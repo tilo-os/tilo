@@ -179,6 +179,7 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
     let told = writes.clone();
     let services = ProcessServices {
         shell: Some(Arc::new(ShellServices {
+            processes: None,
             links: Arc::clone(&links),
             socket: socket.clone(),
             documents: Arc::clone(&kept) as _,

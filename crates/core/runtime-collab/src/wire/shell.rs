@@ -4,7 +4,7 @@
 //! them, and the session is its client. The daemon admits a shell by its launch, as it admits an
 //! app: it makes a link for one shell, a connection it opened itself with a one-use secret, and
 //! hands it to the shell it starts ([`SHELL_FD_ENV`]). A process that holds no link, whatever
-//! account it runs as, is not the shell. A shell connection asks three things of the daemon:
+//! account it runs as, is not the shell. A shell connection asks four things of the daemon:
 //!
 //! - the documents of the workspaces the device holds, read for the device itself and written as
 //!   it: [`ShellCall`] carries what `tilo_peer_state::workspace_documents::DeviceDocuments` and
@@ -15,6 +15,8 @@
 //!   (`Service::RemoteAction`): a workspace's key access and membership and the host's own
 //!   operations among them, answered from a workspace the daemon keeps and forwarded to the
 //!   workspace's keeping device over tilo-actions/1 otherwise;
+//! - the device's tilolang processes, to which the shell hands each of its windows' instances
+//!   ([`ShellCall::Processes`]);
 //! - how each workspace stands (its people, its policy, its hosts and what this device may do
 //!   there): resources the daemon publishes and the shell watches on the same connection
 //!   ([`super::Operation::Services`], [`super::Operation::Watch`]).
@@ -40,6 +42,14 @@ pub const SHELL_FD_ENV: &str = "TILO_SHELL_FD";
 /// one-use secret the daemon answered the shell's [`ShellCall::Vouch`] with: the daemon admits the
 /// connection as the app that vouch named. As long as [`SHELL_MAGIC`].
 pub const VOUCH_MAGIC: &[u8; 4] = b"QSV1";
+
+/// What a connection the shell opens to hand the device's tilolang processes an instance begins
+/// with, followed by the one-use secret the daemon answered the shell's [`ShellCall::Processes`]
+/// with: both written in one message that carries the shell's end of a packet socket pair
+/// (`runtime_portal::packet::pair`) as `SCM_RIGHTS`. The daemon's processes then take the
+/// hand-over on that packet socket (`runtime_portal::device_processes`). As long as
+/// [`SHELL_MAGIC`].
+pub const PROCESSES_MAGIC: &[u8; 4] = b"QSP1";
 
 /// The app a shell vouches for ([`ShellCall::Vouch`]): one the shell launched and admitted on its
 /// own connection, in the workspace that launch named. The connection the vouch admits then
@@ -138,6 +148,10 @@ pub enum ShellCall {
     /// the shell closes the handle ([`super::Operation::Close`]) or its link, and a call it had not
     /// answered fails.
     Provide { provider: String, catalogue: String },
+    /// Admit one connection to the device's tilolang processes: answered with the one-use secret
+    /// that connection opens with after [`PROCESSES_MAGIC`]. The link itself is a byte stream that
+    /// many calls share, so the descriptors of a hand-over travel on that connection instead.
+    Processes,
 }
 
 /// What the name of every provider a shell serves begins with, besides the session's own actions
@@ -272,6 +286,12 @@ pub enum ShellReply {
     Authorized(Result<(), String>),
     /// A [`ShellCall::Provide`]: the handle the provider's calls arrive on.
     Providing(super::Handle),
+    /// A [`ShellCall::Processes`]: the daemon's socket the connection to its processes opens on,
+    /// and the secret it opens with.
+    Processes {
+        socket: std::path::PathBuf,
+        secret: [u8; SHELL_SECRET_BYTES],
+    },
 }
 
 /// A document the device took a write to.

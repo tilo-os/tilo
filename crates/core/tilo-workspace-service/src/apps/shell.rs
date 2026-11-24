@@ -31,11 +31,13 @@ pub struct ShellCaller {
 
 /// The shell links the daemon made and no shell took yet: each a one-use secret the daemon
 /// sends on a connection it opens itself, then hands to the shell it starts. And the connections
-/// an admitted shell vouched for, one for each app it launched, that did not open yet.
+/// an admitted shell vouched for, one for each app it launched, that did not open yet, and those
+/// it asked to hand the device's tilolang processes an instance on.
 #[derive(Default)]
 pub struct ShellLinks {
     shells: std::sync::Mutex<std::collections::HashMap<[u8; 32], ShellCaller>>,
     vouched: std::sync::Mutex<std::collections::HashMap<[u8; 32], Vouch>>,
+    processes: std::sync::Mutex<std::collections::HashSet<[u8; 32]>>,
 }
 
 impl ShellLinks {
@@ -67,7 +69,27 @@ impl ShellLinks {
     pub fn take_vouched(&self, secret: &[u8; 32]) -> Option<Vouch> {
         lock(&self.vouched).remove(secret)
     }
+
+    /// A secret admitting one connection to the device's tilolang processes: what an admitted
+    /// shell is answered when it asks to hand them an instance.
+    #[must_use]
+    pub fn processes(&self) -> [u8; 32] {
+        let secret: [u8; 32] = rand::random();
+        lock(&self.processes).insert(secret);
+        secret
+    }
+
+    /// Whether `secret` admits a connection to the processes, once.
+    #[must_use]
+    pub fn take_processes(&self, secret: &[u8; 32]) -> bool {
+        lock(&self.processes).remove(secret)
+    }
 }
+
+/// The device's tilolang processes, as the shell reaches them: each takes one connection, a
+/// packet socket the shell's admitted connection carried, and answers the one ask on it
+/// (`runtime_portal::device_processes`).
+pub type ShellProcesses = Arc<dyn Fn(std::os::fd::OwnedFd) + Send + Sync>;
 
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -117,6 +139,9 @@ pub struct ShellServices {
     /// settings): the shell link reads and changes them as the app it names, so a session's apps
     /// reach the one copy the daemon keeps.
     pub published: Option<Arc<dyn PublishedResources>>,
+    /// The device's tilolang processes, which the shell hands its windows' instances: `None` where
+    /// none can start.
+    pub processes: Option<ShellProcesses>,
     /// The workspaces the device holds: what the resource commands of the apps the shell runs
     /// itself, and its asks of a workspace's vault, run on.
     pub workspaces: crate::workspaces::Workspaces,

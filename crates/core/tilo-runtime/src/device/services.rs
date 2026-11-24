@@ -1463,6 +1463,7 @@ fn broker_services(
             parts.sockets.join(COLLAB_SOCKET),
             Arc::clone(parts.shell_dispatch),
             server_settings,
+            shell_processes(parts.apps, parts.workspaces),
         ))),
         // A workspace placed on a host has its records changed there: the person's actions on
         // them are sent to the host, which decides and runs them, and the change reaches this
@@ -1476,6 +1477,34 @@ fn broker_services(
         search_index: parts.workspaces.search_publications(),
         ..ProcessServices::default()
     })
+}
+
+/// The device's tilolang processes, as the person's shell hands them its windows' instances on
+/// its link: for the workspaces this device has for them alone. `None` where no process can start.
+#[cfg(unix)]
+fn shell_processes(
+    apps: &Arc<apps::Apps>,
+    workspaces: &Arc<ServiceWorkspaces>,
+) -> Option<tilo_workspace_service::apps::shell::ShellProcesses> {
+    #[cfg(target_os = "linux")]
+    {
+        use tilo_peer_state::workspace_documents::DeviceDocuments as _;
+        let processes = apps
+            .processes()
+            .map_err(|why| tracing::warn!(%why, "no tilolang process can start on this device"))
+            .ok()?;
+        let documents = tilo_workspace_service::device_documents::ServiceDocuments::of(
+            workspaces.copies().clone(),
+        );
+        Some(processes.for_the_shell(Box::new(move |workspace| {
+            documents.workspaces().iter().any(|has| has == workspace)
+        })))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (apps, workspaces);
+        None
+    }
 }
 
 fn execution_policy_clock() -> io::Result<(

@@ -570,7 +570,11 @@ impl Session {
         // tilolang instance reach an origin through.
         let connectors = Rc::new(crate::connectors::ConnectorHost::new());
         if let Some(launch) = &options.launch {
-            launch.lend_links(Rc::clone(&window_links), Rc::clone(&connectors));
+            launch.lend_links(
+                Rc::clone(&window_links),
+                Rc::clone(&connectors),
+                &daemon_link,
+            );
         }
 
         // The programs the person downloaded: the registry takes the
@@ -663,9 +667,9 @@ impl Session {
             std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
         let key_link = crate::workspace_keys::KeyLink::new();
         changes.waking(options.wake.handle());
-        let resource_index = engine.as_ref().map(|_| {
-            crate::resource_index::RecordChanges::start(&document_reads, changes.clone())
-        });
+        let resource_index = engine
+            .as_ref()
+            .map(|_| crate::resource_index::RecordChanges::start(&document_reads, changes.clone()));
         let resource_changes = resource_index.clone().map(|index| {
             index as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>
         });

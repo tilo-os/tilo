@@ -885,6 +885,9 @@ pub(super) async fn drive_connection(
             if marker == *runtime_collab::wire::shell::SHELL_MAGIC {
                 return super::shell::serve(stream, shell).await;
             }
+            if marker == *runtime_collab::wire::shell::PROCESSES_MAGIC {
+                return super::shell::processes(stream, shell).await;
+            }
             vouching = marker == *runtime_collab::wire::shell::VOUCH_MAGIC;
         }
         let admitted = if vouching {

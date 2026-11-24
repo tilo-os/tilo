@@ -226,6 +226,10 @@ struct Device {
     daemon_socket: PathBuf,
     workspace: String,
     _settings: Arc<settings_store::Store>,
+    /// The daemon's shell links.
+    links: Arc<ShellLinks>,
+    /// How many connections reached the device's processes.
+    reached_processes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// The device, its shell linked to its daemon when `linked`, and with no daemon otherwise.
@@ -250,6 +254,7 @@ async fn device_with_both(linked: bool) -> Device {
 
     let daemon_socket = dir.path().join("daemon.sock");
     let links = Arc::new(ShellLinks::default());
+    let reached_processes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let daemon = crate::apps::collab_broker::spawn_with_test_services(
         daemon_socket.clone(),
         Some(membership.authority()),
@@ -258,6 +263,7 @@ async fn device_with_both(linked: bool) -> Device {
         ProcessServices {
             committed_documents: Some(Arc::new(DaemonReads)),
             shell: Some(Arc::new(ShellServices {
+                processes: Some(processes_fake(Arc::clone(&reached_processes))),
                 links: Arc::clone(&links),
                 socket: daemon_socket.clone(),
                 documents: Arc::new(NoDocuments),
@@ -323,7 +329,26 @@ async fn device_with_both(linked: bool) -> Device {
         daemon_socket,
         workspace: id,
         _settings: settings,
+        links,
+        reached_processes,
     }
+}
+
+/// The device's tilolang processes as the dispatch reaches them: each connection counted in
+/// `reached`, and its one ask answered as no process running.
+fn processes_fake(
+    reached: Arc<std::sync::atomic::AtomicUsize>,
+) -> crate::apps::shell::ShellProcesses {
+    use runtime_portal::device_processes::{FromDevice, ToDevice};
+    use runtime_portal::packet::Packet as _;
+    Arc::new(move |connection| {
+        reached.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::spawn(move || {
+            if let Ok(Some(ToDevice::Running)) = ToDevice::receive(&connection) {
+                FromDevice::Running(Vec::new()).send(&connection).unwrap();
+            }
+        });
+    })
 }
 
 /// An endpoint speaking the wire on its connection.
@@ -507,6 +532,64 @@ async fn an_app_vouching_for_itself_is_refused() {
     assert!(
         refused.contains("only the person's shell vouches for an app"),
         "{refused}"
+    );
+}
+
+/// Only the shell the daemon started reaches the device's processes: a connection it asked for on
+/// its own link is handed to them, and one that opens with any other secret, from a process that
+/// dialed the daemon's socket itself, reaches nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn only_the_shell_hands_the_device_processes_an_instance() {
+    use runtime_portal::device_processes::{FromDevice, ToDevice};
+    use runtime_portal::packet::Packet as _;
+    let device = device_with_both(true).await;
+    let ask = |connection: std::os::fd::OwnedFd| {
+        tokio::task::spawn_blocking(move || {
+            ToDevice::Running.send(&connection)?;
+            FromDevice::receive(&connection)
+        })
+    };
+    // A process that is not the shell, with a secret no link asked for.
+    let (ours, theirs) = runtime_portal::packet::pair().unwrap();
+    let dialed = std::os::unix::net::UnixStream::connect(&device.daemon_socket).unwrap();
+    let mut opening = runtime_collab::wire::shell::PROCESSES_MAGIC.to_vec();
+    opening.extend_from_slice(&[9; runtime_collab::wire::shell::SHELL_SECRET_BYTES]);
+    runtime_portal::fd_transport::send_with_fd(&dialed, &opening, &theirs).unwrap();
+    drop(theirs);
+    let refused = ask(ours).await.unwrap();
+    assert!(
+        matches!(refused, Ok(None) | Err(_)),
+        "a process that dialed the daemon itself is not answered: {refused:?}"
+    );
+    assert_eq!(
+        device
+            .reached_processes
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing of it reached the processes"
+    );
+    // The shell, on the link the daemon made for it.
+    let secret = device.links.make(ShellCaller {
+        person: root(3).verifying_key().to_bytes(),
+    });
+    let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
+    opening.extend_from_slice(&secret);
+    let (shell, _) = runtime_collab::ShellClient::open(
+        Endpoint::connect(&device.daemon_socket, &opening)
+            .await
+            .stream,
+    );
+    let connection = shell.processes().await.unwrap();
+    assert_eq!(
+        ask(connection).await.unwrap().unwrap(),
+        Some(FromDevice::Running(Vec::new())),
+        "the shell's connection reaches the processes"
+    );
+    assert_eq!(
+        device
+            .reached_processes
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
     );
 }
 

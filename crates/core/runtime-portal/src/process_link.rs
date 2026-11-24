@@ -592,7 +592,7 @@ mod byte_lists {
 /// A workspace's policy as its JSON text: the policy types leave out empty fields when they are
 /// written, which a positional encoding cannot read back, and the session already bounds that
 /// text.
-mod policy_text {
+pub(crate) mod policy_text {
     use serde::{Deserialize as _, Deserializer, Serialize as _, Serializer};
     use tilo_action_policy::MemberAccess;
 

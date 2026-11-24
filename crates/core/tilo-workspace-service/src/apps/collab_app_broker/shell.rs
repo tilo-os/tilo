@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use runtime_collab::wire::Reply;
 use runtime_collab::wire::shell::{
-    DocumentWritten, SHELL_MAGIC, ShellCall, ShellReply, ShellWrite, VOUCH_MAGIC,
+    DocumentWritten, PROCESSES_MAGIC, SHELL_MAGIC, ShellCall, ShellReply, ShellWrite, VOUCH_MAGIC,
 };
 use tilo_actions::remote::{
     Caller, InvokeArgument, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
@@ -59,6 +59,50 @@ pub(super) async fn serve(
     super::wire::serve(connection, outgoing, reader, writer)
         .await
         .map_err(|error| crate::apps::BrokerError::failed(error.to_string()))
+}
+
+/// Hand the device's tilolang processes the packet socket `stream` carries, when it opened with
+/// [`PROCESSES_MAGIC`] and the secret the daemon answered a shell's [`ShellCall::Processes`] with
+/// on its own link. Marker, secret and descriptor come as one message. Any other connection, one
+/// that dialed the socket itself above all, is closed before anything reaches the processes:
+/// only the shell the daemon started hands them an instance.
+pub(super) async fn processes(
+    stream: tokio::net::UnixStream,
+    services: Arc<ShellServices>,
+) -> Result<(), crate::apps::BrokerError> {
+    use runtime_collab::wire::shell::SHELL_SECRET_BYTES;
+    let refused = |why: String| {
+        tracing::warn!(%why, "refused a hand-over to the device's tilolang processes");
+        Ok(())
+    };
+    let (opening, packets) = loop {
+        if let Err(error) = stream.readable().await {
+            return refused(format!("its connection does not read: {error}"));
+        }
+        match stream.try_io(tokio::io::Interest::READABLE, || {
+            runtime_portal::fd_transport::recv_with_fd(&stream)
+        }) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return refused(format!("its opening does not read: {error}")),
+            Ok(received) => break received,
+        }
+    };
+    let secret = opening
+        .strip_prefix(PROCESSES_MAGIC.as_slice())
+        .and_then(|secret| <[u8; SHELL_SECRET_BYTES]>::try_from(secret).ok());
+    let (Some(secret), Some(packets)) = (secret, packets) else {
+        return refused("its opening is no marker, secret and packet socket".to_owned());
+    };
+    if !services.links.take_processes(&secret) {
+        return refused(
+            "only the person's shell hands over, with a secret its link asked for".to_owned(),
+        );
+    }
+    let Some(processes) = services.processes.as_ref() else {
+        return refused("no tilolang process can start on this device".to_owned());
+    };
+    processes(packets);
+    Ok(())
 }
 
 /// Admit `stream`, which opened with [`VOUCH_MAGIC`], as the app an admitted shell vouched for
@@ -161,6 +205,15 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
         | ShellCall::KeepsReceipts { .. }
         | ShellCall::Authorizes { .. }) => kept(&services.workspaces, call).await,
         ShellCall::Vouch(vouch) => vouch_for(&services, vouch)?,
+        ShellCall::Processes => {
+            if services.processes.is_none() {
+                return Err("no tilolang process can start on this device".to_owned());
+            }
+            ShellReply::Processes {
+                socket: services.socket.clone(),
+                secret: services.links.processes(),
+            }
+        }
         ShellCall::Action {
             workspace,
             frame,

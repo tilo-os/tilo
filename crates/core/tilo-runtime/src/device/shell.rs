@@ -47,6 +47,7 @@ pub(crate) fn services(
     socket: std::path::PathBuf,
     dispatching: Arc<Dispatching>,
     published: Arc<dyn PublishedResources>,
+    processes: Option<tilo_workspace_service::apps::shell::ShellProcesses>,
 ) -> ShellServices {
     let standing = Standing::new(Arc::clone(workspaces));
     standing.follow();
@@ -57,6 +58,7 @@ pub(crate) fn services(
     ShellServices {
         links: Arc::clone(links),
         socket,
+        processes,
         documents: Arc::new(ServiceDocuments::of(copies.clone())),
         writes: Arc::new(ServiceWrites::of(copies.clone())),
         document_writes: Arc::new({

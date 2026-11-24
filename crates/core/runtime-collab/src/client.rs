@@ -1990,6 +1990,40 @@ impl ShellClient {
         Ok(stream)
     }
 
+    /// A packet socket to the device's tilolang processes, for one ask
+    /// (`runtime_portal::device_processes`): admitted on the shell's own link, then opened on the
+    /// daemon's socket with the secret it answered, which carries the daemon's end of the pair.
+    ///
+    /// # Errors
+    /// The daemon refused it, or its socket does not answer.
+    #[cfg(target_os = "linux")]
+    pub async fn processes(&self) -> Result<std::os::fd::OwnedFd, NotAvailable> {
+        let (socket, secret) = match self.call(crate::wire::shell::ShellCall::Processes).await? {
+            crate::wire::shell::ShellReply::Processes { socket, secret } => (socket, secret),
+            other => {
+                return Err(NotAvailable::Refused(format!(
+                    "the daemon answered a hand-over with {other:?}"
+                )));
+            }
+        };
+        let stream = tokio::net::UnixStream::connect(&socket).await?;
+        let (ours, theirs) = runtime_portal::packet::pair()?;
+        let mut opening = crate::wire::shell::PROCESSES_MAGIC.to_vec();
+        opening.extend_from_slice(&secret);
+        // The marker, the secret and the daemon's end in one message: the daemon reads them as
+        // one, so the descriptor arrives with the bytes it reads.
+        loop {
+            stream.writable().await?;
+            match stream.try_io(tokio::io::Interest::WRITABLE, || {
+                runtime_portal::fd_transport::send_with_fd(&stream, &opening, &theirs)
+            }) {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                sent => break sent?,
+            }
+        }
+        Ok(ours)
+    }
+
     /// The shell link the daemon handed this process when it started it
     /// ([`crate::wire::shell::SHELL_FD_ENV`]), taken once; `None` in a process the daemon did not
     /// start as the shell.

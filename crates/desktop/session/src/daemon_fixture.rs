@@ -72,6 +72,7 @@ impl TestDaemon {
         });
         let services = ProcessServices {
             shell: Some(Arc::new(ShellServices {
+                processes: None,
                 links: Arc::clone(&links),
                 socket: socket.clone(),
                 documents: Arc::new(ServiceDocuments::of(workspaces.clone())),
