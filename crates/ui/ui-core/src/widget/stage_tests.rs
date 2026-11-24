@@ -346,7 +346,10 @@ fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
     ));
 
     let stage = shown(&mut host);
-    assert!(stage.menu.is_open(), "the place's menu opened under the press");
+    assert!(
+        stage.menu.is_open(),
+        "the place's menu opened under the press"
+    );
     let labels: Vec<String> = stage
         .menu
         .items()
@@ -399,11 +402,7 @@ fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
         !shown(&mut host).menu.is_open(),
         "a place without commands opens no menu"
     );
-    let selected: Vec<String> = queue
-        .take()
-        .into_iter()
-        .map(|fired| fired.event)
-        .collect();
+    let selected: Vec<String> = queue.take().into_iter().map(|fired| fired.event).collect();
     assert!(
         !selected.contains(&"delete".to_owned()),
         "nothing ran for the press"
@@ -469,9 +468,7 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
         })
         .collect();
     assert!(
-        moved
-            .iter()
-            .any(|(item, at)| item == "box-0" && *at > 96),
+        moved.iter().any(|(item, at)| item == "box-0" && *at > 96),
         "a dragged finger moves the place with it: {moved:?}"
     );
 
@@ -482,11 +479,7 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
         host.dispatch_to_root(&synthetic_input::mouse_press());
         host.dispatch_to_root(&synthetic_input::mouse_release());
     }
-    let fired: Vec<String> = queue
-        .take()
-        .into_iter()
-        .map(|fired| fired.event)
-        .collect();
+    let fired: Vec<String> = queue.take().into_iter().map(|fired| fired.event).collect();
     assert!(
         fired.iter().any(|event| event == "select"),
         "a tap chooses the place: {fired:?}"
@@ -575,4 +568,101 @@ fn a_box_whose_words_fit_stands_at_its_stored_height() {
         (height - 120.0).abs() < 0.5,
         "a place that fits stands where the element put it: {height}"
     );
+}
+
+/// Where the page point `at` stands in the 800 × 600 window a stage of a 1280 × 720 page is
+/// drawn in: the page fits at 0.625, centred, so its top stands 75 window pixels down.
+fn on_screen(at: (f64, f64)) -> (f64, f64) {
+    (at.0 * 0.625, 75.0 + at.1 * 0.625)
+}
+
+/// Drag the place at `from` to `to` (page points) with the hand, and the place's box where the
+/// stage last reported it: the page point it moved to.
+fn dragged(
+    queue: &crate::Intents<crate::component::Fired>,
+    host: &mut FrameHarness,
+    from: (f64, f64),
+    to: (f64, f64),
+) -> (i64, i64) {
+    let (x, y) = on_screen(from);
+    host.dispatch_to_root(&synthetic_input::cursor_moved(x, y));
+    host.dispatch_to_root(&synthetic_input::mouse_press());
+    let (x, y) = on_screen(to);
+    host.dispatch_to_root(&synthetic_input::cursor_moved(x, y));
+    queue
+        .take()
+        .into_iter()
+        .filter(|fired| fired.event == "moved")
+        .next_back()
+        .map(|fired| match fired.value {
+            Some(crate::component::Value::List(mut parts)) => match parts.remove(1) {
+                crate::component::Value::List(mut at) => match at.remove(0) {
+                    crate::component::Value::Int(x) => match at.remove(0) {
+                        crate::component::Value::Int(y) => (x, y),
+                        other => panic!("a page point is whole: {other:?}"),
+                    },
+                    other => panic!("a page point is whole: {other:?}"),
+                },
+                other => panic!("a page point: {other:?}"),
+            },
+            other => panic!("a place moved: {other:?}"),
+        })
+        .expect("the drag reported where the place went")
+}
+
+#[test]
+fn a_dragged_place_snaps_to_the_page_and_the_places_beside_it() {
+    let queue = crate::Intents::default();
+    let mut host = FrameHarness::new(
+        crate::State::new(),
+        Box::new(boxes_stage(&queue, 2)),
+        (800, 600),
+    );
+
+    // Box 0 stands at page (96, 90) and is 160 wide, so its right edge is page x = 256. Box 1
+    // starts at 296: dragging it so its left edge is three units short of that edge snaps it
+    // onto the edge, and a guide says what it lined up with.
+    let landed = dragged(&queue, &mut host, (320.0, 140.0), (277.0, 140.0));
+    assert_eq!(
+        landed,
+        (256, 90),
+        "the place snaps its edge to the place beside it"
+    );
+    let guides = shown(&mut host).guides.borrow().clone();
+    assert!(
+        guides
+            .iter()
+            .any(|guide| guide.vertical && (guide.at - 256.0).abs() < 1e-9),
+        "a guide shows the edge it snapped to: {guides:?}"
+    );
+
+    // The page's own centre is a line too: a place whose middle is close to it moves onto it.
+    host.dispatch_to_root(&synthetic_input::mouse_release());
+    let landed = dragged(&queue, &mut host, (320.0, 140.0), (587.0, 140.0));
+    assert_eq!(
+        landed,
+        (560, 90),
+        "the place's middle snaps to the page's centre"
+    );
+    let guides = shown(&mut host).guides.borrow().clone();
+    assert!(
+        guides
+            .iter()
+            .any(|guide| guide.vertical && (guide.at - 640.0).abs() < 1e-9),
+        "the guide names the page's centre: {guides:?}"
+    );
+
+    // A place that lines up with nothing moves exactly where the hand put it, and shows no guide.
+    host.dispatch_to_root(&synthetic_input::mouse_release());
+    let landed = dragged(&queue, &mut host, (320.0, 140.0), (450.0, 250.0));
+    assert_eq!(
+        landed,
+        (426, 200),
+        "a place near nothing keeps the hand's place"
+    );
+    assert!(
+        shown(&mut host).guides.borrow().is_empty(),
+        "and lines up with nothing"
+    );
+    host.dispatch_to_root(&synthetic_input::mouse_release());
 }

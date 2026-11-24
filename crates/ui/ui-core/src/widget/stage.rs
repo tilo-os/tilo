@@ -331,6 +331,34 @@ impl Stage {
         Point::new(inside.x / scale, inside.y / scale)
     }
 
+    /// `event` as a place reads it: a place is laid out on the page and drawn through the
+    /// stage's own scale, so the hand's window position reaches it as the page point it stands
+    /// on. Events that carry no position reach the places as they are.
+    fn place_event(
+        &self,
+        event: &WindowEvent,
+        ctx: &crate::widget::EventCtx<'_>,
+    ) -> Option<WindowEvent> {
+        let on_page = |at: winit::dpi::PhysicalPosition<f64>| {
+            let at = self.page_point(ctx.logical(at));
+            winit::dpi::PhysicalPosition::new(at.x * ctx.scale_factor, at.y * ctx.scale_factor)
+        };
+        match event {
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            } => Some(WindowEvent::CursorMoved {
+                device_id: *device_id,
+                position: on_page(*position),
+            }),
+            WindowEvent::Touch(touch) => Some(WindowEvent::Touch(winit::event::Touch {
+                location: on_page(touch.location),
+                ..touch.clone()
+            })),
+            _ => None,
+        }
+    }
+
     /// What one page coordinate takes on screen: the fit the person zoomed to.
     #[must_use]
     pub fn scale(&self) -> f64 {
@@ -1422,9 +1450,13 @@ impl Widget for Stage {
             _ => {}
         }
         // The places' own views take what is theirs: a press in a text box puts the caret in it,
-        // a button in a picture's well presses.
+        // a button in a picture's well presses. A place is laid out on the page and drawn
+        // through the stage's one scale, so the hand's window position reaches it as the page
+        // point it stands on.
+        let on_page = self.place_event(event, ctx);
         for (child, node) in self.parts.children.iter_mut().zip(self.parts.nodes.clone()) {
             let path = ctx.path;
+            let event = on_page.as_ref().unwrap_or(event);
             child.handle_event(event, &mut ctx.reborrow(path, node));
             if *ctx.handled {
                 break;
