@@ -12,12 +12,17 @@
 //! The agents the person here keeps ([`Kept`]) are whom what they type is handed to. Their turns
 //! are worked by the workspace's agent engine, which this device's workspace service runs.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use serde_json::{Map, Value};
 use tilo_action_policy::WorkspacePolicy;
+use tilo_actions::{ActionAddress, ActionInvoker, ApiError, ResourceSpec};
 use tilo_app::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents as Record};
+use tilo_service::{Service, Started};
+use tilo_session_core::desktop::state::DesktopHandle;
 
 use crate::followed_resource::FollowedResource;
 
@@ -281,6 +286,23 @@ impl Agents {
     /// read, and read as it stands now: a workspace that keeps none is given none, so one nobody
     /// set an agent up in costs no list.
     fn record(&self, workspace: &str, policy: &WorkspacePolicy, person: &str) -> Held {
+        let followed = self.followed(workspace, policy, person);
+        match followed.held() {
+            Some(true) => Held::Open(followed),
+            Some(false) => Held::None,
+            None => Held::Unknown,
+        }
+    }
+
+    /// The workspace's list of its agents, followed here where it is not, at the grants the pass
+    /// read. Its first state while the workspace keeps none: what the session publishes of it,
+    /// and what the workspace founds when an app first changes it.
+    pub(crate) fn followed(
+        &self,
+        workspace: &str,
+        policy: &WorkspacePolicy,
+        person: &str,
+    ) -> FollowedResource<Record> {
         let mut open = self.open.borrow_mut();
         if open
             .get(workspace)
@@ -305,11 +327,7 @@ impl Agents {
         if self.daemon.link().is_ok() {
             opened.followed.refresh();
         }
-        match opened.followed.held() {
-            Some(true) => Held::Open(opened.followed.clone()),
-            Some(false) => Held::None,
-            None => Held::Unknown,
-        }
+        opened.followed.clone()
     }
 }
 
@@ -385,6 +403,164 @@ pub(crate) fn agent_recipient(kept: Option<(String, String)>) -> ui::floating_su
         None => Recipient::new_agent(crate::i18n::t("session-agent-name")),
     }
 }
+
+/// The resource the workspace's agents are published as: the record's own fields and the verbs
+/// it declares, which a view of another language reads and calls as the workspace's app does.
+pub(crate) const RESOURCE: &str = "workspace:tilo.workspace.agent";
+/// The label a reader sees for it.
+const LABEL: &str = "Agents";
+
+/// The workspace's agents, as this session publishes them: the workspace in front's record as a
+/// reading, its verbs the record's own, answered here for a tilolang view of any app of the
+/// workspace, an agent and a script.
+pub(crate) struct Served {
+    /// The workspaces' lists of their agents, followed through the session's one read.
+    agents: Rc<Agents>,
+    /// The layout, where the workspace in front and its grants are read.
+    handle: DesktopHandle,
+    /// Who sits here: whose grants are read.
+    person: String,
+    /// The resource published last, and the reading it was built at.
+    published: RefCell<Option<(u64, ResourceSpec)>>,
+    /// The reading last published, so a move is told once.
+    seen: Cell<u64>,
+}
+
+impl Served {
+    /// The workspace's agents as `person` sees them wherever `handle` says they are, waking the
+    /// session's loop when the workspace's list of them moves.
+    pub(crate) fn new(agents: Rc<Agents>, handle: DesktopHandle, person: &str) -> Self {
+        Self {
+            agents,
+            handle,
+            person: person.to_owned(),
+            published: RefCell::new(None),
+            seen: Cell::new(0),
+        }
+    }
+
+    /// The workspace in front, and its grants.
+    fn workspace(&self) -> Option<(String, WorkspacePolicy)> {
+        self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|held| (held.id().to_string(), held.policy.clone()))
+        })
+    }
+
+    /// The workspace's record of its agents, followed here: its first state while the workspace
+    /// keeps none.
+    fn record(&self) -> Option<FollowedResource<Record>> {
+        let (workspace, policy) = self.workspace()?;
+        Some(self.agents.followed(&workspace, &policy, &self.person))
+    }
+
+    /// What the record reads as now: its agents, each with its name, who it acts for, its model,
+    /// what it spent and, for a sub-agent, what it was started for and how it stands.
+    fn reading(&self) -> Option<Value> {
+        let record = self.record()?;
+        Some(tilo_resource::read::reading::<Record>(&*record.get()))
+    }
+
+    /// The reading as the record's resource publishes it: its actions, each the record's own.
+    fn resource(&self) -> ResourceSpec {
+        let Some(record) = self.record() else {
+            return tilo_resource::resource::unreadable_parts::<Record>(
+                RESOURCE,
+                LABEL,
+                "the workspace's agents are not read here now",
+            );
+        };
+        let revision = record.revision();
+        if let Some((at, published)) = self.published.borrow().as_ref()
+            && *at == revision
+        {
+            return published.clone();
+        }
+        let published = tilo_resource::publish::<Record>(RESOURCE, LABEL, &*record.get());
+        *self.published.borrow_mut() = Some((revision, published.clone()));
+        published
+    }
+
+    /// Carry out `action` on the record as `invoker`.
+    fn act(
+        &self,
+        invoker: &ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let address = ActionAddress::new(resource, action);
+        if resource != RESOURCE {
+            return Err(ApiError::Unknown(address));
+        }
+        let record = self.record().ok_or_else(|| ApiError::Unavailable {
+            code: "unavailable".to_owned(),
+            reason: "the workspace's agents are not read here now".to_owned(),
+        })?;
+        // The arguments are bound here first, so a call that cannot bind says why before it
+        // reaches the daemon.
+        tilo_resource::resource::build_action::<Record>(
+            action,
+            arguments,
+            tilo_resource::origin_now_ms(),
+        )
+        .map_err(ApiError::InvalidArguments)?;
+        record
+            .invoke_as(invoker, action, arguments.clone())
+            .map_err(ApiError::Failed)?;
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+}
+
+impl Service for Served {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        vec![self.resource()]
+    }
+
+    fn read(&self, resource: &str) -> Option<Value> {
+        (resource == RESOURCE).then(|| {
+            self.reading().unwrap_or_else(|| {
+                // A workspace no one set an agent up in reads as none: a view reads its agents
+                // as absent rather than failing on one, and the way to make the first stands.
+                Value::Object(Map::from_iter([(
+                    "agents".to_owned(),
+                    Value::Array(Vec::new()),
+                )]))
+            })
+        })
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let invoker = ActionInvoker::member(tilo_actions::MemberId::person(self.person.clone()));
+        self.act(&invoker, resource, action, arguments)
+    }
+
+    fn invoke_as(
+        &mut self,
+        invoker: &ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        self.act(invoker, resource, action, arguments)
+    }
+
+    /// What moved in the record, from this device or another: the reading is published again.
+    fn poll(&mut self) -> bool {
+        let Some(record) = self.record() else {
+            return false;
+        };
+        let revision = record.revision();
+        let was = self.seen.replace(revision);
+        was != revision
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

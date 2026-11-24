@@ -2,7 +2,7 @@ app so.tilo.chat "Chat" (
     icon: .message_circle,
     category: .network,
     tagline: "Workspaces for messages, calls and shared work",
-    keywords: ["messenger", "instant messaging", "conversation"],
+    keywords: ["messenger", "instant messaging", "conversation", "assistant", "personal assistant", "my agent", "main chat", "sub-agents", "supervision"],
     previously: so.tilo.lang.chat,
     splash_budget: 250,
 )
@@ -1586,6 +1586,221 @@ view example_row(s: Skill, e: Example) {
     }
 }
 
+/// The workspace's own assistant among its agents, as the workspace's record of them keeps it:
+/// the first one a person made that no MCP client connects as, by the order it was made. The
+/// assistant is no app's agent: it works for the workspace, and its conversation is the one
+/// under Direct messages. None where the workspace keeps none.
+fn assistant(roster: workspace.WorkspaceAgent) -> Option<workspace.Agent> {
+    roster.agents
+        .filter(a -> a.sub == .none)
+        .filter(a -> a.mcp_client == .none)
+        .filter(a -> a.state == .active)
+        .sort_by(a -> a.created_at)
+        .first()
+}
+
+/// The sub-agents `main` started, in the order the record lists them: each with the job it was
+/// started for, the role it was given and how it stands.
+fn subs_of(roster: workspace.WorkspaceAgent, main: workspace.Agent) -> List<workspace.Agent> {
+    roster.agents.filter(
+        a -> match a.sub {
+            .none => false,
+            .some(sub) => sub.started_by == main.id,
+        },
+    )
+}
+
+/// How a sub-agent stands, in the person's words.
+fn standing(sub: workspace.Sub) -> Text {
+    if sub.stands == .working {
+        "Working"
+    } else if sub.stands == .needs_person {
+        "Needs you"
+    } else if sub.line.trim() != "" { "Done: {sub.line}" } else { "Done" }
+}
+
+/// What an agent has spent, in millionths of the currency, as a person reads it: two hundredths
+/// when it spent any.
+fn money(micros: Int) -> Text {
+    let cents = micros / 10000
+    let units = cents / 100
+    let rest = cents - units * 100
+    if rest == 0 { "{units}" } else if rest < 10 { "{units}.0{rest}" } else { "{units}.{rest}" }
+}
+
+/// What the assistant spent against its day's limit, in the person's words: the record's last
+/// counted day, which a new day starts afresh.
+fn spend_words(a: workspace.Agent) -> Text {
+    let spent = match a.spent {
+        .none => "0",
+        .some(s) => money(s.cost_micros),
+    }
+    match a.spend_limit_micros {
+        .none => "{spent} with no day limit",
+        .some(limit) => "{spent} of {money(limit)} a day",
+    }
+}
+
+/// The assistant: how it stands, the model it plans with, chosen in Settings, and what it
+/// spent. The record of the workspace's agents is read here as the session publishes it; the
+/// window keeps no copy, and the model is changed where the workspace chooses its models.
+view supervision(all: Conversations) {
+    let roster = workspace.agents
+    match assistant(roster) {
+        .none => no_assistant(roster),
+        .some(a) => stack(gap: .group) {
+            ui.Text("Supervision", role: .title)
+            ui.ListRow(title: "{a.name} is on", icon: .bot)
+            stack(gap: .tight) {
+                text("Model", role: .label)
+                text(
+                    match a.model {
+                        .none => "Chosen in Settings",
+                        .some(model) => model,
+                    },
+                )
+                ui.Link(
+                    "settings://agent_models",
+                    label: "Change in Settings",
+                    role: .caption,
+                )
+            }
+            stack(gap: .tight) {
+                text("Spent", role: .label)
+                text(spend_words(a))
+            }
+        },
+    }
+}
+
+/// The sub-agents the assistant started: the job each was given, the role it works as and how
+/// it stands. It reads the workspace's record of its agents; a sub-agent cannot read the main
+/// chat, and its conversation is its own.
+view sub_agents(all: Conversations) {
+    state opened: Option<workspace.Agent> = .none
+    let roster = workspace.agents
+    match assistant(roster) {
+        .none => no_assistant(roster),
+        .some(a) => {
+            let subs = subs_of(roster, a)
+            stack(gap: .group) {
+                ui.Text("Sub-agents of {a.name}", role: .title)
+                if subs.is_empty() {
+                    ui.EmptyState("No sub-agents", icon: .users)
+                } else {
+                    for s in subs {
+                        if let sub = s.sub {
+                            ui.Card(item: s, title: sub.job) {
+                                ui.ListRow(
+                                    title: sub.job,
+                                    secondary: sub.role,
+                                    value: standing(sub),
+                                    icon: .users,
+                                )
+                                on activate: set(opened, s)
+                            }
+                        }
+                    }
+                }
+                if let one = opened {
+                    sub_agent(one)
+                }
+                text(
+                    "Each sub-agent has its conversation of its own under Direct messages; it cannot read the main chat.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+        }
+    }
+}
+
+/// One sub-agent: the job it was started for, the role it works as, how it stands, and where
+/// its conversation is. It cannot read the main chat; what it says is its own conversation's,
+/// under Direct messages.
+view sub_agent(s: workspace.Agent) {
+    if let sub = s.sub {
+        stack(gap: .group) {
+            ui.Text(sub.job, role: .title)
+            if sub.role.trim() != "" {
+                text(sub.role, role: .caption, secondary: true)
+            }
+            ui.ListRow(title: s.name, value: standing(sub), icon: .users)
+            text(
+                "It cannot read the main chat. Its conversation is its own, under Direct messages.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+    }
+}
+
+/// Asks the assistant to start a sub-agent for `job`, in the direct conversation it answers in:
+/// the record's own `start-sub-agent` is the assistant's to call there, and the sub-agent reports
+/// in that conversation, where the person follows it. None where the workspace keeps no
+/// conversation with the assistant yet.
+action ask_for_sub_agent(
+    all: Conversations,
+    agent: workspace.Agent,
+    job: Text = "",
+) -> Option<Message> (icon: .pencil, label: "Start a sub-agent") {
+    require job.trim() != "" "Say what the job is first"
+    // An agent stands in the members by its id: the list names it so, and its display name is
+    // the record's own, which the member list does not read.
+    let who = workspace.members.people.find(p -> p.kind() == .agent and p.name() == agent.id)
+    match who {
+        .none => .none,
+        .some(person) => .some(
+            write_to(all, who: person, body: RichText("Start a sub-agent for this job: {job}")),
+        ),
+    }
+}
+
+/// Starting a sub-agent: the job in the person's words, handed to the assistant in the
+/// conversation the person already follows it in. The words are the request an assistant's turn
+/// reads, so a job started here and one typed into the conversation are the same.
+view start_sub_agent(all: Conversations) {
+    state job: Text = ""
+    let roster = workspace.agents
+    match assistant(roster) {
+        .none => no_assistant(roster),
+        .some(a) => stack(gap: .group) {
+            ui.Text("Start a sub-agent", role: .title)
+            text(
+                "{a.name} starts it in your conversation and reports there, so you follow it where it works.",
+                role: .caption,
+                secondary: true,
+            )
+            ui.TextInput(
+                bind: job,
+                lines: 3,
+                placeholder: "What the sub-agent should do",
+            ) {
+                on submit: ask_for_sub_agent(all, agent: a)
+            }
+            ui.Button("Start", role: .primary) {
+                on press: ask_for_sub_agent(all, agent: a, job: job)
+            } as start_sub_agent
+        },
+    }
+}
+
+/// What stands where the assistant would while the workspace keeps none: the one step that
+/// makes it, through the workspace's own record of its agents.
+// The entry fills the action's job with what is typed; typing enter starts it.
+view no_assistant(record: workspace.WorkspaceAgent) {
+    stack(gap: .group) {
+        ui.EmptyState(
+            "You have no assistant in this workspace",
+            icon: .bot,
+            message: "An assistant works for the workspace and answers in the direct conversation under Direct messages.",
+        )
+        ui.Button("Create assistant", role: .primary) {
+            on press: workspace.create_agent(record, name: "Assistant")
+        } as create_assistant
+    }
+}
+
 /// The sidebar: channels outside any category first, then each category with its channels.
 /// Choosing one shows it beside the sidebar.
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
@@ -1809,6 +2024,25 @@ view sidebar(all: Conversations) {
                             }
                         }
                     }
+                    // The workspace's assistant: the sub-agents it started and what it runs
+                    // on. Its conversation is the one under Direct messages, where the
+                    // workspace's agents stand as the members they are.
+                    ui.NavSection("Assistant", collapsible: true) {
+                        ui.NavItem("/assistant/sub-agents", "Sub-agents", icon: .users) {
+                            on select: set(shown, "/assistant/sub-agents")
+                                .then(open(all, view: sub_agents))
+                        }
+                        ui.NavItem("/assistant/start", "Start a sub-agent", icon: .pencil) {
+                            on select: set(shown, "/assistant/start")
+                                .then(
+                                    open(all, view: start_sub_agent),
+                                )
+                        }
+                        ui.NavItem("/assistant/supervision", "Supervision", icon: .gauge) {
+                            on select: set(shown, "/assistant/supervision")
+                                .then(open(all, view: supervision))
+                        }
+                    }
                     // Everyone in the workspace, on a page of their own: the sidebar lists the
                     // conversations a person has, never every member, so a workspace with a
                     // thousand of them keeps its channels in sight.
@@ -1832,6 +2066,16 @@ view sidebar(all: Conversations) {
                                 on select: set(shown, "/reports").then(open(all, view: reports))
                             }
                         }
+                    }
+                    // Who is looking, at the foot of the places: a person without a name reads
+                    // as you, never as the key the workspace knows them by. Choosing it opens
+                    // the conversation with yourself.
+                    ui.NavItem(
+                        "/me",
+                        if invoker.name().trim() == "" { "You" } else { invoker.name() },
+                        person: invoker,
+                    ) {
+                        on select: set(shown, "/me").then(message_person(all, invoker))
                     }
                 }
             }

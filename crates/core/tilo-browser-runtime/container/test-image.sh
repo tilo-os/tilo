@@ -141,7 +141,7 @@ entry TILO_WEB_SERVER=https://server.example/w && fail "a server that is not an 
 for bad in http://site.example https://site.example/path "https://a b"; do
   entry "TILO_WEB_EMBEDDER=$bad" && fail "an embedder that is not an https:// origin must refuse to start: $bad"
 done
-for bad in so.tilo.shell abcde12345.so.tilo.shell ABCDE12345 'ABCDE12345.so.tilo.*' 'ABCDE12345.so.tilo.shell,ABCDE12345.so.tilo.assistant' 'ABCDE12345.so.tilo.shell ABCDE12345.so..x' 'ABCDE12345.so.tilo"x'; do
+for bad in so.tilo.shell abcde12345.so.tilo.shell ABCDE12345 'ABCDE12345.so.tilo.*' 'ABCDE12345.so.tilo.shell,ABCDE12345.so.tilo.chat' 'ABCDE12345.so.tilo.shell ABCDE12345.so..x' 'ABCDE12345.so.tilo"x'; do
   entry "TILO_WEB_APPLE_APPS=$bad" && fail "an Apple app that is no application identifier must refuse to start: $bad"
 done
 
@@ -154,8 +154,8 @@ start
 apple=/.well-known/apple-app-site-association
 [[ $(head_of "$apple" | head -1) == 'HTTP/1.1 404 Not Found' ]] \
   || fail "without TILO_WEB_APPLE_APPS, $apple must not be found: $(head_of "$apple" | head -1)"
-start 'TILO_WEB_APPLE_APPS=ABCDE12345.so.tilo.shell ABCDE12345.so.tilo.assistant'
-[[ $(get "$apple") == '{"webcredentials":{"apps":["ABCDE12345.so.tilo.shell","ABCDE12345.so.tilo.assistant"]}}' ]] \
+start 'TILO_WEB_APPLE_APPS=ABCDE12345.so.tilo.shell ABCDE12345.so.tilo.chat'
+[[ $(get "$apple") == '{"webcredentials":{"apps":["ABCDE12345.so.tilo.shell","ABCDE12345.so.tilo.chat"]}}' ]] \
   || fail "$apple: $(get "$apple")"
 [[ $(head_of "$apple" | head -1) == 'HTTP/1.1 200 OK' ]] || fail "$apple must be answered as it is: $(head_of "$apple" | head -1)"
 grep -q '^content-type: application/json' <(head_of "$apple") || fail "$apple must be served as JSON"

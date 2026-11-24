@@ -183,10 +183,16 @@ pub const WORKSPACE_MEMBERS: &str = "workspace/members";
 /// the content a limit refused, which every host serves its runtime from what it decides by
 /// ([`crate::content::Host::give_content`]).
 pub const WORKSPACE_CONTENT: &str = "workspace/content";
-/// The workspace's root a view names, `workspace.members` (`use tilo.workspace as workspace`).
+/// The workspace's roots a view names (`use tilo.workspace as workspace`): its members, its
+/// content, and the record of its agents, which the session publishes.
 const WORKSPACE_ROOTS: &[(&str, &str, &str)] = &[
     ("members", "Members", WORKSPACE_MEMBERS),
     ("content", "Content", WORKSPACE_CONTENT),
+    (
+        "agents",
+        "WorkspaceAgent",
+        "workspace:tilo.workspace.agent",
+    ),
 ];
 
 /// The resource the workspace's members are read as, of the type its package reads it as.

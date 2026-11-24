@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Hour` is the app's `tl.so.tilo.weather.Hour` at `weather/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `weather/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,6 +20,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "Notice",
     "Hour",
     "Day",
     "Reading",
@@ -34,6 +35,7 @@ __all__ = [
     "Weather",
     "UseAsDefaultArgs",
     "MoveToTopArgs",
+    "RenamePlaceArgs",
     "RemovePlaceArgs",
     "StopRefreshArgs",
     "RetryPlaceArgs",
@@ -52,6 +54,12 @@ MoveToTopArgs = TypedDict("MoveToTopArgs", {
     "place": "Place",
 })
 """The arguments of `move_to_top`."""
+
+RenamePlaceArgs = TypedDict("RenamePlaceArgs", {
+    "place": "Place",
+    "name": "str",
+})
+"""The arguments of `rename_place`."""
 
 RemovePlaceArgs = TypedDict("RemovePlaceArgs", {
     "place": "Place",
@@ -86,9 +94,70 @@ AcceptFoundArgs = TypedDict("AcceptFoundArgs", {
 })
 """The arguments of `accept_found`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Hour(Resource):
     """Hour — `tl.so.tilo.weather.Hour`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
     hqg5l743: str  # at
     nz766xgs: float  # temperature
     bszivu27: float  # chance
@@ -99,7 +168,7 @@ class Hour(Resource):
 
 class Day(Resource):
     """Day — `tl.so.tilo.weather.Day`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
     jpx34w56: str  # date
     @property
     def _7yqjq2lc(self) -> int:
@@ -129,7 +198,7 @@ class Day(Resource):
 
 class Reading(Resource):
     """Reading — `tl.so.tilo.weather.Reading`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
     wz5kgppi: str  # at
     nfn3o6kh: float  # temperature
     npx3rbww: float  # apparent
@@ -153,7 +222,7 @@ class Reading(Resource):
 
 class Air(Resource):
     """Air — `tl.so.tilo.weather.Air`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
     qhxusqd7: str  # at
     b43at2ai: float | None  # european
     rwv4mbrr: float | None  # us
@@ -172,7 +241,7 @@ class Air(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.weather.Place`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
     bacjedt3: str  # name
     aohkzfz3: str  # region
     j6rsr6zo: str  # country
@@ -191,7 +260,7 @@ class Place(Resource):
 
 class PlaceReading(Resource):
     """PlaceReading — `tl.so.tilo.weather.PlaceReading`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
     uzxnvv67: str  # name
     hfv2phzu: str  # place
     kgqshwck: bool  # read
@@ -229,7 +298,7 @@ class PlaceReading(Resource):
 
 class Refresh(Resource):
     """Refresh — `tl.so.tilo.weather.Refresh`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
     @property
     def _6a665z7q(self) -> str:
         """state (`6a665z7q` on the wire)."""
@@ -254,7 +323,7 @@ class Refresh(Resource):
 
 class Found(Resource):
     """Found — `tl.so.tilo.weather.Found`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
     mgz6jurw: str  # name
     @property
     def _6jas4neh(self) -> float:
@@ -280,7 +349,7 @@ class Found(Resource):
 
 class Searching(Resource):
     """Searching — `tl.so.tilo.weather.Searching`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
     fmhvvp6l: str  # wanted
     o4whnz6t: str  # asked
     @property
@@ -296,7 +365,7 @@ class Searching(Resource):
 
 class Locations(Resource):
     """Locations — `tl.so.tilo.weather.Locations`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
     b2qn6gqw: list[Entry[Place]]  # places
     vqfze2cq: Place | None  # default
     ms5dkio6: list[Entry[Searching]]  # searches
@@ -350,6 +419,18 @@ class Locations(Resource):
     def move_to_top_many(self, items: list[MoveToTopArgs]) -> list[dict[str, Any]]:
         """Runs `move_to_top` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("move_to_top", items)
+
+    def rename_place(self,
+        *,
+        place: Place,
+        name: str,
+    ) -> None:
+        """Renames a place the person follows."""
+        return self.action("rename_place", place=place, name=name)
+
+    def rename_place_many(self, items: list[RenamePlaceArgs]) -> list[dict[str, Any]]:
+        """Runs `rename_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename_place", items)
 
     def remove_place(self, *, place: Place) -> None:
         """Removes a place from the list; what was read of it goes with it. Undo brings it back."""
@@ -426,12 +507,12 @@ class Locations(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"save_place", "use_as_default", "use_as_default_many", "move_to_top", "move_to_top_many", "remove_place", "remove_place_many", "stop_refresh", "stop_refresh_many", "retry_place", "retry_place_many", "read_next", "read_next_many", "poll_weather", "poll_weather_many", "begin_search", "end_search", "end_search_many", "add_found", "accept_found", "accept_found_many"})
+    __actions__ = frozenset({"save_place", "use_as_default", "use_as_default_many", "move_to_top", "move_to_top_many", "rename_place", "rename_place_many", "remove_place", "remove_place_many", "stop_refresh", "stop_refresh_many", "retry_place", "retry_place_many", "read_next", "read_next_many", "poll_weather", "poll_weather_many", "begin_search", "end_search", "end_search_many", "add_found", "accept_found", "accept_found_many"})
 
 
 class Readings(Resource):
     """Readings — `tl.so.tilo.weather.Readings`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
     @property
     def _6fze2ppw(self) -> list[Entry[PlaceReading]]:
         """of (`6fze2ppw` on the wire)."""
@@ -457,5 +538,5 @@ class Readings(Resource):
 
 class Weather(Resource):
     """Weather — `tl.so.tilo.weather`."""
-    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    __surface__ = "so.tilo.weather@27d9c91d6b27f659"
 

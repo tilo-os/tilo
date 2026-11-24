@@ -433,15 +433,15 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
         .accept(ACTIONS_ALPN, service)
         .spawn();
 
-    // Ada makes the agent in Studio from her laptop, through Assistant's own create-agent action
-    // on the server: the agent the key is asked for is one the workspace names.
+    // Ada makes the agent in Studio from her laptop, through the workspace's own create-agent
+    // action on the server: the agent the key is asked for is one the workspace names.
     hosted
         .author_agents(&workspace, |_| Ok(()))
         .await
         .expect("Studio's list of agents starts");
     let agents = tilo_agent_session::resource_provider(
         &tilo_peer_state::document_frame::DocumentRoute {
-            app_id: tilo_app_id::apps::ASSISTANT.to_owned(),
+            app_id: "so.tilo.workspace".to_owned(),
             cluster_id: workspace.clone(),
             document: collab_types::workspace_document_id(AGENTS),
         },

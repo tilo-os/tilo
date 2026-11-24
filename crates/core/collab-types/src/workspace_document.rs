@@ -36,7 +36,7 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
     // which the workspace settings sheet, the apps and their devices all
     // read (`tilo-workspace-agent`).
     WorkspaceDocument {
-        app: "so.tilo.assistant",
+        app: "so.tilo.workspace",
         kind: "tilo.workspace.agent",
     },
     // The reports and decisions Chat keeps for its workspace.
@@ -134,9 +134,9 @@ mod tests {
         );
         let agents = workspace_document_id("tilo.workspace.agent");
         assert_eq!(
-            workspace_document("so.tilo.assistant", &agents).map(|document| document.kind),
+            workspace_document("so.tilo.workspace", &agents).map(|document| document.kind),
             Some("tilo.workspace.agent"),
-            "Assistant keeps the workspace's agents for every app of the workspace"
+            "the workspace keeps its agents for every app of the workspace"
         );
         assert!(workspace_document("so.tilo.chat", &agents).is_none());
         assert!(workspace_document("so.tilo.notes", &agents).is_none());

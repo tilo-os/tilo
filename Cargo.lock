@@ -672,38 +672,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "assistant"
-version = "0.1.0"
-dependencies = [
- "assistant",
- "assistant-model",
- "runtime-dylib",
- "serde_json",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
-name = "assistant-model"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "assistant-model-wasm"
-version = "0.1.0"
-dependencies = [
- "assistant-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18251,7 +18219,6 @@ dependencies = [
 name = "tilo-models-wasm"
 version = "0.1.0"
 dependencies = [
- "assistant-model-wasm",
  "poker-model-wasm",
  "remote-model-wasm",
  "workspace-hack",
@@ -21630,7 +21597,6 @@ dependencies = [
  "serde_json",
  "tilo-action-policy",
  "tilo-actions",
- "tilo-app-id",
  "tilo-collab-types",
  "tilo-files",
  "tilo-resource",
@@ -26087,9 +26053,6 @@ dependencies = [
  "asn1-rs",
  "asn1-rs-derive",
  "asn1-rs-impl",
- "assistant",
- "assistant-model",
- "assistant-model-wasm",
  "async-broadcast",
  "async-channel 1.9.0",
  "async-channel 2.5.0",

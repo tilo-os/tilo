@@ -7,7 +7,6 @@
 pub(super) const DEFAULT: &[&str] = &[
     "so.tilo.activity",
     "so.tilo.api-tester",
-    "so.tilo.assistant",
     "so.tilo.backups",
     "so.tilo.browser",
     "so.tilo.calculator",

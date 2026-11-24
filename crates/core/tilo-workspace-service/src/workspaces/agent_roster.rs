@@ -1,7 +1,7 @@
 //! The workspace's agents, brought over from where builds before kept them.
 //!
 //! The list of a workspace's agents was once Chat's resource (`so.tilo.chat`,
-//! kind `chat.agent`); it is Assistant's now ([`tilo_workspace_agent::OWNER`],
+//! kind `chat.agent`); it is the workspace's now ([`tilo_workspace_agent::OWNER`],
 //! kind [`tilo_workspace_agent::KIND`]). The two are different documents, of
 //! different apps under different ids, so no migration step inside one
 //! document can carry the agents across. A workspace written before keeps them
@@ -17,7 +17,7 @@
 //! new list holds each of them a later start finds nothing to copy, and the
 //! old document is read for nothing else.
 //!
-//! A workspace with no list of agents yet under Assistant starts it with the
+//! A workspace with no list of agents yet under the workspace starts it with the
 //! genesis every device makes of it ([`started`]), and the copy is made at time
 //! zero by an actor derived from the heads both documents are at, so two
 //! servers of one workspace that copy at once write the same changes, which
@@ -36,7 +36,7 @@ use tilo_workspace_agent::WorkspaceAgents;
 
 use super::Workspaces;
 
-/// The app that kept the workspace's agents before Assistant did.
+/// The app that kept the workspace's agents before the workspace did.
 const FORMER_OWNER: &str = "so.tilo.chat";
 
 /// The kind the workspace's agents were kept under before.
@@ -47,7 +47,7 @@ const AGENTS: &str = "agents";
 
 impl Workspaces {
     /// Copy the agents every workspace governed here kept under Chat into
-    /// Assistant's list of them. What could not be copied is logged and
+    /// the workspace's list of them. What could not be copied is logged and
     /// tried again when the service next opens.
     pub(super) async fn move_agent_rosters(&self) {
         let states: Vec<_> = self
@@ -68,7 +68,7 @@ impl Workspaces {
                 governed.workspace().to_owned()
             };
             if let Err(error) = Box::pin(self.move_agent_roster(&workspace)).await {
-                tracing::error!(%workspace, %error, "the workspace's agents were not copied to Assistant's list of them");
+                tracing::error!(%workspace, %error, "the workspace's agents were not copied to the workspace's list of them");
             }
         }
     }
@@ -100,10 +100,10 @@ impl Workspaces {
         .map_err(|error| error.to_string())
     }
 
-    /// Write `change` into Assistant's list of the agents of `workspace` as this host, onto the
+    /// Write `change` into the workspace's list of the agents of `workspace` as this host, onto the
     /// list as the workspace holds it. Where it holds none yet the list starts with the genesis
     /// every device makes of it ([`started`]): the identity every reader checks before it opens
-    /// the list, the same change as an Assistant that founds it elsewhere, so the two merge as
+    /// the list, the same change as the workspace that founds it elsewhere, so the two merge as
     /// one list.
     ///
     /// # Errors
@@ -136,7 +136,7 @@ fn listed(doc: &AutoCommit) -> Vec<String> {
     }
 }
 
-/// Copy into `doc`, Assistant's list of the agents of `workspace` (empty
+/// Copy into `doc`, the workspace's list of the agents of `workspace` (empty
 /// when the workspace holds none yet), every agent `old` lists that it lacks.
 /// Returns how many it copied; it writes nothing when that is none.
 ///
@@ -266,7 +266,7 @@ fn copy_object(
     Ok(())
 }
 
-/// Assistant's list of the agents of `workspace` as it starts: the genesis
+/// The workspace's list of the agents of `workspace` as it starts: the genesis
 /// every device makes of it, so a device that later opens it finds the
 /// document it would have made itself.
 ///

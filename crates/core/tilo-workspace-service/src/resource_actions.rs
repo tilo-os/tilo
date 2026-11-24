@@ -3,7 +3,7 @@
 //!
 //! A resource is named as every caller names one: `record:<app>:<id>` in the caller's workspace.
 //! Its type is the one its owner declares for it ([`Declared`]): the list of a workspace's
-//! agents (Assistant's), its emoji (Chat's), its contact directory (Contacts'), the person's
+//! agents (the workspace's), its emoji (Chat's), its contact directory (Contacts'), the person's
 //! settings and their list of workspaces in the workspace whose only member is them (the
 //! settings' and the identity's), and every app's index of
 //! the workspace (the index's own). The workspace's grants on the owner's node decide the call,
@@ -89,7 +89,7 @@ impl Declared {
         vec![
             workspace(
                 tilo_resource::ResourceKind::of::<tilo_workspace_agent::WorkspaceAgents>()
-                    .hosted_by(tilo_workspace_agent::OWNER, "Assistant"),
+                    .hosted_by(tilo_workspace_agent::OWNER, "Workspace"),
                 tilo_workspace_agent::OWNER,
             ),
             workspace(

@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Conversations` is the app's `tl.so.tilo.chat.Conversations` at `chat/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `chat/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -26,6 +26,7 @@ __all__ = [
     "Report",
     "Reverted",
     "Ruling",
+    "Notice",
     "Conversations",
     "Category",
     "VoiceChannel",
@@ -410,9 +411,70 @@ OverturnDecisionArgs = TypedDict("OverturnDecisionArgs", {
 })
 """The arguments of `overturn-decision`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Conversations(Resource):
     """Conversations — `tl.so.tilo.chat.Conversations`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     @property
     def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel | VoiceChannel]]:
         """channels (`5kzdptyg` on the wire)."""
@@ -567,14 +629,26 @@ class Conversations(Resource):
         """Reports a person to the workspace's moderators, for how they behave here rather than for one message: what the reporter says is the whole of it, and the moderators decide it as any other report."""
         return self.action("report_person", who=who, reason=reason)
 
+    def ask_for_sub_agent(self,
+        *,
+        agent: Any,
+        job: str | None = None,
+    ) -> Message | None:
+        """Asks the assistant to start a sub-agent for `job`, in the direct conversation it answers in: the record's own `start-sub-agent` is the assistant's to call there, and the sub-agent reports in that conversation, where the person follows it. None where the workspace keeps no conversation with the assistant yet."""
+        args: dict[str, Any] = {}
+        args["agent"] = agent
+        if job is not None:
+            args["job"] = job
+        return self.action("ask_for_sub_agent", **args)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "conversation_with", "write_to", "delete_channel", "delete_channel_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many", "report_person"})
+    __actions__ = frozenset({"new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "conversation_with", "write_to", "delete_channel", "delete_channel_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many", "report_person", "ask_for_sub_agent"})
 
 
 class Category(Resource):
     """Category — `tl.so.tilo.chat.Category`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     hbhrds5c: str  # name
     hvqgmwrk: list[Entry[TextChannel | VoiceChannel]]  # channels
     @property
@@ -634,7 +708,7 @@ class Category(Resource):
 
 class VoiceChannel(Resource):
     """VoiceChannel — `tl.so.tilo.chat.VoiceChannel`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     olqjezxu: str  # name
     enzjdbyp: str  # service
     nvzanb5n: str  # outside_id
@@ -678,7 +752,7 @@ class VoiceChannel(Resource):
 
 class TextChannel(Resource):
     """TextChannel — `tl.so.tilo.chat.TextChannel`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     x3haugpo: str  # name
     u6b35mgm: str  # topic
     fld77g72: str  # summary
@@ -858,7 +932,7 @@ class TextChannel(Resource):
 
 class OutsideAuthor(Resource):
     """OutsideAuthor — `tl.so.tilo.chat.OutsideAuthor`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     @property
     def _5fxndhc2(self) -> str:
         """name (`5fxndhc2` on the wire)."""
@@ -874,14 +948,14 @@ class OutsideAuthor(Resource):
 
 class OutsideEmoji(Resource):
     """OutsideEmoji — `tl.so.tilo.chat.OutsideEmoji`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     ldtylgfu: str  # name
     jjutyqgx: str  # picture
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.chat.Message`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     xfrqdy3y: str  # body
     @property
     def _4uwxpnw2(self) -> Message | None:
@@ -1014,7 +1088,7 @@ class Message(Resource):
 
 class ChatReport(Resource):
     """Report — `tl.so.tilo.chat.Report`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     jqcabz2h: Message | None  # message
     e3zqz33a: str | None  # person
     adip7bw4: str  # said
@@ -1052,7 +1126,7 @@ class ChatReport(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.chat.Thread`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     xuvfifa5: str  # name
     cv664irm: str  # summary
     ijy454g6: list[Entry[Message]]  # messages
@@ -1169,7 +1243,7 @@ class Thread(Resource):
 
 class Direct(Resource):
     """Direct — `tl.so.tilo.chat.Direct`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     @property
     def _5stv6ro7(self) -> str:
         """name (`5stv6ro7` on the wire)."""
@@ -1337,7 +1411,7 @@ class Direct(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.chat.Draft`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     @property
     def _5shwuvrs(self) -> Direct | TextChannel | Thread:
         """conversation (`5shwuvrs` on the wire)."""
@@ -1404,7 +1478,7 @@ class Draft(Resource):
 
 class Attached(Resource):
     """Attached — `tl.so.tilo.chat.Attached`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     qsdc77jc: str  # name
     h5lqkkjt: str  # media
     g7nx7a7g: int  # size
@@ -1421,7 +1495,7 @@ class Attached(Resource):
 
 class RelayedReaction(Resource):
     """RelayedReaction — `tl.so.tilo.chat.RelayedReaction`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     r2zcptjt: str  # emoji
     awgtnj33: str  # persona
     hammizbi: str  # by
@@ -1429,7 +1503,7 @@ class RelayedReaction(Resource):
 
 class Part(Resource):
     """Part — `tl.so.tilo.chat.Part`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     zevnbs3i: str  # kind
     @property
     def _3hkzkqvr(self) -> str:
@@ -1443,7 +1517,7 @@ class Part(Resource):
 
 class Skill(Resource):
     """Skill — `tl.so.tilo.chat.Skill`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     gfk6pm4a: str  # name
     gnfldsvz: str  # work
     bn3w5doj: str  # how
@@ -1525,7 +1599,7 @@ class Skill(Resource):
 
 class Example(Resource):
     """Example — `tl.so.tilo.chat.Example`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     fspydtu6: str  # text
     @property
     def _2u2ngevv(self) -> bool:
@@ -1548,11 +1622,11 @@ class Example(Resource):
 
 class Chat(Resource):
     """Chat — `tl.so.tilo.chat`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     emoji: dict[str, Emoji]  # Emoji
 
     def add_emoji(self,
@@ -1590,7 +1664,7 @@ class WorkspaceEmoji(Resource):
 
 class Moderation(Resource):
     """Moderation — `tilo.moderation`."""
-    __surface__ = "so.tilo.chat@313be8bbe0f2d2c4"
+    __surface__ = "so.tilo.chat@66fb84ff706b3fcb"
     @property
     def reports(self) -> list[Entry[Report]]:
         """Reports"""

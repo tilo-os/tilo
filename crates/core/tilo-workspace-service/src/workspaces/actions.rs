@@ -4821,9 +4821,10 @@ mod surface_tests {
     }
 
     /// The surface file's text: every action a workspace publishes, on the resource it holds,
-    /// with the parameters and kind its action declares.
+    /// with the parameters and kind its action declares, and the record of its agents, which
+    /// the apps of the workspace read from the same package.
     fn surface() -> String {
-        let resources: Vec<Value> = RESOURCES
+        let mut resources: Vec<Value> = RESOURCES
             .iter()
             .map(|(kind, label)| {
                 let verbs: Vec<Value> = WORKSPACE_MEMBER_LIST_PUBLISHED
@@ -4891,6 +4892,12 @@ mod surface_tests {
                 resource
             })
             .collect();
+        resources.push(
+            serde_json::to_value(tilo_resource::surface::surface_of::<
+                tilo_workspace_agent::WorkspaceAgents,
+            >())
+            .expect("a surface writes as JSON"),
+        );
         tilo_resource::surface::file::render(HEADER, &resources).expect("a surface writes as TOML")
     }
 

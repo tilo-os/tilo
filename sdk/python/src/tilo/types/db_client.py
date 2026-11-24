@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Connection` is the app's `tl.so.tilo.db-client.Connection` at `db-client/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `db-client/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -22,6 +22,7 @@ from tilo import Entry, Invocation, Resource
 __all__ = [
     "Engine",
     "Tab",
+    "Notice",
     "Connection",
     "SavedQuery",
     "Database",
@@ -273,9 +274,70 @@ FailedJobArgs = TypedDict("FailedJobArgs", {
 })
 """The arguments of `failed_job`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Connection(Resource):
     """Connection — `tl.so.tilo.db-client.Connection`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     @property
     def _52sa65q7(self) -> str:
         """name (`52sa65q7` on the wire)."""
@@ -309,14 +371,14 @@ class Connection(Resource):
 
 class SavedQuery(Resource):
     """SavedQuery — `tl.so.tilo.db-client.SavedQuery`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     fxmhtvbz: str  # name
     rnkrjcin: str  # sql
 
 
 class Database(Resource):
     """Database — `tl.so.tilo.db-client.Database`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     djghd3ar: list[Entry[Connection]]  # connections
     dbkiebu3: list[Entry[SavedQuery]]  # queries
     r77o5x22: str  # sql
@@ -631,7 +693,7 @@ class Database(Resource):
 
 class TableInfo(Resource):
     """TableInfo — `tl.so.tilo.db-client.TableInfo`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     yofk7dul: str  # schema
     h5zenygt: str  # name
     tbo6xpjg: str  # kind
@@ -647,7 +709,7 @@ class TableInfo(Resource):
 
 class ColumnInfo(Resource):
     """ColumnInfo — `tl.so.tilo.db-client.ColumnInfo`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     kdq23jfd: str  # schema
     wklm2rxq: str  # table
     qmrcvjjn: str  # name
@@ -666,7 +728,7 @@ class ColumnInfo(Resource):
 
 class KeyInfo(Resource):
     """KeyInfo — `tl.so.tilo.db-client.KeyInfo`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     @property
     def _4sqibo4s(self) -> str:
         """column (`4sqibo4s` on the wire)."""
@@ -681,7 +743,7 @@ class KeyInfo(Resource):
 
 class IndexInfo(Resource):
     """IndexInfo — `tl.so.tilo.db-client.IndexInfo`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     bmcdtfyt: str  # name
     co7n2x5l: bool  # unique
     ws3nxyhc: str  # columns
@@ -689,7 +751,7 @@ class IndexInfo(Resource):
 
 class Answer(Resource):
     """Answer — `tl.so.tilo.db-client.Answer`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     n7guubug: list[str]  # columns
     zmjmvjeu: list[list[str]]  # rows
     ztnqa552: list[list[bool]]  # nulls
@@ -709,13 +771,13 @@ class Answer(Resource):
 
 class Started(Resource):
     """Started — `tl.so.tilo.db-client.Started`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     ms2izpdh: str  # job
 
 
 class Progress(Resource):
     """Progress — `tl.so.tilo.db-client.Progress`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     dday2ali: str  # state
     bpgwkoxz: str  # result
     gacluwxm: str  # error
@@ -723,13 +785,13 @@ class Progress(Resource):
 
 class Opened(Resource):
     """Opened — `tl.so.tilo.db-client.Opened`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     yheverkf: int  # connection
 
 
 class Secret(Resource):
     """Secret — `tl.so.tilo.db-client.Secret`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     psin3vp7: str  # connection
     @property
     def _3twvmxwg(self) -> str:
@@ -743,7 +805,7 @@ class Secret(Resource):
 
 class Run(Resource):
     """Run — `tl.so.tilo.db-client.Run`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     @property
     def _6abruthm(self) -> str:
         """connection (`6abruthm` on the wire)."""
@@ -765,14 +827,14 @@ class Run(Resource):
 
 class Row(Resource):
     """Row — `tl.so.tilo.db-client.Row`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     hxhdvye5: list[str]  # cells
     gc6jygal: list[bool]  # nulls
 
 
 class Outcome(Resource):
     """Outcome — `tl.so.tilo.db-client.Outcome`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     qxwjsiht: int  # seq
     rym2yft2: list[str]  # columns
     m6wzfydf: list[bool]  # numeric
@@ -801,7 +863,7 @@ class Outcome(Resource):
 
 class Session(Resource):
     """Session — `tl.so.tilo.db-client.Session`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     elhp2adh: str  # open
     @property
     def _73sz5sht(self) -> str:
@@ -908,7 +970,7 @@ class Session(Resource):
 
 class OpenAsk(Resource):
     """OpenAsk — `tl.so.tilo.db-client.OpenAsk`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     wr4rh4km: str  # engine
     @property
     def _7ub5mnfo(self) -> str:
@@ -927,7 +989,7 @@ class OpenAsk(Resource):
 
 class QueryAsk(Resource):
     """QueryAsk — `tl.so.tilo.db-client.QueryAsk`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     @property
     def _64plkkzv(self) -> int:
         """connection (`64plkkzv` on the wire)."""
@@ -941,7 +1003,7 @@ class QueryAsk(Resource):
 
 class BrowseAsk(Resource):
     """BrowseAsk — `tl.so.tilo.db-client.BrowseAsk`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     ktmsx6gt: int  # connection
     urg4wtul: str  # schema
     @property
@@ -958,7 +1020,7 @@ class BrowseAsk(Resource):
 
 class TableAsk(Resource):
     """TableAsk — `tl.so.tilo.db-client.TableAsk`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     fmbqqhio: int  # connection
     @property
     def _2maemw4x(self) -> str:
@@ -973,11 +1035,11 @@ class TableAsk(Resource):
 
 class Handle(Resource):
     """Handle — `tl.so.tilo.db-client.Handle`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
     qjoudlls: int  # connection
 
 
 class DbClient(Resource):
     """Database Client — `tl.so.tilo.db-client`."""
-    __surface__ = "so.tilo.db-client@05c2dde9e2b5fec6"
+    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
 

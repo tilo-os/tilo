@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Channel` is the app's `tl.so.tilo.tube.Channel` at `tube/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `tube/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,6 +20,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "Notice",
     "Channel",
     "Video",
     "Playlist",
@@ -139,9 +140,70 @@ LikeCommentArgs = TypedDict("LikeCommentArgs", {
 })
 """The arguments of `like_comment`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Channel(Resource):
     """Channel — `tl.so.tilo.tube.Channel`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
     @property
     def _26ctwf34(self) -> str:
         """key (`26ctwf34` on the wire)."""
@@ -206,7 +268,7 @@ class Channel(Resource):
 
 class Video(Resource):
     """Video — `tl.so.tilo.tube.Video`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
     irzy3c7m: str  # key
     fpxk5w7b: str  # title
     mhkply6c: str  # channel_key
@@ -326,7 +388,7 @@ class Video(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.tube.Playlist`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
     ow7glfos: str  # key
     ljyc7mx2: str  # title
     bzfmd6pg: str  # channel_key
@@ -365,7 +427,7 @@ class Playlist(Resource):
 
 class Comment(Resource):
     """Comment — `tl.so.tilo.tube.Comment`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
     pv4laajx: str  # key
     li4xiefh: str  # video_key
     @property
@@ -395,7 +457,7 @@ class Comment(Resource):
 
 class Segment(Resource):
     """Segment — `tl.so.tilo.tube.Segment`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
     uakovynu: str  # key
     pvlf5o2c: str  # video_key
     qlgpeq35: str  # category
@@ -406,7 +468,7 @@ class Segment(Resource):
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.tube.Reply`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
     y4coaxks: str  # comment
     kwxg57v6: str  # video
     @property
@@ -435,20 +497,20 @@ class Reply(Resource):
 
 class Subscription(Resource):
     """Subscription — `tl.so.tilo.tube.Subscription`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
     slhmwv67: str  # key
     ynf67l6e: str  # name
 
 
 class QueuedVideo(Resource):
     """QueuedVideo — `tl.so.tilo.tube.QueuedVideo`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
     o3xolmld: str  # key
 
 
 class PlaybackPrefs(Resource):
     """PlaybackPrefs — `tl.so.tilo.tube.PlaybackPrefs`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
     @property
     def _5twttwwn(self) -> str:
         """member (`5twttwwn` on the wire)."""
@@ -475,7 +537,7 @@ class PlaybackPrefs(Resource):
 
 class WatchEntry(Resource):
     """WatchEntry — `tl.so.tilo.tube.WatchEntry`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
     noppuxpb: str  # key
     stuii7l7: str  # title
     j37y2bbw: str  # channel_name
@@ -494,7 +556,7 @@ class WatchEntry(Resource):
 
 class YouTube(Resource):
     """YouTube — `tl.so.tilo.tube.YouTube`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
     olrung72: str  # title
     ihhzrm3f: list[Entry[Channel]]  # channels
     qnfjkti5: list[Entry[Video]]  # videos
@@ -706,5 +768,5 @@ class YouTube(Resource):
 
 class Tube(Resource):
     """YouTube — `tl.so.tilo.tube`."""
-    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
+    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
 

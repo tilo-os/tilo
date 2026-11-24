@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Discord` is the app's `tl.so.tilo.discord.preview.Discord` at `preview/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `preview/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -25,6 +25,7 @@ __all__ = [
     "OriginSide",
     "Ownership",
     "OverwriteTarget",
+    "Notice",
     "Discord",
     "DChannel",
     "Overwrite",
@@ -43,7 +44,7 @@ __all__ = [
     "StartThreadOp",
     "CreateWebhookOp",
     "ChannelSpec",
-    "DeleteChannelOp",
+    "ChannelDeletion",
     "CategoryPlace",
     "ChannelPlace",
     "ArrangeOp",
@@ -307,9 +308,70 @@ ReportVoiceArgs = TypedDict("ReportVoiceArgs", {
 })
 """The arguments of `report_voice`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Discord(Resource):
     """Discord — `tl.so.tilo.discord.preview.Discord`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     sclfytrh: str  # name
     lex22ami: str  # guild_id
     @property
@@ -332,6 +394,8 @@ class Discord(Resource):
     @_6hprgb4l.setter
     def _6hprgb4l(self, value: str) -> None:
         self.edit("6hprgb4l", value=value)
+    lp5din5r: str  # api_origin
+    ylfbjmz6: str  # gateway_url
     k3mrdk3z: str  # bot_user
     pgejogzq: list[Entry[DChannel]]  # channels
     zhmdub7y: list[Entry[DRole]]  # roles
@@ -763,31 +827,31 @@ class Discord(Resource):
         """Runs `finish_import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("finish_import", items)
 
-    def send_there(self, *, op: SendOp) -> None:
-        """Sends a message through a channel's webhook, as the bridge plans it."""
+    def send_there(self, *, op: Any) -> None:
+        """Sends a message through a channel's webhook, as the bridge plans it. The call arrives as the JSON the bridge's program writes, and is read as the record the worker's shape declares."""
         return self.action("send_there", op=op)
 
-    def edit_there(self, *, op: EditOp) -> None:
+    def edit_there(self, *, op: Any) -> None:
         """Edits a message the bridge sent."""
         return self.action("edit_there", op=op)
 
-    def delete_there(self, *, op: DeleteOp) -> None:
+    def delete_there(self, *, op: Any) -> None:
         """Deletes a message there."""
         return self.action("delete_there", op=op)
 
-    def react_there(self, *, op: ReactOp) -> None:
+    def react_there(self, *, op: Any) -> None:
         """Adds the bot's reaction."""
         return self.action("react_there", op=op)
 
-    def unreact_there(self, *, op: ReactOp) -> None:
+    def unreact_there(self, *, op: Any) -> None:
         """Takes the bot's reaction back."""
         return self.action("unreact_there", op=op)
 
-    def start_thread_there(self, *, op: StartThreadOp) -> None:
+    def start_thread_there(self, *, op: Any) -> None:
         """Starts a thread on a message."""
         return self.action("start_thread_there", op=op)
 
-    def create_webhook(self, *, op: CreateWebhookOp) -> None:
+    def create_webhook(self, *, op: Any) -> None:
         """Creates a channel's webhook."""
         return self.action("create_webhook", op=op)
 
@@ -795,9 +859,9 @@ class Discord(Resource):
         """Creates a channel there, or brings it back in line."""
         return self.action("apply_channel", op=op)
 
-    def delete_channel_there(self, *, op: DeleteChannelOp) -> None:
+    def delete_channel_there(self, *, channel: str) -> None:
         """Deletes a channel there."""
-        return self.action("delete_channel_there", op=op)
+        return self.action("delete_channel_there", channel=channel)
 
     def arrange_channels(self, *, op: ArrangeOp) -> None:
         """Puts channels and categories in their places there, so the server lists them in this order."""
@@ -811,7 +875,7 @@ class Discord(Resource):
         """Says whether the bridge made the Discord channel or category `id` for one here."""
         return self.action("may_change", id=id)
 
-    def apply_role(self, *, op: RoleSpec) -> None:
+    def apply_role(self, *, op: Any) -> None:
         """Creates a role there, or brings it back in line."""
         return self.action("apply_role", op=op)
 
@@ -823,31 +887,31 @@ class Discord(Resource):
         """Sets a linked member's roles there."""
         return self.action("set_member_roles", op=op)
 
-    def kick(self, *, op: MemberOp) -> None:
+    def kick(self, *, op: Any) -> None:
         """Kicks a linked member there."""
         return self.action("kick", op=op)
 
-    def ban(self, *, op: MemberOp) -> None:
+    def ban(self, *, op: Any) -> None:
         """Bans a linked member there."""
         return self.action("ban", op=op)
 
-    def unban(self, *, op: MemberOp) -> None:
+    def unban(self, *, op: Any) -> None:
         """Unbans a linked member there."""
         return self.action("unban", op=op)
 
-    def set_overwrite(self, *, op: OverwriteOp) -> None:
+    def set_overwrite(self, *, op: Any) -> None:
         """Sets a channel's permission overwrite, for a role the bridge made."""
         return self.action("set_overwrite", op=op)
 
-    def fetch_asset(self, *, op: FetchAssetOp) -> None:
+    def fetch_asset(self, *, op: Any) -> None:
         """Copies a file from Discord's CDN into the workspace's content store."""
         return self.action("fetch_asset", op=op)
 
-    def apply_emoji(self, *, op: EmojiSpec) -> None:
+    def apply_emoji(self, *, op: Any) -> None:
         """Uploads a workspace emoji to the server, or renames one the bridge uploaded."""
         return self.action("apply_emoji", op=op)
 
-    def delete_emoji(self, *, op: DeleteEmojiOp) -> None:
+    def delete_emoji(self, *, op: Any) -> None:
         """Deletes an emoji the bridge uploaded."""
         return self.action("delete_emoji", op=op)
 
@@ -898,7 +962,7 @@ class Discord(Resource):
 
 class DChannel(Resource):
     """DChannel — `tl.so.tilo.discord.preview.DChannel`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     @property
     def _7p2rou2g(self) -> str:
         """id (`7p2rou2g` on the wire)."""
@@ -931,7 +995,7 @@ class DChannel(Resource):
 
 class Overwrite(Resource):
     """Overwrite — `tl.so.tilo.discord.preview.Overwrite`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     x427uoge: str  # id
     @property
     def _76fajf53(self) -> int:
@@ -954,7 +1018,7 @@ class Overwrite(Resource):
 
 class DRole(Resource):
     """DRole — `tl.so.tilo.discord.preview.DRole`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     xom5hhqp: str  # id
     aceuzwtj: str  # name
     wxuu6jgi: str  # permissions
@@ -965,7 +1029,7 @@ class DRole(Resource):
 
 class DEmoji(Resource):
     """DEmoji — `tl.so.tilo.discord.preview.DEmoji`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     oaaqbeyg: str  # id
     @property
     def _5vadig7h(self) -> str:
@@ -980,7 +1044,7 @@ class DEmoji(Resource):
 
 class Mapping(Resource):
     """Mapping — `tl.so.tilo.discord.preview.Mapping`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     ymr43fiv: MappedKind  # kind
     qt55olnf: str  # tilo
     vzp2s2xi: str  # discord
@@ -1001,7 +1065,7 @@ class Mapping(Resource):
 
 class Link(Resource):
     """Link — `tl.so.tilo.discord.preview.Link`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     shknzkt7: str  # discord_user
     lvaegbi4: str  # person
     o4oyz2pi: str  # linked_at
@@ -1015,7 +1079,7 @@ class Link(Resource):
 
 class LinkOffer(Resource):
     """LinkOffer — `tl.so.tilo.discord.preview.LinkOffer`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     q4uc376y: str  # check
     @property
     def _6xuuyuym(self) -> str:
@@ -1042,7 +1106,7 @@ class LinkOffer(Resource):
 
 class Connect(Resource):
     """Connect — `tl.so.tilo.discord.preview.Connect`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     @property
     def _3eaw5xx6(self) -> str:
         """person (`3eaw5xx6` on the wire)."""
@@ -1057,14 +1121,14 @@ class Connect(Resource):
 
 class ServerChoice(Resource):
     """ServerChoice — `tl.so.tilo.discord.preview.ServerChoice`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     ymsxjog2: str  # id
     tafgiv6q: str  # name
 
 
 class SendOp(Resource):
     """SendOp — `tl.so.tilo.discord.preview.SendOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     @property
     def _7lcsdnr4(self) -> str:
         """op (`7lcsdnr4` on the wire)."""
@@ -1094,7 +1158,7 @@ class SendOp(Resource):
 
 class OutAttachment(Resource):
     """OutAttachment — `tl.so.tilo.discord.preview.OutAttachment`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     u7emqycf: str  # blob
     zs5m5uxa: str  # name
     aeq3264s: int  # size
@@ -1102,7 +1166,7 @@ class OutAttachment(Resource):
 
 class EditOp(Resource):
     """EditOp — `tl.so.tilo.discord.preview.EditOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     @property
     def _2ksixnn3(self) -> str:
         """op (`2ksixnn3` on the wire)."""
@@ -1127,7 +1191,7 @@ class EditOp(Resource):
 
 class DeleteOp(Resource):
     """DeleteOp — `tl.so.tilo.discord.preview.DeleteOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     n5ulezfg: str  # op
     n2yclrmw: str  # channel
     liw2ay3q: str | None  # webhook
@@ -1137,7 +1201,7 @@ class DeleteOp(Resource):
 
 class ReactOp(Resource):
     """ReactOp — `tl.so.tilo.discord.preview.ReactOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     juyzi4a5: str  # op
     me76z7t7: str  # channel
     orzlvcjf: str  # message
@@ -1146,7 +1210,7 @@ class ReactOp(Resource):
 
 class StartThreadOp(Resource):
     """StartThreadOp — `tl.so.tilo.discord.preview.StartThreadOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     eqdu4s5n: str  # op
     qxyl2yhx: str  # channel
     @property
@@ -1177,7 +1241,7 @@ class StartThreadOp(Resource):
 
 class CreateWebhookOp(Resource):
     """CreateWebhookOp — `tl.so.tilo.discord.preview.CreateWebhookOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     p3acbhsm: str  # op
     gu2hv6zx: str  # channel
     ijnwz6yd: str  # tilo
@@ -1185,7 +1249,7 @@ class CreateWebhookOp(Resource):
 
 class ChannelSpec(Resource):
     """ChannelSpec — `tl.so.tilo.discord.preview.ChannelSpec`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     aid6dwih: str  # op
     nyneqhtp: str | None  # id
     @property
@@ -1210,23 +1274,23 @@ class ChannelSpec(Resource):
     fvy2cnhd: int  # position
 
 
-class DeleteChannelOp(Resource):
-    """DeleteChannelOp — `tl.so.tilo.discord.preview.DeleteChannelOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
-    rxgm3chv: str  # op
-    cvq5uc5z: str  # channel
+class ChannelDeletion(Resource):
+    """ChannelDeletion — `tl.so.tilo.discord.preview.ChannelDeletion`."""
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
+    fvyrqodk: str  # op
+    rhmxfpcn: str  # channel
 
 
 class CategoryPlace(Resource):
     """CategoryPlace — `tl.so.tilo.discord.preview.CategoryPlace`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     n3kocqem: str  # category
     tjug6eo2: int  # position
 
 
 class ChannelPlace(Resource):
     """ChannelPlace — `tl.so.tilo.discord.preview.ChannelPlace`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     pposs7uz: str  # channel
     w7v7vvgk: str | None  # parent
     rmnsxntg: int  # position
@@ -1234,7 +1298,7 @@ class ChannelPlace(Resource):
 
 class ArrangeOp(Resource):
     """ArrangeOp — `tl.so.tilo.discord.preview.ArrangeOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     @property
     def _4ebcu3vj(self) -> str:
         """op (`4ebcu3vj` on the wire)."""
@@ -1256,7 +1320,7 @@ class ArrangeOp(Resource):
 
 class RoleSpec(Resource):
     """RoleSpec — `tl.so.tilo.discord.preview.RoleSpec`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     oad2kmtd: str  # op
     @property
     def _6khaatsw(self) -> str | None:
@@ -1281,7 +1345,7 @@ class RoleSpec(Resource):
 
 class DeleteRoleOp(Resource):
     """DeleteRoleOp — `tl.so.tilo.discord.preview.DeleteRoleOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     wxxprqy5: str  # op
     @property
     def _43gurfsq(self) -> str:
@@ -1295,7 +1359,7 @@ class DeleteRoleOp(Resource):
 
 class MemberRolesOp(Resource):
     """MemberRolesOp — `tl.so.tilo.discord.preview.MemberRolesOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     kudwdhlw: str  # op
     auupacru: str  # user
     n3pur4nd: list[str]  # add
@@ -1304,7 +1368,7 @@ class MemberRolesOp(Resource):
 
 class MemberOp(Resource):
     """MemberOp — `tl.so.tilo.discord.preview.MemberOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     vpb4svn2: str  # op
     w6fejnzs: str  # user
     lwbm7m7g: str  # reason
@@ -1312,7 +1376,7 @@ class MemberOp(Resource):
 
 class OverwriteOp(Resource):
     """OverwriteOp — `tl.so.tilo.discord.preview.OverwriteOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     hoy7opkc: str  # op
     @property
     def _5bwuxkgk(self) -> str:
@@ -1330,7 +1394,7 @@ class OverwriteOp(Resource):
 
 class FetchAssetOp(Resource):
     """FetchAssetOp — `tl.so.tilo.discord.preview.FetchAssetOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     n5gkbaj7: str  # op
     dymgc2vl: str  # url
     grilu5ek: int  # max_bytes
@@ -1346,7 +1410,7 @@ class FetchAssetOp(Resource):
 
 class AnswerInteractionOp(Resource):
     """AnswerInteractionOp — `tl.so.tilo.discord.preview.AnswerInteractionOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     noppx5yi: str  # op
     ecw6352r: str  # interaction
     ehjwcbzo: str  # content
@@ -1354,7 +1418,7 @@ class AnswerInteractionOp(Resource):
 
 class EmojiSpec(Resource):
     """EmojiSpec — `tl.so.tilo.discord.preview.EmojiSpec`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     ty6f2nw2: str  # op
     ttzu4a2l: str | None  # id
     bunzoexc: str  # name
@@ -1371,7 +1435,7 @@ class EmojiSpec(Resource):
 
 class DeleteEmojiOp(Resource):
     """DeleteEmojiOp — `tl.so.tilo.discord.preview.DeleteEmojiOp`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     w7bai4fx: str  # op
     h2uwhtax: str  # emoji
     @property
@@ -1386,7 +1450,7 @@ class DeleteEmojiOp(Resource):
 
 class Perform(Resource):
     """Perform — `tl.so.tilo.discord.preview.Perform`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     x5ajf4ny: str  # account
     @property
     def _4flmqbgo(self) -> str:
@@ -1400,7 +1464,7 @@ class Perform(Resource):
 
 class Accounts(Resource):
     """Accounts — `tl.so.tilo.discord.preview.Accounts`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     z7et5ezu: list[Entry[Discord]]  # accounts
 
     def begin_setup(self) -> Discord:
@@ -1414,7 +1478,7 @@ class Accounts(Resource):
 
 class VoicePair(Resource):
     """VoicePair — `tl.so.tilo.discord.preview.VoicePair`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
     @property
     def _5xed4gep(self) -> str:
         """discord (`5xed4gep` on the wire)."""
@@ -1435,5 +1499,5 @@ class VoicePair(Resource):
 
 class Preview(Resource):
     """Discord — `tl.so.tilo.discord.preview`."""
-    __surface__ = "so.tilo.discord.preview@f7926374a09a0505"
+    __surface__ = "so.tilo.discord.preview@1c6d592b17b31194"
 

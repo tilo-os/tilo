@@ -45,7 +45,7 @@
 #   TILO_WEB_APPLE_APPS  the application identifiers of the apps that may use
 #                       this site's passkeys, each <team>.<bundle id>, with
 #                       spaces between them, e.g.
-#                       "ABCDE12345.so.tilo.shell ABCDE12345.so.tilo.assistant"
+#                       "ABCDE12345.so.tilo.shell ABCDE12345.so.tilo.chat"
 #                       (unset: none)
 # Only the app itself may frame it, and the one site that embeds it as a live
 # preview, if any (an embed reports its state to that site alone):

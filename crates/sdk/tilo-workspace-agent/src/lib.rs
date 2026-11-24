@@ -1,12 +1,12 @@
 //! A workspace's agents: each agent member is one item of the workspace's own
-//! record of agents, kept by Assistant (`so.tilo.assistant`).
+//! record of agents, kept by the workspace itself (`so.tilo.workspace`).
 //!
 //! The item is the agent's member row. Every app of the workspace opens it, so its
 //! name and model read the same in the settings that list it, in the chat it
 //! answers in, and in the presence its work leaves. Its actor is `agent:<item id>`.
 //!
-//! The record is Assistant's ([`OWNER`]): its actions are decided against Assistant's
-//! committed surface by the workspace's grants, and by nothing else. The agents are the
+//! The record is the workspace's ([`OWNER`]): its actions are decided against the
+//! surface the workspace publishes by the workspace's grants, and by nothing else. The agents are the
 //! workspace's: whoever the grants let change the record (an editor, unless the workspace's
 //! owners narrowed that) makes, names, bounds and retires them, chooses their model and
 //! tells them how to work ([`Agent::instruction`]); a viewer only reads them.
@@ -42,8 +42,9 @@ mod sub_tests;
 #[cfg(test)]
 mod tests;
 
-/// The app whose record this is, and whose surface decides its changes.
-pub use tilo_app_id::apps::ASSISTANT as OWNER;
+/// The app whose record this is, and whose surface decides its changes: the workspace's own
+/// service, which keeps the record for every app of the workspace.
+pub const OWNER: &str = "so.tilo.workspace";
 
 pub const KIND: &str = "tilo.workspace.agent";
 

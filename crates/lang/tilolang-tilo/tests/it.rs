@@ -22,6 +22,7 @@ mod bundle;
 mod capture;
 mod chained;
 mod chat;
+mod chat_agents;
 mod chat_persona_shot;
 mod composer;
 mod contacts;

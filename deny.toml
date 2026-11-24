@@ -20,7 +20,6 @@ exclude = [
     "workspace-hack",
     "workspace-unify",
     "activity",
-    "assistant",
     "discord",
     "file-explorer",
     "mail",

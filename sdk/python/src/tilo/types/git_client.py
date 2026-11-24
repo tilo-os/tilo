@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Hunk` is the app's `tl.so.tilo.git-client.Hunk` at `git-client/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `git-client/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -25,6 +25,7 @@ __all__ = [
     "RefKind",
     "DiffLayout",
     "CheckState",
+    "Notice",
     "Hunk",
     "Change",
     "RefLabel",
@@ -70,6 +71,7 @@ __all__ = [
     "ClosePickerArgs",
     "StageFileArgs",
     "UnstageFileArgs",
+    "ChangeOnKeyArgs",
     "DiscardFileArgs",
     "StageAllArgs",
     "UnstageAllArgs",
@@ -85,6 +87,7 @@ __all__ = [
     "CancelSwitchArgs",
     "SwitchToArgs",
     "DeleteBranchArgs",
+    "BranchOnKeyArgs",
     "SaveStashArgs",
     "ApplyStashArgs",
     "CreateWorktreeArgs",
@@ -96,6 +99,7 @@ __all__ = [
     "CancelCheckArgs",
     "ClearCheckArgs",
     "ReadCommitArgs",
+    "CommitOnKeyArgs",
     "ToggleLayoutArgs",
     "ToggleSyntaxArgs",
     "ToggleWhitespaceArgs",
@@ -151,6 +155,12 @@ UnstageFileArgs = TypedDict("UnstageFileArgs", {
     "c": "Change",
 })
 """The arguments of `unstage_file`."""
+
+ChangeOnKeyArgs = TypedDict("ChangeOnKeyArgs", {
+    "c": "Change",
+    "key": "str",
+})
+"""The arguments of `change_on_key`."""
 
 DiscardFileArgs = TypedDict("DiscardFileArgs", {
     "c": "Change",
@@ -227,6 +237,13 @@ DeleteBranchArgs = TypedDict("DeleteBranchArgs", {
 })
 """The arguments of `delete_branch`."""
 
+BranchOnKeyArgs = TypedDict("BranchOnKeyArgs", {
+    "name": "str",
+    "is_remote": "bool",
+    "key": "str",
+})
+"""The arguments of `branch_on_key`."""
+
 SaveStashArgs = TypedDict("SaveStashArgs", {
     "message": NotRequired["str | None"],
 })
@@ -281,6 +298,12 @@ ReadCommitArgs = TypedDict("ReadCommitArgs", {
 })
 """The arguments of `read_commit`."""
 
+CommitOnKeyArgs = TypedDict("CommitOnKeyArgs", {
+    "id": "str",
+    "key": "str",
+})
+"""The arguments of `commit_on_key`."""
+
 ToggleLayoutArgs = TypedDict("ToggleLayoutArgs", {
     "s": "Session",
     "layout": NotRequired["DiffLayout | None"],
@@ -320,9 +343,70 @@ AsksArgs = TypedDict("AsksArgs", {
 })
 """The arguments of `asks`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Hunk(Resource):
     """Hunk — `tl.so.tilo.git-client.Hunk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     a7uhrt52: int  # index
     @property
     def _5ccadzg6(self) -> str:
@@ -338,7 +422,7 @@ class Hunk(Resource):
 
 class Change(Resource):
     """Change — `tl.so.tilo.git-client.Change`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     ulyz6e5m: str  # path
     pyq3ne6a: str | None  # old_path
     gyf3ucvv: ChangeArea  # area
@@ -378,7 +462,7 @@ class Change(Resource):
 
 class RefLabel(Resource):
     """RefLabel — `tl.so.tilo.git-client.RefLabel`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     zl57j56i: str  # name
     @property
     def _7lddqvmy(self) -> RefKind:
@@ -392,7 +476,7 @@ class RefLabel(Resource):
 
 class Commit(Resource):
     """Commit — `tl.so.tilo.git-client.Commit`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     ge4jaage: str  # id
     ktcweris: str  # summary
     qkodo2um: str  # body
@@ -422,7 +506,7 @@ class Commit(Resource):
 
 class Branch(Resource):
     """Branch — `tl.so.tilo.git-client.Branch`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     mmht373l: str  # name
     @property
     def _2xd7n6ck(self) -> bool:
@@ -441,7 +525,7 @@ class Branch(Resource):
 
 class Tag(Resource):
     """Tag — `tl.so.tilo.git-client.Tag`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     eimgqjmn: str  # name
     rvt4lxwy: str  # target
     qpus5rj2: str | None  # message
@@ -449,7 +533,7 @@ class Tag(Resource):
 
 class Stash(Resource):
     """Stash — `tl.so.tilo.git-client.Stash`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     plxxvefl: int  # index
     npo2d33u: str  # message
     kr54kttq: str  # branch
@@ -457,14 +541,14 @@ class Stash(Resource):
 
 class Remote(Resource):
     """Remote — `tl.so.tilo.git-client.Remote`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     fi4gej3v: str  # name
     ug544zky: str  # url
 
 
 class Worktree(Resource):
     """Worktree — `tl.so.tilo.git-client.Worktree`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     syhlyvff: str  # name
     s43oholm: str  # path
     zumfqfnq: str  # head
@@ -473,7 +557,7 @@ class Worktree(Resource):
 
 class CommitFile(Resource):
     """CommitFile — `tl.so.tilo.git-client.CommitFile`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     elliscls: str  # path
     tlnyi6uz: str | None  # old_path
     @property
@@ -509,7 +593,7 @@ class CommitFile(Resource):
 
 class BrowseEntry(Resource):
     """BrowseEntry — `tl.so.tilo.git-client.BrowseEntry`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     mazzivt3: str  # name
     @property
     def _67eqnwql(self) -> str:
@@ -524,7 +608,7 @@ class BrowseEntry(Resource):
 
 class Session(Resource):
     """Session — `tl.so.tilo.git-client.Session`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     vrfkfgub: str  # path
     qtrusa64: list[Entry[Change]]  # changes
     qakm3prq: DiffLayout  # layout
@@ -569,7 +653,7 @@ class Session(Resource):
 
 class Repository(Resource):
     """Repository — `tl.so.tilo.git-client.Repository`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     n4wepl5s: str  # path
     @property
     def _6ju4ea2u(self) -> str:
@@ -649,6 +733,18 @@ class Repository(Resource):
     def unstage_file_many(self, items: list[UnstageFileArgs]) -> list[dict[str, Any]]:
         """Runs `unstage_file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("unstage_file", items)
+
+    def change_on_key(self,
+        *,
+        c: Change,
+        key: str,
+    ) -> None:
+        """The key pressed on a file's row: `s` stages it or takes it back out of the next commit, and on a conflicted file `o` or `t` keeps our side or theirs."""
+        return self.action("change_on_key", c=c, key=key)
+
+    def change_on_key_many(self, items: list[ChangeOnKeyArgs]) -> list[dict[str, Any]]:
+        """Runs `change_on_key` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("change_on_key", items)
 
     def discard_file(self, *, c: Change) -> None:
         """Discards the working tree's edits to one file, or deletes it when it was never tracked."""
@@ -790,6 +886,19 @@ class Repository(Resource):
         """Runs `delete_branch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete_branch", items)
 
+    def branch_on_key(self,
+        *,
+        name: str,
+        is_remote: bool,
+        key: str,
+    ) -> None:
+        """The key pressed on a branch's row: `Enter` switches to it, and `Delete` deletes it when it is a local branch that is not the one checked out."""
+        return self.action("branch_on_key", name=name, is_remote=is_remote, key=key)
+
+    def branch_on_key_many(self, items: list[BranchOnKeyArgs]) -> list[dict[str, Any]]:
+        """Runs `branch_on_key` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("branch_on_key", items)
+
     def save_stash(self,
         *,
         message: str | None = None,
@@ -907,6 +1016,18 @@ class Repository(Resource):
         """Runs `read_commit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("read_commit", items)
 
+    def commit_on_key(self,
+        *,
+        id: str,
+        key: str,
+    ) -> None:
+        """The key pressed on a commit's row: `Enter` opens its changed files, and `Backspace` or `Escape` steps back out of them, leaving the list of commits as it was."""
+        return self.action("commit_on_key", id=id, key=key)
+
+    def commit_on_key_many(self, items: list[CommitOnKeyArgs]) -> list[dict[str, Any]]:
+        """Runs `commit_on_key` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("commit_on_key", items)
+
     def toggle_layout(self,
         *,
         s: Session,
@@ -1002,12 +1123,12 @@ class Repository(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"open_repository", "open_repository_many", "choose_repository", "choose_repository_many", "open_browsed", "open_browsed_many", "close_picker", "close_picker_many", "stage_file", "stage_file_many", "unstage_file", "unstage_file_many", "discard_file", "discard_file_many", "stage_all", "stage_all_many", "unstage_all", "unstage_all_many", "stage_hunk", "stage_hunk_many", "unstage_hunk", "unstage_hunk_many", "discard_hunk", "discard_hunk_many", "commit", "commit_many", "resolve_conflict", "resolve_conflict_many", "create_branch", "create_branch_many", "checkout_branch", "checkout_branch_many", "switch_stashing", "switch_stashing_many", "switch_carrying", "switch_carrying_many", "cancel_switch", "cancel_switch_many", "switch_to", "switch_to_many", "delete_branch", "delete_branch_many", "save_stash", "save_stash_many", "apply_stash", "apply_stash_many", "create_worktree", "create_worktree_many", "fetch", "fetch_many", "pull", "pull_many", "push", "push_many", "run_approved_check", "run_approved_check_many", "poll_check", "poll_check_many", "cancel_check", "cancel_check_many", "clear_check", "clear_check_many", "read_commit", "read_commit_many", "toggle_layout", "toggle_layout_many", "toggle_syntax", "toggle_syntax_many", "toggle_whitespace", "toggle_whitespace_many", "toggle_wrap", "toggle_wrap_many", "clear_trouble", "clear_trouble_many", "clear_notice", "clear_notice_many", "asks", "asks_many"})
+    __actions__ = frozenset({"open_repository", "open_repository_many", "choose_repository", "choose_repository_many", "open_browsed", "open_browsed_many", "close_picker", "close_picker_many", "stage_file", "stage_file_many", "unstage_file", "unstage_file_many", "change_on_key", "change_on_key_many", "discard_file", "discard_file_many", "stage_all", "stage_all_many", "unstage_all", "unstage_all_many", "stage_hunk", "stage_hunk_many", "unstage_hunk", "unstage_hunk_many", "discard_hunk", "discard_hunk_many", "commit", "commit_many", "resolve_conflict", "resolve_conflict_many", "create_branch", "create_branch_many", "checkout_branch", "checkout_branch_many", "switch_stashing", "switch_stashing_many", "switch_carrying", "switch_carrying_many", "cancel_switch", "cancel_switch_many", "switch_to", "switch_to_many", "delete_branch", "delete_branch_many", "branch_on_key", "branch_on_key_many", "save_stash", "save_stash_many", "apply_stash", "apply_stash_many", "create_worktree", "create_worktree_many", "fetch", "fetch_many", "pull", "pull_many", "push", "push_many", "run_approved_check", "run_approved_check_many", "poll_check", "poll_check_many", "cancel_check", "cancel_check_many", "clear_check", "clear_check_many", "read_commit", "read_commit_many", "commit_on_key", "commit_on_key_many", "toggle_layout", "toggle_layout_many", "toggle_syntax", "toggle_syntax_many", "toggle_whitespace", "toggle_whitespace_many", "toggle_wrap", "toggle_wrap_many", "clear_trouble", "clear_trouble_many", "clear_notice", "clear_notice_many", "asks", "asks_many"})
 
 
 class ApprovedCheck(Resource):
     """ApprovedCheck — `tl.so.tilo.git-client.ApprovedCheck`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     rmw3ex57: str  # check_id
     nsdsyb5s: str  # job
     ui5llo7z: CheckState  # state
@@ -1024,7 +1145,7 @@ class ApprovedCheck(Resource):
 
 class Loaded(Resource):
     """Loaded — `tl.so.tilo.git-client.Loaded`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     u66layc7: str  # answer
     dbwyzz4f: str  # name
     bhabfybv: str  # head
@@ -1043,7 +1164,7 @@ class Loaded(Resource):
 
 class WireChange(Resource):
     """WireChange — `tl.so.tilo.git-client.WireChange`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     @property
     def _37sxq5bs(self) -> str:
         """path (`37sxq5bs` on the wire)."""
@@ -1090,15 +1211,8 @@ class WireChange(Resource):
 
 class WireCommit(Resource):
     """WireCommit — `tl.so.tilo.git-client.WireCommit`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
-    @property
-    def _5ycbn6i4(self) -> str:
-        """id (`5ycbn6i4` on the wire)."""
-        return self.fields["5ycbn6i4"]
-
-    @_5ycbn6i4.setter
-    def _5ycbn6i4(self, value: str) -> None:
-        self.edit("5ycbn6i4", value=value)
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
+    ktz2fyrf: str  # sha
     ugphvrb2: str  # summary
     hg67fbg2: str  # body
     cjxgeuao: str  # author_name
@@ -1120,14 +1234,14 @@ class WireCommit(Resource):
 
 class WireRef(Resource):
     """WireRef — `tl.so.tilo.git-client.WireRef`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     cgcdv4xh: str  # name
     wlrzlclq: RefKind  # kind
 
 
 class WireBranch(Resource):
     """WireBranch — `tl.so.tilo.git-client.WireBranch`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     iwhrqigk: str  # name
     lnt6kiuo: bool  # is_head
     i4erkio3: bool  # is_remote
@@ -1139,7 +1253,7 @@ class WireBranch(Resource):
 
 class WireTag(Resource):
     """WireTag — `tl.so.tilo.git-client.WireTag`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     nsgs47is: str  # name
     yn67zzls: str  # target
     uju3pds5: str | None  # message
@@ -1147,7 +1261,7 @@ class WireTag(Resource):
 
 class WireStash(Resource):
     """WireStash — `tl.so.tilo.git-client.WireStash`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     zyrzfh5t: int  # index
     bd32e2q6: str  # message
     f3lmbvrn: str  # branch
@@ -1155,14 +1269,14 @@ class WireStash(Resource):
 
 class WireRemote(Resource):
     """WireRemote — `tl.so.tilo.git-client.WireRemote`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     d577aqii: str  # name
     ihlupgbv: str  # url
 
 
 class WireWorktree(Resource):
     """WireWorktree — `tl.so.tilo.git-client.WireWorktree`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     htbitpma: str  # name
     f3a3kvnf: str  # path
     cqc2kufj: str  # head
@@ -1171,7 +1285,7 @@ class WireWorktree(Resource):
 
 class WireFile(Resource):
     """WireFile — `tl.so.tilo.git-client.WireFile`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     @property
     def _44l2jnvk(self) -> str:
         """path (`44l2jnvk` on the wire)."""
@@ -1193,21 +1307,21 @@ class WireFile(Resource):
 
 class PathAsk(Resource):
     """PathAsk — `tl.so.tilo.git-client.PathAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     aqyg5aef: str  # path
     dioumhuy: bool  # whitespace
 
 
 class FileAsk(Resource):
     """FileAsk — `tl.so.tilo.git-client.FileAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     qahiprkz: str  # path
     vywcliib: str  # file
 
 
 class HunkAsk(Resource):
     """HunkAsk — `tl.so.tilo.git-client.HunkAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     nh7yqayy: str  # path
     vfjaobn2: str  # file
     tprahdo6: int  # hunk
@@ -1223,14 +1337,14 @@ class HunkAsk(Resource):
 
 class CommitAsk(Resource):
     """CommitAsk — `tl.so.tilo.git-client.CommitAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     ofstus7y: str  # path
     bxihpw7v: str  # message
 
 
 class BranchAsk(Resource):
     """BranchAsk — `tl.so.tilo.git-client.BranchAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     fi4zi42q: str  # path
     c4fbjyom: str  # name
     l7meu2gh: bool  # checkout
@@ -1238,7 +1352,7 @@ class BranchAsk(Resource):
 
 class CheckoutAsk(Resource):
     """CheckoutAsk — `tl.so.tilo.git-client.CheckoutAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     klf3gt64: str  # path
     rpchrkvk: str  # name
     cuml3cz6: bool  # stash
@@ -1246,7 +1360,7 @@ class CheckoutAsk(Resource):
 
 class CommitFilesAsk(Resource):
     """CommitFilesAsk — `tl.so.tilo.git-client.CommitFilesAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     @property
     def _3w5wb2ew(self) -> str:
         """path (`3w5wb2ew` on the wire)."""
@@ -1260,7 +1374,7 @@ class CommitFilesAsk(Resource):
 
 class WorktreeAsk(Resource):
     """WorktreeAsk — `tl.so.tilo.git-client.WorktreeAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     ukwgoqln: str  # path
     py6thmfz: str  # destination
     rwocyieo: str  # branch
@@ -1269,21 +1383,21 @@ class WorktreeAsk(Resource):
 
 class StashSaveAsk(Resource):
     """StashSaveAsk — `tl.so.tilo.git-client.StashSaveAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     yeg5b74s: str  # path
     igkwc6uc: str  # message
 
 
 class StashApplyAsk(Resource):
     """StashApplyAsk — `tl.so.tilo.git-client.StashApplyAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     y3nby6jr: str  # path
     eoe3gfz5: int  # index
 
 
 class ResolveAsk(Resource):
     """ResolveAsk — `tl.so.tilo.git-client.ResolveAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     yltk3frx: str  # path
     o2dbxhal: str  # file
     qvivrkzl: bool  # ours
@@ -1291,7 +1405,7 @@ class ResolveAsk(Resource):
 
 class CheckStatus(Resource):
     """CheckStatus — `tl.so.tilo.git-client.CheckStatus`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     uygk57xo: str  # state
     @property
     def _55lyz5up(self) -> str:
@@ -1321,12 +1435,12 @@ class CheckStatus(Resource):
 
 class RemoteAsk(Resource):
     """RemoteAsk — `tl.so.tilo.git-client.RemoteAsk`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
     gifph57t: str  # path
     tz3p3qeb: str  # remote
 
 
 class GitClient(Resource):
     """Git — `tl.so.tilo.git-client`."""
-    __surface__ = "so.tilo.git-client@c4c68831343dbe97"
+    __surface__ = "so.tilo.git-client@5d95e00cdcb58504"
 

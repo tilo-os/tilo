@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Discord` is a `Resource` of the app's `tl.so.tilo.discord.preview.Discord`, made by its factory with the
+ * `Notice` is a `Resource` of the app's `tl.tilo.host.Notice`, made by its factory with the
  * resource's path (`preview/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.discord.preview@f7926374a09a0505";
+export const SURFACE = "so.tilo.discord.preview@1c6d592b17b31194";
 
 /** What kind of place a Discord channel is. One of "text", "voice", "category", "thread". */
 export type ChannelKind = "text" | "voice" | "category" | "thread";
@@ -236,6 +236,26 @@ export interface ReportVoiceArgs {
   problem: string;
 }
 
+/** Notice — `tl.tilo.host.Notice`. */
+export interface Notice extends tilo.Resource {
+  notice_to: string;  // to
+  notice_title: string;  // title
+  notice_body: string;  // body
+  notice_opens: unknown;  // opens
+  notice_seen: boolean;  // seen
+  notice_device: string;  // device
+  notice_actions: string[];  // actions
+}
+
+/** The actions `Notice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NOTICE_ACTIONS = [] as const;
+
+/** The `tl.tilo.host.Notice` kind at `path`. */
+export function notice(ws: tilo.Workspace, path: string): Notice {
+  return resourceProxy(ws, path, SURFACE, NOTICE_ACTIONS) as unknown as Notice;
+}
+
 /** Discord — `tl.so.tilo.discord.preview.Discord`. */
 export interface Discord extends tilo.Resource {
   sclfytrh: string;  // name
@@ -246,6 +266,8 @@ export interface Discord extends tilo.Resource {
   bxzjsd2v: boolean;  // map_roles
   jf2mmurb: Ownership;  // ownership
   "6hprgb4l": string;  // token_item
+  lp5din5r: string;  // api_origin
+  ylfbjmz6: string;  // gateway_url
   k3mrdk3z: string;  // bot_user
   pgejogzq: Array<tilo.Entry<DChannel>>;  // channels
   zhmdub7y: Array<tilo.Entry<DRole>>;  // roles
@@ -482,33 +504,33 @@ export interface Discord extends tilo.Resource {
   }): Promise<void>;
   /** Runs `finish_import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   finish_importMany(items: FinishImportArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Sends a message through a channel's webhook, as the bridge plans it. */
+  /** Sends a message through a channel's webhook, as the bridge plans it. The call arrives as the JSON the bridge's program writes, and is read as the record the worker's shape declares. */
   send_there(args: {
-    op: SendOp;
+    op: unknown;
   }): Promise<void>;
   /** Edits a message the bridge sent. */
   edit_there(args: {
-    op: EditOp;
+    op: unknown;
   }): Promise<void>;
   /** Deletes a message there. */
   delete_there(args: {
-    op: DeleteOp;
+    op: unknown;
   }): Promise<void>;
   /** Adds the bot's reaction. */
   react_there(args: {
-    op: ReactOp;
+    op: unknown;
   }): Promise<void>;
   /** Takes the bot's reaction back. */
   unreact_there(args: {
-    op: ReactOp;
+    op: unknown;
   }): Promise<void>;
   /** Starts a thread on a message. */
   start_thread_there(args: {
-    op: StartThreadOp;
+    op: unknown;
   }): Promise<void>;
   /** Creates a channel's webhook. */
   create_webhook(args: {
-    op: CreateWebhookOp;
+    op: unknown;
   }): Promise<void>;
   /** Creates a channel there, or brings it back in line. */
   apply_channel(args: {
@@ -516,7 +538,7 @@ export interface Discord extends tilo.Resource {
   }): Promise<void>;
   /** Deletes a channel there. */
   delete_channel_there(args: {
-    op: DeleteChannelOp;
+    channel: string;
   }): Promise<void>;
   /** Puts channels and categories in their places there, so the server lists them in this order. */
   arrange_channels(args: {
@@ -530,7 +552,7 @@ export interface Discord extends tilo.Resource {
   }): Promise<void>;
   /** Creates a role there, or brings it back in line. */
   apply_role(args: {
-    op: RoleSpec;
+    op: unknown;
   }): Promise<void>;
   /** Deletes a role there. */
   delete_role(args: {
@@ -542,31 +564,31 @@ export interface Discord extends tilo.Resource {
   }): Promise<void>;
   /** Kicks a linked member there. */
   kick(args: {
-    op: MemberOp;
+    op: unknown;
   }): Promise<void>;
   /** Bans a linked member there. */
   ban(args: {
-    op: MemberOp;
+    op: unknown;
   }): Promise<void>;
   /** Unbans a linked member there. */
   unban(args: {
-    op: MemberOp;
+    op: unknown;
   }): Promise<void>;
   /** Sets a channel's permission overwrite, for a role the bridge made. */
   set_overwrite(args: {
-    op: OverwriteOp;
+    op: unknown;
   }): Promise<void>;
   /** Copies a file from Discord's CDN into the workspace's content store. */
   fetch_asset(args: {
-    op: FetchAssetOp;
+    op: unknown;
   }): Promise<void>;
   /** Uploads a workspace emoji to the server, or renames one the bridge uploaded. */
   apply_emoji(args: {
-    op: EmojiSpec;
+    op: unknown;
   }): Promise<void>;
   /** Deletes an emoji the bridge uploaded. */
   delete_emoji(args: {
-    op: DeleteEmojiOp;
+    op: unknown;
   }): Promise<void>;
   /** Records what became of an emoji upload, rename or delete. */
   settle_emoji(args: {
@@ -915,19 +937,19 @@ export function channelSpec(ws: tilo.Workspace, path: string): ChannelSpec {
   return resourceProxy(ws, path, SURFACE, CHANNELSPEC_ACTIONS) as unknown as ChannelSpec;
 }
 
-/** DeleteChannelOp — `tl.so.tilo.discord.preview.DeleteChannelOp`. */
-export interface DeleteChannelOp extends tilo.Resource {
-  rxgm3chv: string;  // op
-  cvq5uc5z: string;  // channel
+/** ChannelDeletion — `tl.so.tilo.discord.preview.ChannelDeletion`. */
+export interface ChannelDeletion extends tilo.Resource {
+  fvyrqodk: string;  // op
+  rhmxfpcn: string;  // channel
 }
 
-/** The actions `DeleteChannelOp` reaches before it is read: `ws` calls them without a
+/** The actions `ChannelDeletion` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DELETECHANNELOP_ACTIONS = [] as const;
+export const CHANNELDELETION_ACTIONS = [] as const;
 
-/** The `tl.so.tilo.discord.preview.DeleteChannelOp` kind at `path`. */
-export function deleteChannelOp(ws: tilo.Workspace, path: string): DeleteChannelOp {
-  return resourceProxy(ws, path, SURFACE, DELETECHANNELOP_ACTIONS) as unknown as DeleteChannelOp;
+/** The `tl.so.tilo.discord.preview.ChannelDeletion` kind at `path`. */
+export function channelDeletion(ws: tilo.Workspace, path: string): ChannelDeletion {
+  return resourceProxy(ws, path, SURFACE, CHANNELDELETION_ACTIONS) as unknown as ChannelDeletion;
 }
 
 /** CategoryPlace — `tl.so.tilo.discord.preview.CategoryPlace`. */

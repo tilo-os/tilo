@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Entry` is the app's `tl.so.tilo.code-editor.Entry` at `code-editor/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `code-editor/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -23,6 +23,7 @@ __all__ = [
     "EntryKind",
     "Severity",
     "ItemKind",
+    "Notice",
     "Entry",
     "Problem",
     "Found",
@@ -406,9 +407,70 @@ RestartServerArgs = TypedDict("RestartServerArgs", {
 })
 """The arguments of `restart_server`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Entry(Resource):
     """Entry — `tl.so.tilo.code-editor.Entry`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     jr3jrrmx: EntryKind  # kind
     wlnikenq: str  # name
     otwgp44c: Entry | None  # parent
@@ -615,7 +677,7 @@ class Entry(Resource):
 
 class Problem(Resource):
     """Problem — `tl.so.tilo.code-editor.Problem`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     nbyucnyk: Severity  # severity
     cg3ctzdq: int  # line
     f5kva2nw: int  # column
@@ -624,7 +686,7 @@ class Problem(Resource):
 
 class Found(Resource):
     """Found — `tl.so.tilo.code-editor.Found`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     hzzanee7: int  # line
     qt6b4p4a: int  # column
     @property
@@ -639,7 +701,7 @@ class Found(Resource):
 
 class Item(Resource):
     """Item — `tl.so.tilo.code-editor.Item`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     gvqsbkfl: ItemKind  # kind
     @property
     def _6zcxi5vb(self) -> str:
@@ -670,7 +732,7 @@ class Item(Resource):
 
 class Command(Resource):
     """Command — `tl.so.tilo.code-editor.Command`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     c4ytwucq: str  # command
     i3avwdem: str  # cwd
     @property
@@ -692,7 +754,7 @@ class Command(Resource):
 
 class Hit(Resource):
     """Hit — `tl.so.tilo.code-editor.Hit`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     bcptqatu: str  # path
     zwn4bgwt: str  # rel
     bgpnyksl: int  # line
@@ -703,7 +765,7 @@ class Hit(Resource):
 
 class Completion(Resource):
     """Completion — `tl.so.tilo.code-editor.Completion`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     qg4m5uwr: str  # label
     xm4myjqj: str  # detail
     kwj5llbq: str  # insert
@@ -711,7 +773,7 @@ class Completion(Resource):
 
 class Location(Resource):
     """Location — `tl.so.tilo.code-editor.Location`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     trhzxars: str  # path
     pu4qmppj: int  # line
     e2bphgrg: int  # column
@@ -719,7 +781,7 @@ class Location(Resource):
 
 class Loaded(Resource):
     """Loaded — `tl.so.tilo.code-editor.Loaded`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     pisboohb: str  # text
     wcz4xfj7: int  # mtime
     jqqoxnpy: int  # len
@@ -727,14 +789,14 @@ class Loaded(Resource):
 
 class Stamped(Resource):
     """Stamped — `tl.so.tilo.code-editor.Stamped`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     fj7hqru4: int  # mtime
     qw5jig3a: int  # len
 
 
 class Exists(Resource):
     """Exists — `tl.so.tilo.code-editor.Exists`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     uvwwyzvs: bool  # exists
     @property
     def _7n6rmzco(self) -> int:
@@ -749,13 +811,13 @@ class Exists(Resource):
 
 class DiskAsk(Resource):
     """DiskAsk — `tl.so.tilo.code-editor.DiskAsk`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     kn6q47ka: str  # path
 
 
 class DiskSave(Resource):
     """DiskSave — `tl.so.tilo.code-editor.DiskSave`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     haepmky3: str  # path
     pwykv2y3: str  # text
     zetzlvco: int  # mtime
@@ -765,7 +827,7 @@ class DiskSave(Resource):
 
 class DiskEntry(Resource):
     """DiskEntry — `tl.so.tilo.code-editor.DiskEntry`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     bfnbknrx: str  # name
     wv4a7ixx: str  # path
     @property
@@ -781,13 +843,13 @@ class DiskEntry(Resource):
 
 class Listing(Resource):
     """Listing — `tl.so.tilo.code-editor.Listing`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     pd7egi2y: list[DiskEntry]  # entries
 
 
 class SearchAsk(Resource):
     """SearchAsk — `tl.so.tilo.code-editor.SearchAsk`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     xkrqnga5: str  # root
     @property
     def _5dkbrhtv(self) -> str:
@@ -803,20 +865,20 @@ class SearchAsk(Resource):
 
 class RunAsk(Resource):
     """RunAsk — `tl.so.tilo.code-editor.RunAsk`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     qhqdbt2f: str  # command
     vqlkdbpf: str  # cwd
 
 
 class JobAnswer(Resource):
     """JobAnswer — `tl.so.tilo.code-editor.JobAnswer`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     o7kaxwxn: str  # job
 
 
 class SearchState(Resource):
     """SearchState — `tl.so.tilo.code-editor.SearchState`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     zby3g4ps: str  # state
     aqlgsja7: list[Hit]  # hits
     vp2ht5bq: int  # files
@@ -825,7 +887,7 @@ class SearchState(Resource):
 
 class RunState(Resource):
     """RunState — `tl.so.tilo.code-editor.RunState`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     coxzozlk: str  # state
     swqx5bgj: int  # exit
     wsbgo4u6: str  # output
@@ -835,14 +897,14 @@ class RunState(Resource):
 
 class ServerAsk(Resource):
     """ServerAsk — `tl.so.tilo.code-editor.ServerAsk`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     dwxem6ty: str  # language
     fegqdch5: str  # root
 
 
 class DocumentAsk(Resource):
     """DocumentAsk — `tl.so.tilo.code-editor.DocumentAsk`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     jmzsddw6: str  # job
     cimxyukl: str  # path
     u2ozcojk: str  # language
@@ -852,7 +914,7 @@ class DocumentAsk(Resource):
 
 class AskAsk(Resource):
     """AskAsk — `tl.so.tilo.code-editor.AskAsk`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     gxbdmbnd: str  # job
     ysxutqlg: str  # path
     p4m2am32: int  # line
@@ -862,7 +924,7 @@ class AskAsk(Resource):
 
 class Progress(Resource):
     """Progress — `tl.so.tilo.code-editor.Progress`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     agn2f2db: str  # title
     g7hzlu2h: str  # detail
     whcglspc: int  # percent
@@ -870,7 +932,7 @@ class Progress(Resource):
 
 class Diag(Resource):
     """Diag — `tl.so.tilo.code-editor.Diag`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     ioyqdqpm: str  # severity
     beb3ijea: int  # line
     mev4fmk5: int  # column
@@ -879,28 +941,28 @@ class Diag(Resource):
 
 class CompletionAnswer(Resource):
     """CompletionAnswer — `tl.so.tilo.code-editor.CompletionAnswer`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     z5gkzdtb: str  # what
     xm2tpahh: list[Completion]  # items
 
 
 class HoverAnswer(Resource):
     """HoverAnswer — `tl.so.tilo.code-editor.HoverAnswer`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     jchhxxfm: str  # what
     m4blp7e7: str  # text
 
 
 class DefinitionAnswer(Resource):
     """DefinitionAnswer — `tl.so.tilo.code-editor.DefinitionAnswer`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     qb2osbdn: str  # what
     u57x3dub: list[Location]  # locations
 
 
 class FormatEdit(Resource):
     """FormatEdit — `tl.so.tilo.code-editor.FormatEdit`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     @property
     def _7flc4fke(self) -> int:
         """start (`7flc4fke` on the wire)."""
@@ -917,7 +979,7 @@ class FormatEdit(Resource):
 
 class FormatAnswer(Resource):
     """FormatAnswer — `tl.so.tilo.code-editor.FormatAnswer`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     um2x3bkg: str  # what
     wikls7kq: list[FormatEdit]  # edits
     zke66gso: str  # error
@@ -925,7 +987,7 @@ class FormatAnswer(Resource):
 
 class ServerProgress(Resource):
     """ServerProgress — `tl.so.tilo.code-editor.ServerProgress`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     b22hm43k: str  # title
     @property
     def _33vetzuz(self) -> str:
@@ -940,7 +1002,7 @@ class ServerProgress(Resource):
 
 class ServerState(Resource):
     """ServerState — `tl.so.tilo.code-editor.ServerState`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     mxvtycpj: str  # state
     kqcbbx2v: str  # server
     @property
@@ -958,7 +1020,7 @@ class ServerState(Resource):
 
 class Project(Resource):
     """Project — `tl.so.tilo.code-editor.Project`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
     evbsknez: list[Entry[Entry]]  # files
     inupl3md: list[Entry[Command]]  # commands
     ubr6i22h: str  # folder
@@ -1562,5 +1624,5 @@ class Project(Resource):
 
 class CodeEditor(Resource):
     """Code Editor — `tl.so.tilo.code-editor`."""
-    __surface__ = "so.tilo.code-editor@7d9a8e07c61d5396"
+    __surface__ = "so.tilo.code-editor@207d27b091030c88"
 

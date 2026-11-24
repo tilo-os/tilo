@@ -66,10 +66,6 @@ x86_64 = 1572864
 aarch64 = 1507328
 
 # aarch64 not measured yet: a new app starts at the KPI max target.
-[apps."so.tilo.assistant"]
-x86_64 = 983040
-aarch64 = 6000000
-
 [apps."so.tilo.backups"]
 x86_64 = 1245184
 aarch64 = 1179648

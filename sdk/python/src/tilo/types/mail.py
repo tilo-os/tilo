@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Account` is the app's `tl.so.tilo.mail.Account` at `mail/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `mail/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,6 +20,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "Notice",
     "Account",
     "Mailbox",
     "Thread",
@@ -186,9 +187,70 @@ DiscardArgs = TypedDict("DiscardArgs", {
 })
 """The arguments of `discard`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.mail@56b3ff63c744e05c"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@9b5d0d29b4e68e46"
+    __surface__ = "so.tilo.mail@56b3ff63c744e05c"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -254,7 +316,7 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@9b5d0d29b4e68e46"
+    __surface__ = "so.tilo.mail@56b3ff63c744e05c"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -273,7 +335,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@9b5d0d29b4e68e46"
+    __surface__ = "so.tilo.mail@56b3ff63c744e05c"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -469,13 +531,13 @@ class Thread(Resource):
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@9b5d0d29b4e68e46"
+    __surface__ = "so.tilo.mail@56b3ff63c744e05c"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@9b5d0d29b4e68e46"
+    __surface__ = "so.tilo.mail@56b3ff63c744e05c"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -519,6 +581,18 @@ class Message(Resource):
         """Runs `show_pictures` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("show_pictures", items)
 
+    def links(self) -> list[str]:
+        """The links a message says, each once, in the order it says them: what its formatted part links to, or the web and mail addresses its words carry. A person reads them, copies one, or an agent asks what a message would have one open."""
+        return self.action("links")
+
+    def open_link(self, *, url: str) -> None:
+        """Opens one of a message's links in the app that opens links of its scheme, as pressing a link does: the Browser for a web address. A message opens only a link it says."""
+        return self.action("open_link", url=url)
+
+    def copy_link(self, *, url: str) -> None:
+        """Copies one of a message's links, the address alone, as a person hands it to someone."""
+        return self.action("copy_link", url=url)
+
     def export_markdown(self) -> Any:
         """The message as a Markdown file: what a person exports to read it, or keep it, elsewhere."""
         return self.action("export_markdown")
@@ -549,12 +623,12 @@ class Message(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"show_pictures", "show_pictures_many", "export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment"})
+    __actions__ = frozenset({"show_pictures", "show_pictures_many", "links", "open_link", "copy_link", "export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment"})
 
 
 class Picture(Resource):
     """Picture — `tl.so.tilo.mail.Picture`."""
-    __surface__ = "so.tilo.mail@9b5d0d29b4e68e46"
+    __surface__ = "so.tilo.mail@56b3ff63c744e05c"
     gb5hqtag: str  # source
     @property
     def _7hhcy4ay(self) -> Any:
@@ -568,7 +642,7 @@ class Picture(Resource):
 
 class TrustedSender(Resource):
     """TrustedSender — `tl.so.tilo.mail.TrustedSender`."""
-    __surface__ = "so.tilo.mail@9b5d0d29b4e68e46"
+    __surface__ = "so.tilo.mail@56b3ff63c744e05c"
     @property
     def _5eoon66w(self) -> str:
         """address (`5eoon66w` on the wire)."""
@@ -581,7 +655,7 @@ class TrustedSender(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@9b5d0d29b4e68e46"
+    __surface__ = "so.tilo.mail@56b3ff63c744e05c"
     m2g6zrle: str  # from
     zx2b4ax2: str  # from_address
     hd3o4gkq: str  # to
@@ -669,7 +743,7 @@ class Draft(Resource):
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@9b5d0d29b4e68e46"
+    __surface__ = "so.tilo.mail@56b3ff63c744e05c"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -838,5 +912,5 @@ class Mail(Resource):
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@9b5d0d29b4e68e46"
+    __surface__ = "so.tilo.mail@56b3ff63c744e05c"
 

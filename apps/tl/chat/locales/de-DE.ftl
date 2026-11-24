@@ -222,6 +222,11 @@ d-5rkfnkg4 = Seitenleiste
     .w-no-channels-yet = Noch keine Kanäle
     .w-channels-are-where-your-workspace-talks = Kanäle sind, wo dein Arbeitsbereich spricht, jeder ein Thema.
     .w-notes-to-self = Notizen an mich
+    .w-assistant = Assistent
+    .w-sub-agents = Unteragenten
+    .w-start-a-sub-agent = Unteragenten starten
+    .w-you = Du
+    .w-supervision = Aufsicht
     .w-direct-messages = Direktnachrichten
     .w-everyone = Alle
     .w-workspace = Arbeitsbereich
@@ -983,3 +988,40 @@ d-zmfzcl37 = Meldungszeile
 
 d-vghhlimb = Überlegung
     .w-reasoning = Überlegung
+
+d-bous5cgd = Aufsicht
+    .w-supervision = Aufsicht
+    .w-is-on = { $name } ist an
+    .w-model = Modell
+    .w-chosen-in-settings = In den Einstellungen gewählt
+    .w-change-in-settings = In den Einstellungen ändern
+    .w-spent = Ausgegeben
+
+d-fm2l5rjj = Unteragenten
+    .w-sub-agents-of = Unteragenten von { $name }
+    .w-no-sub-agents = Keine Unteragenten
+    .w-each-sub-agent-has-its-conversation = Jeder Unteragent hat seine eigene Unterhaltung unter Direktnachrichten; den Hauptchat kann er nicht lesen.
+
+d-qjqtfdyr = Kein Assistent
+    .w-you-have-no-assistant-in-this = Du hast keinen Assistenten in diesem Arbeitsbereich
+    .w-an-assistant-works-for-the-workspace = Ein Assistent arbeitet für den Arbeitsbereich und antwortet in der direkten Unterhaltung unter Direktnachrichten.
+    .w-create-assistant = Assistent erstellen
+
+d-4cgtoeqz = Unteragenten starten
+    .doc = Bittet den Assistenten, einen Unteragenten für `job` zu starten, in der direkten Unterhaltung, in der er antwortet: `start-sub-agent` im Datensatz ist dort seine eigene Aktion, und der Unteragent meldet sich in dieser Unterhaltung, wo die Person ihn verfolgt.
+    .w-say-what-the-job-is-first = Sag zuerst, was die Aufgabe ist
+
+d-4cgtoeqz-agent = Agent
+
+d-4cgtoeqz-job = Aufgabe
+
+d-i6unit73 = Unteragent anfragen~present
+
+d-m6qu4xya = Unteragenten starten
+    .w-start-a-sub-agent = Unteragenten starten
+    .w-starts-it-in-your-conversation-and = { $name } startet ihn in deiner Unterhaltung und meldet sich dort, sodass du ihm folgst, wo er arbeitet.
+    .w-what-the-sub-agent-should-do = Was der Unteragent tun soll
+    .w-start = Starten
+
+d-eb6soq5v = Unteragent
+    .w-it-cannot-read-the-main-chat = Er kann den Hauptchat nicht lesen. Seine Unterhaltung ist seine eigene, unter Direktnachrichten.

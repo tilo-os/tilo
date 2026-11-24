@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Artwork` is the app's `tl.so.tilo.canvas.Artwork` at `canvas/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `canvas/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,6 +20,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "Notice",
     "Artwork",
     "Layer",
     "Mark",
@@ -40,11 +41,16 @@ __all__ = [
     "ReferenceJson",
     "MarkJson",
     "AreaJson",
+    "MatteJson",
     "GradeAsk",
     "WandAsk",
     "FindAsk",
     "CombineAsk",
     "MeasureAsk",
+    "SelectAsk",
+    "InspectAsk",
+    "RemoveAsk",
+    "DiffAsk",
     "CompareAsk",
     "Canvas",
     "RenameLayerArgs",
@@ -65,12 +71,17 @@ __all__ = [
     "ResizeMarkArgs",
     "SetReferenceArgs",
     "ClearReferenceArgs",
+    "ClearComparisonArgs",
+    "PickMarkArgs",
+    "PickMarksArgs",
+    "ClearPickedArgs",
     "SelectAreaArgs",
     "ClearSelectionArgs",
     "DrawLookArgs",
     "ClearNoticeArgs",
     "StartPaintArgs",
     "SetLayerGroupArgs",
+    "AdjustLayerArgs",
     "GroupMarkArgs",
     "FillGradientArgs",
     "WetMarkArgs",
@@ -81,6 +92,13 @@ __all__ = [
     "FlipPictureArgs",
     "BlendMarkArgs",
     "AdjustMarkArgs",
+    "MoveMarkArgs",
+    "ScaleMarkArgs",
+    "RotateMarkArgs",
+    "ClipMarkArgs",
+    "FinishMarkArgs",
+    "SetCurveArgs",
+    "SetDynamicsArgs",
 ]
 
 RenameLayerArgs = TypedDict("RenameLayerArgs", {
@@ -186,6 +204,25 @@ ClearReferenceArgs = TypedDict("ClearReferenceArgs", {
 })
 """The arguments of `clear_reference`."""
 
+ClearComparisonArgs = TypedDict("ClearComparisonArgs", {
+})
+"""The arguments of `clear_comparison`."""
+
+PickMarkArgs = TypedDict("PickMarkArgs", {
+    "m": "Mark",
+    "on": NotRequired["bool | None"],
+})
+"""The arguments of `pick_mark`."""
+
+PickMarksArgs = TypedDict("PickMarksArgs", {
+    "marks": "list[Mark]",
+})
+"""The arguments of `pick_marks`."""
+
+ClearPickedArgs = TypedDict("ClearPickedArgs", {
+})
+"""The arguments of `clear_picked`."""
+
 SelectAreaArgs = TypedDict("SelectAreaArgs", {
     "d": "str",
     "feather": NotRequired["float | None"],
@@ -219,6 +256,24 @@ SetLayerGroupArgs = TypedDict("SetLayerGroupArgs", {
     "group": "str",
 })
 """The arguments of `set_layer_group`."""
+
+AdjustLayerArgs = TypedDict("AdjustLayerArgs", {
+    "exposure": NotRequired["float | None"],
+    "contrast": NotRequired["float | None"],
+    "highlights": NotRequired["float | None"],
+    "shadows": NotRequired["float | None"],
+    "saturation": NotRequired["float | None"],
+    "vibrance": NotRequired["float | None"],
+    "hue": NotRequired["float | None"],
+    "temperature": NotRequired["float | None"],
+    "tint": NotRequired["float | None"],
+    "grayscale": NotRequired["bool | None"],
+    "invert": NotRequired["bool | None"],
+    "blur": NotRequired["float | None"],
+    "sharpen": NotRequired["float | None"],
+    "vignette": NotRequired["float | None"],
+})
+"""The arguments of `adjust_layer`."""
 
 GroupMarkArgs = TypedDict("GroupMarkArgs", {
     "group": "str",
@@ -303,9 +358,124 @@ AdjustMarkArgs = TypedDict("AdjustMarkArgs", {
 })
 """The arguments of `adjust_mark`."""
 
+MoveMarkArgs = TypedDict("MoveMarkArgs", {
+    "dx": "float",
+    "dy": "float",
+})
+"""The arguments of `move_mark`."""
+
+ScaleMarkArgs = TypedDict("ScaleMarkArgs", {
+    "cx": "float",
+    "cy": "float",
+    "factor": "float",
+})
+"""The arguments of `scale_mark`."""
+
+RotateMarkArgs = TypedDict("RotateMarkArgs", {
+    "cx": "float",
+    "cy": "float",
+    "degrees": "float",
+})
+"""The arguments of `rotate_mark`."""
+
+ClipMarkArgs = TypedDict("ClipMarkArgs", {
+    "by": "str",
+})
+"""The arguments of `clip_mark`."""
+
+FinishMarkArgs = TypedDict("FinishMarkArgs", {
+    "pixelated": NotRequired["bool | None"],
+    "grain": NotRequired["float | None"],
+    "feather": NotRequired["float | None"],
+    "shadow_x": NotRequired["float | None"],
+    "shadow_y": NotRequired["float | None"],
+    "shadow_blur": NotRequired["float | None"],
+    "shadow_colour": NotRequired["str | None"],
+    "inner_shadow_x": NotRequired["float | None"],
+    "inner_shadow_y": NotRequired["float | None"],
+    "inner_shadow_blur": NotRequired["float | None"],
+    "inner_shadow_colour": NotRequired["str | None"],
+})
+"""The arguments of `finish_mark`."""
+
+SetCurveArgs = TypedDict("SetCurveArgs", {
+    "curve": "list[list[float]]",
+})
+"""The arguments of `set_curve`."""
+
+SetDynamicsArgs = TypedDict("SetDynamicsArgs", {
+    "flow": NotRequired["float | None"],
+    "hardness": NotRequired["float | None"],
+    "spacing": NotRequired["float | None"],
+    "smoothing": NotRequired["float | None"],
+    "taper": NotRequired["float | None"],
+})
+"""The arguments of `set_dynamics`."""
+
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Artwork(Resource):
     """Artwork — `tl.so.tilo.canvas.Artwork`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     zp2ztcwq: str  # title
     izpefh4x: float  # width
     @property
@@ -337,9 +507,13 @@ class Artwork(Resource):
     def _4wmc4l7b(self, value: list[Entry[Picture]]) -> None:
         self.edit("4wmc4l7b", value=value)
     ob6rlf7s: Area | None  # selection
+    hrqejear: list[Mark]  # picked
     exp6h3eo: Reference | None  # reference
     k2slfiuy: str  # look
     mksntvfu: str  # comparison
+    jmoqryks: str  # version_note
+    fydl4rsk: str  # version_overlay
+    i5yildir: list[float]  # version_region
     meooqdog: str  # notice
 
     def add_layer(self,
@@ -757,6 +931,172 @@ class Artwork(Resource):
             args["size"] = size
         return self.action("compare_reference", **args)
 
+    def compare_versions(self, *, change: str) -> str | None:
+        """Compares the artwork with the version history names, overlaid on the surface: what changed between the two, and the changed region as it now stands where it stands."""
+        return self.action("compare_versions", change=change)
+
+    def clear_comparison(self) -> None:
+        """Takes the version comparison away from the surface."""
+        return self.action("clear_comparison")
+
+    def clear_comparison_many(self, items: list[ClearComparisonArgs]) -> list[dict[str, Any]]:
+        """Runs `clear_comparison` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("clear_comparison", items)
+
+    def ask_selection(self, *, ask: str) -> str | None:
+        """Asks the engine for a selection, and keeps the area it answers."""
+        return self.action("ask_selection", ask=ask)
+
+    def select_shape(self,
+        *,
+        kind: str,
+        from_: list[float],
+        to: list[float],
+        mode: str | None = None,
+        feather: float | None = None,
+        grow: float | None = None,
+        invert: bool | None = None,
+    ) -> str | None:
+        """Selects a rectangle or an ellipse from one corner of a drag to the other, meeting the area there is by `mode` (`replace`, `add`, `subtract` or `intersect`)."""
+        args: dict[str, Any] = {}
+        args["kind"] = kind
+        args["from"] = from_
+        args["to"] = to
+        if mode is not None:
+            args["mode"] = mode
+        if feather is not None:
+            args["feather"] = feather
+        if grow is not None:
+            args["grow"] = grow
+        if invert is not None:
+            args["invert"] = invert
+        return self.action("select_shape", **args)
+
+    def select_lasso(self,
+        *,
+        points: list[list[float]],
+        mode: str | None = None,
+        feather: float | None = None,
+        grow: float | None = None,
+        invert: bool | None = None,
+    ) -> str | None:
+        """Selects the area a lasso traces, closed, meeting the area there is by `mode`."""
+        args: dict[str, Any] = {}
+        args["points"] = points
+        if mode is not None:
+            args["mode"] = mode
+        if feather is not None:
+            args["feather"] = feather
+        if grow is not None:
+            args["grow"] = grow
+        if invert is not None:
+            args["invert"] = invert
+        return self.action("select_lasso", **args)
+
+    def select_outline(self,
+        *,
+        d: str,
+        mode: str | None = None,
+        feather: float | None = None,
+        grow: float | None = None,
+        invert: bool | None = None,
+    ) -> str | None:
+        """Selects the area an outline names, meeting the area there is by `mode`."""
+        args: dict[str, Any] = {}
+        args["d"] = d
+        if mode is not None:
+            args["mode"] = mode
+        if feather is not None:
+            args["feather"] = feather
+        if grow is not None:
+            args["grow"] = grow
+        if invert is not None:
+            args["invert"] = invert
+        return self.action("select_outline", **args)
+
+    def grow_selection(self, *, by: float) -> str | None:
+        """Grows (or shrinks, when negative) the selection's edge by `by` units."""
+        return self.action("grow_selection", by=by)
+
+    def invert_selection(self) -> str | None:
+        """Turns the selection inside out: everything in the artwork but what it held."""
+        return self.action("invert_selection")
+
+    def select_marks(self,
+        *,
+        ids: list[str],
+        mode: str | None = None,
+    ) -> str | None:
+        """Selects the shape of the marks or groups `ids` name, meeting the area there is by `mode`."""
+        args: dict[str, Any] = {}
+        args["ids"] = ids
+        if mode is not None:
+            args["mode"] = mode
+        return self.action("select_marks", **args)
+
+    def pick_mark(self,
+        *,
+        m: Mark,
+        on: bool | None = None,
+    ) -> None:
+        """Picks a mark, or lets it go: combine and measure act on the picked marks."""
+        args: dict[str, Any] = {}
+        args["m"] = m
+        if on is not None:
+            args["on"] = on
+        return self.action("pick_mark", **args)
+
+    def pick_mark_many(self, items: list[PickMarkArgs]) -> list[dict[str, Any]]:
+        """Runs `pick_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("pick_mark", items)
+
+    def pick_marks(self, *, marks: list[Mark]) -> None:
+        """Picks the marks, adding any that were not picked."""
+        return self.action("pick_marks", marks=marks)
+
+    def pick_marks_many(self, items: list[PickMarksArgs]) -> list[dict[str, Any]]:
+        """Runs `pick_marks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("pick_marks", items)
+
+    def clear_picked(self) -> None:
+        """Lets every picked mark go."""
+        return self.action("clear_picked")
+
+    def clear_picked_many(self, items: list[ClearPickedArgs]) -> list[dict[str, Any]]:
+        """Runs `clear_picked` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("clear_picked", items)
+
+    def remove_along(self,
+        *,
+        points: list[list[float]],
+        layer: Layer | None = None,
+    ) -> int:
+        """Removes the brush strokes a path crosses, on `layer` or every layer: what a stroke eraser does. Answers how many went."""
+        args: dict[str, Any] = {}
+        args["points"] = points
+        if layer is not None:
+            args["layer"] = layer
+        return self.action("remove_along", **args)
+
+    def inspect_artwork(self,
+        *,
+        palette: bool | None = None,
+        limit: int | None = None,
+        layer: str | None = None,
+        region: list[float] | None = None,
+    ) -> str | None:
+        """Lists what the artwork holds: its layers and newest marks, with ids, bounds and colours, and with `palette` the colours it paints with. The answer is the engine's JSON."""
+        args: dict[str, Any] = {}
+        if palette is not None:
+            args["palette"] = palette
+        if limit is not None:
+            args["limit"] = limit
+        if layer is not None:
+            args["layer"] = layer
+        if region is not None:
+            args["region"] = region
+        return self.action("inspect_artwork", **args)
+
     def select_area(self,
         *,
         d: str,
@@ -884,6 +1224,7 @@ class Artwork(Resource):
         size: float,
         colour: str,
         layer: Layer | None = None,
+        lasso: list[list[float]] | None = None,
     ) -> Mark | None:
         """Ends what the hand laid down at `point`: the stroke takes its last point and closes, or a shape is drawn across the drag that made it."""
         args: dict[str, Any] = {}
@@ -895,16 +1236,18 @@ class Artwork(Resource):
         args["point"] = point
         args["size"] = size
         args["colour"] = colour
+        if lasso is not None:
+            args["lasso"] = lasso
         return self.action("finish_paint", **args)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"add_layer", "rename_layer", "rename_layer_many", "lock_layer", "lock_layer_many", "clip_layer", "clip_layer_many", "add_mask", "set_mask", "set_mask_many", "add_text", "set_medium", "set_medium_many", "save_medium", "remove_medium", "remove_medium_many", "move_layer_up", "move_layer_up_many", "move_layer_down", "move_layer_down_many", "duplicate_layer", "merge_layer_down", "merge_layer_down_many", "show_layer", "show_layer_many", "remove_layer", "remove_layer_many", "set_artwork", "set_artwork_many", "add_stroke", "extend_stroke", "extend_stroke_many", "top_layer", "add_shape", "remove_mark", "remove_mark_many", "recolour", "recolour_many", "resize_mark", "resize_mark_many", "place_picture", "select_like", "select_subject", "refine_selection", "combine_marks", "measure_marks", "set_reference", "set_reference_many", "clear_reference", "clear_reference_many", "compare_reference", "select_area", "select_area_many", "clear_selection", "clear_selection_many", "fill_selection", "draw_look", "draw_look_many", "export_picture", "export_svg", "save_artwork", "import_svg", "clear_notice", "clear_notice_many", "start_paint", "start_paint_many", "continue_paint", "finish_paint"})
+    __actions__ = frozenset({"add_layer", "rename_layer", "rename_layer_many", "lock_layer", "lock_layer_many", "clip_layer", "clip_layer_many", "add_mask", "set_mask", "set_mask_many", "add_text", "set_medium", "set_medium_many", "save_medium", "remove_medium", "remove_medium_many", "move_layer_up", "move_layer_up_many", "move_layer_down", "move_layer_down_many", "duplicate_layer", "merge_layer_down", "merge_layer_down_many", "show_layer", "show_layer_many", "remove_layer", "remove_layer_many", "set_artwork", "set_artwork_many", "add_stroke", "extend_stroke", "extend_stroke_many", "top_layer", "add_shape", "remove_mark", "remove_mark_many", "recolour", "recolour_many", "resize_mark", "resize_mark_many", "place_picture", "select_like", "select_subject", "refine_selection", "combine_marks", "measure_marks", "set_reference", "set_reference_many", "clear_reference", "clear_reference_many", "compare_reference", "compare_versions", "clear_comparison", "clear_comparison_many", "ask_selection", "select_shape", "select_lasso", "select_outline", "grow_selection", "invert_selection", "select_marks", "pick_mark", "pick_mark_many", "pick_marks", "pick_marks_many", "clear_picked", "clear_picked_many", "remove_along", "inspect_artwork", "select_area", "select_area_many", "clear_selection", "clear_selection_many", "fill_selection", "draw_look", "draw_look_many", "export_picture", "export_svg", "save_artwork", "import_svg", "clear_notice", "clear_notice_many", "start_paint", "start_paint_many", "continue_paint", "finish_paint"})
 
 
 class Layer(Resource):
     """Layer — `tl.so.tilo.canvas.Layer`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     bplq2q5j: str  # name
     ilxjjxxz: str  # medium
     smoxtxmk: float  # opacity
@@ -924,6 +1267,49 @@ class Layer(Resource):
     @_2rtbmdqf.setter
     def _2rtbmdqf(self, value: bool) -> None:
         self.edit("2rtbmdqf", value=value)
+    zrxehlis: float  # exposure
+    erzbebsl: float  # contrast
+    qcpp23hg: float  # highlights
+    xr5c7gly: float  # shadows
+    cxp7piot: float  # saturation
+    frr4f7qk: float  # vibrance
+    @property
+    def _7iz5iokq(self) -> float:
+        """hue (`7iz5iokq` on the wire)."""
+        return self.fields["7iz5iokq"]
+
+    @_7iz5iokq.setter
+    def _7iz5iokq(self, value: float) -> None:
+        self.edit("7iz5iokq", value=value)
+    lqesc6ol: float  # temperature
+    @property
+    def _4hpqnjer(self) -> float:
+        """tint (`4hpqnjer` on the wire)."""
+        return self.fields["4hpqnjer"]
+
+    @_4hpqnjer.setter
+    def _4hpqnjer(self, value: float) -> None:
+        self.edit("4hpqnjer", value=value)
+    @property
+    def _2zsbapjy(self) -> bool:
+        """adjust_grayscale (`2zsbapjy` on the wire)."""
+        return self.fields["2zsbapjy"]
+
+    @_2zsbapjy.setter
+    def _2zsbapjy(self, value: bool) -> None:
+        self.edit("2zsbapjy", value=value)
+    giajnlvh: bool  # adjust_invert
+    @property
+    def _76aq4pc3(self) -> float:
+        """blur (`76aq4pc3` on the wire)."""
+        return self.fields["76aq4pc3"]
+
+    @_76aq4pc3.setter
+    def _76aq4pc3(self, value: float) -> None:
+        self.edit("76aq4pc3", value=value)
+    nraansa6: float  # sharpen
+    yxn6dvna: float  # vignette
+    mvgiivbx: list[list[float]]  # curve
 
     def set_layer_group(self, *, group: str) -> None:
         """Puts a layer in the folder `group`, or takes it out when that is empty."""
@@ -933,14 +1319,67 @@ class Layer(Resource):
         """Runs `set_layer_group` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_layer_group", items)
 
+    def adjust_layer(self,
+        *,
+        exposure: float | None = None,
+        contrast: float | None = None,
+        highlights: float | None = None,
+        shadows: float | None = None,
+        saturation: float | None = None,
+        vibrance: float | None = None,
+        hue: float | None = None,
+        temperature: float | None = None,
+        tint: float | None = None,
+        grayscale: bool | None = None,
+        invert: bool | None = None,
+        blur: float | None = None,
+        sharpen: float | None = None,
+        vignette: float | None = None,
+    ) -> None:
+        """Adjusts everything on a layer, after each mark's own adjustments."""
+        args: dict[str, Any] = {}
+        if exposure is not None:
+            args["exposure"] = exposure
+        if contrast is not None:
+            args["contrast"] = contrast
+        if highlights is not None:
+            args["highlights"] = highlights
+        if shadows is not None:
+            args["shadows"] = shadows
+        if saturation is not None:
+            args["saturation"] = saturation
+        if vibrance is not None:
+            args["vibrance"] = vibrance
+        if hue is not None:
+            args["hue"] = hue
+        if temperature is not None:
+            args["temperature"] = temperature
+        if tint is not None:
+            args["tint"] = tint
+        if grayscale is not None:
+            args["grayscale"] = grayscale
+        if invert is not None:
+            args["invert"] = invert
+        if blur is not None:
+            args["blur"] = blur
+        if sharpen is not None:
+            args["sharpen"] = sharpen
+        if vignette is not None:
+            args["vignette"] = vignette
+        return self.action("adjust_layer", **args)
+
+    def adjust_layer_many(self, items: list[AdjustLayerArgs]) -> list[dict[str, Any]]:
+        """Runs `adjust_layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("adjust_layer", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_layer_group", "set_layer_group_many"})
+    __actions__ = frozenset({"set_layer_group", "set_layer_group_many", "adjust_layer", "adjust_layer_many"})
 
 
 class Mark(Resource):
     """Mark — `tl.so.tilo.canvas.Mark`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     @property
     def _3mgqcu4c(self) -> str:
         """name (`3mgqcu4c` on the wire)."""
@@ -1080,6 +1519,55 @@ class Mark(Resource):
     i7zjtca3: float  # line_height
     sc445r7q: float  # tracking
     e7l24fze: str  # text_path
+    @property
+    def _5lpu3cr5(self) -> list[float]:
+        """transform (`5lpu3cr5` on the wire)."""
+        return self.fields["5lpu3cr5"]
+
+    @_5lpu3cr5.setter
+    def _5lpu3cr5(self, value: list[float]) -> None:
+        self.edit("5lpu3cr5", value=value)
+    @property
+    def _7kaylfaa(self) -> str:
+        """clip (`7kaylfaa` on the wire)."""
+        return self.fields["7kaylfaa"]
+
+    @_7kaylfaa.setter
+    def _7kaylfaa(self, value: str) -> None:
+        self.edit("7kaylfaa", value=value)
+    adangnyz: bool  # pixelated
+    p45w3ec2: float  # grain
+    gdv4nrn7: float  # feather
+    dvxs4mkf: float  # shadow_x
+    ebyye73f: float  # shadow_y
+    lpv4a2ao: float  # shadow_blur
+    j3x5co4v: str  # shadow_colour
+    @property
+    def _4d36wjcg(self) -> float:
+        """inner_shadow_x (`4d36wjcg` on the wire)."""
+        return self.fields["4d36wjcg"]
+
+    @_4d36wjcg.setter
+    def _4d36wjcg(self, value: float) -> None:
+        self.edit("4d36wjcg", value=value)
+    aukevlpf: float  # inner_shadow_y
+    wz2pco6l: float  # inner_shadow_blur
+    @property
+    def _3hhduagr(self) -> str:
+        """inner_shadow_colour (`3hhduagr` on the wire)."""
+        return self.fields["3hhduagr"]
+
+    @_3hhduagr.setter
+    def _3hhduagr(self, value: str) -> None:
+        self.edit("3hhduagr", value=value)
+    @property
+    def _66bccfgi(self) -> list[list[float]]:
+        """curve (`66bccfgi` on the wire)."""
+        return self.fields["66bccfgi"]
+
+    @_66bccfgi.setter
+    def _66bccfgi(self, value: list[list[float]]) -> None:
+        self.edit("66bccfgi", value=value)
 
     def group_mark(self, *, group: str) -> None:
         """Puts a mark in the folder `group`, or takes it out when that is empty. Marks of a group are addressed, exported and shown together."""
@@ -1293,21 +1781,150 @@ class Mark(Resource):
         """Runs `adjust_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("adjust_mark", items)
 
+    def move_mark(self,
+        *,
+        dx: float,
+        dy: float,
+    ) -> None:
+        """Moves a mark by `dx`, `dy` artwork units."""
+        return self.action("move_mark", dx=dx, dy=dy)
+
+    def move_mark_many(self, items: list[MoveMarkArgs]) -> list[dict[str, Any]]:
+        """Runs `move_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move_mark", items)
+
+    def scale_mark(self,
+        *,
+        cx: float,
+        cy: float,
+        factor: float,
+    ) -> None:
+        """Scales a mark about `cx`, `cy` by `factor`."""
+        return self.action("scale_mark", cx=cx, cy=cy, factor=factor)
+
+    def scale_mark_many(self, items: list[ScaleMarkArgs]) -> list[dict[str, Any]]:
+        """Runs `scale_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("scale_mark", items)
+
+    def rotate_mark(self,
+        *,
+        cx: float,
+        cy: float,
+        degrees: float,
+    ) -> None:
+        """Turns a mark about `cx`, `cy` by `degrees`."""
+        return self.action("rotate_mark", cx=cx, cy=cy, degrees=degrees)
+
+    def rotate_mark_many(self, items: list[RotateMarkArgs]) -> list[dict[str, Any]]:
+        """Runs `rotate_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rotate_mark", items)
+
+    def clip_mark(self, *, by: str) -> None:
+        """Cuts a mark to the shape of another mark or a group, or lets it stand whole."""
+        return self.action("clip_mark", by=by)
+
+    def clip_mark_many(self, items: list[ClipMarkArgs]) -> list[dict[str, Any]]:
+        """Runs `clip_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("clip_mark", items)
+
+    def finish_mark(self,
+        *,
+        pixelated: bool | None = None,
+        grain: float | None = None,
+        feather: float | None = None,
+        shadow_x: float | None = None,
+        shadow_y: float | None = None,
+        shadow_blur: float | None = None,
+        shadow_colour: str | None = None,
+        inner_shadow_x: float | None = None,
+        inner_shadow_y: float | None = None,
+        inner_shadow_blur: float | None = None,
+        inner_shadow_colour: str | None = None,
+    ) -> None:
+        """Sets how a mark is finished: nearest-neighbour pixels, grain, a feathered edge, and its shadows. A parameter left out stays as it is."""
+        args: dict[str, Any] = {}
+        if pixelated is not None:
+            args["pixelated"] = pixelated
+        if grain is not None:
+            args["grain"] = grain
+        if feather is not None:
+            args["feather"] = feather
+        if shadow_x is not None:
+            args["shadow_x"] = shadow_x
+        if shadow_y is not None:
+            args["shadow_y"] = shadow_y
+        if shadow_blur is not None:
+            args["shadow_blur"] = shadow_blur
+        if shadow_colour is not None:
+            args["shadow_colour"] = shadow_colour
+        if inner_shadow_x is not None:
+            args["inner_shadow_x"] = inner_shadow_x
+        if inner_shadow_y is not None:
+            args["inner_shadow_y"] = inner_shadow_y
+        if inner_shadow_blur is not None:
+            args["inner_shadow_blur"] = inner_shadow_blur
+        if inner_shadow_colour is not None:
+            args["inner_shadow_colour"] = inner_shadow_colour
+        return self.action("finish_mark", **args)
+
+    def finish_mark_many(self, items: list[FinishMarkArgs]) -> list[dict[str, Any]]:
+        """Runs `finish_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("finish_mark", items)
+
+    def set_curve(self, *, curve: list[list[float]]) -> None:
+        """Sets a mark's tone curve, `[[in, out], …]` from 0 to 1."""
+        return self.action("set_curve", curve=curve)
+
+    def set_curve_many(self, items: list[SetCurveArgs]) -> list[dict[str, Any]]:
+        """Runs `set_curve` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_curve", items)
+
+    def set_dynamics(self,
+        *,
+        flow: float | None = None,
+        hardness: float | None = None,
+        spacing: float | None = None,
+        smoothing: float | None = None,
+        taper: float | None = None,
+    ) -> None:
+        """Sets how the brush lays a mark: its flow, hardness, spacing, smoothing and taper, each 0 to 1. A parameter left out stays as it is."""
+        args: dict[str, Any] = {}
+        if flow is not None:
+            args["flow"] = flow
+        if hardness is not None:
+            args["hardness"] = hardness
+        if spacing is not None:
+            args["spacing"] = spacing
+        if smoothing is not None:
+            args["smoothing"] = smoothing
+        if taper is not None:
+            args["taper"] = taper
+        return self.action("set_dynamics", **args)
+
+    def set_dynamics_many(self, items: list[SetDynamicsArgs]) -> list[dict[str, Any]]:
+        """Runs `set_dynamics` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_dynamics", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"group_mark", "group_mark_many", "fill_gradient", "fill_gradient_many", "wet_mark", "wet_mark_many", "clear_gradient", "clear_gradient_many", "set_text", "set_text_many", "crop_picture", "crop_picture_many", "straighten_picture", "straighten_picture_many", "flip_picture", "flip_picture_many", "blend_mark", "blend_mark_many", "adjust_mark", "adjust_mark_many"})
+    __actions__ = frozenset({"group_mark", "group_mark_many", "fill_gradient", "fill_gradient_many", "wet_mark", "wet_mark_many", "clear_gradient", "clear_gradient_many", "set_text", "set_text_many", "crop_picture", "crop_picture_many", "straighten_picture", "straighten_picture_many", "flip_picture", "flip_picture_many", "blend_mark", "blend_mark_many", "adjust_mark", "adjust_mark_many", "move_mark", "move_mark_many", "scale_mark", "scale_mark_many", "rotate_mark", "rotate_mark_many", "clip_mark", "clip_mark_many", "finish_mark", "finish_mark_many", "set_curve", "set_curve_many", "set_dynamics", "set_dynamics_many"})
 
 
 class Area(Resource):
     """Area — `tl.so.tilo.canvas.Area`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     k26xq4t7: str  # d
     enongrrr: float  # feather
+    j7jomf5b: str  # matte_src
+    oeihhduj: float  # matte_x
+    iqzt5i5r: float  # matte_y
+    l6zpym3q: float  # matte_width
+    to7qczkv: float  # matte_height
 
 
 class Picture(Resource):
     """Picture — `tl.so.tilo.canvas.Picture`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     di5h6qir: str  # name
     @property
     def _4be6ojwm(self) -> str:
@@ -1330,7 +1947,7 @@ class Picture(Resource):
 
 class Medium(Resource):
     """Medium — `tl.so.tilo.canvas.Medium`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     bevph2qk: str  # key
     cgytyo4j: str  # label
     @property
@@ -1356,7 +1973,7 @@ class Medium(Resource):
 
 class Pigment(Resource):
     """Pigment — `tl.so.tilo.canvas.Pigment`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     ph4qfvlv: str  # name
     @property
     def _6heumgwe(self) -> str:
@@ -1372,7 +1989,7 @@ class Pigment(Resource):
 
 class Reference(Resource):
     """Reference — `tl.so.tilo.canvas.Reference`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     @property
     def _3ze3qk7e(self) -> str:
         """image (`3ze3qk7e` on the wire)."""
@@ -1391,7 +2008,7 @@ class Reference(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.canvas.Library`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     @property
     def _5gxbqk6v(self) -> list[Entry[Artwork]]:
         """artworks (`5gxbqk6v` on the wire)."""
@@ -1425,14 +2042,14 @@ class Library(Resource):
 
 class LookRequest(Resource):
     """LookRequest — `tl.so.tilo.canvas.LookRequest`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     hhu6bz5c: int  # size
     ubid4c7s: str  # format
 
 
 class ExportRequest(Resource):
     """ExportRequest — `tl.so.tilo.canvas.ExportRequest`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     ottkj6jd: str  # format
     @property
     def _5mutx32x(self) -> float:
@@ -1446,14 +2063,14 @@ class ExportRequest(Resource):
 
 class SvgRequest(Resource):
     """SvgRequest — `tl.so.tilo.canvas.SvgRequest`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     c35hmrf6: list[str] | None  # ids
     gqfdwswn: bool | None  # outline_text
 
 
 class PlaceRequest(Resource):
     """PlaceRequest — `tl.so.tilo.canvas.PlaceRequest`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     @property
     def _2w4n3dr2(self) -> str | None:
         """layer (`2w4n3dr2` on the wire)."""
@@ -1468,7 +2085,7 @@ class PlaceRequest(Resource):
 
 class ArtworkJson(Resource):
     """ArtworkJson — `tl.so.tilo.canvas.ArtworkJson`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     j3bzgr3f: str  # title
     dowdfhi2: float  # width
     vlrgzghe: float  # height
@@ -1490,7 +2107,7 @@ class ArtworkJson(Resource):
 
 class LayerJson(Resource):
     """LayerJson — `tl.so.tilo.canvas.LayerJson`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     xunw6qmv: str  # name
     sxka2uxh: str  # medium
     aka7ql3b: float  # opacity
@@ -1524,11 +2141,54 @@ class LayerJson(Resource):
     y6iyulut: bool  # invert
     k2r2z54p: bool  # clip
     ppv32nn6: bool  # unlinked
+    z56o2ag2: float  # exposure
+    ui3khk6w: float  # contrast
+    yynr6bsh: float  # highlights
+    @property
+    def _3kml5egf(self) -> float:
+        """shadows (`3kml5egf` on the wire)."""
+        return self.fields["3kml5egf"]
+
+    @_3kml5egf.setter
+    def _3kml5egf(self, value: float) -> None:
+        self.edit("3kml5egf", value=value)
+    @property
+    def _5c4xwrcg(self) -> float:
+        """saturation (`5c4xwrcg` on the wire)."""
+        return self.fields["5c4xwrcg"]
+
+    @_5c4xwrcg.setter
+    def _5c4xwrcg(self, value: float) -> None:
+        self.edit("5c4xwrcg", value=value)
+    gi73p5cu: float  # vibrance
+    @property
+    def _7r6f5gkz(self) -> float:
+        """hue (`7r6f5gkz` on the wire)."""
+        return self.fields["7r6f5gkz"]
+
+    @_7r6f5gkz.setter
+    def _7r6f5gkz(self, value: float) -> None:
+        self.edit("7r6f5gkz", value=value)
+    tfdtaklm: float  # temperature
+    oanzkyda: float  # tint
+    aj3mmig4: bool  # grayscale
+    @property
+    def _2cktvie6(self) -> bool:
+        """invert_adjust (`2cktvie6` on the wire)."""
+        return self.fields["2cktvie6"]
+
+    @_2cktvie6.setter
+    def _2cktvie6(self, value: bool) -> None:
+        self.edit("2cktvie6", value=value)
+    zkir2g3c: float  # blur
+    frk7zwuc: float  # sharpen
+    pftddo22: float  # vignette
+    eenyv7e2: list[list[float]]  # curve
 
 
 class MediumJson(Resource):
     """MediumJson — `tl.so.tilo.canvas.MediumJson`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     iztu5hbq: str  # id
     shen6puc: str  # label
     pcwg6twm: str  # engine
@@ -1547,7 +2207,7 @@ class MediumJson(Resource):
 
 class PigmentJson(Resource):
     """PigmentJson — `tl.so.tilo.canvas.PigmentJson`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     dgwlsywk: str  # name
     b74p3dso: str  # colour
     rfus746j: float  # granulation
@@ -1556,7 +2216,7 @@ class PigmentJson(Resource):
 
 class ReferenceJson(Resource):
     """ReferenceJson — `tl.so.tilo.canvas.ReferenceJson`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     go76fdwt: str  # image
     ax3jntcc: list[float] | None  # frame
     urv4gnep: float  # opacity
@@ -1565,7 +2225,7 @@ class ReferenceJson(Resource):
 
 class MarkJson(Resource):
     """MarkJson — `tl.so.tilo.canvas.MarkJson`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     @property
     def _67wvmkkq(self) -> str:
         """name (`67wvmkkq` on the wire)."""
@@ -1655,18 +2315,89 @@ class MarkJson(Resource):
     hyqcnmz5: str  # text_path
     q73msd2q: bool  # wet
     gfq7akbn: dict[str, float]  # params
+    uk5tcnwm: list[float]  # transform
+    w4ew2p2r: str  # clip
+    @property
+    def _3bhfidei(self) -> bool:
+        """pixelated (`3bhfidei` on the wire)."""
+        return self.fields["3bhfidei"]
+
+    @_3bhfidei.setter
+    def _3bhfidei(self, value: bool) -> None:
+        self.edit("3bhfidei", value=value)
+    @property
+    def _6emj7eax(self) -> float:
+        """grain (`6emj7eax` on the wire)."""
+        return self.fields["6emj7eax"]
+
+    @_6emj7eax.setter
+    def _6emj7eax(self, value: float) -> None:
+        self.edit("6emj7eax", value=value)
+    tcpy73ad: float  # feather
+    @property
+    def _3oq5rjv3(self) -> float:
+        """shadow_x (`3oq5rjv3` on the wire)."""
+        return self.fields["3oq5rjv3"]
+
+    @_3oq5rjv3.setter
+    def _3oq5rjv3(self, value: float) -> None:
+        self.edit("3oq5rjv3", value=value)
+    ho5hmfdi: float  # shadow_y
+    @property
+    def _7v73mzgx(self) -> float:
+        """shadow_blur (`7v73mzgx` on the wire)."""
+        return self.fields["7v73mzgx"]
+
+    @_7v73mzgx.setter
+    def _7v73mzgx(self, value: float) -> None:
+        self.edit("7v73mzgx", value=value)
+    aktlep6h: str  # shadow_colour
+    aayx2zu4: float  # inner_shadow_x
+    @property
+    def _52usozk2(self) -> float:
+        """inner_shadow_y (`52usozk2` on the wire)."""
+        return self.fields["52usozk2"]
+
+    @_52usozk2.setter
+    def _52usozk2(self, value: float) -> None:
+        self.edit("52usozk2", value=value)
+    @property
+    def _2h5mxl46(self) -> float:
+        """inner_shadow_blur (`2h5mxl46` on the wire)."""
+        return self.fields["2h5mxl46"]
+
+    @_2h5mxl46.setter
+    def _2h5mxl46(self, value: float) -> None:
+        self.edit("2h5mxl46", value=value)
+    f7cd75z6: str  # inner_shadow_colour
+    zalrvie7: list[list[float]]  # curve
 
 
 class AreaJson(Resource):
     """AreaJson — `tl.so.tilo.canvas.AreaJson`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     nxcluiyf: str  # d
     jxpwvxya: float  # feather
+    algnlk7t: MatteJson | None  # matte
+
+
+class MatteJson(Resource):
+    """MatteJson — `tl.so.tilo.canvas.MatteJson`."""
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    @property
+    def _7s7g6rha(self) -> str:
+        """src (`7s7g6rha` on the wire)."""
+        return self.fields["7s7g6rha"]
+
+    @_7s7g6rha.setter
+    def _7s7g6rha(self, value: str) -> None:
+        self.edit("7s7g6rha", value=value)
+    erbjejvt: list[float]  # rect
 
 
 class GradeAsk(Resource):
     """GradeAsk — `tl.so.tilo.canvas.GradeAsk`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     fy7u7ntb: float  # exposure
     h7ykiuc5: float  # contrast
     akjbo2e5: float  # highlights
@@ -1699,7 +2430,7 @@ class GradeAsk(Resource):
 
 class WandAsk(Resource):
     """WandAsk — `tl.so.tilo.canvas.WandAsk`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     yyqmyjfc: list[float] | None  # at
     etjvwbve: str | None  # colour
     giesycja: float | None  # tolerance
@@ -1709,7 +2440,7 @@ class WandAsk(Resource):
 
 class FindAsk(Resource):
     """FindAsk — `tl.so.tilo.canvas.FindAsk`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     @property
     def _3ug7cc6p(self) -> bool | None:
         """subject (`3ug7cc6p` on the wire)."""
@@ -1735,7 +2466,7 @@ class FindAsk(Resource):
 
 class CombineAsk(Resource):
     """CombineAsk — `tl.so.tilo.canvas.CombineAsk`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     bp3zj5os: list[str]  # ids
     @property
     def _4kf2vu7l(self) -> str:
@@ -1749,7 +2480,7 @@ class CombineAsk(Resource):
 
 class MeasureAsk(Resource):
     """MeasureAsk — `tl.so.tilo.canvas.MeasureAsk`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     @property
     def _2tk6phpq(self) -> list[str]:
         """ids (`2tk6phpq` on the wire)."""
@@ -1760,9 +2491,83 @@ class MeasureAsk(Resource):
         self.edit("2tk6phpq", value=value)
 
 
+class SelectAsk(Resource):
+    """SelectAsk — `tl.so.tilo.canvas.SelectAsk`."""
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    @property
+    def _7omk45ql(self) -> list[float] | None:
+        """rect (`7omk45ql` on the wire)."""
+        return self.fields["7omk45ql"]
+
+    @_7omk45ql.setter
+    def _7omk45ql(self, value: list[float] | None) -> None:
+        self.edit("7omk45ql", value=value)
+    krhe2i56: list[float] | None  # ellipse
+    @property
+    def _5eu7ff7r(self) -> list[list[float]] | None:
+        """points (`5eu7ff7r` on the wire)."""
+        return self.fields["5eu7ff7r"]
+
+    @_5eu7ff7r.setter
+    def _5eu7ff7r(self, value: list[list[float]] | None) -> None:
+        self.edit("5eu7ff7r", value=value)
+    mgxsjhfz: str | None  # d
+    iqzzaywp: list[str] | None  # marks
+    l4imaa4l: str | None  # mode
+    @property
+    def _7zgzz7h2(self) -> float | None:
+        """feather (`7zgzz7h2` on the wire)."""
+        return self.fields["7zgzz7h2"]
+
+    @_7zgzz7h2.setter
+    def _7zgzz7h2(self, value: float | None) -> None:
+        self.edit("7zgzz7h2", value=value)
+    ohfhq5pm: float | None  # grow
+    ojp4xz4a: bool | None  # invert
+
+
+class InspectAsk(Resource):
+    """InspectAsk — `tl.so.tilo.canvas.InspectAsk`."""
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    @property
+    def _3uypu22a(self) -> bool | None:
+        """palette (`3uypu22a` on the wire)."""
+        return self.fields["3uypu22a"]
+
+    @_3uypu22a.setter
+    def _3uypu22a(self, value: bool | None) -> None:
+        self.edit("3uypu22a", value=value)
+    veyz6j2q: list[float] | None  # region
+    ylddsw2e: str | None  # layer
+    @property
+    def _6nfqt3pd(self) -> int | None:
+        """limit (`6nfqt3pd` on the wire)."""
+        return self.fields["6nfqt3pd"]
+
+    @_6nfqt3pd.setter
+    def _6nfqt3pd(self, value: int | None) -> None:
+        self.edit("6nfqt3pd", value=value)
+
+
+class RemoveAsk(Resource):
+    """RemoveAsk — `tl.so.tilo.canvas.RemoveAsk`."""
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    js4zslbp: list[list[float]]  # along
+    besel4qy: str | None  # layer
+
+
+class DiffAsk(Resource):
+    """DiffAsk — `tl.so.tilo.canvas.DiffAsk`."""
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    eubkyqqd: str  # from
+    mit27xah: str | None  # to
+    eiocv26o: bool | None  # look
+    rgii66ho: bool | None  # overlay
+
+
 class CompareAsk(Resource):
     """CompareAsk — `tl.so.tilo.canvas.CompareAsk`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     mztro4wb: list[float] | None  # region
     @property
     def _67462gfa(self) -> str | None:
@@ -1777,7 +2582,7 @@ class CompareAsk(Resource):
 
 class Canvas(Resource):
     """Canvas — `tl.so.tilo.canvas`."""
-    __surface__ = "so.tilo.canvas@4010c42c914c02be"
+    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
     def grade_picture(self,
         *,
         file: Any,

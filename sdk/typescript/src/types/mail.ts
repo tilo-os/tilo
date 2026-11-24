@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Account` is a `Resource` of the app's `tl.so.tilo.mail.Account`, made by its factory with the
+ * `Notice` is a `Resource` of the app's `tl.tilo.host.Notice`, made by its factory with the
  * resource's path (`mail/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@9b5d0d29b4e68e46";
+export const SURFACE = "so.tilo.mail@56b3ff63c744e05c";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -149,6 +149,26 @@ export interface DeleteLabelArgs {
 /** The arguments of `discard`. */
 export interface DiscardArgs {
   d: Draft;
+}
+
+/** Notice — `tl.tilo.host.Notice`. */
+export interface Notice extends tilo.Resource {
+  notice_to: string;  // to
+  notice_title: string;  // title
+  notice_body: string;  // body
+  notice_opens: unknown;  // opens
+  notice_seen: boolean;  // seen
+  notice_device: string;  // device
+  notice_actions: string[];  // actions
+}
+
+/** The actions `Notice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NOTICE_ACTIONS = [] as const;
+
+/** The `tl.tilo.host.Notice` kind at `path`. */
+export function notice(ws: tilo.Workspace, path: string): Notice {
+  return resourceProxy(ws, path, SURFACE, NOTICE_ACTIONS) as unknown as Notice;
 }
 
 /** Account — `tl.so.tilo.mail.Account`. */
@@ -365,6 +385,16 @@ export interface Message extends tilo.Resource {
   show_pictures(): Promise<void>;
   /** Runs `show_pictures` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   show_picturesMany(items: ShowPicturesArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The links a message says, each once, in the order it says them: what its formatted part links to, or the web and mail addresses its words carry. A person reads them, copies one, or an agent asks what a message would have one open. */
+  links(): Promise<string[]>;
+  /** Opens one of a message's links in the app that opens links of its scheme, as pressing a link does: the Browser for a web address. A message opens only a link it says. */
+  open_link(args: {
+    url: string;
+  }): Promise<void>;
+  /** Copies one of a message's links, the address alone, as a person hands it to someone. */
+  copy_link(args: {
+    url: string;
+  }): Promise<void>;
   /** The message as a Markdown file: what a person exports to read it, or keep it, elsewhere. */
   export_markdown(): Promise<unknown>;
   /** The message as a JSON file: what a script or an agent reads its record from. */
@@ -385,7 +415,7 @@ export interface Message extends tilo.Resource {
 
 /** The actions `Message` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGE_ACTIONS = ["show_pictures", "show_picturesMany", "export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment"] as const;
+export const MESSAGE_ACTIONS = ["show_pictures", "show_picturesMany", "links", "open_link", "copy_link", "export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment"] as const;
 
 /** The `tl.so.tilo.mail.Message` kind at `path`. */
 export function message(ws: tilo.Workspace, path: string): Message {

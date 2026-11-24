@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Snippet` is the app's `tl.so.tilo.snippets.Snippet` at `snippets/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `snippets/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -21,6 +21,7 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Language",
+    "Notice",
     "Snippet",
     "FillValue",
     "Fill",
@@ -29,6 +30,7 @@ __all__ = [
     "StarArgs",
     "SetTagsArgs",
     "UntagArgs",
+    "RecordUseArgs",
     "CancelFillArgs",
     "ClearFillArgs",
     "DeleteArgs",
@@ -54,6 +56,10 @@ UntagArgs = TypedDict("UntagArgs", {
     "tag": "str",
 })
 """The arguments of `untag`."""
+
+RecordUseArgs = TypedDict("RecordUseArgs", {
+})
+"""The arguments of `record_use`."""
 
 CancelFillArgs = TypedDict("CancelFillArgs", {
 })
@@ -85,9 +91,70 @@ RemoveTagArgs = TypedDict("RemoveTagArgs", {
 })
 """The arguments of `remove_tag`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Snippet(Resource):
     """Snippet — `tl.so.tilo.snippets.Snippet`."""
-    __surface__ = "so.tilo.snippets@275605095d14df3c"
+    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
     f7zljrnp: str  # title
     @property
     def _5k3zya5m(self) -> str:
@@ -145,21 +212,29 @@ class Snippet(Resource):
         """Copies a snippet's body to the clipboard, and counts the use. A snippet with variables is filled in first (`begin_fill`), so what is copied is what the person meant."""
         return self.action("copy")
 
+    def record_use(self) -> None:
+        """Counts a use of a snippet without copying it: what a script or an agent that took the body its own way records, so 'Most used' is the same number however the snippet was used."""
+        return self.action("record_use")
+
+    def record_use_many(self, items: list[RecordUseArgs]) -> list[dict[str, Any]]:
+        """Runs `record_use` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("record_use", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"star", "star_many", "set_tags", "set_tags_many", "untag", "untag_many", "copy"})
+    __actions__ = frozenset({"star", "star_many", "set_tags", "set_tags_many", "untag", "untag_many", "copy", "record_use", "record_use_many"})
 
 
 class FillValue(Resource):
     """FillValue — `tl.so.tilo.snippets.FillValue`."""
-    __surface__ = "so.tilo.snippets@275605095d14df3c"
+    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
     u5ym5ttn: str  # name
     h5vss6x5: str  # value
 
 
 class Fill(Resource):
     """Fill — `tl.so.tilo.snippets.Fill`."""
-    __surface__ = "so.tilo.snippets@275605095d14df3c"
+    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
     qxvejddr: Snippet | None  # snippet
     e6uc6jtt: list[Entry[FillValue]]  # values
 
@@ -186,7 +261,7 @@ class Fill(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.snippets.Library`."""
-    __surface__ = "so.tilo.snippets@275605095d14df3c"
+    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
     g5k73yqh: list[Entry[Snippet]]  # snippets
     avqtjv3w: list[Entry[Fill]]  # fills
 
@@ -269,9 +344,9 @@ class Library(Resource):
 
 class Snippets(Resource):
     """Snippets — `tl.so.tilo.snippets`."""
-    __surface__ = "so.tilo.snippets@275605095d14df3c"
-    def copy_text(self, *, text: str) -> None:
-        """Puts `text` on the clipboard: as a secret, which histories do not keep and which leaves the clipboard after a while, when it looks like it carries a credential, so an API key does not stay there for whatever is pasted next."""
+    __surface__ = "so.tilo.snippets@13ad3d7afb13bb2b"
+    def copy_text(self, *, text: str) -> bool:
+        """Puts `text` on the clipboard: as a secret, which histories do not keep and which leaves the clipboard after a while, when it looks like it carries a credential, so an API key does not stay there for whatever is pasted next. False when the device refused the copy."""
         return self.action("copy_text", text=text)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`

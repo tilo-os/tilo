@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Conversations` is a `Resource` of the app's `tl.so.tilo.chat.Conversations`, made by its factory with the
+ * `Notice` is a `Resource` of the app's `tl.tilo.host.Notice`, made by its factory with the
  * resource's path (`chat/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@313be8bbe0f2d2c4";
+export const SURFACE = "so.tilo.chat@66fb84ff706b3fcb";
 
 /** One emoji of the workspace. */
 export interface Emoji {
@@ -344,6 +344,26 @@ export interface OverturnDecisionArgs {
   note: string;
 }
 
+/** Notice — `tl.tilo.host.Notice`. */
+export interface Notice extends tilo.Resource {
+  notice_to: string;  // to
+  notice_title: string;  // title
+  notice_body: string;  // body
+  notice_opens: unknown;  // opens
+  notice_seen: boolean;  // seen
+  notice_device: string;  // device
+  notice_actions: string[];  // actions
+}
+
+/** The actions `Notice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NOTICE_ACTIONS = [] as const;
+
+/** The `tl.tilo.host.Notice` kind at `path`. */
+export function notice(ws: tilo.Workspace, path: string): Notice {
+  return resourceProxy(ws, path, SURFACE, NOTICE_ACTIONS) as unknown as Notice;
+}
+
 /** Conversations — `tl.so.tilo.chat.Conversations`. */
 export interface Conversations extends tilo.Resource {
   "5kzdptyg": Array<tilo.Entry<Category | Direct | TextChannel | VoiceChannel>>;  // channels
@@ -418,11 +438,16 @@ export interface Conversations extends tilo.Resource {
     who: string;
     reason: string;
   }): Promise<ChatReport>;
+  /** Asks the assistant to start a sub-agent for `job`, in the direct conversation it answers in: the record's own `start-sub-agent` is the assistant's to call there, and the sub-agent reports in that conversation, where the person follows it. None where the workspace keeps no conversation with the assistant yet. */
+  ask_for_sub_agent(args: {
+    agent: unknown;
+    job?: string;
+  }): Promise<Message | null>;
 }
 
 /** The actions `Conversations` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CONVERSATIONS_ACTIONS = ["new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "conversation_with", "write_to", "delete_channel", "delete_channelMany", "delete_category", "delete_categoryMany", "move_channel", "move_channelMany", "move_category", "move_categoryMany", "report_person"] as const;
+export const CONVERSATIONS_ACTIONS = ["new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "conversation_with", "write_to", "delete_channel", "delete_channelMany", "delete_category", "delete_categoryMany", "move_channel", "move_channelMany", "move_category", "move_categoryMany", "report_person", "ask_for_sub_agent"] as const;
 
 /** The `tl.so.tilo.chat.Conversations` kind at `path`. */
 export function conversations(ws: tilo.Workspace, path: string): Conversations {

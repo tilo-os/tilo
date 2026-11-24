@@ -1542,6 +1542,15 @@ impl Session {
                 &options.person,
                 options.wake.handle(),
             )));
+        // The workspace's record of its agents: each agent, its sub-agents and what they spent,
+        // published for a view of another language as the record's own fields and verbs.
+        services
+            .borrow_mut()
+            .add(Box::new(crate::agents::Served::new(
+                Rc::clone(&agents),
+                handle.clone(),
+                &options.person,
+            )));
         // What apps list rather than run here (the workspace's invocations), followed for the
         // shell's views that list them.
         services

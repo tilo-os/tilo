@@ -45,7 +45,7 @@ const BO: [u8; 32] = [9; 32];
 /// The workspace her assistant works in.
 const WORKSPACE: &str = "6f1f0f7e-3c1d-4a54-9b6e-2d1c5a7e9f10";
 /// The app the made-up tokens were given to.
-const APP: &str = "so.tilo.assistant";
+const APP: &str = "so.tilo.chat";
 const SECOND: u64 = 1_000;
 /// A moment and a minute, in seconds, for what is counted in seconds.
 const START: u64 = 1_000_000;

@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Person` is the app's `tl.so.tilo.tasks.Person` at `tasks/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `tasks/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -26,6 +26,7 @@ __all__ = [
     "StoppedWhy",
     "BudgetBy",
     "Priority",
+    "Notice",
     "Person",
     "Project",
     "Wait",
@@ -386,16 +387,77 @@ LabelManyArgs = TypedDict("LabelManyArgs", {
 })
 """The arguments of `label_many`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Person(Resource):
     """Person — `tl.so.tilo.tasks.Person`."""
-    __surface__ = "so.tilo.tasks@0944081fbec1a28c"
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
     ktw2jimm: str  # name
     hgptkohm: str  # role
 
 
 class Project(Resource):
     """Project — `tl.so.tilo.tasks.Project`."""
-    __surface__ = "so.tilo.tasks@0944081fbec1a28c"
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
     sgnau7vd: str  # name
     rsoasw3n: Kind  # kind
     c5pgzhqt: str  # notes
@@ -500,7 +562,7 @@ class Project(Resource):
 
 class Wait(Resource):
     """Wait — `tl.so.tilo.tasks.Wait`."""
-    __surface__ = "so.tilo.tasks@0944081fbec1a28c"
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
     @property
     def _4fz6j3rg(self) -> WaitKind:
         """kind (`4fz6j3rg` on the wire)."""
@@ -523,7 +585,7 @@ class Wait(Resource):
 
 class Stopped(Resource):
     """Stopped — `tl.so.tilo.tasks.Stopped`."""
-    __surface__ = "so.tilo.tasks@0944081fbec1a28c"
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
     ps5lbw2w: StoppedWhy  # why
     @property
     def _5yqkyqzr(self) -> str:
@@ -538,7 +600,7 @@ class Stopped(Resource):
 
 class Resumed(Resource):
     """Resumed — `tl.so.tilo.tasks.Resumed`."""
-    __surface__ = "so.tilo.tasks@0944081fbec1a28c"
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
     @property
     def _66a5tqcs(self) -> str:
         """cause (`66a5tqcs` on the wire)."""
@@ -552,7 +614,7 @@ class Resumed(Resource):
 
 class Work(Resource):
     """Work — `tl.so.tilo.tasks.Work`."""
-    __surface__ = "so.tilo.tasks@0944081fbec1a28c"
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
     finhtl5k: str  # folder
     ckijp22f: str  # note
     @property
@@ -594,7 +656,7 @@ class Work(Resource):
 
 class Origin(Resource):
     """Origin — `tl.so.tilo.tasks.Origin`."""
-    __surface__ = "so.tilo.tasks@0944081fbec1a28c"
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
     @property
     def _3saq3nij(self) -> str:
         """author (`3saq3nij` on the wire)."""
@@ -631,7 +693,7 @@ class Origin(Resource):
 
 class Task(Resource):
     """Task — `tl.so.tilo.tasks.Task`."""
-    __surface__ = "so.tilo.tasks@0944081fbec1a28c"
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
     @property
     def _2y3yxgz4(self) -> int:
         """number (`2y3yxgz4` on the wire)."""
@@ -1209,7 +1271,7 @@ class Task(Resource):
 
 class Related(Resource):
     """Related — `tl.so.tilo.tasks.Related`."""
-    __surface__ = "so.tilo.tasks@0944081fbec1a28c"
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
     h62xalud: Task  # task
     @property
     def _27gmtaed(self) -> str:
@@ -1223,7 +1285,7 @@ class Related(Resource):
 
 class Tasks(Resource):
     """Tasks — `tl.so.tilo.tasks.Tasks`."""
-    __surface__ = "so.tilo.tasks@0944081fbec1a28c"
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
     lg5gedbh: list[Entry[Task]]  # items
     mdhllpbo: list[Entry[Project]]  # projects
     c7peh6l3: list[Entry[Origin]]  # origins
@@ -1307,7 +1369,7 @@ class Tasks(Resource):
 
 class TiloTasks(Resource):
     """Tasks — `tl.so.tilo.tasks`."""
-    __surface__ = "so.tilo.tasks@0944081fbec1a28c"
+    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
     def new_tasks(self,
         *,
         titles: list[str],

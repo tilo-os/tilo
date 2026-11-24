@@ -100,9 +100,6 @@ members = [
 
     # Applications
     "apps/osk",
-    "apps/assistant",
-    "apps/assistant-model",
-    "apps/assistant-model-wasm",
     "apps/moderation-model",
     "apps/messages",
     "apps/imager",

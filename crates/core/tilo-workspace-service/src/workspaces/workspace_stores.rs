@@ -10,7 +10,7 @@
 //! records ([`tilo_action_policy::decide`]). Each store stands at its app's
 //! node ([`Store`]): the mail accounts at Mail's, the calendars at
 //! Calendar's, the vault's items at Passwords' vault, the events at
-//! Shortcuts' and the initiative at Assistant's. A member reaches them
+//! Shortcuts' and the initiative at Chat's. A member reaches them
 //! through their role (an Editor uses the mail accounts and the vault's
 //! items, a Viewer reads them), an agent or an API key through its grants,
 //! and an owner who wants one closed says so with a grant like any other. A
@@ -76,9 +76,9 @@ impl Store {
         kind: tilo_actions::remote::workspace_events::KIND,
     };
     /// What the workspace's assistant finds to do on its own: its
-    /// look-round and proposals, in Assistant.
+    /// look-round and proposals, in Chat with the workspace's agents.
     pub const INITIATIVE: Self = Self {
-        app: tilo_app_id::apps::ASSISTANT,
+        app: tilo_app_id::apps::CHAT,
         kind: tilo_actions::remote::workspace_initiative::LOOK_ROUND_KIND,
     };
 

@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Attendee` is the app's `tl.so.tilo.calendar.Attendee` at `calendar/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `calendar/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -23,6 +23,7 @@ __all__ = [
     "Color",
     "Priority",
     "Repeat",
+    "Notice",
     "Attendee",
     "Account",
     "Project",
@@ -483,9 +484,70 @@ ThisWeekArgs = TypedDict("ThisWeekArgs", {
 })
 """The arguments of `this_week`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.calendar@0b8f9a748b18680e"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Attendee(Resource):
     """Attendee — `tl.so.tilo.calendar.Attendee`."""
-    __surface__ = "so.tilo.calendar@aaee158565626f7f"
+    __surface__ = "so.tilo.calendar@0b8f9a748b18680e"
     oiolhfhy: str  # name
     zr5l6sfu: str  # email
     wyfwksgq: str  # status
@@ -494,7 +556,7 @@ class Attendee(Resource):
 
 class Account(Resource):
     """Account — `tl.so.tilo.calendar.Account`."""
-    __surface__ = "so.tilo.calendar@aaee158565626f7f"
+    __surface__ = "so.tilo.calendar@0b8f9a748b18680e"
     f44j5f26: str  # key
     gxn236ef: str  # address
     rfeeyuff: str  # name
@@ -523,7 +585,7 @@ class Account(Resource):
 
 class Project(Resource):
     """Project — `tl.so.tilo.calendar.Project`."""
-    __surface__ = "so.tilo.calendar@aaee158565626f7f"
+    __surface__ = "so.tilo.calendar@0b8f9a748b18680e"
     iivr4dfm: str  # name
     @property
     def _5kprlx3s(self) -> Color:
@@ -558,7 +620,7 @@ class Project(Resource):
 
 class Task(Resource):
     """Task — `tl.so.tilo.calendar.Task`."""
-    __surface__ = "so.tilo.calendar@aaee158565626f7f"
+    __surface__ = "so.tilo.calendar@0b8f9a748b18680e"
     r2vx64eh: str  # title
     s6raiajy: bool  # done
     kibl2yut: str | None  # due
@@ -696,7 +758,7 @@ class Task(Resource):
 
 class Event(Resource):
     """Event — `tl.so.tilo.calendar.Event`."""
-    __surface__ = "so.tilo.calendar@aaee158565626f7f"
+    __surface__ = "so.tilo.calendar@0b8f9a748b18680e"
     qqkexjof: str  # key
     yclpjnie: str  # href
     lpmkddba: str  # etag
@@ -1216,7 +1278,7 @@ class Event(Resource):
 
 class Calendar(Resource):
     """Calendar — `tl.so.tilo.calendar.Calendar`."""
-    __surface__ = "so.tilo.calendar@aaee158565626f7f"
+    __surface__ = "so.tilo.calendar@0b8f9a748b18680e"
     gzrwihvd: str  # key
     pwrd7qqx: str  # account
     dn3prfqt: str  # sync_token
@@ -1247,7 +1309,7 @@ class Calendar(Resource):
 
 class Calendars(Resource):
     """Calendars — `tl.so.tilo.calendar.Calendars`."""
-    __surface__ = "so.tilo.calendar@aaee158565626f7f"
+    __surface__ = "so.tilo.calendar@0b8f9a748b18680e"
     g3gq3jmz: list[Entry[Event]]  # events
     ozulkrgt: list[Entry[Calendar]]  # calendars
     lubytvuv: list[Entry[Account]]  # accounts
@@ -1452,7 +1514,7 @@ class Calendars(Resource):
 
 class Moment(Resource):
     """Moment — `tl.so.tilo.calendar.Moment`."""
-    __surface__ = "so.tilo.calendar@aaee158565626f7f"
+    __surface__ = "so.tilo.calendar@0b8f9a748b18680e"
     kd3noj7y: Event  # event
     ejfozpye: str  # at
     @property
@@ -1467,5 +1529,5 @@ class Moment(Resource):
 
 class TiloCalendar(Resource):
     """Calendar — `tl.so.tilo.calendar`."""
-    __surface__ = "so.tilo.calendar@aaee158565626f7f"
+    __surface__ = "so.tilo.calendar@0b8f9a748b18680e"
 

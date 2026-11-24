@@ -41,10 +41,10 @@ struct App {
 
 const APPS: &[App] = &[
     App {
-        package: "assistant",
-        bin: "assistant",
-        id: "so.tilo.assistant",
-        kind: "assistant.window",
+        package: "console",
+        bin: "console",
+        id: "so.tilo.console",
+        kind: "console.view",
     },
     App {
         package: "messages",
