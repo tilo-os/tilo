@@ -149,6 +149,22 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
 /// The activity's root, the one resource every change and every verb of it is on.
 const ACTIVITY_ROOTS: &[(&str, &str, &str)] = &[("history", "Activity", "workspace.activity")];
 
+/// Where the workspace's members are read: everyone in it now, which every host serves its
+/// runtime from the member list it decides by ([`crate::host::Host::follow_members`]).
+pub const WORKSPACE_MEMBERS: &str = "workspace/members";
+/// The workspace's root a view names, `workspace.members` (`use tilo.workspace as workspace`).
+const WORKSPACE_ROOTS: &[(&str, &str, &str)] = &[("members", "Members", WORKSPACE_MEMBERS)];
+
+/// The resource the workspace's members are read as, of the type its package reads it as.
+#[must_use]
+pub fn workspace_members() -> crate::runtime::ResourceRef {
+    crate::runtime::ResourceRef {
+        doc: WORKSPACE_MEMBERS.to_owned(),
+        item: None,
+        ty: format!("{WORKSPACE_APP}#Members"),
+    }
+}
+
 /// The MCP server's root, the one resource every grant and every verb of it is on.
 const MCP_SERVER_ROOTS: &[(&str, &str, &str)] = &[("server", "Server", "mcp.server")];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
@@ -301,7 +317,7 @@ const PUBLISHED: &[Published] = &[
         app: WORKSPACE_APP,
         title: "Workspace",
         kinds: &[],
-        roots: &[],
+        roots: WORKSPACE_ROOTS,
         // What a workspace's own actions are, written beside the service that publishes them.
         files: &[include_str!(
             "../../../core/tilo-workspace-service/workspace-surface.toml"
@@ -825,8 +841,11 @@ impl Roots {
     /// Start `target` reading what it would before its app publishes anything, so a view that
     /// reads a field of it runs as the app opens, rather than trapping on a resource with no
     /// reading at all. The session's first reading replaces it.
+    /// A root the host serves itself (the workspace's members) already reads as it serves it.
     fn seed(host: &crate::host::Host, target: &crate::runtime::ResourceRef) {
-        let _ = host.runtime().set_reading(target, "{}");
+        if !host.runtime().serves(target) {
+            let _ = host.runtime().set_reading(target, "{}");
+        }
     }
 
     /// Whether `app` is a platform app this window reads: what its views change is its
@@ -865,6 +884,7 @@ impl Roots {
         for (target, reading) in &self.followed {
             while let Some(result) = reading.latest() {
                 match result {
+                    Ok(_) if runtime.serves(target) => {}
                     Ok(reading) => {
                         moved |= runtime.set_reading(target, &reading).unwrap_or_else(|error| {
                             tracing::warn!(%error, resource = %target.id_string(), "a platform reading was refused");

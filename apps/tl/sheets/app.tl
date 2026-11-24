@@ -5,6 +5,8 @@ app so.tilo.sheets "Sheets" (
     keywords: ["spreadsheet", "spreadsheets", "excel", "calc", "table", "tables", "csv", "xls", "xlsx", "formulas", "numbers", "libreoffice calc", "tabelle", "tabellen", "kalkulation", "rechnen", "tabellenkalkulation"],
 )
 
+use tilo.workspace as workspace
+
 /// The currency a bare money format shows in.
 enum Currency {
     usd

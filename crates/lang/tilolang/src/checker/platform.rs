@@ -684,25 +684,36 @@ impl Checker<'_> {
         Ex::host(Imp::Occurrences, given, Ty::List(Box::new(Ty::Time)))
     }
 
-    /// `workspace.members`: everyone in the workspace now, read from the platform's membership.
-    pub(super) fn workspace_field(&mut self, name: &ast::Ident) -> Ex {
-        if name.name == "members" {
-            return Ex::host(
-                Imp::WorkspaceMembers,
-                Vec::new(),
-                Ty::List(Box::new(Ty::Actor)),
+    /// Everyone in the workspace now, which a person picker and a rich input's `@` drawer offer:
+    /// the `people` of the workspace's `members` root, read as the module reads it once it uses
+    /// the workspace's package (`use tilo.workspace as workspace`, then `workspace.members`).
+    pub(super) fn workspace_people(&mut self, span: Span) -> Ex {
+        let app = crate::prims::WORKSPACE_APP;
+        if !self.env.imports.iter().any(|import| import.app == app) {
+            self.err(
+                "E064",
+                span,
+                format!(
+                    "a person picker offers the workspace's members, which a package reads by \
+                     using the workspace's package: `use {app} as workspace`"
+                ),
             );
+            return Ex::error();
         }
-        self.err(
-            "E021",
-            name.span,
-            format!(
-                "`workspace` has no field `{}`; fields are: {}",
-                name.name,
-                crate::prims::WORKSPACE_FIELDS
-            ),
-        );
-        Ex::error()
+        let at = |kind| ast::Expr { kind, span };
+        let name = |name: &str| ast::Ident {
+            name: name.to_owned(),
+            span,
+            from_template_of: None,
+        };
+        let mut read = at(ExprKind::Ident("tilo".to_owned()));
+        for step in ["workspace", "members", "people"] {
+            read = at(ExprKind::Field {
+                base: Box::new(read),
+                name: name(step),
+            });
+        }
+        self.expr(&read, None)
     }
 
     /// `speakers(items)`: the people who spoke in the conversation of `items`, most recent first,
@@ -755,11 +766,10 @@ impl Checker<'_> {
 
     /// Who a rich input's `@` drawer offers after the conversation's own: the members who can read
     /// what a mention names (`target`), or the workspace's members.
-    pub(super) fn drawer_people(target: Option<Ex>) -> Ex {
-        let people = Ty::List(Box::new(Ty::Actor));
+    pub(super) fn drawer_people(&mut self, target: Option<Ex>, span: Span) -> Ex {
         match target {
-            Some(r) => Ex::host(Imp::Members, vec![r], people),
-            None => Ex::host(Imp::WorkspaceMembers, Vec::new(), people),
+            Some(r) => Ex::host(Imp::Members, vec![r], Ty::List(Box::new(Ty::Actor))),
+            None => self.workspace_people(span),
         }
     }
 

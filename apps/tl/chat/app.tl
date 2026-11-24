@@ -7,6 +7,8 @@ app so.tilo.chat "Chat" (
     splash_budget: 250,
 )
 
+use tilo.workspace as workspace
+
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people. Beside them,
 /// how kinds of work are done here: the workspace's skills, which its people write and its
@@ -805,7 +807,7 @@ action message_person(all: Conversations, who: Actor) -> Direct (
 
 /// Whether `who` may be written to here by `me`: an agent, `me`, or a person of the workspace.
 fn in_workspace(who: Actor, me: Actor) -> Bool {
-    who.kind() != .person or who == me or workspace.members.contains(who)
+    who.kind() != .person or who == me or workspace.members.people.contains(who)
 }
 
 /// The direct conversation between the invoker and `who`, none while the two of them have none:
@@ -1408,7 +1410,7 @@ view sidebar(all: Conversations) {
             // would be: the screen a narrow window shows its places on never shows nothing. With
             // no places and nothing open the window says it once, in place of both columns, and
             // the way to make the first is the window bar's own, which every width shows.
-            if all.channels.is_empty() and workspace.members.filter(m -> m != invoker).is_empty() {
+            if all.channels.is_empty() and workspace.members.people.filter(m -> m != invoker).is_empty() {
                 ui.EmptyState(
                     "No channels yet",
                     icon: .hash,
@@ -1538,7 +1540,7 @@ view sidebar(all: Conversations) {
                     // Everyone in the workspace, on a page of their own: the sidebar lists the
                     // conversations a person has, never every member, so a workspace with a
                     // thousand of them keeps its channels in sight.
-                    if not workspace.members.is_empty() {
+                    if not workspace.members.people.is_empty() {
                         ui.NavSection("Direct messages") {
                             ui.NavItem("/people", "Everyone", icon: .users) {
                                 on select: set(shown, "/people").then(open(all, view: people))
@@ -1676,7 +1678,7 @@ view people(all: Conversations) {
         content: {
             ui.Scroll {
                 page {
-                    for p in workspace.members {
+                    for p in workspace.members.people {
                         row(gap: .related, align: .center) {
                             avatar(p)
                             stack(fill: 1.0, gap: .none) {

@@ -4696,12 +4696,20 @@ mod surface_tests {
                         })
                     })
                     .collect();
-                json!({
+                let mut resource = json!({
                     "kind": format!("workspace.{kind}"),
                     "label": label,
                     "version": 1,
                     "verbs": verbs,
-                })
+                });
+                // The members read as everyone in the workspace now: what every host is handed
+                // from the member list it decides by (`tilolang_tilo`'s `Host::follow_members`).
+                if *kind == "members" {
+                    resource["fields"] = json!([
+                        { "path": "people", "type": { "list": "actor" }, "readonly": true },
+                    ]);
+                }
+                resource
             })
             .collect();
         tilo_resource::surface::file::render(HEADER, &resources).expect("a surface writes as TOML")

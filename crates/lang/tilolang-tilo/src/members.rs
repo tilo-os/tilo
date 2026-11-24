@@ -245,13 +245,43 @@ impl Host {
                 .and_then(MemberId::person_id)
                 .unwrap_or(person),
         );
-        self.runtime()
-            .set_members(members_of(&access, &me), Some(reads_of(&access, &me, self)));
+        self.give_members(&access, &me);
         *self.inner.members_from.borrow_mut() = Some((
             person.to_owned(),
             std::sync::Arc::unwrap_or_clone(access.policy),
         ));
         true
+    }
+}
+
+impl Host {
+    /// Give the runtime the workspace's members as `access` has them, `me` the person it is read
+    /// for: the reading of the Workspace package's `members` root (`workspace.members.people`
+    /// of `use tilo.workspace as workspace`), which the host serves from the member list it
+    /// decides by whatever the session publishes, and their roles and who of them reads what
+    /// (`members(r)`, `std.may_read`).
+    #[allow(
+        clippy::expect_used,
+        reason = "an actor always writes as JSON"
+    )]
+    pub fn give_members(&self, access: &MemberAccess, me: &PersonId) {
+        let members = members_of(access, me);
+        let people: Vec<serde_json::Value> = members
+            .iter()
+            .map(|member| {
+                tilolang_runtime::value::to_json(&tilolang_runtime::Value::Actor(member.who()))
+                    .expect("an actor writes as JSON")
+            })
+            .collect();
+        let reading = serde_json::json!({ "people": people });
+        if let Err(error) = self.runtime().serve_reading(
+            &crate::platform_apps::workspace_members(),
+            &reading.to_string(),
+        ) {
+            tracing::error!(%error, "the workspace's members were refused as a reading");
+        }
+        self.runtime()
+            .set_members(members, Some(reads_of(access, me, self)));
     }
 }
 

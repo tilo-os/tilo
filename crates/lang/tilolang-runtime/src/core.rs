@@ -66,7 +66,7 @@ use Imp::{
     UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild, UiNode, UiOn,
     UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
     Versions, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText,
-    WebText, Withdraw, Word, WorkspaceMembers, Zones,
+    WebText, Withdraw, Word, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -214,7 +214,7 @@ pub struct Core {
     /// How a day or a time of day named in a sentence reads, in the person's formats
     /// (`Runtime::set_sentence_by`).
     pub sentence_by: RefCell<Option<Box<SentenceBy>>>,
-    /// The workspace's members, as the host last gave them (`workspace.members`).
+    /// The workspace's members, as the host last gave them (`members(r)`).
     pub members: RefCell<crate::members::Members>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
     /// The network came back: entries waiting to go online are tried again on the next settle.
@@ -674,7 +674,7 @@ impl Core {
             | Delivery | Reach | MetaOf | Versions | Links | RunChanges | Unseen | FirstUnseen
             | SeenBy | Mentions | Steps | VersionEnd | FieldChanged | Phrase | Word
             | EntryParts => self.platform_import(imp, a),
-            WorkspaceMembers | Members | MayRead | Speakers | ActorId | ActorKind | ActorRole
+            Members | MayRead | Speakers | ActorId | ActorKind | ActorRole
             | ActorApp => {
                 self.members_import(imp, a)
             }

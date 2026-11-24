@@ -303,7 +303,6 @@ imports! {
     Delivery = "delivery" ([H] -> [H]);
     // `reach(r)`: how far this device's own changes of `r` have gone, as its sync keeps it.
     Reach = "reach" ([H] -> [H]);
-    WorkspaceMembers = "workspace_members" ([] -> [H]);
     Members = "members" ([H] -> [H]);
     // `std.may_read(who, r)`: whether the member `who` may read the resource `r`.
     MayRead = "may_read" ([H, H] -> [I32]);

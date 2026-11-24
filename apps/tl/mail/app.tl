@@ -7,6 +7,7 @@ app so.tilo.mail "Mail" (
 )
 
 use so.tilo.contacts as contacts
+use tilo.workspace as workspace
 
 /// What the server of one of the workspace's mail accounts holds. The account itself, its
 /// address, servers and signature, is the workspace settings', and its credentials stay in
@@ -1451,7 +1452,7 @@ action announce(t: Thread) uses notify (icon: .bell, label: "Announce the mail t
         } else { t.subject }
         // The mailbox is the workspace's: everyone who is in it is told, so the mail reaches
         // each of their devices.
-        for who in workspace.members {
+        for who in workspace.members.people {
             notify(to: who, title: title, body: body, opens: t)
         }
     }

@@ -894,11 +894,11 @@ impl Checker<'_> {
             self.binding_prop(n, d, &a.value, &given);
         }
         // Who may be picked, and which of them is Me: the workspace's, never a copy the app keeps.
-        let people = Ty::List(Box::new(Ty::Actor));
+        let people = self.workspace_people(c.call.span);
         self.prop(
             Ex::local(n, Ty::View),
             "people",
-            Ex::host(Imp::WorkspaceMembers, Vec::new(), people),
+            people,
             c.call.span,
         );
         self.prop(
@@ -1410,11 +1410,11 @@ impl Checker<'_> {
         );
         let view = Ex::local(n, Ty::View);
         self.bind_part(&view, d, b, field, span);
-        let people = Ty::List(Box::new(Ty::Actor));
+        let people = self.workspace_people(span);
         self.prop(
             view.clone(),
             "people",
-            Ex::host(Imp::WorkspaceMembers, Vec::new(), people),
+            people,
             span,
         );
         self.prop(

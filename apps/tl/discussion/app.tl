@@ -1,5 +1,7 @@
 app so.tilo.lang.discussion "Discussion" (icon: .message_square, category: .office)
 
+use tilo.workspace as workspace
+
 /// Where it was first written, when it was moved here from another tracker or service: the
 /// person there, the service, where it reads there and its reference, so a task or a thread
 /// imported from elsewhere says where it came from.

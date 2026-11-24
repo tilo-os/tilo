@@ -1,3 +1,5 @@
+use tilo.workspace as workspace
+
 /// Who is here, and their menus. A person's presence on the bar is their face in the group
 /// that opens the session's roster, where each person's card is. An agent's presence opens its
 /// own: stopping its run.
@@ -30,7 +32,7 @@ view people_button() {
         }
         ui.Button(
             label,
-            faces: workspace.members.filter(m -> people.any(p -> p.name == m.name())),
+            faces: workspace.members.people.filter(m -> people.any(p -> p.name == m.name())),
             role: .bar,
         ) {
             on press: session.toggle_people()

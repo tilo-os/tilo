@@ -6,6 +6,7 @@ app so.tilo.calendar "Calendar" (
 )
 
 use so.tilo.mail as mail
+use tilo.workspace as workspace
 
 /// Someone invited to an event, and what they answered: `needs-action` until they say.
 type Attendee (origin: caldav.attendee, title: email) {
@@ -840,7 +841,7 @@ action ring_due(e: Event) uses notify {
 action remind_now(e: Event) uses notify {
     require e.remind != Time("1970-01-01T00:00:00Z") "It has no reminder"
     e.remind = Time("1970-01-01T00:00:00Z")
-    for who in workspace.members {
+    for who in workspace.members.people {
         notify(to: who, title: e.title, body: std.say("Starts {e.start}"), opens: e)
     }
 }

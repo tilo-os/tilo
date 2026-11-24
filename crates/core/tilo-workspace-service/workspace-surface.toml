@@ -6,6 +6,9 @@ format = 2
 kind = "workspace.members"
 label = "Members"
 version = 1
+fields = [
+  { path = "people", type = { list = "actor" }, readonly = true },
+]
 
 [[resources.verbs]]
 id = "list"

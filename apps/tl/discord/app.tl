@@ -5,6 +5,8 @@ app so.tilo.discord.preview "Discord" (
     keywords: ["discord", "chat", "server", "channels"],
 )
 
+use tilo.workspace as workspace
+
 /// A connected Discord account: the server it bridges, what the bridge knows of both sides, and
 /// who here linked their Discord account. A server's categories are Chat's categories and its
 /// channels Chat's channels, so the sidebar lists them as any other conversation; this holds
@@ -656,7 +658,7 @@ fn how_many(n: Int, one: Text, many: Text) -> Text {
 
 /// The person here a link is with, `me` when the workspace no longer holds them.
 fn person_of(l: Link, me: Actor) -> Actor {
-    if let p = workspace.members.find(p -> p.id() == l.person) { p } else { me }
+    if let p = workspace.members.people.find(p -> p.id() == l.person) { p } else { me }
 }
 
 /// The link of the person `me`, when they linked an account.

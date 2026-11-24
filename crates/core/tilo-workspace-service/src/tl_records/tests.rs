@@ -19,6 +19,7 @@
 )]
 
 mod action_cost;
+mod members_root;
 mod task_listing;
 mod task_reads;
 

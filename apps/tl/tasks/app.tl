@@ -9,6 +9,7 @@ app so.tilo.tasks "Tasks" (
 use so.tilo.contacts as contacts
 use so.tilo.lang.discussion as discussion
 use so.tilo.notes as notes
+use tilo.workspace as workspace
 
 /// How much a task matters, most urgent last.
 enum Priority {
@@ -1434,11 +1435,11 @@ view home(t: Tasks) {
             if let p = x.project {
                 "project:{p.name}"
             } else {
-                place_of(places(workspace.members.len() > 1), x).key
+                place_of(places(workspace.members.people.len() > 1), x).key
             },
         )
         .then(set(opened, x))
-    let side = places(workspace.members.len() > 1)
+    let side = places(workspace.members.people.len() > 1)
     let project = t.projects.find(p -> chosen == "project:{p.name}")
     let label = if chosen.starts_with("label:") { chosen.slice(6, chosen.len()) } else { "" }
     let place = side.find(f -> f.key == chosen) ?? Task.today

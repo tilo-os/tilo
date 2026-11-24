@@ -503,7 +503,7 @@ fn published_value(value: &Json, published: &dyn Fn(&str, &str) -> Option<Json>)
 impl Opened {
     /// Open the record `store` holds through `packages` for `viewer`: the member as whom the
     /// platform's own writes are made. `policy` is the workspace's, as this device reads it:
-    /// the host's members and who of them reads what (`workspace.members`, `std.may_read`,
+    /// the host's members and who of them reads what (`members(r)`, `std.may_read`,
     /// [`Self::readers`]). Without one, the host knows no members, and nobody reads anything.
     ///
     /// # Errors
@@ -589,10 +589,7 @@ impl Opened {
             // The owner stands at no window here: whoever the policy names, the host names the
             // same.
             let access = tilo_action_policy::MemberAccess::person(policy, me.clone());
-            host.runtime().set_members(
-                tilolang_tilo::members::members_of(&access, &me),
-                Some(tilolang_tilo::members::reads_of(&access, &me, &host)),
-            );
+            host.give_members(&access, &me);
         }
         Ok(Self {
             host,

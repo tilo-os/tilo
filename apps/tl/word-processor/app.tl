@@ -6,6 +6,7 @@ app so.tilo.word-processor "Writer" (
 )
 
 use so.tilo.lang.discussion as discussion
+use tilo.workspace as workspace
 
 /// A document: what a person writes, together with anyone else at it. Its words are its body —
 /// the paragraphs, headings, lists, quotes, code and tables the shared editor edits — and who

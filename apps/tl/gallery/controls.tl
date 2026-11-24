@@ -1,3 +1,5 @@
+use tilo.workspace as workspace
+
 /// How soon a report is due, as a case the report holds.
 enum Urgency {
     /// No hurry
@@ -107,12 +109,16 @@ view controls(g: Gallery) {
         ui.Section("People") {
             form {
                 field("Owner") {
-                    ui.PersonField(bind: g.controls_owner, people: workspace.members, me: invoker)
+                    ui.PersonField(
+                        bind: g.controls_owner,
+                        people: workspace.members.people,
+                        me: invoker,
+                    )
                 }
                 field("Reviewer") {
                     ui.PersonField(
                         bind: g.controls_reviewer,
-                        people: workspace.members,
+                        people: workspace.members.people,
                         me: invoker,
                     )
                 }

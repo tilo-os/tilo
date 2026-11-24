@@ -569,6 +569,27 @@ impl Runtime {
         Ok(self.core.take_reading(target, json))
     }
 
+    /// The reading of `target` as this runtime's host serves it itself, from what it decides by
+    /// (the workspace's members, from its member list): set as [`Self::set_reading`] sets one,
+    /// and from now on a resource [`Self::serves`] answers true for, so a reading published for
+    /// it elsewhere (an empty one, for a resource no service of the device publishes) is never
+    /// handed in over it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_reading`].
+    pub fn serve_reading(&self, target: &ResourceRef, reading: &str) -> Result<bool, RuntimeError> {
+        self.core.foreign.borrow_mut().serve(target);
+        self.set_reading(target, reading)
+    }
+
+    /// Whether this runtime's host serves `target`'s reading itself ([`Self::serve_reading`]):
+    /// a host handing in the readings the session publishes skips it.
+    #[must_use]
+    pub fn serves(&self, target: &ResourceRef) -> bool {
+        self.core.foreign.borrow().serves(target)
+    }
+
     /// Evaluate an agent block as `actor`. A view renders and
     /// can be pressed; an action application is invoked, or suggested when the authority asks
     /// (the block's module is the author, so the chain starts with it); data is returned.
@@ -1717,7 +1738,7 @@ impl Runtime {
 
     /// The workspace's members now, from its membership, and how its grants decide who of
     /// them reads a resource (`None`: everyone reads everything the workspace holds). What
-    /// `workspace.members`, `members(r)`, `p.kind()` and `p.role()` read; the host gives them
+    /// `members(r)`, `std.may_read`, `p.kind()` and `p.role()` read; the host gives them
     /// again whenever membership or grants change, and every view that read them runs again.
     pub fn set_members(
         &self,

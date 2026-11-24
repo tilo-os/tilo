@@ -97,6 +97,8 @@ impl Platform for Packages {
                 continue;
             }
             match tilolang_tilo::runtime::ResourceRef::parse_id(&published, &ty) {
+                // A root the host serves itself (the workspace's members) reads as it serves it.
+                Some(target) if host.runtime().serves(&target) => {}
                 Some(target) => {
                     if let Err(error) = host.runtime().set_reading(&target, "{}") {
                         eprintln!("tilolang: `{published}` reads nothing: {error}");

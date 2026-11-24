@@ -1,4 +1,4 @@
-//! Who is in the workspace, end to end: `workspace.members`, `members(r)`, `p.kind()` and
+//! Who is in the workspace, end to end: `members(r)`, `p.kind()` and
 //! `p.role()` read what the host says the membership is, follow it live, and feed a rich
 //! input's `@` drawer.
 
@@ -35,7 +35,7 @@ fn kind_of(p: Actor) -> Text {
 view workspace(r: Workspace) {
     state draft: RichText = RichText("")
     page {
-        for p in workspace.members {
+        for p in members(r) {
             text("in {p.name()} {kind_of(p)} {p.role() ?? "no role"}")
         }
         for p in members(r) {

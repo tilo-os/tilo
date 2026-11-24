@@ -1,4 +1,4 @@
-//! Who is in the workspace: `workspace.members`, `members(r)`, and what an actor is
+//! Who is in the workspace as code asks it: `members(r)`, `std.may_read`, and what an actor is
 //! (`p.kind()`, `p.role()`, `p.app()`).
 //!
 //! The members are the platform's: the host reads them from the workspace's membership (its
@@ -353,10 +353,6 @@ impl Core {
     ) -> HResult<Option<Wasm>> {
         use crate::abi::Imp;
         match imp {
-            Imp::WorkspaceMembers => {
-                let list = self.read_members();
-                self.ret_h(actors(list.iter()))
-            }
             Imp::Members => {
                 let target = self.ref_arg(a.h(0)?)?;
                 let list = self.read_members();

@@ -318,8 +318,11 @@ was made from, and the thread under that resource draws every comment about it, 
 draws a thread says what it draws itself (`std.linked(t, without: discussion.said_about(t))`).
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
-`workspace.members` is everyone in it, people and agents, a `List<Actor>`, and `members(r)`
-those of them the workspace's grants let read `r`. `invoker` is who invokes an action, and in a
+the Workspace package's `members` root (`use tilo.workspace as workspace`, then
+`workspace.members.people`) is everyone in it, people and agents, a `List<Actor>`, which each
+host serves from the member list it decides by; `members(r)` is those of them the workspace's
+grants let read `r`. A person picker and a rich input's `@` drawer with nothing to mention in
+offer the same people, so a package that has one uses the workspace's package. `invoker` is who invokes an action, and in a
 view the person it is shown to, who would invoke its actions. An actor says what it is: `p.name()`,
 `p.kind()` (`.person` or `.agent`, an `ActorKind`) and `p.role()` (`Option<Text>`, the
 workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view

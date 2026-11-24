@@ -2024,10 +2024,9 @@ impl Checker<'_> {
         made
     }
 
-    /// Whether `e` is `space` or `workspace`, read only through their fields, and not a variable of
-    /// that name.
+    /// Whether `e` is `space`, read only through its fields, and not a variable of that name.
     fn names_platform(&self, e: &ast::Expr) -> bool {
-        matches!(&e.kind, ExprKind::Ident(n) if (n == "space" || n == "workspace") && self.lookup(n).is_none())
+        matches!(&e.kind, ExprKind::Ident(n) if n == "space" && self.lookup(n).is_none())
     }
 
     fn container_field(&self, b: &Ex, fname: &ast::Ident) -> Option<(TypeKey, FieldInfo)> {

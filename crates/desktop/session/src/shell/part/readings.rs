@@ -360,6 +360,12 @@ impl SessionOrigin {
                 };
                 target
             };
+            // A root the part's host serves itself (the workspace's members) is read as it
+            // serves it, never as the session publishes it.
+            if cx.host.runtime().serves(&target) {
+                seen.insert(id, generation);
+                continue;
+            }
             match cx.host.runtime().set_reading(&target, &reading.to_string()) {
                 Ok(changed) => moved |= changed,
                 Err(error) => tracing::error!(id, %error, "a place's reading was refused"),

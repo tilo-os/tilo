@@ -82,9 +82,23 @@ pub struct Foreign {
     /// session's, Settings') within the program they run, not on a next pass. `None` where the
     /// host hands readings in as the session publishes them.
     ask: Option<AskForReading>,
+    /// The resources whose reading this runtime's host serves itself (the workspace's members,
+    /// from the member list it decides by), by key: a reading published elsewhere never stands
+    /// in for one ([`crate::Runtime::serves`]).
+    served: std::collections::BTreeSet<String>,
 }
 
 impl Foreign {
+    /// Note that the host serves `target`'s reading itself.
+    pub(crate) fn serve(&mut self, target: &ResourceRef) {
+        self.served.insert(Self::key(target));
+    }
+
+    /// Whether the host serves `target`'s reading itself.
+    pub(crate) fn serves(&self, target: &ResourceRef) -> bool {
+        self.served.contains(&Self::key(target))
+    }
+
     /// The host asks for the reading of a resource the code meets and this holds none of, while
     /// the code runs, and hands the reading in at once.
     pub(crate) fn set_ask(

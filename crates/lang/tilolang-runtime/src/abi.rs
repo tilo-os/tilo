@@ -273,7 +273,6 @@ imports! {
     (ActRunLine, "act_run_line", "ii", "i"),
     (Delivery, "delivery", "i", "i"),
     (Reach, "reach", "i", "i"),
-    (WorkspaceMembers, "workspace_members", "", "i"),
     (Members, "members", "i", "i"),
     (MayRead, "may_read", "ii", "i"),
     (Speakers, "speakers", "il", "i"),

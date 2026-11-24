@@ -266,8 +266,9 @@ pub const BUILTINS: &[&str] = &[
     "preview_rows",
 ];
 
-/// The fields of `workspace`.
-pub const WORKSPACE_FIELDS: &str = "members";
+/// The platform package a workspace's own resources are read from: its `members` root holds
+/// everyone in it, which a person picker and a rich input's `@` drawer offer.
+pub const WORKSPACE_APP: &str = "tilo.workspace";
 
 /// The fields of `space` (layout.md, "Responding to space").
 pub const SPACE_FIELDS: &str = "width_class, compact, wide, orientation, width, height";

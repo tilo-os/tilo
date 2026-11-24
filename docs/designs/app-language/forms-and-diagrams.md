@@ -32,7 +32,7 @@ a command that still asks for an argument, so no app writes them.
   | `enum` | segmented control up to four values, otherwise a menu |
   | `Date`, `Time` | date and time pickers that take natural text ("tomorrow 9") |
   | `Number` with a unit | number field with steps and the unit |
-  | `Actor` | people picker over `workspace.members` |
+  | `Actor` | people picker over `workspace.members.people` (`use tilo.workspace as workspace`) |
   | a resource type | a picker over `find(T)`, with the palette's search |
 
   Labels come from parameter names and doc comments, through the app's i18n catalogue.

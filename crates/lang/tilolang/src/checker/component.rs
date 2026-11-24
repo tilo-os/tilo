@@ -252,7 +252,7 @@ impl Checker<'_> {
         // A rich input's `@` drawer offers who can read what a mention names; the conversation's own
         // people it offers are the view's to give.
         if d.name == "RichInput" && !given.contains("people") {
-            self.drawer_props(n);
+            self.drawer_props(n, span);
         }
         if let Some(block) = &c.block {
             self.component_block(n, d, block, span);
