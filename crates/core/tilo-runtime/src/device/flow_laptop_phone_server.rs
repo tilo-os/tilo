@@ -1114,7 +1114,7 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
 
     // It writes where its copy stands, and sends what it wrote.
     let later = tilo_peer_state::HeldCopy {
-        catching_up_from: [7; 32].into(),
+        catching_up_from: [[7; 32]].into(),
         ..tilo_peer_state::HeldCopy::default()
     };
     assert!(
@@ -1150,7 +1150,7 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
         .await
         .expect("the studio is governed here");
     let phone = tilo_peer_state::HeldCopy {
-        catching_up_from: [9; 32].into(),
+        catching_up_from: [[9; 32]].into(),
         ..tilo_peer_state::HeldCopy::default()
     };
     assert!(
@@ -1165,4 +1165,3 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
     laptop.entered.close();
     server.shutdown().await;
 }
-
