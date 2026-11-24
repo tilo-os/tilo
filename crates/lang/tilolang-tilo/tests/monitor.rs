@@ -129,7 +129,9 @@ struct Installed {
 impl Installed {
     fn new(reading_json: &str) -> Self {
         let host = Host::new(me(), || None).expect("a host");
-        let metas = tilolang_tilo::platform_apps::platform_packages()
+        // Only the packages the app `use`s: the whole platform carries the actions package the
+        // host already runs, and a host loads one package once.
+        let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
             .expect("the platform's packages read");
         for meta in &metas {
             host.runtime().load_foreign(meta.clone()).expect("the device is loaded");
