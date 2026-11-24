@@ -3,11 +3,11 @@
 //! An app the shell launched speaks to this host on one connection. Its documents are the
 //! person's workspaces', which the device's daemon keeps; what only this host serves (the
 //! person's settings, the published resources Quick Settings changes, the drives and apps Files
-//! lists, audio, calls, the person's devices, search) stays here. So each such connection is
+//! lists, audio, calls, the person's devices) stays here. So each such connection is
 //! joined at the daemon too, on a connection the shell vouches for on its own link to the daemon
 //! ([`runtime_collab::ShellClient::vouched`]), and every call goes to the side that answers it:
-//! the channel's presence, document, content, history, context, resources and committed reads to
-//! the daemon, everything else here. A channel the app joins is joined on both sides, and is the
+//! the channel's presence, document, content, search entries, history, context, resources and
+//! committed reads to the daemon, everything else here. A channel the app joins is joined on both sides, and is the
 //! app's only once both took it: a shell without a daemon serves no app's documents, and its
 //! apps' joins are refused saying why.
 //!
@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use runtime_collab::wire::shell::Vouch;
 use runtime_collab::wire::{
     Ask, Call, Changes, ContextUpdate, Event, FRAMING, Handle, HostFrame, Operation, Publication,
-    Reply, Service, Topic,
+    Reply, Report, Service, Topic,
 };
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::sync::mpsc;
@@ -316,11 +316,14 @@ impl Router {
                 channel,
                 publication,
             } => {
+                // What the app publishes to search is kept by the daemon too: the device's one
+                // index is there.
                 let documents = matches!(
                     publication,
                     Publication::Presence(_)
                         | Publication::Document(_)
                         | Publication::Content { .. }
+                        | Publication::Report(Report::SearchIndex(_))
                 );
                 self.on_channel(id, channel, documents, false, |channel| {
                     Operation::Publish {

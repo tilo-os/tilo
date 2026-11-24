@@ -1,11 +1,12 @@
-//! The session's persistent search index of what apps hold.
+//! The device's persistent search index of what apps hold.
 //!
 //! A running app publishes its search entries over its certified broker
-//! route ([`ui::search::index_publication`]): per app, workspace workspace and
-//! record, keyed by the stable resource id a hit opens. This index applies
-//! each change as it arrives and keeps the entries after the app closes, so
-//! the app's content is findable whether or not it runs
-//! (the shell's app content provider answers from it).
+//! route ([`tilo_resource::search_index`]): per app, workspace and record,
+//! keyed by the stable resource id a hit opens. The device's daemon keeps the
+//! one index: it applies each change as it arrives, and what the records the
+//! device holds say ([`super::records`]), and keeps the entries after the app
+//! closes, so the app's content is findable whether or not it runs, by every
+//! caller the daemon answers `search#find` for ([`super::IndexSearch`]).
 //!
 //! It is derived state: every entry is the app's own to publish again, and
 //! the files here may be deleted and rebuilt. Nothing here ever changes an
@@ -17,18 +18,18 @@
 //! publication made while locked never drops its secret entries: being
 //! locked is not deleting.
 //!
-//! On disk, under `$XDG_STATE_HOME/tilo/search/app-content/`, each key
-//! (app, workspace, record) is one private file rewritten when that key
-//! changes, and the apps' last lock reports are another.
+//! On disk, under the daemon's state, each key (app, workspace, record) is one
+//! private file rewritten when that key changes, and the apps' last lock
+//! reports are another.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
-use ui::search::index_publication::{IndexDelta, IndexEntry, MAX_ENTRIES};
+use tilo_resource::search_index::{IndexDelta, IndexEntry, MAX_ENTRIES};
 
 /// Where one app's entries were published from: its app id, the workspace
 /// workspace and the record, a window's record for every window of the
@@ -118,13 +119,10 @@ impl Inner {
     fn opening<'a>(
         &'a self,
         workspace: &'a str,
-        allowed: Option<&'a BTreeSet<IndexKey>>,
     ) -> impl Iterator<Item = (&'a str, &'a IndexEntry)> + 'a {
         self.entries_by_key
             .iter()
-            .filter(move |(key, _)| {
-                key.workspace == workspace && allowed.is_none_or(|keys| keys.contains(*key))
-            })
+            .filter(move |(key, _)| key.workspace == workspace)
             .flat_map(move |(key, entries)| {
                 let unlocked = self.unlocked(&key.app);
                 entries
@@ -136,12 +134,9 @@ impl Inner {
 
     /// What every resource a person may find is called now, by the entry
     /// that opens it.
-    fn titles(&self, allowed: Option<&BTreeSet<IndexKey>>) -> Titles<'_> {
+    fn titles(&self) -> Titles<'_> {
         let mut by_resource: HashMap<(&str, &str), Vec<(&str, &str)>> = HashMap::new();
         for (key, entries) in &self.entries_by_key {
-            if allowed.is_some_and(|keys| !keys.contains(key)) {
-                continue;
-            }
             let unlocked = self.unlocked(&key.app);
             for entry in entries.values() {
                 if entry.opens_its_resource() && (!entry.secret || unlocked) {
@@ -203,22 +198,14 @@ fn names_app(app: &str, resource: &str, published_by: &str) -> bool {
             .is_some_and(|rest| rest.starts_with(':'))
 }
 
-struct ReadPolicy {
-    allows: Box<dyn Fn(&IndexKey) -> bool + Send + Sync>,
-    revision: fn() -> u64,
-}
-
-/// The session's persistent index of apps' search entries. Shared between
-/// the broker, which hands it publications, and search, which reads it.
+/// The device's persistent index of apps' search entries. Shared between
+/// the broker, which hands it publications, the reader of the device's
+/// records, and search, which reads it.
 pub struct AppContentIndex {
     inner: Mutex<Inner>,
     /// Moves on every change a search could see.
     generation: AtomicU64,
-    policy: OnceLock<ReadPolicy>,
     store: Option<Store>,
-    /// Wakes the compositor loop when the index changes, so a showing
-    /// search takes the change in.
-    wake: Mutex<Option<std::task::Waker>>,
 }
 
 impl AppContentIndex {
@@ -228,9 +215,7 @@ impl AppContentIndex {
         Self {
             inner: Mutex::new(Inner::default()),
             generation: AtomicU64::new(0),
-            policy: OnceLock::new(),
             store: None,
-            wake: Mutex::new(None),
         }
     }
 
@@ -241,9 +226,7 @@ impl AppContentIndex {
         let index = Arc::new(Self {
             inner: Mutex::new(Inner::default()),
             generation: AtomicU64::new(0),
-            policy: OnceLock::new(),
             store: Store::open(dir.clone()),
-            wake: Mutex::new(None),
         });
         let loading = Arc::clone(&index);
         let spawned = std::thread::Builder::new()
@@ -257,41 +240,7 @@ impl AppContentIndex {
 
     /// Which build of the contents a search reads.
     pub fn generation(&self) -> u64 {
-        let index = self.generation.load(Ordering::Acquire);
-        index.wrapping_add(self.policy.get().map_or(0, |policy| (policy.revision)()))
-    }
-
-    /// Bind visibility to the live authority of the device holding the index.
-    pub fn set_read_policy(
-        &self,
-        allows: impl Fn(&IndexKey) -> bool + Send + Sync + 'static,
-        revision: fn() -> u64,
-    ) {
-        if self
-            .policy
-            .set(ReadPolicy {
-                allows: Box::new(allows),
-                revision,
-            })
-            .is_ok()
-        {
-            self.changed();
-        }
-    }
-
-    fn allowed_keys(&self, workspace: Option<&str>) -> Option<BTreeSet<IndexKey>> {
-        let policy = self.policy.get()?;
-        // A policy reader can ask the replica, whose publication reads this index.
-        let mut allowed: BTreeSet<_> = self
-            .inner
-            .lock_recover()
-            .entries_by_key
-            .keys()
-            .filter(|key| workspace.is_none_or(|id| key.workspace == id))
-            .cloned()
-            .collect();
-        allowed.retain(|key| (policy.allows)(key));
-        Some(allowed)
+        self.generation.load(Ordering::Acquire)
     }
 
     /// The ids installed apps had before, as the catalogue says: what a
@@ -302,16 +251,8 @@ impl AppContentIndex {
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// Wake `waker` whenever the index changes.
-    pub fn set_waker(&self, waker: std::task::Waker) {
-        *self.wake.lock_recover() = Some(waker);
-    }
-
     fn changed(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
-        if let Some(waker) = self.wake.lock_recover().as_ref() {
-            waker.wake_by_ref();
-        }
     }
 
     /// Apply one change `app` published in `workspace` from `record`.
@@ -371,14 +312,10 @@ impl AppContentIndex {
 
     /// Everything the index holds now, split by what a person may find.
     pub fn contents(&self) -> Contents {
-        let allowed = self.allowed_keys(None);
         let inner = self.inner.lock_recover();
-        let titles = inner.titles(allowed.as_ref());
+        let titles = inner.titles();
         let mut contents = Contents::default();
         for (key, entries) in &inner.entries_by_key {
-            if allowed.as_ref().is_some_and(|keys| !keys.contains(key)) {
-                continue;
-            }
             let unlocked = inner.unlocked(&key.app);
             for entry in entries.values() {
                 let indexed = IndexedEntry {
@@ -405,10 +342,9 @@ impl AppContentIndex {
     /// The title `workspace`'s apps published for the resource `resource`: the
     /// entry that opens it, as a search would find it.
     pub fn title(&self, workspace: &str, resource: &str) -> Option<String> {
-        let allowed = self.allowed_keys(Some(workspace));
         let inner = self.inner.lock_recover();
         inner
-            .opening(workspace, allowed.as_ref())
+            .opening(workspace)
             .find(|(_, entry)| entry.resource == resource)
             .map(|(_, entry)| entry.title.clone())
     }
@@ -416,10 +352,9 @@ impl AppContentIndex {
     /// Every resource `workspace`'s apps published an entry opening, with the
     /// app, once each.
     pub fn resources(&self, workspace: &str) -> Vec<(String, String)> {
-        let allowed = self.allowed_keys(Some(workspace));
         let inner = self.inner.lock_recover();
         let mut resources: Vec<(String, String)> = inner
-            .opening(workspace, allowed.as_ref())
+            .opening(workspace)
             .map(|(app, entry)| (app.to_owned(), entry.resource.clone()))
             .collect();
         drop(inner);
@@ -432,10 +367,9 @@ impl AppContentIndex {
     /// app and the title that entry gives it, once each: what a person picks
     /// an existing resource from.
     pub fn titled(&self, workspace: &str) -> Vec<(String, String, String)> {
-        let allowed = self.allowed_keys(Some(workspace));
         let inner = self.inner.lock_recover();
         let mut titled: Vec<(String, String, String)> = inner
-            .opening(workspace, allowed.as_ref())
+            .opening(workspace)
             .map(|(app, entry)| (app.to_owned(), entry.resource.clone(), entry.title.clone()))
             .collect();
         drop(inner);
@@ -448,13 +382,14 @@ impl AppContentIndex {
     /// of `app` (its backlinks), in any app: what refers to it, wherever
     /// it was written.
     pub fn backlinks(&self, workspace: &str, app: &str, resource: &str) -> Vec<IndexedEntry> {
-        let allowed = self.allowed_keys(Some(workspace));
         let inner = self.inner.lock_recover();
-        let titles = inner.titles(allowed.as_ref());
+        let titles = inner.titles();
         let mut out = Vec::new();
-        for (key, entries) in inner.entries_by_key.iter().filter(|(key, _)| {
-            key.workspace == workspace && allowed.as_ref().is_none_or(|keys| keys.contains(*key))
-        }) {
+        for (key, entries) in inner
+            .entries_by_key
+            .iter()
+            .filter(|(key, _)| key.workspace == workspace)
+        {
             let unlocked = inner.unlocked(&key.app);
             for entry in entries.values().filter(|entry| !entry.secret || unlocked) {
                 let refers = entry.references.iter().any(|reference| {
@@ -539,23 +474,6 @@ impl AppContentIndex {
         }
         self.changed();
     }
-}
-
-/// The session's index, kept in the state directory; in memory where there
-/// is none, and in unit tests.
-pub fn session() -> Arc<AppContentIndex> {
-    static SESSION: OnceLock<Arc<AppContentIndex>> = OnceLock::new();
-    Arc::clone(SESSION.get_or_init(|| {
-        let dir = if cfg!(test) {
-            None
-        } else {
-            tilo_paths::state_dir().map(|root| root.join("tilo/search/app-content"))
-        };
-        dir.map_or_else(
-            || Arc::new(AppContentIndex::in_memory()),
-            AppContentIndex::persistent,
-        )
-    }))
 }
 
 /// The file the apps' lock reports are kept in.
@@ -673,18 +591,26 @@ fn store_file(dir: &Path, file: &str, bytes: Option<&[u8]>) -> std::io::Result<(
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    // A temporary file is private to its owner from the start.
-    let mut temporary = tempfile::NamedTempFile::new_in(dir)?;
-    temporary.write_all(bytes)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(&path).map_err(|error| error.error)?;
-    Ok(())
+    // The file is written beside its name, private to its owner from the start, and takes the
+    // name in one step: a reader sees the old entries or the new, never half of them.
+    let temporary = dir.join(format!(".{file}.{}", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut written = options.open(&temporary)?;
+    written.write_all(bytes)?;
+    written.sync_all()?;
+    std::fs::rename(&temporary, &path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::search::index_publication::{IndexAction, IndexWeight};
+    use tilo_resource::search_index::{IndexAction, IndexWeight};
 
     const WORKSPACE: &str = "6f1c3c43-2a59-4d36-9d0e-0b6a3b1f7e21";
 
@@ -710,35 +636,6 @@ mod tests {
             .iter()
             .map(|indexed| indexed.entry.title.as_str())
             .collect()
-    }
-
-    #[test]
-    fn a_previous_index_publication_is_hidden_after_read_access_is_removed() {
-        let index = AppContentIndex::in_memory();
-        let denied = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let access = Arc::clone(&denied);
-        index.set_read_policy(
-            move |key| key.record != "review" || !access.load(Ordering::Acquire),
-            || 0,
-        );
-        for (document_id, title) in [("review", "Restricted review"), ("other", "Shared notes")] {
-            index.apply(
-                &IndexKey::new("so.tilo.notes", WORKSPACE, document_id),
-                IndexDelta {
-                    upsert: vec![entry(document_id, title)],
-                    ..IndexDelta::default()
-                },
-            );
-        }
-        assert_eq!(
-            index.title(WORKSPACE, "review").as_deref(),
-            Some("Restricted review")
-        );
-        denied.store(true, Ordering::Release);
-        assert!(index.title(WORKSPACE, "review").is_none());
-        assert_eq!(titles(&index.contents().visible), vec!["Shared notes"]);
-        assert_eq!(index.titled(WORKSPACE).len(), 1);
-        assert_eq!(index.resources(WORKSPACE).len(), 1);
     }
 
     tilo_test_env::scenario! {

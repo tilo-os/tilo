@@ -734,7 +734,7 @@ LIBRARY_SKIP += (
 )
 # Crates of the same kind that live in other groups.
 LIBRARY_SKIP += (
-    "crates/engines/search/",
+    "crates/platform/search/",
     "crates/engines/tilo-page-raster/",
     "crates/engines/tilo-recurrence/",
     "crates/engines/tilo-webview/",

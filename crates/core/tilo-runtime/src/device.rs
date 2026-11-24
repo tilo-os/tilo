@@ -55,6 +55,7 @@ mod person;
 pub(crate) mod presence;
 #[cfg(target_os = "linux")]
 pub mod processes;
+mod search;
 pub mod serve;
 pub mod server_settings;
 pub mod services;

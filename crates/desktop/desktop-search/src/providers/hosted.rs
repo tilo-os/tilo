@@ -216,6 +216,7 @@ mod tests {
             app: Some("so.tilo.notes".into()),
             provider: Some("record:so.tilo.notes:1".into()),
             when: None,
+            ..Found::default()
         }
     }
 

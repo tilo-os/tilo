@@ -509,6 +509,99 @@ impl Apps {
     }
 }
 
+/// What an installed app answers search about one of its records: its own binary, started by
+/// `tilo-launcher` in its record mode with no services, reads the record on its input and answers
+/// its entries on its output.
+#[cfg(target_os = "linux")]
+impl tilo_workspace_service::search::records::RecordReader for Apps {
+    fn entries(
+        &self,
+        app: &str,
+        doc: &[u8],
+    ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, tilo_workspace_service::search::records::Unread>
+    {
+        use std::io::Write as _;
+        use std::os::unix::process::ExitStatusExt as _;
+        use std::process::{Command, Stdio};
+        use tilo_workspace_service::search::records::{INDEX_FLAG, Unread};
+
+        let launcher = self
+            .launcher_candidates
+            .iter()
+            .find(|path| path.is_file())
+            .ok_or_else(|| {
+                Unread::Refused("no tilo-launcher is installed, so no app's records are read".into())
+            })?;
+        let installed = self
+            .installed()
+            .into_iter()
+            .find(|installed| installed.app_id == app)
+            .ok_or_else(|| Unread::Refused(format!("{app} is not installed here")))?;
+        let mut child = Command::new(launcher)
+            .arg("run")
+            .arg("--manifest")
+            .arg(&installed.manifest_path)
+            .arg("--payload-root")
+            .arg(&installed.payload_root)
+            .arg("--app-id")
+            .arg(installed.app_id.as_str())
+            .arg("--no-services")
+            .arg("--")
+            .arg(INDEX_FLAG)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| Unread::Refused(format!("{app} cannot read its record: {error}")))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            // A reader stopped before it read any of the record leaves the pipe it writes to
+            // closed: nothing read, rather than anything about the record.
+            if let Err(error) = stdin.write_all(doc).and_then(|()| stdin.flush()) {
+                return Err(if error.kind() == std::io::ErrorKind::BrokenPipe {
+                    Unread::Stopped(format!("{app} was stopped before it read its record"))
+                } else {
+                    Unread::Refused(format!("{app} reads none of its record: {error}"))
+                });
+            }
+        }
+        let out = child.wait_with_output().map_err(|error| {
+            Unread::Refused(format!("{app} stops without reading its record: {error}"))
+        })?;
+        if !out.status.success() {
+            let said = format!(
+                "{app} reads none of its record ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            // What ends a reader from outside (the daemon stopping, an app closed for memory)
+            // says nothing about the record it was reading.
+            return Err(match out.status.signal() {
+                Some(libc::SIGTERM | libc::SIGINT | libc::SIGHUP | libc::SIGKILL) => {
+                    Unread::Stopped(said)
+                }
+                _ => Unread::Refused(said),
+            });
+        }
+        serde_json::from_slice(&out.stdout)
+            .map_err(|error| Unread::Refused(format!("{app} answers no entries: {error}")))
+    }
+}
+
+/// Where no app sandbox runs, no app reads its records: search holds what running apps publish.
+#[cfg(not(target_os = "linux"))]
+impl tilo_workspace_service::search::records::RecordReader for Apps {
+    fn entries(
+        &self,
+        app: &str,
+        _doc: &[u8],
+    ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, tilo_workspace_service::search::records::Unread>
+    {
+        Err(tilo_workspace_service::search::records::Unread::Refused(format!(
+            "{app} reads no record here: this platform starts no app in its record mode"
+        )))
+    }
+}
+
 impl LauncherServices for Apps {
     fn applications(&self) -> Vec<LaunchableApplication> {
         let mut apps = self.installed();

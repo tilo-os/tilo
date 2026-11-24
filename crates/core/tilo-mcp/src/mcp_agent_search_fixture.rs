@@ -66,6 +66,7 @@ impl tilo_actions::remote::ResourceSearch for Notes {
                     app: Some(APP.to_owned()),
                     provider: None,
                     when: None,
+                    ..tilo_actions::remote::Found::default()
                 },
             ));
         }

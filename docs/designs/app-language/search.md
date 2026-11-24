@@ -193,9 +193,11 @@ known by (the registry's keywords: "youtube" for an app called Tube) are not par
 
 ## 7. Who indexes
 
-- **Text search is the system's.** The shell keeps one persistent index of what the workspace
-  holds (`tilo_desktop_search::content_index`), published into by whatever holds the resources, and it answers
-  even when nothing that published is running. Nobody keeps a private copy.
+- **Text search is the system's.** The device's daemon keeps one persistent index of what the
+  workspaces hold (`tilo_workspace_service::search`), published into by whatever holds the
+  resources, and it answers even when nothing that published is running. Every caller of
+  `search#find` (the palette over the shell link, an agent, another device) is answered from it,
+  each result checked against what that caller may read. Nobody keeps a private copy.
 - **Resources with an outside origin** (an IMAP server, YouTube) are searched through that
   origin's search capability, invoked by the system and merged into one ranking. What was
   fetched is cached and indexed like the rest.

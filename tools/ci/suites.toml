@@ -1249,7 +1249,7 @@ inputs = [
   "crates/sdk/tilo-workspace-agent/",
   "crates/sdk/tilo-workspace-emoji/",
   "crates/sdk/zone-globe/",
-  "crates/engines/search/",
+  "crates/platform/search/",
   "crates/engines/tilo-page-raster/",
   "crates/engines/tilo-recurrence/",
   "crates/engines/tilo-webview/",

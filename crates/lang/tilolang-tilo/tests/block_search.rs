@@ -4,12 +4,12 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::indexed::IndexedContent;
 use tilo_desktop_search::model::{OPEN_ANCHOR, Source as _, Target};
 use tilo_render_protocol::patch::local::{End, pair};
 use tilo_render_protocol::patch::{self as ui, ToUi, Transport as _};
 use tilo_resource::search_index::{IndexState, Publisher};
+use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{Actor, InvokeOutcome};
 use tilolang_tilo::OpenEffect;
@@ -188,7 +188,16 @@ fn search(host: &Host, needle: &str) -> Vec<tilo_desktop_search::Hit> {
             .publish(WORKSPACE, APP, "notebook", delta)
             .expect("the index takes what the window publishes");
     }
-    IndexedContent::new(Arc::new(index), str::to_owned, "ada").query(needle)
+    // The device's search, as its daemon answers the person, who may read all of it.
+    let search = IndexSearch::new(Arc::new(index), Arc::new(|_, _| true));
+    IndexedContent::new(
+        Arc::new(search),
+        tilo_actions::remote::Caller::local_person("ada"),
+        str::to_owned,
+        "ada",
+        Arc::new(|| {}),
+    )
+    .query(needle)
 }
 
 #[test]

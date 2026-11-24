@@ -26,7 +26,6 @@ use tilo_session_core::layout;
 
 use tilo_actions::{ActionAddress, OperationKind, ResourceSpec, ResourceViewSpec};
 use tilo_compositor::OutputConfig;
-use tilo_session::platform::indexes::SessionIndexes;
 use tilo_session::{Options, Session};
 use tilo_session_core::surfaces::Published;
 
@@ -322,9 +321,7 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
 
 /// A session whose search reads `index` : the one index the palette and an agent's `tilo` tool find
 /// things through, with `app` 's entries in it.
-fn session_searching(
-    index: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
-) -> Session {
+fn session_searching(index: std::sync::Arc<tilo_workspace_service::search::AppContentIndex>) -> Session {
     crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
@@ -332,7 +329,14 @@ fn session_searching(
             state: Some(crate::common::device_state()),
             collab: false,
             search: tilo_session::SearchOptions {
-                indexes: Some(std::sync::Arc::new(SessionIndexes::new(index, None))),
+                // Searched as the device's daemon searches it for the person, who may read all
+                // of it.
+                index: Some(std::sync::Arc::new(
+                    tilo_workspace_service::search::IndexSearch::new(
+                        index,
+                        std::sync::Arc::new(|_, _| true),
+                    ),
+                )),
                 ..tilo_session::SearchOptions::default()
             },
             ..Options::default()
@@ -343,7 +347,7 @@ fn session_searching(
 /// Publish the mailbox into the index the session searches, as an app does: the entry opens the
 /// resource through its app's `open` , at that resource.
 fn index_mailbox(
-    index: &tilo_desktop_search::content_index::AppContentIndex,
+    index: &tilo_workspace_service::search::AppContentIndex,
     app: &str,
     workspace: &str,
 ) {
@@ -387,8 +391,7 @@ fn index_mailbox(
 #[test]
 fn text_typed_on_the_canvas_places_what_find_finds() {
     let _settled = ui::motion::testing::settled();
-    let index =
-        std::sync::Arc::new(tilo_desktop_search::content_index::AppContentIndex::in_memory());
+    let index = std::sync::Arc::new(tilo_workspace_service::search::AppContentIndex::in_memory());
     let mut session = session_searching(index.clone());
     step(&mut session);
     let (app, _) = with_mailbox(&mut session);

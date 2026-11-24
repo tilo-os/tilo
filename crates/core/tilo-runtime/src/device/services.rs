@@ -889,6 +889,14 @@ impl Daemon {
         // The files daemons that mount this device's workspaces: their stores keep the files'
         // bytes, which the broker's record content reads and keeps through them.
         let files_daemons = Arc::new(tilo_workspace_service::files::socket::Daemons::default());
+        // The device's one search index: what its apps publish and its records say, read for
+        // every caller as the broker decides it may.
+        let search = super::search::DeviceSearch::open(
+            root,
+            workspaces.copies(),
+            Arc::clone(&apps) as Arc<dyn tilo_workspace_service::search::records::RecordReader>,
+        );
+        workspaces.keep_search(Arc::clone(&search));
         stage("starting the collaboration broker");
         #[cfg(unix)]
         let shell_links = Arc::default();
@@ -927,6 +935,7 @@ impl Daemon {
                     None,
                 ),
             );
+            search.serve(&broker);
         }
         workspaces.serve_invocations(Arc::clone(&invocations));
         stage("reading the calls that wait for the person");
@@ -1462,6 +1471,9 @@ fn broker_services(
         // The providers registered on this device ([`Daemon::provide`]): a call made here reaches
         // them through the same registry another device's call does.
         providers: Some(parts.workspaces.copies().providers()),
+        // What an app publishes of what it holds, on its connection here: the device's one
+        // search index keeps it after the app closes.
+        search_index: parts.workspaces.search_publications(),
         ..ProcessServices::default()
     })
 }
@@ -2734,6 +2746,13 @@ fn stop_session(
 }
 
 impl ActionProvider for RuntimeActionProvider {
+    /// The device's one search index, read as the caller may read it.
+    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        self.workspaces
+            .search()
+            .map(|search| search as Arc<dyn tilo_actions::remote::ResourceSearch>)
+    }
+
     fn installed_surface(&self, app_id: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
         tilo_actions::remote::Pending::ready(
             self.apps

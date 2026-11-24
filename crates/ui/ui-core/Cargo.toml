@@ -320,7 +320,7 @@ tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["local"] }
 # Every catalogue and text index is a tantivy index through the shared
 # search layer.
-tilo-search = { version = "0.1.0", path = "../../engines/search" }
+tilo-search = { version = "0.1.0", path = "../../platform/search" }
 # The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
 # nested Resource tree apps publish. `action_palette` +
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the

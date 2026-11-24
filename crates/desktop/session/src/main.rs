@@ -637,15 +637,7 @@ fn start(
     } else {
         tilo_session::Machine::Owned
     };
-    // This device's apps, as search and the surfaces that name an app read them, and the index
-    // apps publish what they hold into: the image analysis reads it and writes back into it.
-    let content = tilo_desktop_search::content_index::session();
-    let (mut services, _following) = services(
-        &wake,
-        power.clone(),
-        machine,
-        std::sync::Arc::clone(&content),
-    );
+    let (mut services, _following) = services(&wake, power.clone(), machine);
     let (capture, captures) =
         tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
     // The portal's side of the desktop, which the session answers.
@@ -702,7 +694,7 @@ fn start(
         test_control,
         admin_control,
         hosted_browser,
-        ..device_options(machine, config, content)
+        ..device_options(machine, config)
     };
     // The person's files: the files daemon mounts them as the Files app's endpoint, so the
     // session records its process before the daemon's connections arrive.
@@ -1095,7 +1087,6 @@ fn desktop_services(
 fn device_options(
     machine: tilo_session::Machine,
     config: tilo_session::SessionConfig,
-    content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
 ) -> tilo_session::Options {
     use tilo_session::{
         AppSocket, Options, Vpn,
@@ -1104,9 +1095,11 @@ fn device_options(
     let owned = machine.is_owned();
     Options {
         config,
-        search: search_options(std::sync::Arc::clone(&content)),
+        search: search_options(),
         lists: tilo_session::Lists::of_device(),
-        content,
+        // The device's image model, reached through the model gateway as `so.tilo.vision`, the
+        // package it answers as.
+        vision: Some(std::sync::Arc::new(tilo_vision_service::LocalVision::local())),
         // The apps this session starts reach its services over the socket the launcher hands them,
         // in this session's runtime directory.
         app_socket: AppSocket::Launcher,
@@ -1201,32 +1194,6 @@ fn start_command(
 #[cfg(target_os = "linux")]
 type Following = Vec<Box<dyn std::any::Any>>;
 
-/// The image model's work as the app that shows the pictures asks it (`engine.call`): a
-/// sentence about a picture, the words in it, the objects and pets, or the faces it groups.
-#[cfg(target_os = "linux")]
-struct ImageModelEngine(tilo_vision_service::ImageModelWork);
-
-#[cfg(target_os = "linux")]
-impl tilolang_tilo::engine::Provider for ImageModelEngine {
-    fn call(&self, op: &str, input: &str) -> Result<String, String> {
-        self.0.call(op, input)
-    }
-
-    fn start(&self, op: &str, _input: &str) -> Result<String, String> {
-        Err(format!(
-            "`{op}` is answered now: the image model runs no job for this app"
-        ))
-    }
-
-    fn status(&self, job: &str) -> Result<String, String> {
-        Err(format!("no job `{job}` runs on this device"))
-    }
-
-    fn cancel(&self, _job: &str) -> bool {
-        false
-    }
-}
-
 /// The system services the session hosts, on this device's own daemons,
 /// and what keeps their readings following the device. A session in a
 /// window of another desktop hosts only the settings service: the machine's
@@ -1237,7 +1204,6 @@ fn services(
     wake: &tilo_service::LoopWake,
     power: Option<tilo_session_power::PowerLink>,
     machine: tilo_session::Machine,
-    content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
 ) -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     use std::sync::Arc;
     use tilo_connectivity_service::{Connectivity, device::OsDevice};
@@ -1245,26 +1211,6 @@ fn services(
     let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
     let mut following: Following = Vec::new();
     services.push(Box::new(tilo_settings_service::SettingsService::new()));
-    // The device's image model, and the library analysis whose words join each picture's entry in
-    // the system index. The service holds its own model-gateway connection (as `so.tilo.vision`,
-    // the package it answers as) and finds its pictures through the index search reads.
-    let vision = tilo_vision_service::VisionService::new(
-        std::sync::Arc::new(tilo_vision_service::LocalVision::local()),
-        std::sync::Arc::new(tilo_vision_service::index::VisionIndexSource(
-            std::sync::Arc::clone(&content),
-        )),
-        std::sync::Arc::new(tilo_vision_service::index::VisionIndexSink(content)),
-        wake.handle(),
-    );
-    // The model's work, which Photos asks the session for by name (`engine.call`): the app
-    // reads the JSON answer into its own records, and no other app asks it.
-    tilolang_tilo::engine::register(
-        tilo_vision_service::PHOTOS_APP,
-        std::sync::Arc::new(ImageModelEngine(tilo_vision_service::ImageModelWork::of(
-            &vision,
-        ))),
-    );
-    services.push(Box::new(vision));
     // What this session ran into: the list as the resource's reading and each record's text as its
     // own, which Settings reads as an app does.
     services.push(Box::new(tilo_crash_reports::CrashReports::new()));
@@ -1338,9 +1284,7 @@ fn audio_helper() -> Option<std::path::PathBuf> {
 /// apps the person can get, each followed as it changes, what apps hold, the person's files, the
 /// records the workspaces hold, and the search sources they switched off.
 #[cfg(target_os = "linux")]
-fn search_options(
-    content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
-) -> tilo_session::SearchOptions {
+fn search_options() -> tilo_session::SearchOptions {
     use std::sync::Arc;
     use tilo_desktop_search::providers::files::FileNames;
 
@@ -1363,7 +1307,7 @@ fn search_options(
     }
     tilo_session::SearchOptions {
         indexes: Some(std::sync::Arc::new(
-            tilo_session::platform::indexes::SessionIndexes::new(content, files),
+            tilo_session::platform::indexes::SessionIndexes::new(files),
         )),
         // A desktop's files are its disk's, which the indexes above read.
         workspace_files: None,

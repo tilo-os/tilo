@@ -38,6 +38,10 @@ pub struct Options {
     /// The system services the session hosts: what they publish is the session's, beside the
     /// desktop's.
     pub services: Vec<Box<dyn Service>>,
+    /// The device's image model: what the pictures in the device's search index show, read into
+    /// it as words they are found by. Without one, pictures are found by their names alone.
+    #[cfg(target_os = "linux")]
+    pub vision: Option<std::sync::Arc<dyn tilo_vision_service::VisionModel>>,
     /// The machine's brightness controls, which the displays service reads and
     /// sets: the panel's backlight and every external monitor that speaks
     /// DDC/CI. Without one, no display of this session can be dimmed (a test,
@@ -48,9 +52,6 @@ pub struct Options {
     /// The apps this device lists — installed here, the machine's own and those a person can get —
     /// as search, the app sheets and the tool service read them.
     pub lists: crate::lists::Lists,
-    /// The index apps publish what they hold into: what search finds in an app that is not open,
-    /// and what the broker keeps current.
-    pub content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
     /// The action host: what open apps publish and run, and where what is chosen in search runs by
     /// address. Without one, search finds the desktop's own and starts nothing.
     pub apps: Option<Rc<dyn AppActions>>,
@@ -401,10 +402,11 @@ impl Default for Options {
             config: SessionConfig::default(),
             accelerometer: Accelerometer::default(),
             services: Vec::new(),
+            #[cfg(target_os = "linux")]
+            vision: None,
             backlights: None,
             search: SearchOptions::default(),
             lists: crate::lists::Lists::default(),
-            content: tilo_desktop_search::content_index::session(),
             apps: None,
             launch: None,
             setup: None,

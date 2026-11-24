@@ -88,7 +88,7 @@ tilo-history = { version = "0.1.0", path = "../tilo-history" }
 tilo-workspace-agent = { version = "0.1.0", path = "../tilo-workspace-agent" }
 tilo-workspace-emoji = { version = "0.1.0", path = "../tilo-workspace-emoji" }
 # The default search provider over a resource's entries.
-tilo-search = { version = "0.1.0", path = "../../engines/search" }
+tilo-search = { version = "0.1.0", path = "../../platform/search" }
 # Merging a member's change in tests, the way sync does.
 tilo-automerge.workspace = true
 automerge.workspace = true

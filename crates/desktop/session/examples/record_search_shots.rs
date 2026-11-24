@@ -22,10 +22,9 @@ use std::time::Duration;
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
 use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
-use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
-use tilo_session::platform::indexes::SessionIndexes;
 use tilo_session::{AppLists, Lists, Options, SearchOptions, Session};
+use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 use ui::search::index_publication::{IndexDelta, IndexEntry, IndexKind, IndexPerson};
 
 /// The app whose records are read.
@@ -146,10 +145,14 @@ fn chat_lists() -> Lists {
     })
 }
 
-/// The session's search, over the index Chat publishes into.
+/// The session's search, over the index Chat publishes into, searched as the device's daemon
+/// searches it for the person.
 fn chat_search(content: &Arc<AppContentIndex>) -> SearchOptions {
     SearchOptions {
-        indexes: Some(Arc::new(SessionIndexes::new(Arc::clone(content), None))),
+        index: Some(Arc::new(IndexSearch::new(
+            Arc::clone(content),
+            Arc::new(|_, _| true),
+        ))),
         ..SearchOptions::default()
     }
 }

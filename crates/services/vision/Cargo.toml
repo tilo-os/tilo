@@ -16,8 +16,6 @@ tilo-content-device = { path = "../../core/content-device" }
 tilo-image-codec = { path = "../../engines/tilo-image-codec" }
 tilo-model-client = { path = "../../sdk/model-client", default-features = false }
 tilo-ocr = { path = "../../engines/ocr" }
-# The system index a picture's words are written back into.
-tilo-desktop-search = { path = "../../desktop/desktop-search", features = ["indexes"] }
 agent-provider-config = { path = "../../integrations/provider-config" }
 base64.workspace = true
 hex.workspace = true

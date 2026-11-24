@@ -1976,7 +1976,7 @@ fn mail() -> Bundle {
 
 /// Apply the search index deltas the instance published to the session's index, over its
 /// certified route, as the session's index applies them.
-fn published_index(index: &tilo_desktop_search::content_index::AppContentIndex, sent: &Sent) {
+fn published_index(index: &tilo_workspace_service::search::AppContentIndex, sent: &Sent) {
     for request in sent.borrow().iter() {
         if let CollabRequest::PublishSearchIndex { delta_json } = request {
             index
@@ -1988,8 +1988,8 @@ fn published_index(index: &tilo_desktop_search::content_index::AppContentIndex, 
 
 #[test]
 fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
-    use tilo_desktop_search::content_index::AppContentIndex;
     use tilo_desktop_search::indexed::IndexedContent;
+    use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
     use tilo_desktop_search::model::{Source as _, Target};
 
     // A live Mail instance, its room filled by the package's own scenario, runs its frames.
@@ -2011,7 +2011,14 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
     // Search reads that index through its production source: a word that appears only inside a
     // message's body (not its subject, its sender or its conversation's snippet) finds the
     // message, with no window running a search of its own.
-    let content = IndexedContent::new(std::sync::Arc::clone(&index), ToOwned::to_owned, "");
+    let search = IndexSearch::new(std::sync::Arc::clone(&index), std::sync::Arc::new(|_, _| true));
+    let content = IndexedContent::new(
+        std::sync::Arc::new(search),
+        tilo_actions::remote::Caller::local_person("ada"),
+        ToOwned::to_owned,
+        "",
+        std::sync::Arc::new(|| {}),
+    );
     let found = content.query("widths");
     assert_eq!(
         found.len(),

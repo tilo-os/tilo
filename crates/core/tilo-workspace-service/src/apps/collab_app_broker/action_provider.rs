@@ -636,7 +636,7 @@ impl AppBrokerState {
             }
             // Nor does it search another device's workspace: that is an agent's.
             RemoteActionMessage::Invoke(request)
-                if tilo_actions::remote::search::is_find(&request.target) =>
+                if tilo_actions::remote::search::is_search(&request.target) =>
             {
                 None
             }

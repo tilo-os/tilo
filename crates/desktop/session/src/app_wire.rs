@@ -26,9 +26,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, ApiError, InvocationId};
 use tilo_broker_core::services::{
-    ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
+    ContentStoreServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
 };
-use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
 use tilo_workspace_keys::KeyProvider;
@@ -531,24 +530,6 @@ impl tilo_workspace_service::workspaces::PresentDevices for SessionPresence {
     }
 }
 
-/// The host service the broker hands apps' search publications to: the
-/// session's index of what apps hold, which the desktop's search reads and
-/// which keeps what was published after the app closes and the session
-/// restarts.
-struct ContentIndex(std::sync::Arc<AppContentIndex>);
-
-impl SearchIndexServices for ContentIndex {
-    fn publish(
-        &self,
-        room: tilo_desktop_model::WorkspaceId,
-        app: &str,
-        record: &str,
-        delta: &[u8],
-    ) -> Result<(), String> {
-        self.0.publish(&room.to_string(), app, record, delta)
-    }
-}
-
 /// The workspaces' sealed records as this session serves them: the broker
 /// the channel service checks, and where an endpoint follows a route's keys.
 pub struct Sealed {
@@ -561,8 +542,8 @@ pub struct Sealed {
 }
 
 /// What this session hands the broker besides the link and the launcher: the
-/// board every app's live activity shows on, the index its publications land
-/// in, the session it decides a workspace against, the shortcuts it saves and
+/// board every app's live activity shows on, what notes its records changing,
+/// the session it decides a workspace against, the shortcuts it saves and
 /// runs, the workspace's activity it serves, and the runs of what people ask
 /// its agents.
 pub struct Hosted {
@@ -570,10 +551,8 @@ pub struct Hosted {
     /// The calls this session's apps join: the service a view's call steps
     /// reach.
     pub native_media: Option<tilo_native_media::NativeMediaService>,
-    pub content: Option<std::sync::Arc<AppContentIndex>>,
-    /// The records' content in that index, read from the records themselves:
-    /// what search finds of an app that never opened them here.
-    pub records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
+    /// What notes the workspaces' records changing, for the roles that follow them.
+    pub records: Option<std::sync::Arc<crate::resource_index::RecordChanges>>,
     pub layout: std::sync::Arc<LayoutAuthority>,
     /// The workspace's shortcuts as the broker saves and runs them, from this device's own
     /// workspace service; no session without a device identity keeps any.
@@ -1317,7 +1296,6 @@ fn broker_services(
     let Hosted {
         live_activities,
         native_media,
-        content,
         records,
         layout,
         shortcuts,
@@ -1530,13 +1508,12 @@ fn broker_services(
         // than refused. What a window shows is read from the broker's record
         // subscriptions instead ([`crate::continuations`]).
         continuations: BrokerService::served(window_notes),
-        // What an app publishes of its own content is found whether or not
-        // it runs, once it is closed and after a restart.
-        search_index: BrokerService::when(content.map(|content| {
-            std::sync::Arc::new(ContentIndex(content)) as std::sync::Arc<dyn SearchIndexServices>
-        })),
-        // The records' content in that index, read from the records
-        // themselves: a change to a workspace's record is indexed here.
+        // What an app publishes of its own content goes to the device's daemon on the app's own
+        // connection there: the daemon keeps the device's one index.
+        search_index: BrokerService::unserved(
+            "an app's search entries go to the device's daemon, which keeps the one index",
+        ),
+        // A change to a workspace's record is noted for the roles that follow them.
         document_index_changes: BrokerService::when(records.map(|records| {
             records as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>
         })),
@@ -2070,7 +2047,7 @@ mod tests {
             link,
             std::sync::Arc::new(Launches::default()),
             fabric,
-            hosted(None),
+            hosted(),
             None,
             None,
         )
@@ -2078,16 +2055,15 @@ mod tests {
 
     /// What a session with no index and no session of its own hands the broker:
     /// the services under test, and the empty session it decides against.
-    fn hosted(content: Option<std::sync::Arc<AppContentIndex>>) -> Hosted {
-        hosted_with(content, Lists::default())
+    fn hosted() -> Hosted {
+        hosted_with(Lists::default())
     }
 
     /// The same, over the app lists the test reads: what each app declared it
     /// may do on the action links is served out of them.
-    fn hosted_with(content: Option<std::sync::Arc<AppContentIndex>>, lists: Lists) -> Hosted {
+    fn hosted_with(lists: Lists) -> Hosted {
         Hosted {
             live_activities: std::sync::Arc::new(runtime_collab::LiveActivities::default()),
-            content,
             records: None,
             layout: std::sync::Arc::new(LayoutAuthority::new(
                 tilo_desktop_model::Layout::default(),
@@ -2136,58 +2112,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_app_wire_serves_an_app_what_this_session_keeps_for_it;
 
-        phase an_apps_search_publication_lands_in_the_index_search_reads;
-        // An app publishes what it holds through the broker, and the index the
-        // session handed it keeps it: it is the same index search reads.
-        {
-            use ui::search::index_publication::{IndexDelta, IndexEntry};
-
-            let content = std::sync::Arc::new(AppContentIndex::in_memory());
-            let services = host_services(
-                Link::for_test(),
-                std::sync::Arc::new(Launches::default()),
-                None,
-                hosted(Some(std::sync::Arc::clone(&content))),
-                None,
-                None,
-            );
-            let search_index = services
-                .search_index
-                .expect("a session with an index offers apps its search index");
-            let workspace_id = tilo_desktop_model::WorkspaceId::new();
-            let delta = IndexDelta {
-                reset: true,
-                upsert: vec![IndexEntry {
-                    key: "n1".into(),
-                    resource: "n1".into(),
-                    action: None,
-                    title: "Groceries".into(),
-                    subtitle: None,
-                    group: None,
-                    icon: None,
-                    boost: 0,
-                    fields: Vec::new(),
-                    secret: false,
-                    references: Vec::new(),
-                    ..IndexEntry::default()
-                }],
-                ..IndexDelta::default()
-            };
-            search_index
-                .publish(
-                    workspace_id,
-                    "so.tilo.notes",
-                    "tab:0001",
-                    &delta.encode().expect("a delta"),
-                )
-                .expect("the index takes the publication");
-            assert_eq!(
-                content.title(&workspace_id.to_string(), "n1").as_deref(),
-                Some("Groceries"),
-                "what the app published is in the index search reads"
-            );
-        }
-
         phase an_app_keeps_and_asks_for_content_through_the_services_of_this_session;
         // An app's `offerBlob`, `wantBlob` and `subscribeBlobs`, and the content
         // put links, are served by the app wire this session keeps: the same store
@@ -2202,7 +2126,7 @@ mod tests {
                 None,
                 Hosted {
                     document_content: Some(kept),
-                    ..hosted(None)
+                    ..hosted()
                 },
                 None,
                 None,
@@ -2357,7 +2281,7 @@ mod tests {
                 Link::for_test(),
                 std::sync::Arc::new(Launches::default()),
                 None,
-                hosted_with(None, Lists::fixed(lists)),
+                hosted_with(Lists::fixed(lists)),
                 None,
                 None,
             );
@@ -2529,7 +2453,7 @@ mod tests {
             Link::for_test(),
             std::sync::Arc::new(Launches::default()),
             None,
-            hosted(None),
+            hosted(),
             None,
             None,
             None,
@@ -2719,7 +2643,7 @@ mod tests {
             Hosted {
                 shortcuts: Some(std::sync::Arc::new(library)),
                 initiative: None,
-                ..hosted(None)
+                ..hosted()
             },
             None,
             None,

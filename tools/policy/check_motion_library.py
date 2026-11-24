@@ -106,7 +106,7 @@ SCANNED += (
 )
 # Crates of the same kind that live in other groups.
 SCANNED += (
-    Path("crates/engines/search"),
+    Path("crates/platform/search"),
     Path("crates/engines/tilo-page-raster"),
     Path("crates/engines/tilo-recurrence"),
     Path("crates/engines/tilo-webview"),

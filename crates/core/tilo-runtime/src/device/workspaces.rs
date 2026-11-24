@@ -73,6 +73,9 @@ pub(crate) struct ServiceWorkspaces {
     /// What the service hands the content its members answer this device with,
     /// held here so it is there for as long as the runtime.
     keepers: Mutex<Vec<Arc<dyn tilo_workspace_service::workspaces::ContentKeeper>>>,
+    /// The device's one search index, once the daemon keeps it: what every caller's search of
+    /// these workspaces is answered from.
+    search: OnceLock<Arc<super::search::DeviceSearch>>,
 }
 
 impl ServiceWorkspaces {
@@ -154,6 +157,7 @@ impl ServiceWorkspaces {
             takes_work: std::sync::atomic::AtomicBool::new(false),
             content: OnceLock::new(),
             keepers: Mutex::new(Vec::new()),
+            search: OnceLock::new(),
         }
     }
 
@@ -728,6 +732,23 @@ impl ServiceWorkspaces {
     /// The record content service of these workspaces, once it is made.
     pub(crate) fn record_content_service(&self) -> Option<Arc<RouteContent>> {
         self.content.get().map(|(content, _)| Arc::clone(content))
+    }
+
+    /// Keep `search` as the device's search index.
+    pub(crate) fn keep_search(&self, search: Arc<super::search::DeviceSearch>) {
+        let _ = self.search.set(search);
+    }
+
+    /// Where an app's search entries are published, once the daemon keeps the index.
+    pub(crate) fn search_publications(
+        &self,
+    ) -> Option<Arc<dyn tilo_workspace_service::apps::services::SearchIndexServices>> {
+        Some(self.search.get()?.publications())
+    }
+
+    /// The search of the device's index, once the daemon keeps one and its broker serves.
+    pub(crate) fn search(&self) -> Option<Arc<tilo_workspace_service::search::IndexSearch>> {
+        self.search.get()?.search()
     }
 
     /// The shelf this profile keeps content on, once its record content service is made: where

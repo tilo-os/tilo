@@ -18,7 +18,7 @@ name = "emoji"
 miniz_oxide.workspace = true
 serde.workspace = true
 # Name and keyword search.
-tilo-search = { path = "../../engines/search" }
+tilo-search = { path = "../../platform/search" }
 tracing.workspace = true
 
 [build-dependencies]

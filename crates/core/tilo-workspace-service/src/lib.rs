@@ -85,6 +85,8 @@ pub mod payloads;
 pub mod resource_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod registry;
+#[cfg(all(feature = "content", not(target_arch = "wasm32")))]
+pub mod search;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod service;
 #[cfg(not(target_arch = "wasm32"))]

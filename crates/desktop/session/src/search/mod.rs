@@ -201,9 +201,12 @@ pub trait AppActions {
 /// What the session's search reaches beyond the desktop.
 #[derive(Default)]
 pub struct SearchOptions {
-    /// What apps hold and what the person's files say, as this host indexes them; `None` where the
-    /// host keeps no index.
+    /// What the person's files say, as this host indexes them; `None` where the host keeps no
+    /// index.
     pub indexes: Option<Arc<dyn Indexes>>,
+    /// The device's search index of what apps hold, as the device's daemon answers it; `None`
+    /// where this host reaches none.
+    pub index: Option<Arc<dyn ResourceSearch>>,
     /// The sources the person switched off.
     pub preferences: SearchPreferences,
     /// Where the person's windows were.
@@ -275,8 +278,8 @@ pub struct SessionSearch {
     apps_lists: Option<Arc<dyn Apps>>,
     /// The model gateway this session's own questions run on, where it runs one.
     models: Option<Arc<dyn crate::platform::Models>>,
-    /// What apps hold and what the person's files say, as this session reads them.
-    indexes: Option<Arc<dyn crate::platform::indexes::Index>>,
+    /// What apps hold, as the device's index answers this session's person.
+    content: Option<Arc<tilo_desktop_search::indexed::IndexedContent>>,
     /// The sources the person switched off, as kept: what the next search leaves out, and what a
     /// switch from search changes.
     preferences: RefCell<SearchPreferences>,
@@ -430,6 +433,7 @@ impl SessionSearch {
     ) -> Self {
         let SearchOptions {
             indexes,
+            index,
             preferences,
             places,
             records,
@@ -439,12 +443,23 @@ impl SessionSearch {
         } = options;
         let reading = lists.as_ref().map(|lists| lists.reading());
         let indexed = indexes.as_ref().map(|indexes| indexes.of(person));
+        // Rows about what an app holds say who wrote them: the person at this session.
+        let content = index.map(|index| {
+            let wake = wake.clone().unwrap_or_else(|| Arc::new(|| {}));
+            Arc::new(tilo_desktop_search::indexed::IndexedContent::new(
+                index,
+                Caller::local_person(person),
+                crate::app_names::app_name,
+                person,
+                wake,
+            ))
+        });
         let kept = Kept {
             host_apps: reading
                 .as_ref()
                 .and_then(|read| read.host_apps(&preferences)),
             reading,
-            content: indexed.as_ref().map(|index| index.content()),
+            content: content.clone().map(Held::from),
             files: indexed.as_ref().and_then(|index| index.files()),
             workspace: None,
         };
@@ -462,7 +477,7 @@ impl SessionSearch {
             unkept: Cell::new((false, false)),
             kept: RefCell::new(kept),
             models,
-            indexes: indexed,
+            content,
             apps,
             records,
             workspace_files,
@@ -767,12 +782,9 @@ impl SessionSearch {
     ) -> (Vec<Held>, Vec<PublishedActions>) {
         let mut sources = Vec::new();
         if let Some(name) = app.app.as_deref()
-            && let Some(content) = self
-                .indexes
-                .as_ref()
-                .and_then(|index| index.content_for(name))
+            && let Some(content) = &self.content
         {
-            sources.push(content);
+            sources.push(Held::new(content.for_app(name)));
         }
         let published = self
             .apps
@@ -1201,9 +1213,9 @@ impl SessionSearch {
                 Recipient::found(if agent { Agent } else { Person }, id, name)
             });
         let published = self
-            .indexes
+            .content
             .as_ref()
-            .map_or_else(Vec::new, |indexes| indexes.recipients());
+            .map_or_else(Vec::new, |content| content.recipients());
         let mut out: Vec<Recipient> = Vec::new();
         for recipient in published.into_iter().chain(members) {
             if recipient.kind == Person && recipient.id == self.person {
@@ -1230,9 +1242,9 @@ impl SessionSearch {
     /// published, and who is here or kept.
     pub(crate) fn recipients_generation(&self) -> (u64, u64) {
         (
-            self.indexes
+            self.content
                 .as_ref()
-                .map_or(0, |indexes| indexes.generation()),
+                .map_or(0, |content| content.generation()),
             self.recipients_moved.get(),
         )
     }
@@ -1808,6 +1820,7 @@ fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
         app,
         provider: None,
         when: None,
+        ..Found::default()
     })
 }
 
@@ -2409,7 +2422,7 @@ mod tests {
         }
     }
 
-    /// A window's search reads what its app published into this session's index, and none of
+    /// A window's search reads what its app published into the device's index, and none of
     /// another app's: one index, narrowed to the app the window shows. The same search over
     /// everything finds it too.
     #[cfg(target_os = "linux")]
@@ -2417,7 +2430,7 @@ mod tests {
     fn a_windows_search_reads_what_its_app_published_and_no_other() {
         use std::sync::Arc;
 
-        let index = Arc::new(tilo_desktop_search::content_index::AppContentIndex::in_memory());
+        let index = Arc::new(tilo_workspace_service::search::AppContentIndex::in_memory());
         let mut publisher = ui::search::index_publication::Publisher::default();
         for (app, key, title) in [
             ("so.tilo.chat", "chat.workspace/channels/c_voice", "voice"),
@@ -2448,9 +2461,9 @@ mod tests {
         }
         let search = SessionSearch::new(
             SearchOptions {
-                indexes: Some(Arc::new(crate::platform::indexes::SessionIndexes::new(
+                index: Some(Arc::new(tilo_workspace_service::search::IndexSearch::new(
                     Arc::clone(&index),
-                    None,
+                    Arc::new(|_, _| true),
                 ))),
                 ..SearchOptions::default()
             },

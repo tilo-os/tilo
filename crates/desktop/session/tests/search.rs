@@ -25,7 +25,7 @@ use tilo_actions::{ApiError, ResourceSpec};
 use tilo_app_launch::SessionEnvironment;
 use tilo_compositor::{InputEvent, KeyRepeat};
 use tilo_session_core::desktop::verbs::{LAUNCHPAD_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE, launchpad_card_id};
-use tilo_desktop_search::content_index::AppContentIndex;
+use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
@@ -91,7 +91,8 @@ fn session(asked: Rc<Asked>) -> Session {
 }
 
 /// A session whose search also lists the records `records` keeps current and what apps published
-/// into `content` .
+/// into `content`, searched as the device's daemon searches it for the person, who may read all of
+/// it.
 fn session_over(
     asked: Rc<Asked>,
     records: Option<tilo_session::Records>,
@@ -107,10 +108,9 @@ fn session_over(
             ..AppLists::default()
         }),
         search: SearchOptions {
-            indexes: content.map(|content| {
-                std::sync::Arc::new(tilo_session::platform::indexes::SessionIndexes::new(
-                    content, None,
-                )) as std::sync::Arc<dyn tilo_session::platform::indexes::Indexes>
+            index: content.map(|content| {
+                Arc::new(IndexSearch::new(content, Arc::new(|_, _| true)))
+                    as Arc<dyn tilo_actions::remote::ResourceSearch>
             }),
             records,
             ..SearchOptions::default()

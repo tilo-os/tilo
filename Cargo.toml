@@ -225,7 +225,7 @@ members = [
     "crates/ui/theme-painter-wasm",
     "crates/ui/themes/bauhaus",
     "crates/ui/winit-x11",
-    "crates/engines/search",
+    "crates/platform/search",
 
     # Collab
     "crates/core/action-policy",

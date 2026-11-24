@@ -39,22 +39,6 @@ pub const MAX_FIELDS: usize = 32;
 /// Entries one publication holds; the rest of a larger set is not indexed.
 pub const MAX_ENTRIES: usize = 20_000;
 
-/// How much a match in one of an entry's fields counts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IndexWeight {
-    /// The name a person looks for.
-    Title,
-    /// A stable identity typed verbatim: an address, a site, a username.
-    Identity,
-    /// A secondary line: an author, a sender, a folder.
-    Subtitle,
-    /// Other short fields: labels, tags, a subject.
-    Metadata,
-    /// Short prose.
-    Body,
-}
-
 /// A published action a hit invokes: an action of a resource the app
 /// publishes, by their ids.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -63,40 +47,9 @@ pub struct IndexAction {
     pub action: String,
 }
 
-/// What kind of thing an entry is, where the app keeps something the shell's
-/// generic rows would read poorly: each is its own section, drawn as what it
-/// is rather than as a record.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IndexKind {
-    /// An agent of the workspace, opened in the conversation it answers in.
-    Agent,
-    /// A conversation: a channel, a group or a direct message.
-    Conversation,
-    /// One message in a conversation, opened where it sits.
-    Message,
-    /// A person or an agent the workspace knows, drawn as themselves.
-    Person,
-}
-
-/// A person or an agent an entry is about: who a row shows and what it says
-/// under its name.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct IndexPerson {
-    /// The name the record gives them, when it can say it; empty: what their
-    /// `anchor` is called now.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub name: String,
-    /// The resource that names them when the record only holds their id
-    /// (`chat.workspace/people/…`), empty when there is none.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub anchor: String,
-    /// Their stable id: picks their colour and their picture.
-    pub identity: String,
-    /// Whether they are an agent.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub agent: bool,
-}
+/// What kind of thing an entry is, and who it is about: what a search answers of it too
+/// ([`tilo_actions::remote::Found`]), so they are its types.
+pub use tilo_actions::remote::search::{IndexKind, IndexPerson, IndexWeight};
 
 /// One search entry, as the system index keeps it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

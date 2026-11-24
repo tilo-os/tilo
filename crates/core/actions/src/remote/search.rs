@@ -27,13 +27,94 @@ pub const RESOURCE: &str = "search";
 /// Find what the workspace holds by words, best first.
 pub const FIND: &str = "find";
 
+/// List the pictures the search holds that the caller may read: what the device's image model
+/// reads to say what each shows.
+pub const PICTURES: &str = "pictures";
+/// Add the words a picture was found to show to the entry its app published for it
+/// ([`Description`]).
+pub const DESCRIBE: &str = "describe";
+
 /// What [`FIND`] is invoked on.
 #[must_use]
 pub fn target() -> RemoteActionTarget {
+    target_of(FIND)
+}
+
+/// The search's `action`.
+fn target_of(action: &str) -> RemoteActionTarget {
     RemoteActionTarget {
         provider: PROVIDER.to_owned(),
-        address: ActionAddress::new(RESOURCE, FIND),
+        address: ActionAddress::new(RESOURCE, action),
     }
+}
+
+/// Whether `target` is an action of the workspace's search: [`FIND`], [`PICTURES`] or
+/// [`DESCRIBE`].
+#[must_use]
+pub fn is_search(target: &RemoteActionTarget) -> bool {
+    target.provider == PROVIDER
+        && target.address.resource == RESOURCE
+        && [FIND, PICTURES, DESCRIBE].contains(&target.address.action.as_str())
+}
+
+/// One picture the search holds: the entry an app published that names a picture's bytes.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Picture {
+    /// The resource a result opens.
+    pub resource: String,
+    /// The app that keeps it.
+    pub app: String,
+    /// The workspace it is in.
+    pub workspace: String,
+    /// The record the app publishes it from.
+    pub record: String,
+    /// The picture's bytes: a content reference in the device's store.
+    pub image: String,
+}
+
+/// What a picture was found to show: the words it is found by from now on, beside its own.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Description {
+    pub picture: Picture,
+    /// What the picture reads as where its app published none.
+    pub title: String,
+    /// The words, each with what a match in it counts.
+    pub words: Vec<(String, IndexWeight)>,
+}
+
+/// The invocation `invocation` of the search's `action` with `argument`.
+fn request_of(
+    invocation: super::InvocationId,
+    action: &str,
+    argument: Option<serde_json::Value>,
+) -> InvokeRequest {
+    InvokeRequest {
+        invocation,
+        target: target_of(action),
+        argument: match argument {
+            Some(serde_json::Value::Object(fields)) => InvokeArgument::Json(fields),
+            _ => InvokeArgument::None,
+        },
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// The invocation `invocation` that lists the pictures ([`PICTURES`]).
+#[must_use]
+pub fn pictures_request(invocation: super::InvocationId) -> InvokeRequest {
+    request_of(invocation, PICTURES, None)
+}
+
+/// The invocation `invocation` that adds `description` to its picture ([`DESCRIBE`]).
+#[must_use]
+pub fn describe_request(invocation: super::InvocationId, description: &Description) -> InvokeRequest {
+    request_of(invocation, DESCRIBE, serde_json::to_value(description).ok())
 }
 
 /// Whether `target` asks the workspace's search.
@@ -66,22 +147,7 @@ impl Query {
             needle: needle.to_owned(),
             within: within.clone(),
         };
-        let argument = match serde_json::to_value(query) {
-            Ok(serde_json::Value::Object(fields)) => InvokeArgument::Json(fields),
-            _ => InvokeArgument::None,
-        };
-        InvokeRequest {
-            invocation,
-            target: target(),
-            argument,
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        }
+        request_of(invocation, FIND, serde_json::to_value(query).ok())
     }
 
     /// What `request` asks the search.
@@ -102,11 +168,12 @@ impl Query {
     }
 }
 
-/// The receipt that answers invocation `invocation` of [`FIND`] with what the search found.
+/// The receipt that answers invocation `invocation` of the search with what it answered: what
+/// [`FIND`] found, the [`PICTURES`], nothing for [`DESCRIBE`].
 #[must_use]
-pub fn receipt(
+pub fn receipt<T: serde::Serialize>(
     invocation: super::InvocationId,
-    found: Result<Vec<Found>, ActionCallError>,
+    found: Result<T, ActionCallError>,
 ) -> InvocationReceipt {
     let status = match found.and_then(|found| {
         serde_json::to_value(found).map_err(|error| ActionCallError::Unavailable {
@@ -143,34 +210,59 @@ pub fn found(receipt: InvocationReceipt) -> Result<Vec<Found>, ActionCallError> 
     }
 }
 
-/// What `request` of [`FIND`] finds in `caller`'s workspace by `provider`'s own search
-/// ([`ActionProvider::resource_search`]).
+/// What `request` of the search ([`is_search`]) answers in `caller`'s workspace from
+/// `provider`'s own search ([`ActionProvider::resource_search`]).
 pub fn searched<H: ActionProvider + ?Sized>(
     provider: &H,
     caller: &Caller,
     request: &InvokeRequest,
 ) -> Pending<InvocationReceipt> {
     let invocation = request.invocation;
-    let answer = move |found| receipt(invocation, found);
-    let query = match Query::of(request) {
-        Ok(query) => query,
-        Err(error) => return Pending::ready(answer(Err(error))),
+    let Some(search) = provider.resource_search() else {
+        return Pending::ready(receipt::<()>(
+            invocation,
+            Err(ActionCallError::Unavailable {
+                reason: "this provider holds no records to search".into(),
+            }),
+        ));
     };
-    match provider.resource_search() {
-        Some(search) => search
-            .find_within(caller, &query.needle, &query.within)
-            .map(answer),
-        None => Pending::ready(answer(Err(ActionCallError::Unavailable {
-            reason: "this provider holds no records to search".into(),
-        }))),
+    match request.target.address.action.as_str() {
+        PICTURES => search
+            .pictures(caller)
+            .map(move |pictures| receipt(invocation, pictures)),
+        DESCRIBE => match argument::<Description>(request) {
+            Ok(description) => search
+                .describe(caller, description)
+                .map(move |described| receipt(invocation, described)),
+            Err(error) => Pending::ready(receipt::<()>(invocation, Err(error))),
+        },
+        _ => match Query::of(request) {
+            Ok(query) => search
+                .find_within(caller, &query.needle, &query.within)
+                .map(move |found| receipt(invocation, found)),
+            Err(error) => Pending::ready(receipt::<()>(invocation, Err(error))),
+        },
     }
+}
+
+/// What `request` is asked with, as `T`.
+fn argument<T: serde::de::DeserializeOwned>(request: &InvokeRequest) -> Result<T, ActionCallError> {
+    let fields = match &request.argument {
+        InvokeArgument::Json(fields) => fields.clone(),
+        _ => serde_json::Map::new(),
+    };
+    serde_json::from_value(serde_json::Value::Object(fields)).map_err(|error| {
+        ActionCallError::InvalidRequest {
+            reason: format!("the search's `{}` does not read: {error}", request.target.address.action),
+        }
+    })
 }
 
 /// One resource a search found, as every caller of the one search reads a
 /// result: the resource it is about, what it is, and what it reads as. It
 /// crosses the wire as a provider's answer to a search asked over its API
 /// ([`FIND`]).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Found {
     /// The resource's published id: what a caller addresses it by.
     pub resource: String,
@@ -199,6 +291,94 @@ pub struct Found {
     /// search says so (a message: when it was written).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<i64>,
+    /// The workspace it is in, where the search spans every workspace its caller sees (a
+    /// person's own search); `None` where it is the caller's one workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// The search's own name for the result: where its app published it from and its key
+    /// there, the same for the same result across searches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The line under its label, as its app says it (an entry's subtitle, else the group it
+    /// lists it under).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    /// What it is, where its app keeps something more than a record: an agent, a conversation,
+    /// a message, a person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<IndexKind>,
+    /// Who it shows, the one in front first (a message's sender, a conversation's people), each
+    /// by what the workspace calls them now; empty where the caller may read no name for them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub people: Vec<IndexPerson>,
+    /// Where it is, by what that is called now: the conversation a message sits in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
+    /// The named icon its app gave it (a lucide kebab name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// How well it matched, on the ranking's own scale: higher is better.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rank: Option<i32>,
+    /// Whether it opens as the item its app keeps, which the app draws as its own list draws it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub item: bool,
+    /// Whether it is a secret its app keeps locked: nothing of it shows but its app, opened to
+    /// unlock it ([`Found::app`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
+}
+
+
+/// How much a match in one of an entry's fields counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexWeight {
+    /// The name a person looks for.
+    Title,
+    /// A stable identity typed verbatim: an address, a site, a username.
+    Identity,
+    /// A secondary line: an author, a sender, a folder.
+    Subtitle,
+    /// Other short fields: labels, tags, a subject.
+    Metadata,
+    /// Short prose.
+    Body,
+}
+
+/// What kind of thing an entry is, where the app keeps something the shell's
+/// generic rows would read poorly: each is its own section, drawn as what it
+/// is rather than as a record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexKind {
+    /// An agent of the workspace, opened in the conversation it answers in.
+    Agent,
+    /// A conversation: a channel, a group or a direct message.
+    Conversation,
+    /// One message in a conversation, opened where it sits.
+    Message,
+    /// A person or an agent the workspace knows, drawn as themselves.
+    Person,
+}
+
+/// A person or an agent an entry is about: who a row shows and what it says
+/// under its name.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct IndexPerson {
+    /// The name the record gives them, when it can say it; empty: what their
+    /// `anchor` is called now.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// The resource that names them when the record only holds their id
+    /// (`chat.workspace/people/…`), empty when there is none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub anchor: String,
+    /// Their stable id: picks their colour and their picture.
+    pub identity: String,
+    /// Whether they are an agent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
 }
 
 /// The kind of a result that is a file of the workspace's folder: its
@@ -229,13 +409,21 @@ pub struct Within {
     /// Before this moment, in seconds since the Unix epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<i64>,
+    /// What one app publishes alone: a window's search of the app it shows, whether or not the
+    /// app runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    /// What it is, where its app says ([`Found::about`]): asked with no words, every one of
+    /// these, the most recent first (the people, agents and conversations a message can go to).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub about: Vec<IndexKind>,
 }
 
 impl Within {
     /// Whether it narrows nothing.
     #[must_use]
-    pub const fn is_everything(&self) -> bool {
-        self.place.is_none() && !self.is_timed()
+    pub fn is_everything(&self) -> bool {
+        self.place.is_none() && self.app.is_none() && self.about.is_empty() && !self.is_timed()
     }
 
     /// Whether it narrows to a stretch of time.
@@ -326,6 +514,30 @@ pub trait ResourceSearch: Send + Sync {
             reason: NOT_NARROWED.into(),
         }))
     }
+
+    /// The pictures the search holds that `caller` may read ([`PICTURES`]).
+    ///
+    /// # Errors
+    /// This search keeps no pictures, or refuses `caller`.
+    fn pictures(&self, _caller: &super::Caller) -> super::Pending<Result<Vec<Picture>, ActionCallError>> {
+        super::Pending::ready(Err(ActionCallError::Unavailable {
+            reason: "this search keeps no pictures".into(),
+        }))
+    }
+
+    /// Add `description` to its picture's entry ([`DESCRIBE`]).
+    ///
+    /// # Errors
+    /// This search keeps no pictures, or `caller` may not read the picture.
+    fn describe(
+        &self,
+        _caller: &super::Caller,
+        _description: Description,
+    ) -> super::Pending<Result<(), ActionCallError>> {
+        super::Pending::ready(Err(ActionCallError::Unavailable {
+            reason: "this search keeps no pictures".into(),
+        }))
+    }
 }
 
 /// The stem an English word is matched by: its plural, its participle and
@@ -392,6 +604,8 @@ mod tests {
             place: Some("pad/threads/t1".into()),
             after: Within::moment("2026-11-10"),
             before: Within::moment("2026-11-17T00:00:00Z"),
+            app: None,
+            about: Vec::new(),
         };
         assert_eq!(last_week.after, Some(1_794_268_800));
         let inside = Within::moment("2026-11-12T09:30:00+01:00");

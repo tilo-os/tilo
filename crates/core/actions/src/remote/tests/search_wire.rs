@@ -27,6 +27,7 @@ fn search_and_changes_cross_the_api_as_the_host_answers_them() {
                 app: Some("so.tilo.notes".into()),
                 provider: None,
                 when: None,
+                ..Found::default()
             }]))
         }
     }
@@ -107,6 +108,8 @@ fn search_and_changes_cross_the_api_as_the_host_answers_them() {
             place: Some("pad/threads/general".into()),
             after: Some(1),
             before: None,
+            app: None,
+            about: Vec::new(),
         },
     ));
     let encoded = RemoteActionFrame::new(narrowed.clone()).encode().unwrap();

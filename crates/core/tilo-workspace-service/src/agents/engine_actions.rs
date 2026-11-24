@@ -95,7 +95,7 @@ fn serve_device(
                 result,
             }),
         RemoteActionMessage::Invoke(request)
-            if tilo_actions::remote::search::is_find(&request.target) =>
+            if tilo_actions::remote::search::is_search(&request.target) =>
         {
             tilo_actions::remote::search::searched(provider, caller, &request)
                 .map(RemoteActionMessage::Receipt)

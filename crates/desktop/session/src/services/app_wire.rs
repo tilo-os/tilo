@@ -147,8 +147,8 @@ pub(crate) struct Collaboration<'a> {
     pub fanout: std::sync::Arc<FanoutState>,
     /// The records' content this session keeps and asks the workspaces for.
     pub content: Option<std::sync::Arc<crate::content::ContentService>>,
-    /// The records' content in search's index, read from the records.
-    pub records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
+    /// What notes the workspaces' records changing, for the roles that follow them.
+    pub records: Option<std::sync::Arc<crate::resource_index::RecordChanges>>,
     /// The programs agents write in this session's tasks, run by it.
     pub task_programs:
         Option<std::sync::Arc<tilo_workspace_service::workspaces::task_programs::TaskPrograms>>,
@@ -300,9 +300,6 @@ pub(crate) fn start_app_wire(
         app_wire::Hosted {
             live_activities: std::sync::Arc::clone(live_activities),
             native_media: calls_service.clone(),
-            // The index search reads is the one apps publish into: a closed app's content is found
-            // from here on.
-            content: Some(std::sync::Arc::clone(&options.content)),
             records,
             layout: std::sync::Arc::clone(&layout),
             shortcuts,

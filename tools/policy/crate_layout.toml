@@ -189,7 +189,6 @@ services = [
     "tilo-media-controls -> tilo-media",
     "tilo-projector -> tilo-callstream",
     "tilo-vision-service -> agent-provider-config",
-    "tilo-vision-service -> tilo-desktop-search",
     "tilo-vision-service -> tilo-image-codec",
     "tilo-vision-service -> tilo-model-client",
     "tilo-vision-service -> tilo-ocr",
@@ -197,7 +196,6 @@ services = [
 ]
 
 ui = [
-    "tilo-emoji -> tilo-search",
     "tilo-formats -> tilo-resource",
     "tilo-render-protocol -> tilo-actions",
     "tilo-rich-edit -> collab-types",
@@ -238,7 +236,6 @@ ui = [
     "tilo-ui -> tilo-process-services",
     "tilo-ui -> tilo-reference",
     "tilo-ui -> tilo-resource",
-    "tilo-ui -> tilo-search",
     "tilo-ui -> tilo-startup-metrics",
     "tilo-ui -> tilo-test-env",
     "tilo-ui -> tilo-tts",

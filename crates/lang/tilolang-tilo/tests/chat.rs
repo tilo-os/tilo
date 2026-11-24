@@ -1635,9 +1635,9 @@ fn a_message_is_found_by_search_and_a_read_holds_what_it_says() {
     use std::sync::Arc;
 
     use tilo_desktop_search::Source as _;
-    use tilo_desktop_search::content_index::AppContentIndex;
     use tilo_desktop_search::indexed::IndexedContent;
     use tilo_resource::search_index::{IndexState, Publisher};
+    use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
@@ -1671,7 +1671,15 @@ fn a_message_is_found_by_search_and_a_read_holds_what_it_says() {
             .publish("workspace", APP, "chat", delta)
             .expect("the index takes what the app publishes");
     }
-    let hits = IndexedContent::new(Arc::new(index), str::to_owned, "ada").query("launch build");
+    let search = IndexSearch::new(Arc::new(index), Arc::new(|_, _| true));
+    let hits = IndexedContent::new(
+        Arc::new(search),
+        tilo_actions::remote::Caller::local_person("ada"),
+        str::to_owned,
+        "ada",
+        Arc::new(|| {}),
+    )
+    .query("launch build");
     let found = hits
         .iter()
         .find(|hit| hit.title.contains("launch build"))

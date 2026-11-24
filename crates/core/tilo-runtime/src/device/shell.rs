@@ -180,6 +180,14 @@ fn kept_here(request: &InvokeRequest) -> bool {
 }
 
 impl ActionProvider for Shell {
+    /// The device's one search index: the person's search spans every workspace they see.
+    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        self.kept
+            .workspaces
+            .search()
+            .map(|search| search as Arc<dyn tilo_actions::remote::ResourceSearch>)
+    }
+
     fn query(
         &self,
         caller: &Caller,

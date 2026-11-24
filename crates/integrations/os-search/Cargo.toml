@@ -17,7 +17,7 @@ blake3.workspace = true
 # The one action API every caller browses and opens resources through.
 tilo-actions = { path = "../../core/actions" }
 # The palette's folding and ranking, for the hosts that ask us to match.
-tilo-search = { path = "../../engines/search" }
+tilo-search = { path = "../../platform/search" }
 # Bounds how long one action host answer may take.
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true

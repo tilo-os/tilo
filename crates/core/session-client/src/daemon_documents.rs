@@ -403,6 +403,87 @@ fn answered_is(asked: Result<ShellReply, String>, resource: &str) -> bool {
     }
 }
 
+/// The device's one search, as the daemon answers it for the person on the shell link: the same
+/// index, and the same reads decided per record, that `tilo do`, an agent's `find` and every other
+/// caller of the daemon search. The daemon answers the link's person: a caller here is who the
+/// link was handed to.
+#[derive(Clone, Debug)]
+pub struct DaemonSearch(pub DaemonShell);
+
+impl DaemonSearch {
+    /// Ask the daemon's search `request`, and read what it answered as `T`.
+    fn asked<T: serde::de::DeserializeOwned + Send + 'static>(
+        &self,
+        request: InvokeRequest,
+    ) -> tilo_actions::remote::Pending<Result<T, tilo_actions::remote::ActionCallError>> {
+        let (answer, pending) = tilo_actions::remote::pending();
+        let shell = self.0.clone();
+        self.0.runtime().spawn(async move {
+            let answered = shell
+                .dispatch(None, &RemoteActionMessage::Invoke(request))
+                .await
+                .and_then(|output| {
+                    let output: tilo_actions::ActionOutput = serde_json::from_value(output)
+                        .map_err(|error| format!("the search's answer does not read: {error}"))?;
+                    serde_json::from_value(output.value.unwrap_or_default())
+                        .map_err(|error| format!("the search's answer does not read: {error}"))
+                })
+                .map_err(|reason| tilo_actions::remote::ActionCallError::Unavailable { reason });
+            answer.complete(answered);
+        });
+        pending
+    }
+}
+
+impl tilo_actions::remote::ResourceSearch for DaemonSearch {
+    fn find(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        needle: &str,
+    ) -> tilo_actions::remote::Pending<
+        Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionCallError>,
+    > {
+        self.find_within(caller, needle, &tilo_actions::remote::Within::default())
+    }
+
+    fn find_within(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        needle: &str,
+        within: &tilo_actions::remote::Within,
+    ) -> tilo_actions::remote::Pending<
+        Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionCallError>,
+    > {
+        self.asked(tilo_actions::remote::search::Query::request(
+            tilo_actions::InvocationId::new(),
+            needle,
+            within,
+        ))
+    }
+
+    fn pictures(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+    ) -> tilo_actions::remote::Pending<
+        Result<Vec<tilo_actions::remote::search::Picture>, tilo_actions::remote::ActionCallError>,
+    > {
+        self.asked(tilo_actions::remote::search::pictures_request(
+            tilo_actions::InvocationId::new(),
+        ))
+    }
+
+    fn describe(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        description: tilo_actions::remote::search::Description,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        self.asked(tilo_actions::remote::search::describe_request(
+            tilo_actions::InvocationId::new(),
+            &description,
+        ))
+    }
+}
+
 /// [`DeviceWrites`] the device's daemon signs and seals as the device.
 #[derive(Clone, Debug)]
 pub struct DaemonWrites(pub DaemonShell);

@@ -75,6 +75,8 @@ tilo-app-window = { version = "0.1.0", path = "../../sdk/tilo-app-window" }
 # The palette, a native app whose actions it lists beside a tilolang app's, and the content
 # index a paragraph of a rich text is found in.
 tilo-desktop-search = { path = "../../desktop/desktop-search", features = ["indexes"] }
+# The device's search index the palette reads, as the daemon keeps it.
+tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["content"] }
 passwords = { path = "../../../apps/passwords" }
 # The YouTube connector's service, faked at the boundary where the app hands its effects over:
 # the real origin writes a test's own answers into the client's records. No network, no client.

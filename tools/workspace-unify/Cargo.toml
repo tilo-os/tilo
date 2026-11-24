@@ -1299,7 +1299,7 @@ doc = false
 "tilo-sandbox" = { path = "../../crates/platform/tilo-sandbox", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../crates/platform/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../crates/core/tilo-seal", default-features = false, features = [] }
-"tilo-search" = { path = "../../crates/engines/search", default-features = false, features = ["disk"] }
+"tilo-search" = { path = "../../crates/platform/search", default-features = false, features = ["disk"] }
 "tilo-secret-service" = { path = "../../crates/desktop/secret-service", default-features = false, features = [] }
 "tilo-secret-vault" = { path = "../../crates/core/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../crates/platform/tilo-secrets", default-features = false, features = [] }
@@ -3911,7 +3911,7 @@ doc = false
 "tilo-sandbox" = { path = "../../crates/platform/tilo-sandbox", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../crates/platform/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../crates/core/tilo-seal", default-features = false, features = [] }
-"tilo-search" = { path = "../../crates/engines/search", default-features = false, features = ["disk"] }
+"tilo-search" = { path = "../../crates/platform/search", default-features = false, features = ["disk"] }
 "tilo-secret-service" = { path = "../../crates/desktop/secret-service", default-features = false, features = [] }
 "tilo-secret-vault" = { path = "../../crates/core/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../crates/platform/tilo-secrets", default-features = false, features = [] }

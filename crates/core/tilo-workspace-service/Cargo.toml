@@ -25,7 +25,7 @@ agents = ["apps", "device-keys", "dep:tilolang-tilo", "dep:tilo-broker-core", "d
 device-keys = ["dep:tilo-workspace-keys"]
 # Content a record references, reaching the devices that may read it: what a host serves
 # for its workspaces' records, with or without apps on top.
-content = ["dep:tilo-broker-core"]
+content = ["dep:tilo-broker-core", "dep:tilo-search"]
 # A workspace's file tree held in the device's own service, its bytes on the records' route.
 files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:bytes", "dep:wire-frame", "dep:rustix"]
 # A session client's pages, read through the document core over the replica its engine admits
@@ -43,6 +43,8 @@ tilo-resource-store = { version = "0.1.0", path = "../resource-store" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../action-policy" }
+# The ranking the device's search index answers `search#find` with.
+tilo-search = { path = "../../platform/search", optional = true }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Where the desktop service keeps its key, and where a workspace's files appear in the Files
 # mount, which its access list names.

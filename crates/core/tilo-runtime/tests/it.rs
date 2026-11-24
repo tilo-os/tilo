@@ -118,6 +118,8 @@ mod provided;
 mod refresh_reads;
 #[path = "root_holder_login.rs"]
 mod root_holder_login;
+#[path = "search.rs"]
+mod search;
 #[path = "shell_link.rs"]
 mod shell_link;
 #[path = "runtime_daemon_process.rs"]

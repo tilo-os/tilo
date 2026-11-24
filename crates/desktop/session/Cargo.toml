@@ -506,7 +506,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 test-http = { path = "../../../tools/test-http" }
 # The broker's certified-connection context, for driving a service the way
 # the broker admits Files.
-tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "test-support"] }
+tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "content", "test-support"] }
 # A site's workspace as a site runs it: the host on this machine that
 # governs the workspace a join enrolls into, folding what its pages write,
 # and the page of its person that recorded there first.

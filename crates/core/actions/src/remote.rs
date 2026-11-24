@@ -2051,8 +2051,9 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
                 result,
             }),
         // The workspace's search, asked as an action of its own, is answered by the provider's
-        // search at once: it runs nothing and is remembered as no invocation.
-        RemoteActionMessage::Invoke(request) if search::is_find(&request.target) => {
+        // search at once, and is remembered as no invocation: a find or a listing of pictures
+        // runs nothing, and a picture's description only adds to the index.
+        RemoteActionMessage::Invoke(request) if search::is_search(&request.target) => {
             search::searched(provider, caller, &request).map(RemoteActionMessage::Receipt)
         }
         RemoteActionMessage::Invoke(request) => {

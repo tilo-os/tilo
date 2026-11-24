@@ -12,8 +12,9 @@
 //! - [`window`]: one window's own search, over what it publishes.
 //! - [`answers`]: what a query that is not a name answers: a sum, a unit
 //!   conversion, an address, the web searches it can be.
-//! - `content_index` and `files_index` (feature `indexes`): the session's
-//!   on-disk indexes of what apps publish and of the person's files.
+//! - [`indexed`]: what apps hold, as the device's search index answers it.
+//! - `files_index` (feature `indexes`): the session's on-disk index of the
+//!   person's files.
 //! - [`availability`]: what the manifest registry knows of each app: where
 //!   it runs, its category and the words people know it by.
 //! - [`usage`] and [`preferences`]: what the person chose before, and the
@@ -28,11 +29,8 @@
 pub mod answers;
 pub mod availability;
 #[cfg(feature = "indexes")]
-pub mod content_index;
-#[cfg(feature = "indexes")]
 pub mod files_index;
 pub mod i18n;
-#[cfg(feature = "indexes")]
 pub mod indexed;
 pub mod model;
 pub mod names;
