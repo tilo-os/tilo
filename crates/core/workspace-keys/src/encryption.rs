@@ -2726,7 +2726,7 @@ async fn within<F: std::future::Future>(wait: Duration, changed: F) -> bool {
         let measuring = std::thread::Builder::new()
             .name("tilo-keys-wait".into())
             .spawn(move || {
-                if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = ended.recv_timeout(wait) {
+                if ended.recv_timeout(wait) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
                     let _ = passed.send(());
                 }
             });
