@@ -495,7 +495,12 @@ view session_card(
             ui.ListRow(title: c.summary, secondary: changed_where(c), icon: .clock) {
                 trailing: {
                     if c.target.id != "" {
-                        ui.Button(c.target.label, icon: .arrow_up_right, size: .small, role: .plain) {
+                        ui.Button(
+                            c.target.label,
+                            icon: .arrow_up_right,
+                            size: .small,
+                            role: .plain,
+                        ) {
                             on press: history.open_change(
                                 history.history,
                                 id: c.target.id,
@@ -533,14 +538,10 @@ view session_card(
 
 /// Where a session's change landed, as its row says it: the app, and the thing it changed.
 fn changed_where(c: history.SessionChange) -> Text {
-    let app = c.target.app_label ?? ""
-    if app == "" {
+    let in_app = c.target.app_label ?? ""
+    if in_app == "" {
         c.target.label
-    } else if c.target.label == "" {
-        app
-    } else {
-        "{app} · {c.target.label}"
-    }
+    } else if c.target.label == "" { in_app } else { "{in_app} · {c.target.label}" }
 }
 
 /// The workspace played back change by change: each frame the layout as it stood, and the person
