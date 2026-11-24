@@ -257,11 +257,6 @@ type Diag {
     message: Text
 }
 
-type Diagnostics {
-    /// Each file's problems, by the path it stands at.
-    diagnostics: Map<List<Diag>>
-}
-
 type CompletionAnswer {
     what: Text = ""
     items: List<Completion>
@@ -295,8 +290,10 @@ type ServerState {
     state: Text = ""
     server: Text = ""
     failure: Text = ""
-    progress: Option<Progress>
-    diagnostics: Option<Diagnostics>
+    /// The progress of the work the server is doing (`Indexing 42%`), as the engine wrote it.
+    progress: Option<json.Value>
+    /// Each file's problems, by the path it stands at.
+    diagnostics: Option<Map<List<Diag>>>
     answer: Text = ""
 }
 
@@ -790,12 +787,7 @@ fn shifted(entry: Entry, line: Int, step: Text, inward: Bool) -> Text {
     let spaces = leading_spaces(one)
     let changed = if inward {
         "{step}{one}"
-    } else if spaces == 0 {
-        one
-    } else {
-        let cut = (spaces - width).max(0)
-        one.slice(cut, one.len())
-    }
+    } else if spaces == 0 { one } else { one.slice(spaces.min(width), one.len()) }
     joined([lines.take(line), [changed], rest_from(lines, line + 1)].flat_map(x -> x))
 }
 
@@ -930,6 +922,10 @@ fn count_from(hay: Text, needle: Text, word: Bool, from: Int, count: Int) -> Int
 /// The declarations a file's text writes — `fn`, `struct`, `enum`, `trait`, `class`, `def`,
 /// `interface`, `type`, `const` — each with the line and column it stands at: what the
 /// project's symbols are and what go-to-symbol offers.
+action symbols(entry: Entry) -> List<Found> (icon: .code, label: "Go to symbol") {
+    symbols_in(entry)
+}
+
 fn symbols_in(entry: Entry) -> List<Found> {
     let found: List<Found> = []
     let at = 0
@@ -1074,6 +1070,7 @@ fn count_of(line: Text, piece: Text) -> Int {
 /// the file, the editor's own otherwise.
 action check(p: Project, entry: Entry) (icon: .check, label: "Check the file") {
     require entry.kind == .file "A folder holds no text"
+    ensure_server(p, entry)
     let digest = fingerprint(entry.text)
     entry.checked = digest
     if has_server(p, entry) {
@@ -1115,74 +1112,59 @@ action open_folder(p: Project, folder: Text) uses files (
         .err(why) => {
             p.trouble = "Couldn’t read {root}: {why}"
         }
-        .ok(answer) => match json.decode<Listing>(answer) {
-            .err(why) => {
-                p.trouble = why
+        .ok(answer) => {
+            let olds: List<Entry> = []
+            for e in p.files {
+                olds = olds + [e]
             }
-            .ok(listing) => {
-                for e in p.files {
-                    p.files.remove(e)
-                }
-                p.folder = root
-                read_into(p, .none, listing)
-                p.trouble = ""
+            for e in olds {
+                p.files.remove(e)
             }
-        },
+            p.folder = root
+            p.trouble = ""
+            read_into(p, .none, answer)
+        }
     }
 }
 
-/// Records the entries of `listing`, standing in `folder`, and reads a file's own bytes: the
-/// tree is the project's, so every file the project shows is one a save can check.
-action read_into(p: Project, parent: Option<Entry>, listing: Listing) {
-    for found in listing.entries {
-        if not found.hidden {
-            let made = p.files.insert(
-                Entry(
-                    kind: if found.folder { .folder } else { .file },
-                    name: found.name,
-                    parent: parent,
-                    language: if found.folder { "" } else { language_of(found.name) },
-                    text: "",
-                    saved: "",
-                    disk: found.path,
-                ),
-            )
-            if found.folder { read_folder_into(p, made, found.path) } else { read_text(p, made) }
+/// Records the entries `answer` lists, standing in `folder`, and reads a file's own bytes:
+/// the tree is the project's, so every file the project shows is one a save can check. The
+/// listing crosses an action call as the text the device answered, which it already is.
+action read_into(p: Project, parent: Option<Entry>, answer: Text) {
+    match json.decode<Listing>(answer) {
+        .ok(listing) => {
+            for found in listing.entries {
+                if not found.hidden {
+                    let made = p.files.insert(
+                        Entry(
+                            kind: if found.folder { .folder } else { .file },
+                            name: found.name,
+                            parent: parent,
+                            language: if found.folder { "" } else { language_of(found.name) },
+                            text: "",
+                            saved: "",
+                            disk: found.path,
+                        ),
+                    )
+                    if found.folder {
+                        read_folder_into(p, made, found.path)
+                    } else { read_text(p, made) }
+                }
+            }
+        }
+        .err(why) => {
+            p.trouble = why
         }
     }
 }
 
 action read_folder_into(p: Project, folder: Entry, path: Text) {
     match engine.call("list", json.encode(DiskAsk(path: path))) {
-        .ok(answer) => match json.decode<Listing>(answer) {
-            .ok(listing) => {
-                for found in listing.entries {
-                    if not found.hidden {
-                        let made = p.files.insert(
-                            Entry(
-                                kind: if found.folder { .folder } else { .file },
-                                name: found.name,
-                                parent: folder,
-                                language: if found.folder { "" } else { language_of(found.name) },
-                                text: "",
-                                saved: "",
-                                disk: found.path,
-                            ),
-                        )
-                        if found.folder {
-                            read_folder_into(p, made, found.path)
-                        } else { read_text(p, made) }
-                    }
-                }
-            }
-            .err(_) => {}
-        },
+        .ok(answer) => read_into(p, .some(folder), answer),
         .err(_) => {}
     }
 }
 
-/// Reads a file's bytes as its text, keeping the stamp a save checks against; a file that is
-/// not text, or is too large, is an entry with nothing in it that says why when it is opened.
 action read_text(p: Project, entry: Entry) {
     match engine.call("load", json.encode(DiskAsk(path: entry.disk))) {
         .ok(answer) => match json.decode<Loaded>(answer) {
@@ -1503,7 +1485,7 @@ action poll(p: Project) uses time {
                         c.state = if state.failure != "" { "failed" } else { state.state }
                         c.ended = now
                         c.job = ""
-                        c.items = items_of(c.output)
+                        c.items = items_of(state.output)
                         if state.failure != "" {
                             p.trouble = state.failure
                         }
@@ -1614,17 +1596,20 @@ fn digits(one: Text) -> Bool {
 
 /// Brings the caret to the place an item of a command's output names: the file is read if the
 /// project does not hold it yet, and the page shows it.
-action reveal_item(p: Project, item: Item) uses files (icon: .locate_fixed, label: "Go to it") {
-    require item.path != "" "That line names no file"
-    let path = canonical(item.path)
-    if let known = file_at(p, path) {
+action reveal_item(p: Project, path: Text, line: Int = 0) uses files (
+    icon: .locate_fixed,
+    label: "Go to it",
+) {
+    require path != "" "That line names no file"
+    let at = canonical(path)
+    if let known = file_at(p, at) {
         p.trouble = ""
-        seen_line(p, item.line)
-    } else if let found = find_file_named(p, item.path) {
+        seen_line(p, line)
+    } else if let found = find_file_named(p, path) {
         p.trouble = ""
-        seen_line(p, item.line)
+        seen_line(p, line)
     } else {
-        p.trouble = "{path} is not a file of this project"
+        p.trouble = "{at} is not a file of this project"
     }
 }
 
@@ -1691,11 +1676,13 @@ action stop_search(p: Project) (icon: .square, label: "Stop searching") {
 
 /// Shows the place a search found: the file is read from the device when the project does not
 /// hold it yet, and the page opens it.
-action open_hit(p: Project, hit: Hit) uses files (icon: .locate_fixed, label: "Open the place") {
-    let path = hit.path
+action open_hit(p: Project, path: Text, line: Int = 0) uses files (
+    icon: .locate_fixed,
+    label: "Open the place",
+) {
     if let known = file_at(p, path) {
         p.trouble = ""
-        seen_line(p, hit.line)
+        seen_line(p, line)
     } else {
         match engine.call("load", json.encode(DiskAsk(path: path))) {
             .ok(answer) => match json.decode<Loaded>(answer) {
@@ -1713,7 +1700,7 @@ action open_hit(p: Project, hit: Hit) uses files (icon: .locate_fixed, label: "O
                         ),
                     )
                     made
-                    seen_line(p, hit.line)
+                    seen_line(p, line)
                     p.trouble = ""
                 }
                 .err(why) => {
@@ -1851,15 +1838,15 @@ action poll_server(p: Project) {
                 }
                 p.server_trouble = state.failure
                 if let progress = state.progress {
-                    p.server_progress = if progress.percent > 0 {
-                        "{progress.title} {progress.percent}%"
-                    } else { progress.title }
+                    let title = std.json_text(progress, "title")
+                    let percent = std.json_number(progress, "percent")
+                    p.server_progress = if percent > 0 { "{title} {percent}%" } else { title }
                 } else {
                     p.server_progress = ""
                 }
                 if let found = state.diagnostics {
-                    for path in found.diagnostics.keys() {
-                        if let held = found.diagnostics.get(path) {
+                    for path in found.keys() {
+                        if let held = found.get(path) {
                             if let file = file_at(p, path) {
                                 file.problems = held.map(d -> problem_of(d))
                                 file.source = p.server_name
@@ -1982,12 +1969,12 @@ action definition(p: Project, entry: Entry, line: Int = 0, column: Int = 0) (
 }
 
 /// Writes the completion a person chose where the caret stands.
-action accept_completion(p: Project, entry: Entry, item: Completion) (
+action accept_completion(p: Project, entry: Entry, label: Text, insert: Text) (
     icon: .check,
     label: "Write the suggestion",
 ) {
     let at = offset_of(entry.text, p.answer_line, p.answer_column)
-    let written = if item.insert != "" { item.insert } else { item.label }
+    let written = if insert != "" { insert } else { label }
     entry.text = "{entry.text.slice(0, at)}{written}{entry.text.slice(at, entry.text.len())}"
     p.answer_items = []
     p.answer_what = ""
@@ -2270,6 +2257,11 @@ template view file_head(
             ui.MenuItem("Go to definition", icon: .locate_fixed) {
                 on choose: definition(p, e, p.answer_line, p.answer_column)
             }
+            for place in symbols_in(e) {
+                ui.MenuItem(place.words, icon: .code) {
+                    on choose: seen_line(p, place.line)
+                }
+            }
         }
     }
     row(gap: .related, align: .center) {
@@ -2388,7 +2380,7 @@ view terminal_panel(p: Project) {
                         }
                         for item in c.items.take(8) {
                             ui.Button(item.text, icon: .locate_fixed) {
-                                on press: reveal_item(p, item)
+                                on press: reveal_item(p, item.path, item.line)
                             }
                         }
                     }
@@ -2430,7 +2422,7 @@ view search_panel(p: Project) {
         text(search_said(p), role: .caption, secondary: true)
         for hit in p.search_hits.take(200) {
             ui.ListRow(title: hit.preview, meta: "{hit.rel}:{hit.line + 1}", icon: .search) {
-                on activate: open_hit(p, hit)
+                on activate: open_hit(p, hit.path, hit.line)
             }
         }
     }
@@ -2468,7 +2460,7 @@ template view status_line(p: Project, e: Entry) {
         ui.Section("Suggestions") {
             for item in p.answer_items.take(8) {
                 ui.ListRow(title: item.label, secondary: item.detail, icon: .code) {
-                    on activate: accept_completion(p, e, item)
+                    on activate: accept_completion(p, e, item.label, item.insert)
                 }
             }
         }

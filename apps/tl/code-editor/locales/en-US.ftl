@@ -486,15 +486,6 @@ d-7nbsbvje-filter-line = Line
 
 d-7nbsbvje-filter-column = Column
 
-d-7rcunm5q = Diagnostics
-    .noun = { $count ->
-        [one] diagnostic
-       *[other] diagnostics
-    }
-
-d-pfdqfft6 = Diagnostics
-    .doc = Each file's problems, by the path it stands at.
-
 d-xa3s7x43 = Completion answer
     .noun = { $count ->
         [one] completion answer
@@ -574,14 +565,12 @@ d-kqcbbx2v = Server
 d-66ixtrna = Failure
 
 d-sqfl7jdi = Progress
+    .doc = The progress of the work the server is doing (`Indexing 42%`), as the engine wrote it.
 
 d-s4bc4e6s = Diagnostics
+    .doc = Each file's problems, by the path it stands at.
 
 d-h4pgltlo = Answer
-
-d-uaoqlskg-filter-progress = Progress
-
-d-uaoqlskg-filter-diagnostics = Diagnostics
 
 d-a34gxw47 = Project
     .doc = A project: its files and folders, the commands run in it, and what the device answers about it.
@@ -874,6 +863,9 @@ d-qeqmb2pr-case = Case
 
 d-qeqmb2pr-word = Word
 
+d-albctzgc = Go to symbol
+    .doc = The declarations a file's text writes — `fn`, `struct`, `enum`, `trait`, `class`, `def`, `interface`, `type`, `const` — each with the line and column it stands at: what the project's symbols are and what go-to-symbol offers.
+
 d-hedpejsd = Check the file
     .doc = Checks a file and keeps what it found: the device's server's problems when one answers for the file, the editor's own otherwise.
     .w-a-folder-holds-no-text = A folder holds no text
@@ -886,11 +878,11 @@ d-6jlaqqyx = Open a project folder
 d-6jlaqqyx-folder = Folder
 
 d-vmmfvt6f = Read into
-    .doc = Records the entries of `listing`, standing in `folder`, and reads a file's own bytes: the tree is the project's, so every file the project shows is one a save can check.
+    .doc = Records the entries `answer` lists, standing in `folder`, and reads a file's own bytes: the tree is the project's, so every file the project shows is one a save can check.
 
 d-vmmfvt6f-parent = Parent
 
-d-vmmfvt6f-listing = Listing
+d-vmmfvt6f-answer = Answer
 
 d-thpwxqjh = Read folder into
 
@@ -899,7 +891,6 @@ d-thpwxqjh-folder = Folder
 d-thpwxqjh-path = Path
 
 d-og2uvscy = Read text
-    .doc = Reads a file's bytes as its text, keeping the stamp a save checks against; a file that is not text, or is too large, is an entry with nothing in it that says why when it is opened.
 
 d-og2uvscy-entry = Entry
 
@@ -999,7 +990,9 @@ d-mqipns37 = Go to it
     .doc = Brings the caret to the place an item of a command's output names: the file is read if the project does not hold it yet, and the page shows it.
     .w-that-line-names-no-file = That line names no file
 
-d-mqipns37-item = Item
+d-mqipns37-path = Path
+
+d-mqipns37-line = Line
 
 d-7ecrxle7 = Seen line
 
@@ -1021,7 +1014,9 @@ d-5lsivooa = Stop searching
 d-ivfwweyt = Open the place
     .doc = Shows the place a search found: the file is read from the device when the project does not hold it yet, and the page opens it.
 
-d-ivfwweyt-hit = Hit
+d-ivfwweyt-path = Path
+
+d-ivfwweyt-line = Line
 
 d-kcnxibkp = Ensure server
     .doc = Starts the language server for a file's language, if none runs for it yet, and tells it about the file.
@@ -1073,7 +1068,9 @@ d-pnged4ux = Write the suggestion
 
 d-pnged4ux-entry = Entry
 
-d-pnged4ux-item = Item
+d-pnged4ux-label = Label
+
+d-pnged4ux-insert = Insert
 
 d-fu3y2v7i = Format the file
     .doc = Reformats a file as its language's formatter does, as one change.

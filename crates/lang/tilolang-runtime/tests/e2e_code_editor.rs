@@ -56,6 +56,10 @@ mod cases {
                 .push((op.to_owned(), input.to_owned()));
             match op {
                 "list" if input.contains("/nowhere") => Err("no folder stands there".to_owned()),
+                "list" if input.contains("/p/src") => Ok(r#"{"entries":[
+                    {"name":"main.rs","path":"/p/src/main.rs","folder":false,"hidden":false}
+                ]}"#
+                .to_owned()),
                 "list" => Ok(r#"{"entries":[
                     {"name":"src","path":"/p/src","folder":true,"hidden":false},
                     {"name":"README.md","path":"/p/README.md","folder":false,"hidden":false},
@@ -69,7 +73,9 @@ mod cases {
                     Ok(r#"{"text":"fn main() {}\n","mtime":12,"len":13}"#.to_owned())
                 }
                 "load" => Ok(r#"{"text":"","mtime":1,"len":0}"#.to_owned()),
-                "save" if *self.conflict.borrow() => Err("conflict".to_owned()),
+                "save" if *self.conflict.borrow() && !input.contains("\"force\":true") => {
+                    Err("conflict".to_owned())
+                }
                 "save" => Ok(r#"{"mtime":42,"len":17}"#.to_owned()),
                 "stat" => Ok(r#"{"exists":true,"mtime":42,"len":17}"#.to_owned()),
                 "change" | "open" | "saved" | "ask" => Ok("{}".to_owned()),
@@ -226,6 +232,51 @@ mod cases {
             }
         }
 
+        fn value(&self, r: &ResourceRef, field: &str) -> Value {
+            self.rt.read(r, field).unwrap()
+        }
+
+        /// The id a declaration of the compiled app takes, for comparing an enum case.
+        fn id(&self, name: &str) -> String {
+            self.app
+                .compiled
+                .ids
+                .get(name)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| panic!("no id {name}"))
+        }
+
+        /// The values of a `List` field: a list of records is a value list, not references.
+        fn list(&self, r: &ResourceRef, field: &str) -> Vec<Value> {
+            match self.value(r, field) {
+                Value::List(items) => items,
+                other => panic!("{field} reads {other:?}"),
+            }
+        }
+
+        /// One field of a record value, as a `List<T>` field holds them.
+        fn rec(&self, value: &Value, field: &str) -> Value {
+            match value {
+                Value::Rec(record) => record
+                    .fields
+                    .get(&self.id(field))
+                    .unwrap_or_else(|| panic!("no {field} in {record:?}"))
+                    .clone(),
+                other => panic!("not a record: {other:?}"),
+            }
+        }
+
+        fn opt_ref(&self, r: &ResourceRef, field: &str) -> Option<ResourceRef> {
+            match self.value(r, field) {
+                Value::Opt(Some(held)) => match *held {
+                    Value::Ref(found) => Some(Rc::unwrap_or_clone(found.target)),
+                    other => panic!("{field} holds {other:?}"),
+                },
+                Value::Opt(None) => None,
+                other => panic!("{field} reads {other:?}"),
+            }
+        }
+
         fn records(&self, r: &ResourceRef, field: &str) -> Vec<ResourceRef> {
             match self.rt.read(r, field).unwrap() {
                 Value::List(items) => items
@@ -258,7 +309,16 @@ mod cases {
         assert_eq!(editor.text(&main, "name"), "main.rs");
         assert_eq!(editor.text(&main, "language"), "Rust");
         assert_eq!(editor.text(&main, "text"), "");
-        assert_eq!(editor.number(&main, "kind"), 0, "a file is a file");
+        match editor.value(&main, "kind") {
+            Value::Enum(kind) => {
+                assert_eq!(
+                    kind.variant,
+                    editor.id("EntryKind.file"),
+                    "a file is a file"
+                )
+            }
+            other => panic!("kind reads {other:?}"),
+        }
 
         let listed = editor.records(&editor.root, "files");
         assert_eq!(listed.len(), 2);
@@ -309,7 +369,11 @@ mod cases {
         let src = editor.folder("src", None);
         let ui = editor.folder("ui", Some(&src));
         let main = editor.file("main.rs", Some(&src));
-        assert_eq!(editor.text(&main, "parent"), editor.text(&main, "parent"));
+        assert_eq!(
+            editor.opt_ref(&main, "parent").map(|p| p.id_string()),
+            Some(src.id_string()),
+            "the file stands in the folder"
+        );
 
         editor.call(
             "move_entry",
@@ -462,7 +526,7 @@ mod cases {
                 Value::text("pub fn crab() {}\nlet x = 1;\nstruct Shell {}\n"),
             ],
         );
-        let symbols = editor.call("symbols_in", vec![Value::resource(&main)]);
+        let symbols = editor.call("symbols", vec![Value::resource(&main)]);
         match symbols {
             InvokeOutcome::Done(Value::List(items)) => {
                 assert_eq!(items.len(), 2, "the function and the struct")
@@ -555,7 +619,13 @@ mod cases {
         let files = editor.records(&editor.root, "files");
         assert!(
             files.iter().any(|f| editor.text(f, "name") == "README.md"),
-            "the folder's file is an entry"
+            "the folder's file is an entry; trouble: {:?}; files: {:?}; ops: {:?}",
+            editor.text(&editor.root, "trouble"),
+            files
+                .iter()
+                .map(|f| editor.text(f, "name"))
+                .collect::<Vec<_>>(),
+            editor.engine.ops()
         );
         let readme = files
             .iter()
@@ -650,12 +720,13 @@ mod cases {
         assert_eq!(editor.text(&commands[0], "state"), "done");
         assert_eq!(editor.number(&commands[0], "exit"), 101);
         assert!(editor.text(&commands[0], "output").contains("expected"));
-        let items = editor.records(&commands[0], "items");
+        let items = editor.list(&commands[0], "items");
         assert!(
             items
                 .iter()
-                .any(|i| editor.text(i, "path") == "src/main.rs" && editor.number(i, "line") == 3),
-            "the compiler's place is an item"
+                .any(|i| editor.rec(i, "Item.path") == Value::text("src/main.rs")
+                    && editor.rec(i, "Item.line") == Value::Int(3)),
+            "the compiler's place is an item: {items:?}"
         );
 
         editor.call(
@@ -679,14 +750,26 @@ mod cases {
             ],
         );
         editor.call("poll", vec![Value::resource(&editor.root)]);
-        assert_eq!(editor.number(&editor.root, "search_files"), 2);
-        let hits = editor.records(&editor.root, "search_hits");
+        assert_eq!(
+            editor.number(&editor.root, "search_files"),
+            2,
+            "state {:?} job {:?} trouble {:?} hits {:?}",
+            editor.text(&editor.root, "search_state"),
+            editor.text(&editor.root, "search_job"),
+            editor.text(&editor.root, "trouble"),
+            editor.list(&editor.root, "search_hits").len()
+        );
+        let hits = editor.list(&editor.root, "search_hits");
         assert_eq!(hits.len(), 1);
-        assert_eq!(editor.text(&hits[0], "rel"), "src/main.rs");
+        assert_eq!(editor.rec(&hits[0], "Hit.rel"), Value::text("src/main.rs"));
 
         editor.call(
             "open_hit",
-            vec![Value::resource(&editor.root), Value::resource(&hits[0])],
+            vec![
+                Value::resource(&editor.root),
+                Value::text("/p/src/main.rs"),
+                Value::Int(0),
+            ],
         );
         let files = editor.records(&editor.root, "files");
         let main = files
@@ -709,8 +792,12 @@ mod cases {
             .into_iter()
             .find(|f| editor.text(f, "name") == "README.md")
             .expect("a file");
-        // The server is started for a Rust file and asked to check it.
-        let rust = editor.file("src/main.rs", None);
+        // The server is started for a Rust file the device listed and asked to check it.
+        let rust = editor
+            .records(&editor.root, "files")
+            .into_iter()
+            .find(|f| editor.text(f, "name") == "main.rs")
+            .expect("the file the device listed");
         editor.call(
             "check",
             vec![Value::resource(&editor.root), Value::resource(&rust)],
@@ -721,7 +808,14 @@ mod cases {
             editor.engine.ops()
         );
         editor.call("poll", vec![Value::resource(&editor.root)]);
-        assert_eq!(editor.text(&editor.root, "server_name"), "rust-analyzer");
+        assert_eq!(
+            editor.text(&editor.root, "server_name"),
+            "rust-analyzer",
+            "state {:?} trouble {:?} job {:?}",
+            editor.text(&editor.root, "server_state"),
+            editor.text(&editor.root, "server_trouble"),
+            editor.text(&editor.root, "server_job")
+        );
         let _ = main;
 
         editor.call(
@@ -757,8 +851,11 @@ mod cases {
             "check",
             vec![Value::resource(&editor.root), Value::resource(&broken)],
         );
-        let problems = editor.records(&broken, "problems");
-        assert!(!problems.is_empty(), "an open bracket is a problem");
+        let problems = editor.list(&broken, "problems");
+        assert!(
+            !problems.is_empty(),
+            "an open bracket is a problem: {problems:?}"
+        );
         assert_eq!(editor.text(&broken, "source"), "lint");
         assert!(editor.text(&broken, "checked") != "");
     }

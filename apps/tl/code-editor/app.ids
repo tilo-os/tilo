@@ -31,8 +31,6 @@ Diag.column = mev4fmk5
 Diag.line = beb3ijea
 Diag.message = iwar3uyn
 Diag.severity = ioyqdqpm
-Diagnostics = 7rcunm5q
-Diagnostics.diagnostics = pfdqfft6
 DiskAsk = 44dpm5a4
 DiskAsk.path = kn6q47ka
 DiskEntry = opcoyw4j
@@ -352,6 +350,7 @@ status_line = 76a2taoq
 stop@Project = 5axs3ogs
 stop@Project~present = enlvxjgl
 stop_search@Project = 5lsivooa
+symbols@Entry = albctzgc
 symbols_in = gi7lsi5h
 terminal_panel = zl3bj7gd
 terminal_panel.typed = ntqj6awv
@@ -367,4 +366,6 @@ word_char = ttfk6yom
 write@Project = 5kbwbngv
 
 # retired
+Diagnostics = 7rcunm5q
+Diagnostics.diagnostics = pfdqfft6
 known_language = lulobiqz

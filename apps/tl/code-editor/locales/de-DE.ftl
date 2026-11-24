@@ -486,15 +486,6 @@ d-7nbsbvje-filter-line = Zeile
 
 d-7nbsbvje-filter-column = Column
 
-d-7rcunm5q = Diagnostics
-    .noun = { $count ->
-        [one] diagnostic
-       *[other] diagnostics
-    }
-
-d-pfdqfft6 = Diagnostics
-    .doc = Each file's problems, by the path it stands at.
-
 d-xa3s7x43 = Completion answer
     .noun = { $count ->
         [one] completion answer
@@ -578,10 +569,6 @@ d-sqfl7jdi = Progress
 d-s4bc4e6s = Diagnostics
 
 d-h4pgltlo = Answer
-
-d-uaoqlskg-filter-progress = Progress
-
-d-uaoqlskg-filter-diagnostics = Diagnostics
 
 d-a34gxw47 = Projekt
     .doc = A project: its files and folders, the commands run in it, and what the device answers about it.
@@ -890,8 +877,6 @@ d-vmmfvt6f = Read into
 
 d-vmmfvt6f-parent = Übergeordnet
 
-d-vmmfvt6f-listing = Listing
-
 d-thpwxqjh = Read folder into
 
 d-thpwxqjh-folder = Folder
@@ -899,7 +884,6 @@ d-thpwxqjh-folder = Folder
 d-thpwxqjh-path = Path
 
 d-og2uvscy = Read text
-    .doc = Reads a file's bytes as its text, keeping the stamp a save checks against; a file that is not text, or is too large, is an entry with nothing in it that says why when it is opened.
 
 d-og2uvscy-entry = Entry
 
@@ -999,8 +983,6 @@ d-mqipns37 = Go to it
     .doc = Brings the caret to the place an item of a command's output names: the file is read if the project does not hold it yet, and the page shows it.
     .w-that-line-names-no-file = That line names no file
 
-d-mqipns37-item = Item
-
 d-7ecrxle7 = Seen line
 
 d-7ecrxle7-line = Zeile
@@ -1020,8 +1002,6 @@ d-5lsivooa = Stopp searching
 
 d-ivfwweyt = Open the place
     .doc = Shows the place a search found: the file is read from the device when the project does not hold it yet, and the page opens it.
-
-d-ivfwweyt-hit = Hit
 
 d-kcnxibkp = Ensure server
     .doc = Starts the language server for a file's language, if none runs for it yet, and tells it about the file.
@@ -1072,8 +1052,6 @@ d-pnged4ux = Write the suggestion
     .doc = Writes the completion a person chose where the caret stands.
 
 d-pnged4ux-entry = Entry
-
-d-pnged4ux-item = Item
 
 d-fu3y2v7i = Formatieren the file
     .doc = Reformats a file as its language's formatter does, as one change.
