@@ -2161,6 +2161,10 @@ impl Core {
     /// Run a read of a resource. A run that may invoke another action records the value in its
     /// journal, and running it again answers from the journal; anywhere else the read just runs.
     pub(crate) fn journaled_read(&self, live: impl FnOnce() -> HResult<Value>) -> HResult<Value> {
+        if self.writing.get() {
+            // A read a write makes on its way is the write's own: the journal answers the write.
+            return live();
+        }
         {
             let mut frames = self.frames.borrow_mut();
             let Some(run) = frames.run_mut().filter(|run| run.journaled) else {
@@ -2186,16 +2190,61 @@ impl Core {
         Ok(value)
     }
 
+    /// Make one write the running code asks for (`r.f = v`, an insert, a removal, a move) as one
+    /// step of its run's journal. A run that is run again after a call it waited on made this
+    /// write before the call, and the change it made is committed under the run's invocation:
+    /// the journal answers the whole write, so the replay neither checks it against the store,
+    /// which already holds it (the item it removed is gone), nor decides from the store what to
+    /// write (where a move puts an item), and it makes the write no more. The run goes on from
+    /// where it waited, on the state it was in then. `made` names the item the write made, which
+    /// `replayed` builds the write's answer from.
+    pub(crate) fn journaled_write<T>(
+        &self,
+        live: impl FnOnce() -> HResult<T>,
+        made: impl FnOnce(&T) -> Option<String>,
+        replayed: impl FnOnce(Option<String>) -> HResult<T>,
+    ) -> HResult<T> {
+        if self.writing.get() {
+            return live();
+        }
+        {
+            let mut frames = self.frames.borrow_mut();
+            let Some(run) = frames.run_mut().filter(|run| run.journaled) else {
+                drop(frames);
+                return live();
+            };
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
+                let JournalEntry::Wrote { item } = entry else {
+                    return trap("the run diverged from its journal: expected a write");
+                };
+                let item = item.clone();
+                run.cursor = run.cursor.saturating_add(1);
+                drop(frames);
+                return replayed(item);
+            }
+        }
+        self.writing.set(true);
+        let result = live();
+        self.writing.set(false);
+        let value = result?;
+        self.journal_push(JournalEntry::Wrote { item: made(&value) })?;
+        Ok(value)
+    }
+
     /// Apply a write the running action makes, as [`Core::journaled_read`] answers a read: a run
     /// that is run again after it waited made this write before the call it waited on, and the
     /// change it made is in the record. Replay answers the write from the journal and applies
-    /// nothing, so the item it made keeps what the call wrote on top of it.
+    /// nothing, so the item it made keeps what the call wrote on top of it. Inside a
+    /// [`Core::journaled_write`], the write is that one's own and is applied as it comes.
     pub(crate) fn journaled_apply(
         &self,
         txn: Txn,
         at: &ResourceRef,
         m: &Mutation,
     ) -> HResult<Applied> {
+        if self.writing.get() {
+            return self.apply_write(txn, at, m);
+        }
         {
             let mut frames = self.frames.borrow_mut();
             let Some(run) = frames.run_mut().filter(|run| run.journaled) else {

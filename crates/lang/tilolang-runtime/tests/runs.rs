@@ -444,4 +444,276 @@ action poll(l: Lib) -> Text {
             "each call is one change, and ten replays make no more"
         );
     }
+
+    /// A device that checks what a design holds: its answer is an action of its own app, which a
+    /// person allows before it runs, as a call that reaches outside the caller's package does.
+    const DEVICE: &str = r#"app so.tilo.device "Device"
+
+type Desk {
+    asked: Int merge counter
+}
+
+root Desk
+
+default view desk for Desk
+
+view desk(d: Desk) {
+    text("{d.asked}")
+}
+
+/// The device's verdict on a design of `left` parts.
+action verdict(d: Desk, left: Int) -> Text {
+    d.asked += 1
+    return "holds {left}"
+}
+"#;
+
+    /// An action that removes a part and then asks the device about what is left: the run waits
+    /// on the device between the two, and the answer goes on from where it asked.
+    const TRIM: &str = r#"app so.tilo.trim "Trim"
+
+use so.tilo.device as device
+
+type Part {
+    name: Text
+}
+
+type Design {
+    parts: Collection<Part>
+    verdict: Text
+    trims: Int merge counter
+}
+
+root Design
+
+default view design for Design
+
+view design(g: Design) {
+    text("{g.parts.len()}")
+}
+
+action add(g: Design, name: Text) {
+    g.parts.insert(Part(name: name))
+}
+
+action trim(g: Design, d: device.Desk, name: Text) -> Text {
+    for held in g.parts {
+        if held.name == name { g.parts.remove(held) }
+    }
+    let said = device.verdict(d, g.parts.count())
+    g.verdict = said
+    g.trims += 1
+    return said
+}
+
+/// Removes the parts a filter picks out and the ones `remove_where` matches, then asks.
+action prune(g: Design, d: device.Desk, first: Text, second: Text) -> Text {
+    for held in g.parts.filter(p -> p.name == first) {
+        g.parts.remove(held)
+    }
+    let gone = g.parts.remove_where(p -> p.name == second)
+    let said = device.verdict(d, g.parts.count())
+    g.verdict = "{said} after {gone}"
+    g.trims += 1
+    return said
+}
+"#;
+
+    struct Trim {
+        rt: Runtime,
+        trim: App,
+        dispatch: Dispatch,
+        design: tilolang_runtime::ResourceRef,
+        desk: tilolang_runtime::ResourceRef,
+    }
+
+    fn trim_world() -> Trim {
+        let device = App::compile(DEVICE, &[]);
+        let trim = App::compile(TRIM, &[device.meta().clone()]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        device.load(&rt);
+        trim.load(&rt);
+        let dispatch = Dispatch::new();
+        rt.set_foreign_invoker(dispatch.clone());
+        let design = rt.create_root("Design").unwrap();
+        let desk = rt.create_root("Desk").unwrap();
+        let add = trim.action("add");
+        for name in ["a", "b", "c"] {
+            rt.invoke_action(
+                &me(),
+                (add.as_str(), vec![Value::resource(&design), Value::text(name)]),
+            )
+            .unwrap();
+        }
+        Trim {
+            rt,
+            trim,
+            dispatch,
+            design,
+            desk,
+        }
+    }
+
+    impl Trim {
+        fn start(&self, name: &str) -> InvokeOutcome {
+            self.rt
+                .invoke_action(
+                    &me(),
+                    (
+                        self.trim.action("trim").as_str(),
+                        vec![
+                            Value::resource(&self.design),
+                            Value::resource(&self.desk),
+                            Value::text(name),
+                        ],
+                    ),
+                )
+                .unwrap()
+        }
+
+        fn names(&self) -> Vec<String> {
+            let Value::List(parts) = self.rt.read(&self.design, "parts").unwrap() else {
+                panic!("parts reads a list");
+            };
+            parts
+                .iter()
+                .map(|part| {
+                    let Value::Ref(r) = part else {
+                        panic!("a part is a reference")
+                    };
+                    self.rt
+                        .read(&r.target, "name")
+                        .unwrap()
+                        .as_text()
+                        .unwrap()
+                        .to_owned()
+                })
+                .collect()
+        }
+
+        /// The invocation each change the trim made to the design belongs to.
+        fn trim_changes(&self) -> Vec<Option<String>> {
+            let trim = self.trim.action("trim");
+            self.rt
+                .history(&self.design.doc)
+                .unwrap()
+                .into_iter()
+                .filter(|note| note.action == trim)
+                .map(|note| note.invocation)
+                .collect()
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn an_action_that_removes_and_then_asks_the_device;
+
+        phase the_answer_goes_on_from_the_ask_and_removes_once;
+        {
+            let w = trim_world();
+            let InvokeOutcome::Waits { run, .. } = w.start("b") else {
+                panic!("the device's verdict is asked of a person first");
+            };
+            assert_eq!(
+                w.dispatch.asked().1.get(1),
+                Some(&Value::Int(2)),
+                "the device is asked about what is left after the removal"
+            );
+            let out = w.dispatch.allow(&w.rt, &run);
+            assert_eq!(out, RunOutcome::Done(Value::text("holds 2")));
+            assert_eq!(w.names(), ["a", "c"], "the part went once, and no other with it");
+            assert_eq!(
+                w.rt.read(&w.design, "verdict").unwrap(),
+                Value::text("holds 2"),
+                "the rest of the body read the answer the device gave"
+            );
+            assert_eq!(
+                w.rt.read(&w.design, "trims").unwrap(),
+                Value::Int(1),
+                "the rest of the body ran once"
+            );
+            assert_eq!(
+                w.rt.read(&w.desk, "asked").unwrap(),
+                Value::Int(1),
+                "the device was asked once"
+            );
+            let changes = w.trim_changes();
+            assert!(!changes.is_empty(), "the trim changed the design");
+            assert!(
+                changes
+                    .iter()
+                    .all(|invocation| invocation.is_some() && *invocation == changes[0]),
+                "every change of the trim is one invocation, one step to undo: {changes:?}"
+            );
+            // A second trim of what the first left removes from that, and is its own step.
+            let InvokeOutcome::Waits { run: next, .. } = w.start("a") else {
+                panic!("the second trim asks too");
+            };
+            assert_eq!(
+                w.dispatch.allow(&w.rt, &next),
+                RunOutcome::Done(Value::text("holds 1"))
+            );
+            assert_eq!(w.names(), ["c"]);
+            assert_eq!(w.rt.read(&w.design, "trims").unwrap(), Value::Int(2));
+        }
+
+        phase parts_a_filter_and_remove_where_pick_go_once_before_the_ask;
+        {
+            let w = trim_world();
+            let prune = w.trim.action("prune");
+            let InvokeOutcome::Waits { run, .. } = w
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        prune.as_str(),
+                        vec![
+                            Value::resource(&w.design),
+                            Value::resource(&w.desk),
+                            Value::text("a"),
+                            Value::text("c"),
+                        ],
+                    ),
+                )
+                .unwrap()
+            else {
+                panic!("the device's verdict is asked of a person first");
+            };
+            assert_eq!(
+                w.dispatch.allow(&w.rt, &run),
+                RunOutcome::Done(Value::text("holds 1"))
+            );
+            assert_eq!(w.names(), ["b"], "the picked parts went once, and only they");
+            assert_eq!(
+                w.rt.read(&w.design, "verdict").unwrap(),
+                Value::text("holds 1 after 1")
+            );
+            assert_eq!(w.rt.read(&w.design, "trims").unwrap(), Value::Int(1));
+            assert_eq!(w.rt.read(&w.desk, "asked").unwrap(), Value::Int(1));
+        }
+
+        phase a_declined_ask_leaves_the_design_as_it_was;
+        {
+            let w = trim_world();
+            let InvokeOutcome::Waits { run, .. } = w.start("b") else {
+                panic!("the device's verdict is asked of a person first");
+            };
+            let error = decline(&w.rt, &run);
+            assert!(
+                matches!(error, tilolang_runtime::RuntimeError::Denied(_)),
+                "{error}"
+            );
+            assert_eq!(
+                w.names(),
+                ["a", "b", "c"],
+                "the removal made before the ask does not stand once it is declined"
+            );
+            assert_eq!(w.rt.read(&w.design, "verdict").unwrap(), Value::text(""));
+            assert_eq!(w.rt.read(&w.design, "trims").unwrap(), Value::Int(0));
+            assert_eq!(w.rt.read(&w.desk, "asked").unwrap(), Value::Int(0));
+            assert!(
+                w.trim_changes().is_empty(),
+                "nothing of the declined trim is in history"
+            );
+        }
+    }
 }

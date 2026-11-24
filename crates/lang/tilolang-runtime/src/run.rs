@@ -39,10 +39,12 @@ pub enum JournalEntry {
     /// A request to the page this window shows, and the answer it got: what the page's actions
     /// read and did, which a replay answers from here instead of acting on the page again.
     Page { request: String, answer: String },
-    /// A write the run made, and the item it made, when it made one. A run that waited is run
-    /// again after the change it made before the call is already in the record: replay answers
-    /// the write from the journal and makes it no more, so it neither doubles what it wrote nor
-    /// takes back what the call it made wrote on top of it.
+    /// A write the run's code made (a field set, an insert, a removal, a move), and the item it
+    /// made, when it made one. A run that waited is run again after the change it made before
+    /// the call is already in the record: replay answers the write whole from the journal,
+    /// checking nothing against the store and making it no more, so it neither doubles what it
+    /// wrote, nor trips over its own removal, nor takes back what the call it made wrote on top
+    /// of it.
     Wrote { item: Option<String> },
     /// A person was told something (`notify`), and the run carries on: a replay tells them no
     /// more than the first run did.

@@ -274,6 +274,9 @@ pub struct Core {
     pub reader: RefCell<Option<Box<crate::program::ReadThrough>>>,
     /// Whether the invocation being made is a `try`'s, whose failure the program handles.
     pub trying: std::cell::Cell<bool>,
+    /// Whether one write the code asked for is being made ([`Core::journaled_write`]): the reads
+    /// and changes it makes on its way are its own, and the journal records the write whole.
+    pub writing: std::cell::Cell<bool>,
     /// Whether a run is being driven: its first change opens it and its last closes it, and the
     /// calls it makes are steps of it rather than runs of their own.
     pub running: std::cell::Cell<bool>,
@@ -439,6 +442,7 @@ impl Core {
             published: RefCell::new(crate::published::Published::default()),
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
+            writing: std::cell::Cell::new(false),
             running: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::foreign::Foreign::default()),
             rust_views: crate::rust_views::Shared::default(),

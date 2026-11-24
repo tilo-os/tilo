@@ -923,75 +923,27 @@ impl Core {
                 rec.ty
             ));
         };
-        if imp == Imp::CollInsertKeyed
-            && let Some(id) = &kept
-        {
-            let at = ctx.target.item(id, item_ty.id.clone());
-            // Whether it stands is a read like any other: a run that is run again after it
-            // waited finds what it found before.
-            let stands =
-                self.journaled_read(|| Ok(Value::Bool(self.store.borrow().type_of(&at).is_ok())))?;
-            if matches!(stands, Value::Bool(true)) {
-                let author = Some(self.module_of_frame()?);
-                return self.ret_h(Value::Ref(RefValue {
-                    target: Rc::new(at),
-                    author,
-                }));
-            }
-        }
-        let new = crate::store::NewResource {
-            ty: item_ty.id.clone(),
-            app: AppId::default(),
-            fields: item_ty.specs(),
-            text_defaults: item_ty.text_defaults(),
-        };
-        // The id it is given is a read like any other: a run that is run again after it waited
-        // gives the item the id it gave it before.
-        let id = match kept {
-            Some(id) => id,
-            None => match self
-                .journaled_read(|| Ok(Value::Text(self.store.borrow_mut().fresh_id("i"))))?
-            {
-                Value::Text(id) => id,
-                other => return trap(format!("expected an id, got {}", other.kind_name())),
-            },
-        };
-        let applied = self.apply_mut(
-            &ctx,
-            &Mutation::CollInsert {
-                field: ctx.field.id.clone(),
-                item: new,
-                index: None,
-                id: Some(id),
-            },
+        // The insert is one write of the run: a run that is run again after a call it waited on
+        // already made the item, and its journal answers the insert whole (the id it gave, or
+        // that a keyed item already stood) without asking the store, which holds the item now.
+        let keyed = imp == Imp::CollInsertKeyed;
+        let made = self.journaled_write(
+            || self.insert_item(&ctx, &item_ty, &rec, (kept.clone(), keyed)),
+            Clone::clone,
+            Ok,
         )?;
-        let Applied::Item(id) = applied else {
-            return trap("the store did not return the new item");
+        let Some(id) = made.clone().or(kept) else {
+            return trap("the run diverged from its journal: the insert names no item");
         };
         let target = ctx.target.item(&id, item_ty.id.clone());
-        self.touched(target.id_string());
-        self.init_item(&ctx, &item_ty, &target, &rec)?;
-        // A record field the new item was not given holds a record of its own, made with it.
-        if crate::held::holds_any(&item_ty) {
-            let held = self.make_held(
-                &target,
-                &item_ty,
-                &|field| rec.fields.contains_key(field),
-                &|at, m| {
-                    self.journaled_apply(ctx.txn, at, m)
-                        .map_err(|fail| match fail {
-                            crate::engine::HostFail::Trap(why) => why,
-                            crate::engine::HostFail::Suspend => {
-                                "making a held record cannot wait".to_owned()
-                            }
-                        })
-                },
-            )?;
-            for id in held {
-                self.touched(id);
-            }
-        }
         let author = Some(self.module_of_frame()?);
+        if made.is_none() {
+            // A keyed item that already stood is that item, unchanged.
+            return self.ret_h(Value::Ref(RefValue {
+                target: Rc::new(target),
+                author,
+            }));
+        }
         // What the item starts with is part of inserting it: its type's initial action writes in
         // this same change, when the package whose code this is declares the type.
         let pkg = author
@@ -1008,6 +960,73 @@ impl Core {
             target: Rc::new(target),
             author,
         }))
+    }
+
+    /// The item [`Core::coll_insert`] makes, with its fields and the records it holds: its id,
+    /// or `None` for a keyed item (`keyed`) that already stands, which the insert leaves as it is.
+    fn insert_item(
+        &self,
+        ctx: &MutCtx,
+        item_ty: &TypeInfo,
+        rec: &RecordInit,
+        (kept, keyed): (Option<String>, bool),
+    ) -> HResult<Option<String>> {
+        if keyed
+            && let Some(id) = &kept
+            && self
+                .store
+                .borrow()
+                .type_of(&ctx.target.item(id, item_ty.id.clone()))
+                .is_ok()
+        {
+            return Ok(None);
+        }
+        let new = crate::store::NewResource {
+            ty: item_ty.id.clone(),
+            app: AppId::default(),
+            fields: item_ty.specs(),
+            text_defaults: item_ty.text_defaults(),
+        };
+        let id = match kept {
+            Some(id) => id,
+            None => self.store.borrow_mut().fresh_id("i"),
+        };
+        let applied = self.apply_mut(
+            ctx,
+            &Mutation::CollInsert {
+                field: ctx.field.id.clone(),
+                item: new,
+                index: None,
+                id: Some(id),
+            },
+        )?;
+        let Applied::Item(id) = applied else {
+            return trap("the store did not return the new item");
+        };
+        let target = ctx.target.item(&id, item_ty.id.clone());
+        self.touched(target.id_string());
+        self.init_item(ctx, item_ty, &target, rec)?;
+        // A record field the new item was not given holds a record of its own, made with it.
+        if crate::held::holds_any(item_ty) {
+            let held = self.make_held(
+                &target,
+                item_ty,
+                &|field| rec.fields.contains_key(field),
+                &|at, m| {
+                    self.journaled_apply(ctx.txn, at, m)
+                        .map_err(|fail| match fail {
+                            crate::engine::HostFail::Trap(why) => why,
+                            crate::engine::HostFail::Suspend => {
+                                "making a held record cannot wait".to_owned()
+                            }
+                        })
+                },
+            )?;
+            for id in held {
+                self.touched(id);
+            }
+        }
+        Ok(Some(id))
     }
 
     fn init_item(
@@ -1136,6 +1155,36 @@ impl Core {
     }
 
     pub(crate) fn resource_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
+            // A change the code makes is one write of the run, answered whole by its journal when
+            // the run is run again after a call: what it checks of the store and what it decides
+            // from it (the item a removal takes, the place a move goes to) were checked and
+            // decided when it was made, before the store held it.
+            Imp::ResSetI
+            | Imp::ResSetF
+            | Imp::ResSetH
+            | Imp::ResTextSet
+            | Imp::ResAddI
+            | Imp::ResAddF
+            | Imp::CollRemove
+            | Imp::CollMove
+            | Imp::CollMoveTo
+            | Imp::CollMoveAmong
+            | Imp::CollPlace
+            | Imp::SetAdd
+            | Imp::SetRemove
+            | Imp::MapPut
+            | Imp::MapRemove
+            | Imp::MapSetAdd
+            | Imp::MapSetRemove => {
+                self.journaled_write(|| self.resource_access(imp, a), |_| None, |_| ret_void())
+            }
+            _ => self.resource_access(imp, a),
+        }
+    }
+
+    /// [`Core::resource_import`]: reading, making and changing resources.
+    fn resource_access(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ResGetI => {
                 let v = self.res_get(a.h(0)?, a.h(1)?)?;
