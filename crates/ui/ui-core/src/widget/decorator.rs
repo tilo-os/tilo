@@ -487,6 +487,7 @@ decorator_trait! {
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;
         fn child_clip_rect() -> Option<vello::kurbo::Rect>;
+        fn appears_from() -> Option<vello::kurbo::Point>;
         fn own_page_title() -> Option<String>;
         fn is_item_opened_in_place() -> bool;
         fn page_title_is_heading() -> bool;

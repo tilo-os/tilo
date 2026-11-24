@@ -53,7 +53,7 @@ pub enum WindowAnswer {
         css: String,
         body: String,
     },
-    /// The elements that changed, each by its number with its markup, outermost first.
+    /// What changed: elements replaced, put in or taken out, outermost first.
     Changed(Vec<PagePatch>),
 }
 

@@ -257,19 +257,46 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
     )
 }
 
-/// `html` with `patch` applied as the page applies it: the element it numbers replaced whole.
+/// `html` with `patch` applied as the page applies it: the element it numbers replaced whole or
+/// taken out, or the new one put in as its parent's child element at its place.
 fn apply(html: &str, patch: &Patch, place: &str) -> String {
-    let (start, _) = opening(html, patch.id).unwrap_or_else(|| {
-        panic!(
-            "{place}: a patch replaces element {}, which the page does not hold",
-            patch.id
-        )
-    });
-    let (before, from) = html.split_at_checked(start).expect("a tag starts there");
-    let (_, after) = from
-        .split_at_checked(element_len(from))
-        .expect("the element ends inside the page");
-    format!("{before}{}{after}", patch.html)
+    let held = |id: u32| {
+        opening(html, id).unwrap_or_else(|| {
+            panic!("{place}: a patch names element {id}, which the page does not hold")
+        })
+    };
+    // The element starting at `start`, cut out of the page with `with` in its place.
+    let cut = |start: usize, with: &str| {
+        let (before, from) = html.split_at_checked(start).expect("a tag starts there");
+        let (_, after) = from
+            .split_at_checked(element_len(from))
+            .expect("the element ends inside the page");
+        format!("{before}{with}{after}")
+    };
+    match patch {
+        Patch::Replace { id, html: fresh } => cut(held(*id).0, fresh),
+        Patch::Remove { id } => cut(held(*id).0, ""),
+        Patch::Insert {
+            parent,
+            at,
+            html: fresh,
+        } => {
+            // Past the parent's opening tag and its own words, then past `at` child elements.
+            let skip_words = |from: usize| {
+                from + html
+                    .get(from..)
+                    .and_then(|rest| rest.find('<'))
+                    .expect("the parent closes inside the page")
+            };
+            let mut point = skip_words(held(*parent).1);
+            for _ in 0..*at {
+                let child = html.get(point..).expect("a child starts there");
+                point = skip_words(point + element_len(child));
+            }
+            let (before, after) = html.split_at_checked(point).expect("a tag starts there");
+            format!("{before}{fresh}{after}")
+        }
+    }
 }
 
 /// How long the element `html` starts with is, up to and with its closing tag.

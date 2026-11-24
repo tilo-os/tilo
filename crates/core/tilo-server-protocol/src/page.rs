@@ -212,11 +212,30 @@ pub enum CallAnswer {
 /// writer and every window that answers it.
 pub use tilo_headless_schema::PageAction;
 
-/// One element of a page replaced: the one numbered `id` takes `html`.
+/// One change to a page, by its elements' numbers (`data-p`), applied in order: an element that
+/// comes or goes is put in or taken out alone, so the rest of the page stays the elements it was,
+/// with their scroll and focus.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PagePatch {
-    pub id: u32,
-    pub html: String,
+#[serde(rename_all = "snake_case")]
+pub enum PagePatch {
+    /// The element numbered `id` becomes `html`.
+    Replace { id: u32, html: String },
+    /// `html` goes in as the element numbered `parent`'s child element `at`, counted once every
+    /// [`PagePatch::Remove`] before it is applied.
+    Insert { parent: u32, at: u32, html: String },
+    /// The element numbered `id` is taken out.
+    Remove { id: u32 },
+}
+
+impl PagePatch {
+    /// The markup it brings in: none for a removal.
+    #[must_use]
+    pub fn html(&self) -> Option<&str> {
+        match self {
+            Self::Replace { html, .. } | Self::Insert { html, .. } => Some(html),
+            Self::Remove { .. } => None,
+        }
+    }
 }
 
 /// A page a serving device opened: the number a page's next asks name it by,
@@ -242,12 +261,11 @@ pub enum PageAnswer {
         css: String,
         body: String,
     },
-    /// What the page's last ask changed: the elements, outermost first.
+    /// What the page's last ask changed, outermost first.
     Patched(Vec<PagePatch>),
     /// The page is not shown here, and why.
     Refused(PageRefusal),
-    /// What others changed on the page since, unasked: the elements,
-    /// outermost first.
+    /// What others changed on the page since, unasked, outermost first.
     Changed(Vec<PagePatch>),
     /// A call step the page's view asked for: the browser carries it, and answers with
     /// [`PageAsk::CallResult`] under the step's request id.
@@ -367,12 +385,20 @@ mod tests {
             }
         ));
         assert_eq!(
-            serde_json::to_string(&PageAnswer::Patched(vec![PagePatch {
-                id: 2,
-                html: "<p data-p=\"2\">x</p>".into()
-            }]))
+            serde_json::to_string(&PageAnswer::Patched(vec![
+                PagePatch::Remove { id: 3 },
+                PagePatch::Replace {
+                    id: 2,
+                    html: "<p data-p=\"2\">x</p>".into()
+                },
+                PagePatch::Insert {
+                    parent: 1,
+                    at: 0,
+                    html: "<p data-p=\"4\">y</p>".into()
+                },
+            ]))
             .unwrap(),
-            r#"{"patched":[{"id":2,"html":"<p data-p=\"2\">x</p>"}]}"#
+            r#"{"patched":[{"remove":{"id":3}},{"replace":{"id":2,"html":"<p data-p=\"2\">x</p>"}},{"insert":{"parent":1,"at":0,"html":"<p data-p=\"4\">y</p>"}}]}"#
         );
         // A page that was shown again is answered with what its script reads
         // to redraw quietly (`answer.refused.reopened`), never as an error.

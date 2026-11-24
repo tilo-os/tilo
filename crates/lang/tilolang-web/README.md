@@ -126,13 +126,18 @@ string (`"\"activate\""`) are the same action. `'{"resize": {"width": w, "height
 window out at a new size, as `app_resize` does.
 
 ```ts
-{ ok: true, patches: { id: number, html: string }[] }   // replace the element with data-p=id by html
+{ ok: true, patches: (
+    { replace: { id: number, html: string } }               // the element with data-p=id becomes html
+  | { insert: { parent: number, at: number, html: string } } // html goes in as child element `at` of data-p=parent
+  | { remove: { id: number } }                              // the element with data-p=id is taken out
+  )[] }                                                     // applied in order
 | { ok: false, message: string }
 ```
 
-This is the protocol `crates/server/tilo-server/src/web/page/page.mjs` speaks to the server; its
+This is the protocol `crates/core/tilo-server/src/web/page/page.mjs` speaks to the server; its
 event handlers (`click`, `change`, `input`, composition, `focusin`, caret) and its patch apply
-(keeping the focused field's element so the caret survives) can be copied as they are.
+(keeping the focused field's element so the caret survives, and putting in or taking out only
+the element that came or went) can be copied as they are.
 
 ### `app_share(handle, resource) -> string`
 

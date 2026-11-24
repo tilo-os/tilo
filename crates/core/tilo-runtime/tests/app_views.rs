@@ -139,7 +139,9 @@ fn a_page_of_an_installed_app_is_drawn_by_its_own_window() {
             "the theme's stylesheet comes with it"
         );
         assert!(
-            pressed.iter().any(|patch| patch.html.contains('7')),
+            pressed
+                .iter()
+                .any(|patch| patch.html().is_some_and(|html| html.contains('7'))),
             "the display shows the key pressed: {pressed:?}"
         );
     });

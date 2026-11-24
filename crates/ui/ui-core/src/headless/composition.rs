@@ -225,6 +225,7 @@ impl<'a> Walk<'a> {
             ]
         });
         composed.focusable = widget.is_focusable();
+        composed.appears_from = widget.appears_from().map(|point| [point.x, point.y]);
         if pictured
             || children.is_empty()
                 && crate::composition::page::shows_paint(semantics.as_ref(), composed.rect)

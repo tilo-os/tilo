@@ -66,7 +66,12 @@ click, key or edit (`tilo_server_protocol::page`); the app worker
 (`crates/core/agent-session/src/workspace_actions/pages.rs`) performs it on the
 widget the number names through `perform_semantic_named`, the same path a
 screen reader or an agent takes, and answers with patches: `Page::patch` sends
-only the elements that changed, each replacing the element with its number. An
+only the elements that changed, each replacing the element with its number, or,
+for an element that came or went (a menu opening over the window, a row added),
+putting it in at its place or taking it out alone, so everything else keeps its
+scroll and focus. A surface over the window carries the point it appears from
+(`Composed::appears_from`), and the page grows it from there with the theme's
+appear timing, as `motion::Appear` does natively. An
 open page also asks every few seconds what others changed, so their edits reach
 it.
 

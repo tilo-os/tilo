@@ -135,7 +135,9 @@ fn a_task_checked_off_on_the_page_is_done_in_the_workspace() {
         "the press on the page marked the task done in the workspace"
     );
     assert!(
-        patches.iter().any(|patch| patch.html.contains("checked")),
+        patches
+            .iter()
+            .any(|patch| matches!(patch, ui::composition::page::Patch::Replace { html, .. } | ui::composition::page::Patch::Insert { html, .. } if html.contains("checked"))),
         "the page is answered the box, checked: {patches:?}"
     );
 }

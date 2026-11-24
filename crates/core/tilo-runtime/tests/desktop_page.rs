@@ -178,7 +178,7 @@ fn windows(html: &str) -> Vec<&str> {
 fn patched(patches: &[PagePatch]) -> String {
     patches
         .iter()
-        .map(|patch| patch.html.as_str())
+        .filter_map(PagePatch::html)
         .collect::<Vec<_>>()
         .join("")
 }

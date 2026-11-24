@@ -71,5 +71,7 @@ textarea.tilo-field{padding:6px 10px;scrollbar-width:none;field-sizing:content;o
 .tilo-view button,.tilo-view input[type=checkbox],.tilo-view input[type=radio]{transition:background-color var(--tilo-fade) var(--tilo-settle),box-shadow var(--tilo-fade) var(--tilo-settle);}
 .tilo-view button:hover,.tilo-view button:active{transition-duration:0s;}
 .tilo-view input[role=switch]::after{transition:transform var(--tilo-move) var(--tilo-settle);}
-@media (prefers-reduced-motion:reduce){.tilo-view{--tilo-move:0ms;}.tilo-view *{animation:none!important;}}
+.tilo-view [data-layer]{transition-property:var(--tilo-appear-props);transition-duration:var(--tilo-appear-time);transition-timing-function:var(--tilo-appear-curve);}
+@starting-style{.tilo-view [data-layer]{opacity:0;transform:var(--tilo-appear-from);}}
+@media (prefers-reduced-motion:reduce){.tilo-view{--tilo-move:0ms;--tilo-appear-props:opacity;--tilo-appear-time:var(--tilo-fade);--tilo-appear-curve:var(--tilo-settle);}.tilo-view *{animation:none!important;}}
 .tilo-view time,.tilo-view [role=table],.tilo-view .tilo-detail,.tilo-view [role=progressbar],.tilo-view [role=meter],.tilo-view [role=slider],.tilo-view [role=spinbutton]{font-variant-numeric:tabular-nums;}

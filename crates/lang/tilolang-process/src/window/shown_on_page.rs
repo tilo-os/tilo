@@ -246,9 +246,10 @@ fn serving_call(frame: &mut FrameHarness, call: Vec<u8>, invoker: Option<String>
 fn patches(patches: Vec<Patch>) -> Vec<PagePatch> {
     patches
         .into_iter()
-        .map(|patch| PagePatch {
-            id: patch.id,
-            html: patch.html,
+        .map(|patch| match patch {
+            Patch::Replace { id, html } => PagePatch::Replace { id, html },
+            Patch::Insert { parent, at, html } => PagePatch::Insert { parent, at, html },
+            Patch::Remove { id } => PagePatch::Remove { id },
         })
         .collect()
 }

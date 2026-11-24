@@ -202,7 +202,7 @@ impl AppPages for Echo {
         act: Option<crate::app_serving::PageAct>,
     ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
         Pending::ready(Ok(act
-            .map(|act| PagePatch {
+            .map(|act| PagePatch::Replace {
                 id: act.id,
                 html: format!("{:?}", act.action),
             })
@@ -280,7 +280,7 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
         .await;
         assert_eq!(
             answer(&mut browser).await,
-            PageAnswer::Patched(vec![PagePatch {
+            PageAnswer::Patched(vec![PagePatch::Replace {
                 id: 3,
                 html: "Value(\"Milk\")".into()
             }])

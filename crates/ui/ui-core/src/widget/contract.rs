@@ -377,6 +377,15 @@ pub trait Widget {
         None
     }
 
+    /// For a surface that stands over the window (a popover, a menu), the absolute logical point
+    /// it appears from: the summoning control's centre, the caret, a context menu's pointer. A
+    /// host drawing the surface with elements of its own grows it from there, as
+    /// [`crate::motion::Appear`] does natively. `None` for anything else, and for a surface that
+    /// appears about its own centre (a dialog).
+    fn appears_from(&self) -> Option<vello::kurbo::Point> {
+        None
+    }
+
     /// The words this widget shows as the heading of the page it belongs to, when it is the page's own
     /// title: a large-title text the content edits or sets at the top of a document.
     fn own_page_title(&self) -> Option<String> {

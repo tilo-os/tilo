@@ -479,12 +479,12 @@ impl tilo_runtime::key_sessions::PageViews for ShownWindow {
                         css: ".n{}".into(),
                         body: format!("<main data-p=\"0\">{}</main>", show.unwrap_or_default()),
                     },
-                    WindowAsk::Act { id, action, .. } => {
-                        WindowAnswer::Changed(vec![tilo_server_protocol::page::PagePatch {
+                    WindowAsk::Act { id, action, .. } => WindowAnswer::Changed(vec![
+                        tilo_server_protocol::page::PagePatch::Replace {
                             id,
                             html: format!("{action:?}"),
-                        }])
-                    }
+                        },
+                    ]),
                     WindowAsk::Changed => WindowAnswer::Changed(Vec::new()),
                     WindowAsk::Wells(_) => WindowAnswer::Changed(Vec::new()),
                 };
@@ -568,7 +568,8 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
         .unwrap()
         .unwrap();
     assert!(
-        ran.iter().any(|patch| patch.html.contains("Pin: Done.")),
+        ran.iter()
+            .any(|patch| patch.html().is_some_and(|html| html.contains("Pin: Done."))),
         "the row's action ran and said so: {ran:?}"
     );
     let invoked = device.runs.broker.invoked.lock().unwrap().clone();
@@ -606,8 +607,11 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        toggled.first().map(|patch| (patch.id, patch.html.as_str())),
-        Some((7, "Toggle"))
+        toggled.first(),
+        Some(&tilo_server_protocol::page::PagePatch::Replace {
+            id: 7,
+            html: "Toggle".into()
+        })
     );
     assert_eq!(
         pages

@@ -615,17 +615,33 @@ function start() {
     morph(keep, kept, active);
   };
 
+  const element = id => page.querySelector(`[data-p="${id}"]`);
+  const fromHtml = html => {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    editable(template.content);
+    return template.content.firstElementChild;
+  };
+
+  // Each step in order: an element replaced, put in as a child at its place, or taken out. What
+  // comes or goes is the one element, so everything else stays the element the browser holds,
+  // with its scroll, its focus and the motion it is in.
   const patch = patches => {
     const active = document.activeElement;
-    for (const {id, html} of patches) {
-      const old = page.querySelector(`[data-p="${id}"]`);
-      if (!old) continue;
-      const template = document.createElement('template');
-      template.innerHTML = html;
-      const fresh = template.content.firstElementChild;
-      editable(template.content);
-      if (editing(active) && old.contains(active)) morph(old, fresh, active);
-      else old.replaceWith(fresh);
+    for (const step of patches) {
+      if (step.replace) {
+        const old = element(step.replace.id);
+        if (!old) continue;
+        const fresh = fromHtml(step.replace.html);
+        if (editing(active) && old.contains(active)) morph(old, fresh, active);
+        else old.replaceWith(fresh);
+      } else if (step.insert) {
+        const parent = element(step.insert.parent);
+        if (!parent) continue;
+        parent.insertBefore(fromHtml(step.insert.html), parent.children[step.insert.at] ?? null);
+      } else if (step.remove) {
+        element(step.remove.id)?.remove();
+      }
     }
     reconcile();
     focusAsked();

@@ -9,6 +9,14 @@ fn text(path: &str, words: &str) -> Composed {
     node
 }
 
+/// The element `patch` replaces and its new markup; any other step fails the test.
+fn replaced(patch: &Patch) -> (u32, &str) {
+    match patch {
+        Patch::Replace { id, html } => (*id, html),
+        other => panic!("an element replaced, not {other:?}"),
+    }
+}
+
 fn window(title: &str) -> Composition {
     let mut root = Composed::new("Root[0]".to_owned(), "Column", [0.0, 0.0, 1280.0, 720.0]);
     root.layout = Some("display:flex;flex-direction:column;gap:8px 8px;".to_owned());
@@ -62,9 +70,61 @@ fn a_change_patches_only_what_changed_and_keeps_every_number() {
     assert_eq!(first, page.render(&window("Groceries")));
     let patches = page.patch(&window("Groceries list"));
     assert_eq!(patches.len(), 1, "{patches:?}");
-    assert_eq!(page.path(patches[0].id), Some("Root[0]/Label[0]"));
-    assert!(patches[0].html.contains("Groceries list"));
+    let (id, html) = replaced(&patches[0]);
+    assert_eq!(page.path(id), Some("Root[0]/Label[0]"));
+    assert!(html.contains("Groceries list"));
     assert!(page.patch(&window("Groceries list")).is_empty());
+}
+
+/// A menu opening over the window is put in alone, and taken out alone when it closes: every
+/// element of the window stays the one the browser holds, so the list scrolled half way down
+/// stays scrolled and the button that opened the menu keeps the keyboard's focus. The menu grows
+/// from that button.
+#[test]
+fn a_menu_opening_and_closing_leaves_the_window_s_elements_in_place() {
+    let mut page = Page::new();
+    let closed = window("Notes");
+    page.render(&closed);
+    let mut open = closed.clone();
+    let mut menu = Composed::new("Menu[0]".to_owned(), "Popover", [40.0, 92.0, 160.0, 64.0]);
+    menu.semantics = Some(AccessNode::new(Role::Menu).with_name("Note".to_owned()));
+    menu.appears_from = Some([85.0, 74.0]);
+    let mut item = Composed::new(
+        "Menu[0]/Item[0]".to_owned(),
+        "MenuItem",
+        [44.0, 96.0, 152.0, 28.0],
+    );
+    item.semantics = Some(AccessNode::new(Role::MenuItem).with_name("Pin".to_owned()));
+    menu.children = vec![item];
+    open.layers.push(menu);
+
+    let opened = page.patch(&open);
+    let [Patch::Insert { parent, at, html }] = opened.as_slice() else {
+        panic!("the menu alone is put in: {opened:?}");
+    };
+    assert_eq!(page.path(*parent), Some(""), "it goes in over the window");
+    assert_eq!(*at, 1, "after the window itself");
+    assert!(
+        html.contains("data-layer") && html.contains(">Pin"),
+        "{html}"
+    );
+    assert!(
+        html.contains("transform-origin:85.0px 92.0px;"),
+        "it grows from the edge nearest the button that opened it: {html}"
+    );
+    assert!(
+        html.contains("--tilo-appear-from:translate(-5.9px,-5.4px) scale(0.920);"),
+        "it starts smaller and a little toward the button: {html}"
+    );
+
+    let shut = page.patch(&closed);
+    let [Patch::Remove { id }] = shut.as_slice() else {
+        panic!("the menu alone is taken out: {shut:?}");
+    };
+    assert!(
+        page.render(&open).contains(&format!("data-p=\"{id}\"")),
+        "it takes out the menu it put in"
+    );
 }
 
 /// A widget that publishes its rows (a list drawing them itself) shows each as an element of
@@ -250,13 +310,12 @@ fn a_canvas_places_what_it_holds_and_a_host_fills_its_wells() {
     // Another member moved the second place: only its element changes.
     let patches = page.patch(&canvas([520.0, 330.0]));
     assert_eq!(patches.len(), 1, "{patches:?}");
+    let (id, html) = replaced(&patches[0]);
     assert!(
-        patches[0]
-            .html
-            .contains("position:absolute;left:420px;top:280px;"),
+        html.contains("position:absolute;left:420px;top:280px;"),
         "{patches:?}"
     );
-    assert_eq!(page.path(patches[0].id), Some("Root[0]/MapPin[1]"));
+    assert_eq!(page.path(id), Some("Root[0]/MapPin[1]"));
 }
 
 /// A real widget's frame, laid out at `size`, as a page reads it: its composition with the
@@ -389,7 +448,7 @@ fn a_fields_focus_words_and_caret_come_from_the_page() {
     assert!(
         patches
             .iter()
-            .any(|patch| patch.html.contains("value=\"Buy oat milk\"")),
+            .any(|patch| matches!(patch, Patch::Replace { html, .. } if html.contains("value=\"Buy oat milk\""))),
         "the field's new words come back: {patches:?}"
     );
 
@@ -460,6 +519,12 @@ fn the_page_moves_by_the_themes_motion() {
     let css = theme_css(&theme);
     assert_eq!(prop(&css, "fade"), fast);
     assert_eq!(prop(&css, "move"), fast);
+    assert_eq!(
+        prop(&css, "appear-time"),
+        format!("{}ms", theme.tokens.motion.durations.base_ms),
+        "a menu arrives over `base`"
+    );
+    assert_eq!(prop(&css, "appear-props"), "opacity,transform");
     let settle = prop(&css, "settle");
     let points: Vec<f64> = settle
         .strip_prefix("linear(")
@@ -484,14 +549,28 @@ fn the_page_moves_by_the_themes_motion() {
     let css = theme_css(&reduced);
     assert_eq!(prop(&css, "fade"), fast, "reduced motion still fades");
     assert_eq!(prop(&css, "move"), "0ms", "reduced motion lands the travel");
+    assert_eq!(
+        (prop(&css, "appear-time"), prop(&css, "appear-props")),
+        (fast.clone(), "opacity".to_owned()),
+        "under reduced motion a menu only fades in, over `fast`"
+    );
 
     let mut still = crate::Theme::light();
     still.tokens.motion.still = true;
     let css = theme_css(&still);
     assert_eq!(prop(&css, "fade"), "0ms");
     assert_eq!(prop(&css, "move"), "0ms");
+    assert_eq!(prop(&css, "appear-time"), "0ms");
 
-    for name in ["fade", "move", "settle"] {
+    for name in [
+        "fade",
+        "move",
+        "settle",
+        "appear-time",
+        "appear-curve",
+        "appear-props",
+        "appear-from",
+    ] {
         assert!(
             PAGE_CSS.contains(&format!("var(--tilo-{name})")),
             "the stylesheet moves by --tilo-{name}"

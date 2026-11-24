@@ -1136,7 +1136,7 @@ impl Search {
     }
 
     fn patched(&self) -> Vec<PagePatch> {
-        vec![PagePatch {
+        vec![PagePatch::Replace {
             id: SEARCH_RESULTS,
             html: results_div(&self.results()),
         }]

@@ -535,6 +535,10 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
         self.rect()
     }
 
+    fn appears_from(&self) -> Option<vello::kurbo::Point> {
+        Some(self.list.anchor().center())
+    }
+
     fn ime_cursor_rect(&self) -> Option<Rect> {
         (self.visible_flag && !self.inline)
             .then(|| self.filter_composition.ime_cursor_rect())

@@ -220,8 +220,8 @@ pub fn app_render(handle: u32) -> String {
 /// What the person did on the element numbered `id` (its `data-p`) at `target` (its `data-t`):
 /// `"activate"`, `"toggle"`, `"focus"`, `"increment"`, `"decrement"`, `{"value": text}` or
 /// `{"select": {anchor, focus}}`, as the element's `data-a` asks, or `{"resize": {width,
-/// height}}`. Answers `{ok, patches: [{id, html}]}`: each element to replace,
-/// by its `data-p`.
+/// height}}`. Answers `{ok, patches}`: in order, each element replaced (`{replace: {id, html}}`),
+/// put in (`{insert: {parent, at, html}}`) or taken out (`{remove: {id}}`), by its `data-p`.
 #[wasm_bindgen]
 pub fn app_act(handle: u32, id: u32, target: Option<String>, action_json: &str) -> String {
     let action = match page_action(action_json) {

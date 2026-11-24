@@ -73,11 +73,19 @@ pub fn semantic(action: PageAction) -> Option<Action> {
     })
 }
 
-/// One element replaced by its new HTML: what [`Page::patch`] answers.
+/// One change to the page, by its elements' numbers (`data-p`): what [`Page::patch`] answers, a
+/// host applying them in order. An element that comes or goes is put in or taken out alone, so
+/// everything around it stays the element it was: its scroll, its focus, its motion.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct Patch {
-    pub id: u32,
-    pub html: String,
+#[serde(rename_all = "snake_case")]
+pub enum Patch {
+    /// The element numbered `id` becomes `html`.
+    Replace { id: u32, html: String },
+    /// `html` goes in as the element numbered `parent`'s child element `at`, counted once every
+    /// [`Patch::Remove`] before it is applied.
+    Insert { parent: u32, at: u32, html: String },
+    /// The element numbered `id` is taken out.
+    Remove { id: u32 },
 }
 
 /// One element of the rendered page: its opening tag, what it shows of its own,
@@ -139,20 +147,84 @@ impl Element {
     /// whose own markup or whose children changed is replaced whole. One with no
     /// number of its own is replaced as part of the nearest one that has.
     fn diff(&self, old: &Self, out: &mut Vec<Patch>) -> bool {
-        let same_shape = self.tag == old.tag
-            && self.id == old.id
-            && self.attrs == old.attrs
-            && self.own == old.own
-            && self.children.len() == old.children.len()
+        if self.tag != old.tag
+            || self.id != old.id
+            || self.attrs != old.attrs
+            || self.own != old.own
+        {
+            return false;
+        }
+        let same_children = self.children.len() == old.children.len()
             && self
                 .children
                 .iter()
                 .zip(&old.children)
                 .all(|(new, old)| new.id == old.id && new.tag == old.tag);
-        if !same_shape {
+        if same_children {
+            return Self::diff_children(self.children.iter().zip(&old.children), out);
+        }
+        // Children came or went (a menu opening over the window, a row added to a list): each is
+        // put in or taken out by its number, and the ones that stayed are compared as they are.
+        let Some(parent) = self.id else {
+            return false;
+        };
+        let numbers = |children: &[Self]| {
+            children
+                .iter()
+                .map(|child| child.id)
+                .collect::<Option<std::collections::HashSet<u32>>>()
+        };
+        let (Some(new_numbers), Some(old_numbers)) =
+            (numbers(&self.children), numbers(&old.children))
+        else {
+            return false;
+        };
+        let stayed_new = self
+            .children
+            .iter()
+            .filter(|child| child.id.is_some_and(|id| old_numbers.contains(&id)));
+        let stayed_old = old
+            .children
+            .iter()
+            .filter(|child| child.id.is_some_and(|id| new_numbers.contains(&id)));
+        if !stayed_new
+            .clone()
+            .zip(stayed_old.clone())
+            .all(|(new, old)| new.id == old.id && new.tag == old.tag)
+        {
             return false;
         }
-        for (new, old) in self.children.iter().zip(&old.children) {
+        let mut inner = Vec::new();
+        inner.extend(
+            old.children
+                .iter()
+                .filter_map(|child| child.id)
+                .filter(|id| !new_numbers.contains(id))
+                .map(|id| Patch::Remove { id }),
+        );
+        if !Self::diff_children(stayed_new.zip(stayed_old), &mut inner) {
+            return false;
+        }
+        for (at, child) in self.children.iter().enumerate() {
+            if child.id.is_some_and(|id| !old_numbers.contains(&id)) {
+                inner.push(Patch::Insert {
+                    parent,
+                    at: u32::try_from(at).unwrap_or(u32::MAX),
+                    html: child.html(),
+                });
+            }
+        }
+        out.extend(inner);
+        true
+    }
+
+    /// The changes within children that stand in the same places, each pair compared: `false`
+    /// when one changed and has no number to be replaced by.
+    fn diff_children<'a>(
+        pairs: impl Iterator<Item = (&'a Self, &'a Self)>,
+        out: &mut Vec<Patch>,
+    ) -> bool {
+        for (new, old) in pairs {
             if new == old {
                 continue;
             }
@@ -160,7 +232,7 @@ impl Element {
             if new.diff(old, &mut inner) {
                 out.extend(inner);
             } else if let Some(id) = new.id {
-                out.push(Patch {
+                out.push(Patch::Replace {
                     id,
                     html: new.html(),
                 });
@@ -446,8 +518,8 @@ impl Page {
         html
     }
 
-    /// What changed on the page since the last render: each element to replace,
-    /// outermost first. With nothing rendered before, it is the whole body.
+    /// What changed on the page since the last render: each element to replace, put in or take
+    /// out, outermost first. With nothing rendered before, it is the whole body.
     pub fn patch(&mut self, composition: &Composition) -> Vec<Patch> {
         let body = self.build(composition);
         let mut patches = Vec::new();
@@ -456,7 +528,7 @@ impl Page {
             None => true,
         };
         if whole {
-            patches = vec![Patch {
+            patches = vec![Patch::Replace {
                 id: body.id.unwrap_or_default(),
                 html: body.html(),
             }];
@@ -477,6 +549,7 @@ impl Page {
             let mut over = Element::new("div");
             over.id = Some(self.id(&format!("#layer:{index}:{}", layer.path)));
             over.attr("data-layer", "");
+            over.attr("style", &appear_style(layer));
             over.children
                 .push(self.node(layer, Place::At([0.0, 0.0]), Context::Plain));
             body.children.push(over);
@@ -1250,6 +1323,55 @@ pub fn escape(text: &str) -> String {
     out
 }
 
+/// Where a surface over the window starts arriving, as the layer's style: about the point of it
+/// nearest the control that summoned it (its own centre when nothing did), smaller and a few
+/// pixels toward that control, as [`crate::motion::Appear`] starts it natively. The page's
+/// stylesheet runs it to rest (`@starting-style`) on the theme's appear timing.
+fn appear_style(layer: &Composed) -> String {
+    use crate::motion::{Appear, Direction};
+    use vello::kurbo::{Point, Rect};
+    fn summoned(node: &Composed) -> Option<(&Composed, [f64; 2])> {
+        node.appears_from
+            .map(|point| (node, point))
+            .or_else(|| node.children.iter().find_map(summoned))
+    }
+    let (surface, anchor) = summoned(layer).unwrap_or_else(|| {
+        let [x, y, width, height] = layer.rect;
+        (layer, [x + width / 2.0, y + height / 2.0])
+    });
+    let [x, y, width, height] = surface.rect;
+    let surface = Rect::new(x, y, x + width, y + height);
+    let anchor = Point::new(anchor[0], anchor[1]);
+    let origin = Appear::origin(surface, anchor);
+    // The tokens' own motion, never reduced: the stylesheet decides whether it moves.
+    let moving = crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), false);
+    let start = Appear::coming(0.0, Direction::Enter, surface, anchor, moving);
+    format!(
+        "transform-origin:{:.1}px {:.1}px;--tilo-appear-from:translate({:.1}px,{:.1}px) scale({:.3});",
+        origin.x, origin.y, start.offset.x, start.offset.y, start.scale
+    )
+}
+
+/// A spring's progress over `duration` as a CSS `linear()` curve, each sample passed through
+/// `shape` (a motion that draws its progress eased, as [`crate::motion::Appear`] does).
+fn css_curve(
+    spring: crate::motion::SpringSpec,
+    duration: std::time::Duration,
+    shape: impl Fn(f64) -> f64,
+) -> String {
+    let points = (0..=SETTLE_SAMPLES)
+        .map(|i| {
+            if i == SETTLE_SAMPLES {
+                return "1".to_owned();
+            }
+            let t = duration.as_secs_f64() * f64::from(i) / f64::from(SETTLE_SAMPLES);
+            format!("{:.3}", shape(1.0 - spring.state(1.0, 0.0, t).0))
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("linear({points})")
+}
+
 /// How many steps the page's `--tilo-settle` curve samples the spring at: enough that the
 /// straight lines between them read as the curve over a `fast` change.
 const SETTLE_SAMPLES: u16 = 16;
@@ -1313,21 +1435,32 @@ pub fn theme_css(theme: &crate::Theme) -> String {
     // the travel; a theme that holds still does neither.
     let motion = theme.motion();
     let fast = motion.tokens().durations.fast();
-    let spring = crate::motion::SpringSpec::settling_within(fast);
-    let settle = (0..=SETTLE_SAMPLES)
-        .map(|i| {
-            if i == SETTLE_SAMPLES {
-                return "1".to_owned();
-            }
-            let t = fast.as_secs_f64() * f64::from(i) / f64::from(SETTLE_SAMPLES);
-            format!("{:.3}", 1.0 - spring.state(1.0, 0.0, t).0)
-        })
-        .collect::<Vec<_>>()
-        .join(",");
+    let settle = css_curve(
+        crate::motion::SpringSpec::settling_within(fast),
+        fast,
+        |p| p,
+    );
+    // A popover, menu or dialog arriving: over `base`, its scale, reach and opacity drawn on the
+    // square of its progress, as `Appear` draws them; under reduced motion it only fades, over
+    // `fast`; a theme that holds still shows it at once.
+    let (appear_time, appear_curve, appear_props) = if motion.still() {
+        (std::time::Duration::ZERO, settle.clone(), "opacity")
+    } else if motion.reduced() {
+        (fast, settle.clone(), "opacity")
+    } else {
+        let base = motion.tokens().durations.base();
+        let spring = crate::motion::SpringSpec::settling_within(base);
+        (
+            base,
+            css_curve(spring, base, |p| p * p),
+            "opacity,transform",
+        )
+    };
     let motion_props = format!(
-        "--tilo-fade:{}ms;--tilo-move:{}ms;--tilo-settle:linear({settle});",
+        "--tilo-fade:{}ms;--tilo-move:{}ms;--tilo-settle:{settle};--tilo-appear-time:{}ms;--tilo-appear-curve:{appear_curve};--tilo-appear-props:{appear_props};",
         motion.fade(fast).as_millis(),
         motion.fast().as_millis(),
+        appear_time.as_millis(),
     );
     format!(
         ":root{{color-scheme:{look};{motion_props}--tilo-hover:{};--tilo-press:{};--tilo-selected:{};--tilo-ground:{};--tilo-sidebar:{};--tilo-raised:{};--tilo-overlay:{};--tilo-text:{};--tilo-text-dim:{};--tilo-text-tertiary:{};--tilo-border:{};--tilo-focus:{};--tilo-accent:{};--tilo-on-accent:{};--tilo-radius:{:.1}px;--tilo-control-radius:{}px;{type_roles}}}",

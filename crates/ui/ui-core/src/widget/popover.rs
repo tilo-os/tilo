@@ -1467,6 +1467,10 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         self.panel.rect
     }
 
+    fn appears_from(&self) -> Option<Point> {
+        Some(self.panel.anchor.center())
+    }
+
     /// An open popover captures input, so the host's global shortcuts and
     /// click-through stay off while it is up.
     fn modal_capture(&self) -> Option<Rect> {

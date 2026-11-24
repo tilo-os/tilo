@@ -2086,6 +2086,10 @@ impl Widget for ContextMenu {
         self.rect
     }
 
+    fn appears_from(&self) -> Option<Point> {
+        Some(self.appear_anchor())
+    }
+
     fn accessibility_hidden(&self) -> bool {
         // A box opened with no menu around it is on screen with no menu.
         !self.open && !self.send_to_alone_drawn()
