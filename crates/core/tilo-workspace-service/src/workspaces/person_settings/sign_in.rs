@@ -386,12 +386,14 @@ impl Workspaces {
         };
         let root = self.workspace_root(workspace);
         let store = self.cloud_credentials(&root);
-        let authorization = store.begin_sign_in(cloud, None).map_err(|error| match error {
-            account_credentials::CredentialError::NotConfigured { provider, .. } => {
-                format!("Signing in with {provider} is not set up in this build")
-            }
-            error => error.to_string(),
-        })?;
+        let authorization = store
+            .begin_sign_in(cloud, None)
+            .map_err(|error| match error {
+                account_credentials::CredentialError::NotConfigured { provider, .. } => {
+                    format!("Signing in with {provider} is not set up in this build")
+                }
+                error => error.to_string(),
+            })?;
         let open = authorization.url().to_owned();
         let name = cloud_name(asking, cloud.label());
         let id = tilo_oauth::random_token().map_err(|error| error.to_string())?;
@@ -498,9 +500,9 @@ impl Workspaces {
         let signing_in = apple_id.clone();
         let outcome =
             tokio::task::spawn_blocking(move || auth.sign_in(&signing_in, password.as_str()))
-            .await
-            .map_err(|_| "the Apple ID sign-in did not finish".to_owned())?
-            .map_err(|error| error.to_string())?;
+                .await
+                .map_err(|_| "the Apple ID sign-in did not finish".to_owned())?
+                .map_err(|error| error.to_string())?;
         match outcome {
             ICloudSignIn::NeedsCode(challenge) => {
                 let id = tilo_oauth::random_token().map_err(|error| error.to_string())?;
@@ -655,8 +657,10 @@ impl Workspaces {
                     Ok(session) => session,
                     Err(error) => {
                         let refused = error.to_string();
-                        if matches!(error, account_credentials::icloud::ICloudAuthError::InvalidCode)
-                        {
+                        if matches!(
+                            error,
+                            account_credentials::icloud::ICloudAuthError::InvalidCode
+                        ) {
                             return Err(format!("{refused}. Enter the newest code"));
                         }
                         begun().remove(&submitting.sign_in);
@@ -810,7 +814,11 @@ pub(super) async fn accounts_sign_in(
         }
         BEGIN_CLOUD_SIGN_IN => {
             let asking: BeginCloudSignIn = super::argument(request, "storage to connect")?;
-            super::answer(&workspaces.begin_cloud_sign_in((person, workspace), &asking).await)
+            super::answer(
+                &workspaces
+                    .begin_cloud_sign_in((person, workspace), &asking)
+                    .await,
+            )
         }
         SUBMIT_SIGN_IN_CODE => {
             let submitting: SubmitSignInCode = super::argument(request, "a sign-in's code")?;
@@ -897,10 +905,7 @@ async fn keep_oauth_account(
         "use_calendar": false,
         "use_mail": false,
     });
-    accounts::cloud_types::set_files_mode(
-        &mut config,
-        accounts::cloud_types::FilesMode::Sync,
-    );
+    accounts::cloud_types::set_files_mode(&mut config, accounts::cloud_types::FilesMode::Sync);
     let secret = oauth_secret(tokens).token.unwrap_or_default();
     keep_cloud_sign_in(
         vault,
@@ -910,10 +915,7 @@ async fn keep_oauth_account(
         Zeroizing::new(secret),
     )
     .await?;
-    let mut account = accounts::Account::new(
-        accounts::AccountId::from(id),
-        cloud.type_id(),
-    );
+    let mut account = accounts::Account::new(accounts::AccountId::from(id), cloud.type_id());
     name.clone_into(&mut account.display_name);
     account.config = config;
     vault.keep_account(&account).await
@@ -927,12 +929,11 @@ async fn keep_icloud_account(
     apple_id: &str,
     session: &account_credentials::icloud::ICloudSessionState,
 ) -> Result<(), String> {
-    let mount = tokio::task::spawn_blocking(|| {
-        WebICloud::apple().map(|auth| auth.storage_config())
-    })
-    .await
-    .map_err(|_| "iCloud's settings were not read".to_owned())?
-    .map_err(|error| error.to_string())?;
+    let mount =
+        tokio::task::spawn_blocking(|| WebICloud::apple().map(|auth| auth.storage_config()))
+            .await
+            .map_err(|_| "iCloud's settings were not read".to_owned())?
+            .map_err(|error| error.to_string())?;
     let id = cloud_id(accounts::cloud_types::ICLOUD_DRIVE, name);
     let mut account = accounts::Account::new(
         accounts::AccountId::from(id.clone()),
@@ -953,15 +954,16 @@ async fn keep_icloud_account(
     {
         config.insert("mount".into(), mount);
     }
-    accounts::cloud_types::set_files_mode(
-        &mut config,
-        accounts::cloud_types::FilesMode::Sync,
-    );
+    accounts::cloud_types::set_files_mode(&mut config, accounts::cloud_types::FilesMode::Sync);
     let secret = icloud_secret(apple_id, session).token.unwrap_or_default();
     keep_cloud_sign_in(
         vault,
         &id,
-        if apple_id.is_empty() { "iCloud" } else { apple_id },
+        if apple_id.is_empty() {
+            "iCloud"
+        } else {
+            apple_id
+        },
         &mut config,
         Zeroizing::new(secret),
     )
@@ -995,10 +997,7 @@ async fn keep_webdav_account(
         "use_calendar": false,
         "use_mail": false,
     });
-    accounts::cloud_types::set_files_mode(
-        &mut config,
-        accounts::cloud_types::FilesMode::Sync,
-    );
+    accounts::cloud_types::set_files_mode(&mut config, accounts::cloud_types::FilesMode::Sync);
     keep_cloud_sign_in(
         vault,
         &id,

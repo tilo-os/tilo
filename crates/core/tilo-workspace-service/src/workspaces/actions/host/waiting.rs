@@ -31,7 +31,9 @@ pub(super) fn at_once(
                 .record(&request.invocation.0.to_string())
                 .and_then(|at| store.kept_ask(&at))
                 .unwrap_or_else(|| {
-                    panic!("the host answers at once or keeps the call for its person, not {status:?}")
+                    panic!(
+                        "the host answers at once or keeps the call for its person, not {status:?}"
+                    )
                 });
             Err(ActionCallError::ConfirmationRequired(Box::new(kept.facts)))
         }
@@ -73,7 +75,10 @@ pub(super) async fn answered_by(
     settled(page.invoke(person, answer)).await?;
     let ended = tilo_test_env::within("the answered call's end", async {
         loop {
-            match page.observe(caller, &request.invocation).map(|state| state.update) {
+            match page
+                .observe(caller, &request.invocation)
+                .map(|state| state.update)
+            {
                 Some(
                     update @ (InvocationUpdate::Succeeded { .. }
                     | InvocationUpdate::Failed { .. }

@@ -408,7 +408,9 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
     assert_eq!(
         reading(&setup).await["accounts"]
             .as_array()
-            .and_then(|accounts| accounts.iter().find(|account| account["id"] == json!(address)))
+            .and_then(|accounts| accounts
+                .iter()
+                .find(|account| account["id"] == json!(address)))
             .map(|account| account["services"].clone()),
         Some(json!({"mail": true, "calendar": false, "files": false})),
         "the row says its calendars are off"
@@ -439,7 +441,9 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
     assert_eq!(
         reading(&setup).await["accounts"]
             .as_array()
-            .and_then(|accounts| accounts.iter().find(|account| account["id"] == json!(address)))
+            .and_then(|accounts| accounts
+                .iter()
+                .find(|account| account["id"] == json!(address)))
             .map(|account| account["services"].clone()),
         Some(json!({"mail": true, "calendar": true, "files": false})),
         "the row says its calendars are on again"
@@ -599,8 +603,8 @@ async fn the_accounts_reading_lists_an_account_connected_signed_in_again_and_rem
 /// loopback sockets.
 #[tokio::test]
 async fn an_account_added_in_settings_is_read_in_mail() {
-    use tilo_actions::remote::person_accounts::FetchedMail;
     use tilo_account_probe::stand_in;
+    use tilo_actions::remote::person_accounts::FetchedMail;
 
     const ADDRESS: &str = "team@example.test";
     const PASSWORD: &str = "made-up team password";

@@ -369,9 +369,9 @@ async fn an_answer_that_meets_the_record_is_carried_out() {
         // is still taking it in.
         let asking = {
             let (service, ada, agent) = (service.clone(), ada.clone(), agent.clone());
-            tokio::spawn(async move {
-                invoked(&service, workspace_id, (&ada, &agent), adding).await
-            })
+            tokio::spawn(
+                async move { invoked(&service, workspace_id, (&ada, &agent), adding).await },
+            )
         };
         let record = tilo_test_env::within("the record shows", async {
             loop {
@@ -404,10 +404,11 @@ async fn an_answer_that_meets_the_record_is_carried_out() {
             let here = service.in_workspace_as(workspace_id, &ada);
             let now = tilo_clock::now();
             let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
-            let followed =
-                settled(tilo_actions::remote::settle_with(&here, &agent, invocation, None, until))
-                    .await
-                    .expect("an admitted call is followed from the moment of the approve");
+            let followed = settled(tilo_actions::remote::settle_with(
+                &here, &agent, invocation, None, until,
+            ))
+            .await
+            .expect("an admitted call is followed from the moment of the approve");
             // Under way or ended, whichever this host is at: never nothing to follow.
             assert!(
                 matches!(

@@ -240,11 +240,9 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 None,
             );
             // The device's one reader decides every change of a record, as on a device.
-            workspace
-                .state
-                .serve_records(Arc::new(crate::workspaces::record_reads::RecordReads::of_device(
-                    None, None,
-                )));
+            workspace.state.serve_records(Arc::new(
+                crate::workspaces::record_reads::RecordReads::of_device(None, None),
+            ));
             let peer = 72;
             let (_worker, _) = workspace.join_worker(peer).await;
             let identity = workspace

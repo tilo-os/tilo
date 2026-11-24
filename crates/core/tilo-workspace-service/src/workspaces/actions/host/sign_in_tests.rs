@@ -265,8 +265,10 @@ impl account_credentials::icloud::ICloudAuth for StandInApple {
         &self,
         apple_id: &str,
         password: &str,
-    ) -> Result<account_credentials::icloud::ICloudSignIn, account_credentials::icloud::ICloudAuthError>
-    {
+    ) -> Result<
+        account_credentials::icloud::ICloudSignIn,
+        account_credentials::icloud::ICloudAuthError,
+    > {
         use account_credentials::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
         if apple_id.trim().is_empty() || password.is_empty() {
             return Err(ICloudAuthError::InvalidCredentials);
@@ -309,9 +311,7 @@ impl account_credentials::icloud::ICloudAuth for StandInApple {
 
 /// The accounts `workspace` keeps, as its apps read them.
 async fn kept_reading(workspaces: &Workspaces, workspace: &WorkspaceId) -> Value {
-    workspaces
-        .accounts_reading(&workspace.to_string())
-        .await
+    workspaces.accounts_reading(&workspace.to_string()).await
 }
 
 /// An `Apple ID`'s sign-in keeps no account until the code Apple sent is
@@ -409,7 +409,10 @@ async fn an_icloud_drive_waits_for_the_code_apple_sends() {
         .expect("a reference to a vault item")
         .id()
         .to_owned();
-    let sealed = workspaces.open_vault(&workspace_id.to_string()).await.unwrap();
+    let sealed = workspaces
+        .open_vault(&workspace_id.to_string())
+        .await
+        .unwrap();
     let secret = sealed
         .entries()
         .iter()
@@ -438,13 +441,11 @@ async fn a_drive_is_kept_once_its_provider_page_approves_it() {
     let ada = caller(&device);
 
     let provider = tilo_oauth::fake::FakeAuthorizationServer::start();
-    workspaces.cloud_sign_in_through(
-        CredentialStore::for_root(None).with_provider(
-            OAuthCloud::GoogleDrive,
-            provider.provider(),
-            "test-client",
-        ),
-    );
+    workspaces.cloud_sign_in_through(CredentialStore::for_root(None).with_provider(
+        OAuthCloud::GoogleDrive,
+        provider.provider(),
+        "test-client",
+    ));
 
     let step: SignInStep = answered(
         settled(page.invoke(
@@ -466,7 +467,12 @@ async fn a_drive_is_kept_once_its_provider_page_approves_it() {
         .await
         .unwrap()
         .expect("the browser approves the sign-in");
-    kept_soon(workspaces, workspace_id, accounts::cloud_types::GOOGLE_DRIVE).await;
+    kept_soon(
+        workspaces,
+        workspace_id,
+        accounts::cloud_types::GOOGLE_DRIVE,
+    )
+    .await;
 
     let reading = kept_reading(workspaces, &workspace_id).await;
     let account = reading["accounts"]
@@ -511,7 +517,11 @@ async fn a_webdav_server_is_kept_from_what_its_person_typed() {
         .await
         .unwrap(),
     );
-    assert!(step.id.is_empty(), "nothing waits for a browser: {}", step.open);
+    assert!(
+        step.id.is_empty(),
+        "nothing waits for a browser: {}",
+        step.open
+    );
 
     let reading = kept_reading(workspaces, &workspace_id).await;
     let account = reading["accounts"]

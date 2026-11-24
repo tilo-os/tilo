@@ -138,10 +138,8 @@ mod external_moderation_rpc_tests {
                 .clone();
             let (actor, origin) = self.caller();
             let invocation = tilo_actions::InvocationId::new();
-            let approval = crate::apps::collab_app_broker::person_approved(
-                &self.route.cluster_id,
-                invocation,
-            );
+            let approval =
+                crate::apps::collab_app_broker::person_approved(&self.route.cluster_id, invocation);
             let token = self
                 .state
                 .confirmation_token(
@@ -219,8 +217,7 @@ mod external_moderation_rpc_tests {
                 None,
                 self.directories.clone(),
             );
-            let handle = opened(&rpc, &self.route.channel_key()).await
-                .unwrap();
+            let handle = opened(&rpc, &self.route.channel_key()).await.unwrap();
             (
                 rpc,
                 signed_worker::Connection {
@@ -773,8 +770,7 @@ mod external_moderation_rpc_tests {
                     &workspace.route.cluster_id,
                     "foreign-store",
                 );
-                let foreign = opened(&rpc, &foreign_route.channel_key()).await
-                    .unwrap();
+                let foreign = opened(&rpc, &foreign_route.channel_key()).await.unwrap();
                 // The foreign record is its own route hold, never handed this invocation.
                 refused(&foreign, &request, id, "no retained target invocation").await;
                 let mut replacement = descriptor;

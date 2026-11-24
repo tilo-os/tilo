@@ -76,7 +76,6 @@ impl crate::apps::certificate_authority::CertificateAuthority for CurrentHost {
     }
 }
 
-
 /// A directory that reports each query/resolve entry and then waits for release.
 pub struct HeldHostDirectory {
     pub entered: mpsc::UnboundedSender<&'static str>,
@@ -398,7 +397,9 @@ impl OriginalWorkspace {
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity::sources::test_trust::install();
         tilo_identity::provisioning::ensure_collaboration_identity(
-            &tilo_identity::store::account_identity_dir(&fixture_root.path().join("config/tilo/identity")),
+            &tilo_identity::store::account_identity_dir(
+                &fixture_root.path().join("config/tilo/identity"),
+            ),
             &tilo_device_identity::IdentityPaths::under(fixture_root.path().join("identity")),
             tilo_identity::provisioning::IdentityStorage::Files,
         )

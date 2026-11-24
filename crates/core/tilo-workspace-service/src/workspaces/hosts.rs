@@ -421,7 +421,8 @@ impl Workspaces {
         // The hand-over carries this device's change naming the server among the
         // workspace's holders; the server takes the workspace in only once it is
         // named, and answers the address it was named by.
-        let (workspace_id, hint, arguments) = match self.hand_over(workspace, &reached, role).await {
+        let (workspace_id, hint, arguments) = match self.hand_over(workspace, &reached, role).await
+        {
             Ok(handed) => handed,
             Err(error) => return Err(self.unnamed(workspace, device, named_before, error).await),
         };

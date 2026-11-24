@@ -345,8 +345,7 @@ impl Fixture {
             Some(Arc::new(devices)),
         );
         let directories = Rc::new(LocalActionDirectoryRegistry::new(rx));
-        let publisher =
-            Connection::join(&state, &directories, &route, &owner).await;
+        let publisher = Connection::join(&state, &directories, &route, &owner).await;
         publisher.publish(rows()).await;
         let peer = *directories.directories.borrow().keys().next().unwrap();
         assert_eq!(
@@ -395,8 +394,7 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
             ] {
                 // Every foreign person claims the owner's presence name. The
                 // certified root, not this wire label, must decide disclosure.
-                let client =
-                    Connection::join(&state, &directories, &route, person).await;
+                let client = Connection::join(&state, &directories, &route, person).await;
                 for needle in ["", "Secret"] {
                     let page = client.query((&state, &directories), peer, needle).await;
                     assert_disclosure(&page.rows, private, needle);
@@ -418,8 +416,7 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
                 }
             }
             // Even the workspace's Owner cannot inspect another person's private view.
-            let foreign_publisher =
-                Connection::join(&state, &directories, &route, &editor).await;
+            let foreign_publisher = Connection::join(&state, &directories, &route, &editor).await;
             foreign_publisher.publish(rows()).await;
             let foreign_peer = *directories
                 .directories

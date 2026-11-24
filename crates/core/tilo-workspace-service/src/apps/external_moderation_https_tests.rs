@@ -45,8 +45,7 @@ mod https_completion {
             None,
             workspace.directories.clone(),
         );
-        let handle = opened(&rpc, &workspace.route.channel_key()).await
-            .unwrap();
+        let handle = opened(&rpc, &workspace.route.channel_key()).await.unwrap();
         signed_worker::Connection {
             handle,
             server,
@@ -709,7 +708,10 @@ mod https_completion {
                     );
                     bounded(
                         "native admission after consent",
-                        store_invoke(target.handle.clone(), with_their_approve(&workspace, &asking)),
+                        store_invoke(
+                            target.handle.clone(),
+                            with_their_approve(&workspace, &asking),
+                        ),
                     )
                     .await
                     .unwrap();

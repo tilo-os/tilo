@@ -35,11 +35,7 @@ pub const NAME: &str = "Servers";
 /// Whether this device holds its person's workspace: the workspace names it
 /// among its holders, whether it founded the workspace or was taken in.
 pub async fn holds_person_workspace(workspaces: &Workspaces) -> bool {
-    holds_person_workspace_of(
-        workspaces,
-        &workspaces.device_cert().user_public_key,
-    )
-    .await
+    holds_person_workspace_of(workspaces, &workspaces.device_cert().user_public_key).await
 }
 
 /// Whether this device holds `person`'s workspace: the workspace names this device among its

@@ -193,8 +193,7 @@ async fn a_run_under_another_devices_certificate_is_a_foreign_devices() {
     );
     let mut flagged = cert.clone();
     flagged.capabilities.foreign = true;
-    tilo_user_identity::sign_device_cert(&mut flagged, &SigningKey::from_bytes(&[1; 32]))
-        .unwrap();
+    tilo_user_identity::sign_device_cert(&mut flagged, &SigningKey::from_bytes(&[1; 32])).unwrap();
     for (what, presented) in [("another device", other), ("a foreign device", flagged)] {
         let admission = host
             .workspaces()
@@ -324,7 +323,10 @@ async fn the_persons_admitted_run_answers_what_their_agent_asked_and_no_other_de
         refusal(answer(&foreign)).contains(asked::ON_YOUR_DEVICE),
         "a foreign device answers nothing for its person"
     );
-    assert!(handed.0.lock().unwrap().is_empty(), "nothing was handed back");
+    assert!(
+        handed.0.lock().unwrap().is_empty(),
+        "nothing was handed back"
+    );
 
     answer(admission.caller()).expect("their own device answers");
     assert_eq!(

@@ -92,9 +92,7 @@ impl Memberships {
     /// Forget `workspace`: this host serves it no more, so it is in no one's
     /// listing.
     pub(crate) fn forget(&self, workspace: &str) {
-        self.holders_by_workspace
-            .write_recover()
-            .remove(workspace);
+        self.holders_by_workspace.write_recover().remove(workspace);
         let Some(people) = self.by_workspace.write_recover().remove(workspace) else {
             return;
         };

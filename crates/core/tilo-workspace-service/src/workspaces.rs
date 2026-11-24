@@ -1161,9 +1161,8 @@ struct WorkspacesInner {
     /// What signs an `Apple ID` in, when a test stands a provider of its own
     /// in ([`Workspaces::icloud_sign_in_through`]); Apple's otherwise.
     #[cfg(any(test, feature = "test-support"))]
-    icloud_sign_in: std::sync::RwLock<
-        Option<std::sync::Arc<dyn account_credentials::icloud::ICloudAuth>>,
-    >,
+    icloud_sign_in:
+        std::sync::RwLock<Option<std::sync::Arc<dyn account_credentials::icloud::ICloudAuth>>>,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
@@ -3292,9 +3291,7 @@ impl Workspaces {
             .governance()
             .keeping_devices()
             .into_iter()
-            .filter(|hint| {
-                tilo_user_identity::verify_device_cert_at(&hint.host, now_ns).is_ok()
-            })
+            .filter(|hint| tilo_user_identity::verify_device_cert_at(&hint.host, now_ns).is_ok())
             .map(|hint| hint.host.device_public_key)
             .collect();
         self.inner

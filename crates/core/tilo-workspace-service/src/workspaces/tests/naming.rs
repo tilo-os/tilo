@@ -5,8 +5,8 @@
 use tilo_peer_state::{CopyRole, join::Role};
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::workspaces::tests::{device_cert, governor, test_host};
 use crate::workspaces::HostWorkspaceRequest;
+use crate::workspaces::tests::{device_cert, governor, test_host};
 
 #[tokio::test]
 async fn a_hand_over_without_the_change_naming_the_server_is_refused() {

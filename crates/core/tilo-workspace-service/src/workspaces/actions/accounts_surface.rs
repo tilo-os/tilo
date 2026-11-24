@@ -150,11 +150,7 @@ fn begin_cloud_sign_in_params() -> Vec<ActionParam> {
             ParamType::Text,
             "The name the account is shown under.",
         ),
-        ActionParam::optional(
-            "server",
-            ParamType::Text,
-            "A `WebDAV` server's address.",
-        ),
+        ActionParam::optional("server", ParamType::Text, "A `WebDAV` server's address."),
         ActionParam::optional(
             "username",
             ParamType::Text,
@@ -348,11 +344,7 @@ mod surface_tests {
                             FieldType::Text,
                             "The address or name it signs in at.",
                         ),
-                        (
-                            "username",
-                            FieldType::Text,
-                            "The name it signs in with.",
-                        ),
+                        ("username", FieldType::Text, "The name it signs in with."),
                         ("provider", FieldType::Text, "The provider it belongs to."),
                         (
                             "status",
@@ -418,11 +410,7 @@ mod surface_tests {
                     "AccountServices",
                     "Which of one account's services its person uses.",
                     &[
-                        (
-                            "mail",
-                            FieldType::Bool,
-                            "Whether its mail shows in Mail.",
-                        ),
+                        ("mail", FieldType::Bool, "Whether its mail shows in Mail."),
                         (
                             "calendar",
                             FieldType::Bool,
