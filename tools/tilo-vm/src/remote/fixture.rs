@@ -270,7 +270,6 @@ impl Device {
                 key: machine,
                 user: root.verifying_key().to_bytes(),
                 workspace: WORKSPACE.into(),
-                scope: None,
             },
             route: DeviceRoute {
                 device: hex::encode(device.verifying_key().to_bytes()),

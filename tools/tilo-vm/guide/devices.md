@@ -22,10 +22,9 @@ changed. Nothing reaches a device over SSH; `vm ssh` is the one interactive
 shell, for people.
 
 **This computer needs a Tilo login.** On a device of yours run
-`tilo device add`, then here `tilo login <the ticket it prints>`. On a
-computer with no person of its own (CI, a fresh builder) tilo-vm makes a
-throwaway one for its VMs under its state directory the first time it starts
-one (`tilo login --new-identity`); `tilo-vm doctor` says which it uses.
+`tilo device add`, then here `tilo login <the ticket it prints>`. A computer
+that is no device of yours (CI, a fresh builder) makes a person of its own with
+`tilo login --new-identity`; `tilo-vm doctor` says which it asks as.
 
 **A VM tilo-vm starts joins by itself.** Before the VM's first boot tilo-vm
 runs `tilo device add`, which prints a one-use ticket, and hands the ticket to

@@ -214,14 +214,6 @@ pub fn registry_path() -> PathBuf {
         .join("vms.toml")
 }
 
-/// Where tilo-vm keeps the person it makes for itself on a machine that has none.
-pub fn own_identity_dir(registry: &Path) -> PathBuf {
-    registry
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("identity")
-}
-
 impl Registry {
     pub fn load(path: &Path) -> Result<Self, CliError> {
         match std::fs::read_to_string(path) {

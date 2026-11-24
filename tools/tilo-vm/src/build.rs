@@ -442,7 +442,7 @@ mod tests {
                     "CARGO=cargo python3 os/dev/assemble-app-runtime.py --repo . --target-dir target --profile thin-app --app calendar --tapp-out /w/calendar.tapp"
                 );
                 let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-                assert!(apps_in(&repo).contains(&"calendar".to_owned()));
+                assert!(apps_in(&repo).contains(&"camera".to_owned()));
             }
         }
 

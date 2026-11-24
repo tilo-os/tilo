@@ -58,6 +58,7 @@ chown -R "$run_user:" "$work" "$reports" target
 as_user() { sudo -n -u "$run_user" -H env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
 caps=$(as_user virsh --connect qemu:///session capabilities)
 grep -q "<domain type='kvm'" <<<"$caps" || { echo "libvirt's session daemon offers no KVM domain" >&2; exit 1; }
+as_user bash tools/ci/vm-host-person.sh "$work/tilo-runtime.log"
 phase 'VM host ready'
 
 hold=${T_INPUT_HOLD:-0}

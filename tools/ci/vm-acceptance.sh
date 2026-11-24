@@ -219,6 +219,7 @@ as_user() { sudo -n -u "$run_user" -H --preserve-env="$keep" env "XDG_RUNTIME_DI
 # SIGPIPE virsh then gets ended a run with status 141 and nothing said.
 caps=$(as_user virsh --connect qemu:///session capabilities)
 grep -q "<domain type='kvm'" <<<"$caps" || { echo "libvirt's session daemon offers no KVM domain" >&2; exit 1; }
+as_user bash tools/ci/vm-host-person.sh "$work/tilo-runtime.log"
 
 args=(--disk "$disk" --commit "$commit" --outputs "$outputs" --budgets "$budgets"
       --tilo-vm /usr/local/bin/tilo-vm --runner t)

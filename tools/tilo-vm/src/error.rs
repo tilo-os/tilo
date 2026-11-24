@@ -259,7 +259,7 @@ impl CliError {
                 "wake it at its power button or keyboard, then tilo-vm vm status {vm}: that records its MAC and hostname, so a new address is found by name. Next time keep it from sleeping: tilo-vm vm awake {vm} --for 2h"
             ),
             Self::NotLoggedIn { .. } => {
-                "log this machine in as one of your devices: on a device of yours run tilo device add, then here tilo login <the ticket it prints>   (tilo-vm guide devices)".into()
+                "log this machine in as one of your devices: on a device of yours run tilo device add, then here tilo login <the ticket it prints>   |   a machine of its own: tilo login --new-identity   (tilo-vm guide devices)".into()
             }
             Self::NotJoined { vm } => format!(
                 "start it and let it answer once: tilo-vm vm start {vm}   |   a machine you set up yourself: tilo-vm vm add {vm} --device <its device key>   (tilo-vm guide devices)"

@@ -40,9 +40,6 @@ pub struct Machine {
     pub key: SigningKey,
     pub user: [u8; 32],
     pub workspace: String,
-    /// Where `tilo` keeps this identity: `None` for the person's own login, else the environment
-    /// that scopes tilo-vm's own person ([`Machine::own`]).
-    pub scope: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Machine {
@@ -57,16 +54,11 @@ impl std::fmt::Debug for Machine {
 /// The `tilo` command tilo-vm asks: the one built beside this tilo-vm when there is one (a
 /// checkout's build, or CI's tilo-vm with the command it built), else the one on `PATH`.
 pub(crate) fn tilo_program() -> PathBuf {
-    beside_or_on_path("tilo")
-}
-
-/// The program `name` built beside this tilo-vm, else the one on `PATH`.
-fn beside_or_on_path(name: &str) -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|exe| Some(exe.parent()?.join(name)))
+        .and_then(|exe| Some(exe.parent()?.join("tilo")))
         .filter(|beside| beside.is_file())
-        .unwrap_or_else(|| name.into())
+        .unwrap_or_else(|| "tilo".into())
 }
 
 impl Machine {
@@ -76,28 +68,10 @@ impl Machine {
         let keys = tilo_identity::provisioning::collaboration_identity_paths();
         let place =
             tilo_device_identity::login::Place::here(keys).map_err(|error| login_error(&error))?;
-        Self::at(&place, None)
+        Self::at(&place)
     }
 
-    /// The throwaway person tilo-vm makes for itself under `dir` when this machine has none (CI,
-    /// a fresh builder), and the environment that scopes `tilo` to it.
-    pub fn own(dir: &Path) -> Result<Option<Self>, CliError> {
-        let place = tilo_device_identity::login::Place::at(
-            dir.join("state/tilo/device"),
-            tilo_device_identity::IdentityPaths::under(dir.join("identity")),
-        );
-        Self::at(&place, Some(dir.to_path_buf()))
-    }
-
-    /// The environment `tilo` runs in for this identity.
-    pub fn env(&self) -> Vec<(String, String)> {
-        self.scope.as_deref().map(own_env).unwrap_or_default()
-    }
-
-    fn at(
-        place: &tilo_device_identity::login::Place,
-        scope: Option<PathBuf>,
-    ) -> Result<Option<Self>, CliError> {
+    fn at(place: &tilo_device_identity::login::Place) -> Result<Option<Self>, CliError> {
         // A computer a ticket logged in acts in its person's own workspace, as the certificate the
         // login filed names them.
         if let Some(device) = tilo_device_identity::login::served_device_key(place.keys())
@@ -111,33 +85,28 @@ impl Machine {
                 workspace: tilo_server_protocol::servers::person_workspace_id(
                     &cert.user_public_key,
                 ),
-                scope,
             }));
         }
         let Ok(user) = tilo_device_identity::persist::read_public_key(&place.keys().user_pubkey)
         else {
             return Ok(None);
         };
-        // tilo-vm's own person is served by a daemon of its own, which runs only while asked.
-        let _daemon = scope.as_deref().map(OwnDaemon::start).transpose()?;
-        let workspace = founded(scope.as_deref().map(own_env).unwrap_or_default())?;
+        let workspace = founded()?;
         let key = tilo_device_identity::persist::load_device_key(place.keys())
             .map_err(|error| login_error(&anyhow::anyhow!("{error}")))?;
         Ok(Some(Self {
             key,
             user,
             workspace,
-            scope,
         }))
     }
 }
 
-/// The workspace the daemon `tilo` reaches in `env` founded for its person, as it answers
-/// `tilo device key` with no login.
-fn founded(env: Vec<(String, String)>) -> Result<String, CliError> {
+/// The workspace this computer's daemon founded for its person, as it answers `tilo device key`
+/// with no login.
+fn founded() -> Result<String, CliError> {
     let output = std::process::Command::new(tilo_program())
         .args(["device", "key"])
-        .envs(env)
         .output()
         .map_err(CliError::io("run tilo device key"))?;
     serde_json::from_slice::<serde_json::Value>(&output.stdout)
@@ -148,130 +117,6 @@ fn founded(env: Vec<(String, String)>) -> Result<String, CliError> {
             status: output.status.to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         })
-}
-
-/// The environment that keeps `tilo` to tilo-vm's own person under `dir`: its identity, its
-/// state and the profile of its daemon ([`OwnDaemon`]), whose native endpoint every `tilo` run in
-/// it asks, so none installs or starts this account's own service.
-pub fn own_env(dir: &Path) -> Vec<(String, String)> {
-    [
-        ("TILO_IDENTITY_ROOT", "identity"),
-        ("XDG_STATE_HOME", "state"),
-        ("XDG_DATA_HOME", "data"),
-        ("XDG_CONFIG_HOME", "config"),
-        ("TILO_RUNTIME_PROFILE", OWN_PROFILE),
-        ("HOME", OWN_HOME),
-    ]
-    .into_iter()
-    .map(|(name, sub)| (name.to_owned(), dir.join(sub).display().to_string()))
-    .collect()
-}
-
-/// Where under tilo-vm's own person's directory its daemon keeps its profile and sockets.
-const OWN_PROFILE: &str = "profile";
-/// The home its daemon keeps the person's workspace folders in, apart from this account's.
-const OWN_HOME: &str = "home";
-/// How long tilo-vm's own daemon has to answer at its native endpoint.
-const OWN_DAEMON_START: Duration = Duration::from_secs(60);
-/// How long it has to stop once told to.
-const OWN_DAEMON_STOP: Duration = Duration::from_secs(10);
-
-/// The daemon serving tilo-vm's own person: `tilo-runtime` over a private profile under the
-/// person's directory, a child of tilo-vm while tilo-vm needs it (founding the person, a VM
-/// joining it), stopped when dropped. It is never this account's service, so an account with no
-/// user manager (CI's, reached through `sudo`) runs it too, and the account's own Tilo daemon,
-/// when it has one, is left alone.
-pub struct OwnDaemon {
-    /// `None` when a daemon answered already (another tilo-vm's).
-    child: Option<std::process::Child>,
-}
-
-impl OwnDaemon {
-    /// The daemon of the person under `dir`, started when none answers, once it answers.
-    pub fn start(dir: &Path) -> Result<Self, CliError> {
-        let profile = dir.join(OWN_PROFILE);
-        let socket = profile.join("native.sock");
-        if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
-            return Ok(Self { child: None });
-        }
-        for private in [&profile, &dir.join(OWN_HOME)] {
-            make_private_dir(private)?;
-        }
-        let log_path = dir.join("daemon.log");
-        let log = std::fs::File::create(&log_path)
-            .map_err(CliError::io(format!("create {}", log_path.display())))?;
-        let program = beside_or_on_path("tilo-runtime");
-        let child = std::process::Command::new(&program)
-            .arg("--profile")
-            .arg(&profile)
-            .envs(own_env(dir))
-            .stdin(std::process::Stdio::null())
-            .stdout(
-                log.try_clone()
-                    .map_err(CliError::io(format!("open {}", log_path.display())))?,
-            )
-            .stderr(log)
-            .spawn()
-            .map_err(CliError::io(format!("run {}", program.display())))?;
-        let mut daemon = Self { child: Some(child) };
-        let deadline = std::time::Instant::now() + OWN_DAEMON_START;
-        loop {
-            if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
-                return Ok(daemon);
-            }
-            let exited = daemon
-                .child
-                .as_mut()
-                .and_then(|child| child.try_wait().ok().flatten());
-            if exited.is_some() || std::time::Instant::now() >= deadline {
-                return Err(CliError::CommandFailed {
-                    command: format!("{} --profile {}", program.display(), profile.display()),
-                    status: exited.map_or_else(
-                        || format!("no answer within {}s", OWN_DAEMON_START.as_secs()),
-                        |status| status.to_string(),
-                    ),
-                    stderr: last_lines(&log_path, 20),
-                });
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-}
-
-impl Drop for OwnDaemon {
-    fn drop(&mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
-        };
-        // Told to stop, the daemon lets go of the device's lock and its endpoints itself.
-        let _ = std::process::Command::new("kill")
-            .args(["-TERM", &child.id().to_string()])
-            .status();
-        let deadline = std::time::Instant::now() + OWN_DAEMON_STOP;
-        while std::time::Instant::now() < deadline {
-            if !matches!(child.try_wait(), Ok(None)) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-}
-
-/// Make `dir` and its parents, and keep it to this account alone.
-fn make_private_dir(dir: &Path) -> Result<(), CliError> {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::create_dir_all(dir)
-        .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
-        .map_err(CliError::io(format!("make {}", dir.display())))
-}
-
-/// The last `count` lines of the file at `path`, for an error that says why a program stopped.
-fn last_lines(path: &Path, count: usize) -> String {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(count)..].join("\n")
 }
 
 fn login_error(error: &anyhow::Error) -> CliError {

@@ -75,6 +75,7 @@ keep=$(env | sed -n 's/^\(TILO_[A-Z0-9_]*\|T_[A-Z0-9_]*\)=.*/\1/p' | paste -sd, 
 as_user() { sudo -n -u "$run_user" -H --preserve-env="$keep" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
 caps=$(as_user virsh --connect qemu:///session capabilities)
 grep -q "<domain type='kvm'" <<<"$caps" || { echo "libvirt's session daemon offers no KVM domain" >&2; exit 1; }
+as_user bash tools/ci/vm-host-person.sh "$work/tilo-runtime.log"
 phase 'host ready'
 
 # Let the holder of the key in scripts/e2e-remote/HOLD into this micro-VM while it holds the

@@ -670,19 +670,13 @@ impl App {
         Ok(remote)
     }
 
-    /// The identity this machine drives its devices as: the person's own `tilo login`, else the
-    /// person tilo-vm made for itself when the machine had none.
+    /// The identity this machine drives its devices as: the person's own `tilo login`.
     pub(crate) fn machine(&self) -> Result<Machine, CliError> {
         if let Some(machine) = &self.machine {
             return Ok(machine.clone());
         }
-        if let Some(machine) = Machine::here()? {
-            return Ok(machine);
-        }
-        Machine::own(&config::own_identity_dir(&self.registry_path))?.ok_or_else(|| {
-            CliError::NotLoggedIn {
-                detail: "this computer has no Tilo login".into(),
-            }
+        Machine::here()?.ok_or_else(|| CliError::NotLoggedIn {
+            detail: "this computer has no Tilo login".into(),
         })
     }
 
@@ -1197,14 +1191,9 @@ impl App {
             Ok(machine) => Check::ok(
                 "login",
                 format!(
-                    "asks devices as {} in workspace {}{}",
+                    "asks devices as {} in workspace {}",
                     hex::encode(machine.key.verifying_key().to_bytes()),
                     machine.workspace,
-                    if machine.scope.is_some() {
-                        " (tilo-vm's own person: this computer has no Tilo login)"
-                    } else {
-                        ""
-                    }
                 ),
             ),
             Err(error) => Check::warn("login", error.to_string(), error.hint()),
