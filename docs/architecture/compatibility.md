@@ -247,15 +247,13 @@ the window is exactly one peer version wide:
   `neighbour_wire::OLDEST_PEER_PROTOCOL_VERSION`). Every handshake and
   identity announcement checks that window and nothing else.
 - The main flows are frozen at the oldest version a build works with:
-  a server holding a workspace (the handshake, the workspaces each server
-  announces, a subscription and its answer), sync (a delta, anti-entropy's
-  ask and answer), a governance change committed to a server, a lease claim,
-  the identity announcement, and the connection protocols a server is dialled
-  on. Their frames are kept in
-  `crates/core/neighbour-wire/previous-peer-frames.txt`;
-  `tilo-server-protocol`'s `tests/previous_peer_version.rs` and
-  tilo-peer-state's lease tests read each with today's types, write it back,
-  and fail on any byte that differs, so each side reads what the other sends.
+  the handshake, sync (anti-entropy's ask and answer), a lease claim, the
+  identity announcement, and the connection protocols a server is dialled on.
+  Their frames are kept in
+  `crates/core/neighbour-wire/previous-peer-frames.txt`; tilo-peer-state's
+  lease test reads the claim with today's types, writes it back, and fails on
+  any byte that differs. The frames of the session transport that carried a
+  device's workspaces, subscription and delta flow went with the transport.
 - Every message a device takes in, from a peer, a server or its own store, is
   read by one reader, `neighbour_wire::NeighbourMsg::decode`, and the frames
   that carry one end with it or read it through that reader. A document write

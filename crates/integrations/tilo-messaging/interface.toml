@@ -8,7 +8,7 @@
 # replies and events (crates/integrations/tilo-messaging/src/service), apart from
 # the runtime interface every app speaks.
 name = "messaging"
-version = 1
+version = 2
 version_const = "crates/integrations/tilo-messaging/src/service/wire.rs:PROTOCOL"
 encoding = "json"
 served_to_apps = true
@@ -227,6 +227,7 @@ roots = ["Handoff", "Frame", "Call", "Reply", "Event"]
 "SendError" = "enum external"
 "SendError::AlreadyReserved" = "unit"
 "SendError::InvalidRequest" = "unit"
+"SendError::NotOwnDevice" = "unit"
 "SendError::Revoked" = "unit"
 "SendError::Unavailable" = "unit"
 "SendError::Uncertain" = "unit"

@@ -18,7 +18,7 @@ pub struct Handoff {
     pub app_id: String,
 }
 
-pub const PROTOCOL: u16 = 1;
+pub const PROTOCOL: u16 = 2;
 
 pub const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(4 * 1024);
 
