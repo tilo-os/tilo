@@ -127,8 +127,10 @@ impl DesktopPass {
         self.handle.follow_bars();
         self.home_windows();
         self.publish();
+        // Where the windows stand follows from the tree as this pass left it, for every host.
+        let moved = super::shown::lay_out(&mut self.handle.shared.borrow_mut());
         let shared = self.handle.shared.borrow();
-        shared.revision != before || shared.search_revision != search_revision
+        moved || shared.revision != before || shared.search_revision != search_revision
     }
 
     /// Give every window a display, and the display the person is on the strip it shows: a window
@@ -146,44 +148,65 @@ impl DesktopPass {
         }
     }
 
-    /// Apply the queued verbs to the tree, and float the windows asked to float (by a verb, or as
-    /// they open) over the middle of the display they stand on: the shell reads every other change
-    /// from the tree.
-    fn apply(&mut self, tiles: &mut dyn TileSource) {
+    /// Apply the queued verbs to the tree: a window opened over the shell docks as a card beside
+    /// the window it opened next to, one asked to float lifts over the middle of the display it
+    /// stands on, and the strips bring the windows opened, restored or moved into view and pan as
+    /// asked. The shell reads every other change from the tree.
+    fn apply(&self, tiles: &mut dyn TileSource) {
         let Some(ops) = self.handle.apply_queued(tiles) else {
             return;
         };
         for op in ops {
-            let floated = match op {
-                RowOp::Float(strip, group)
-                | RowOp::Open {
+            match op {
+                RowOp::Open {
                     strip,
                     group,
                     float: true,
                     ..
-                } => Some((strip, group)),
-                _ => None,
-            };
-            if let Some((strip, group)) = floated {
-                let area = self.handle.read(|tree| {
-                    let display = tree.outputs.display_of(group);
-                    tree.outputs
-                        .displays
-                        .iter()
-                        .find(|shown| Some(shown.id) == display)
-                        .or_else(|| tree.outputs.displays.first())
-                        .map(|shown| {
-                            ui::kurbo::Rect::new(
-                                shown.x,
-                                shown.y,
-                                shown.x + shown.width,
-                                shown.y + shown.height,
-                            )
-                        })
-                });
-                let (width, height) = ui::widget::FLOAT_SIZE;
-                let area = area.unwrap_or_else(|| ui::kurbo::Rect::new(0.0, 0.0, width, height));
-                self.handle.float_over(strip, group, area);
+                } => {
+                    let mut shared = self.handle.shared.borrow_mut();
+                    let display = shared.tree.outputs.display_of(group);
+                    let area = super::shown::work_area(&shared, display);
+                    if let Some(beside) =
+                        super::floats::dock_beside(&mut shared, strip, group, area)
+                    {
+                        shared.reveal_asked.push((strip, beside));
+                    }
+                }
+                RowOp::Float(strip, group) => {
+                    let mut shared = self.handle.shared.borrow_mut();
+                    let display = shared.tree.outputs.display_of(group);
+                    let area = super::shown::work_area(&shared, display);
+                    // A window that opened as a card goes back to the column as the card it was.
+                    if shared.dock.born.contains(&group) {
+                        if let Some(beside) =
+                            super::floats::dock_beside(&mut shared, strip, group, area)
+                        {
+                            shared.reveal_asked.push((strip, beside));
+                        }
+                    } else {
+                        drop(shared);
+                        self.handle.float_over(strip, group, area);
+                    }
+                }
+                RowOp::Open { strip, group, .. } | RowOp::Reveal(strip, group) => {
+                    self.handle
+                        .shared
+                        .borrow_mut()
+                        .reveal_asked
+                        .push((strip, group));
+                }
+                RowOp::Pan(strip, offset) => {
+                    let mut shared = self.handle.shared.borrow_mut();
+                    let focused = shared.tree.outputs.focused_display();
+                    for ((panned, display), pan) in &mut shared.pans {
+                        if *panned == strip && (display.is_none() || *display == focused) {
+                            pan.scroll = offset.max(0.0);
+                        }
+                    }
+                    shared.wake.wake();
+                }
+                _ => {}
             }
         }
     }

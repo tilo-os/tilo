@@ -237,6 +237,15 @@ pub struct Shared {
     pub minter: IdMinter,
     /// Logical width the strip lays out against.
     pub viewport_width: f64,
+    /// The displays the host last named, primary first, in the surface's coordinates: the one a
+    /// device with a single display lays its strip out on, which the tree's partition does not
+    /// keep ([`DesktopHandle::set_displays`]).
+    pub displays: Vec<tilo_desktop_model::Display>,
+    /// Where each strip shown on a display is panned to, by strip and display (`None` on one
+    /// display), and the window last brought into view there ([`shown::lay_out`]).
+    pub pans: HashMap<(StripId, Option<u32>), shown::StripPan>,
+    /// The windows asked into view since the last layout: each one opened, restored or moved.
+    pub reveal_asked: Vec<(StripId, GroupId)>,
     /// How much of the shell's top edge the desktop bar overlays now
     /// ([`DesktopHandle::set_top_overlay_inset`]): every window moves down by it, whole, so its own
     /// bar stands below the bar shown over it rather than under it.

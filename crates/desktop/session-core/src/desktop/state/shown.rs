@@ -1,9 +1,14 @@
 //! Where the windows the shell shows stand, as the last layout left them: the whole of each window,
 //! and the bounds of the tab it shows. Every display shows a strip of its own, so that is every row
 //! the shell draws, not only the one the person works in.
+use tilo_desktop_model::{LayoutKind, StripId, TileContent};
 use ui::kurbo::Rect;
+use ui::widget::{
+    FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, HANDLE_SLOT_PX, STRIP_BOTTOM_GUTTER_PX,
+    STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX,
+};
 
-use super::{DesktopHandle, GroupId, TabId};
+use super::{DesktopHandle, GroupId, Shared, TabId, displays, floats};
 
 impl DesktopHandle {
     /// Where each window the shell draws draws its active tab, in the surface's coordinates, as of
@@ -121,7 +126,7 @@ pub struct ShownTab {
 }
 
 /// What one strip holds, window by window, as the last layout left it.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct ShownTabs(pub Vec<ShownTab>);
 
 impl ShownTabs {
@@ -209,4 +214,312 @@ impl DesktopHandle {
         // in the frame this asks for, and nothing else.
         shared.wake.wake();
     }
+}
+
+/// The height of the area a host lays the shell out on before it names a display: a 16:10 display
+/// as wide as the viewport ([`DesktopHandle::set_viewport_width`]).
+const UNNAMED_DISPLAY_ASPECT: f64 = 10.0 / 16.0;
+
+/// How far one strip shown on one display is panned, and the window it last brought into view
+/// there: a strip pans to the window the person moves to, and stays where they panned it until
+/// they move to another.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StripPan {
+    /// How far the strip's windows are moved left, in logical pixels.
+    pub scroll: f64,
+    /// The window last brought into view.
+    pub revealed: Option<GroupId>,
+}
+
+/// One strip as one display shows it: the windows it lays out there, in order, over `area`.
+struct Section {
+    strip: StripId,
+    display: Option<u32>,
+    area: Rect,
+    groups: Vec<GroupId>,
+}
+
+/// The area the shell is laid out on for `display`: that display, or with none named the display
+/// the person works on, else the one the host last named first, else the viewport.
+#[must_use]
+pub fn work_area(shared: &Shared, display: Option<u32>) -> Rect {
+    let named = display.and_then(|id| shared.displays.iter().find(|shown| shown.id == id));
+    let focused = shared.tree.outputs.focused_display();
+    named
+        .or_else(|| {
+            shared
+                .displays
+                .iter()
+                .find(|shown| Some(shown.id) == focused)
+        })
+        .or_else(|| shared.displays.iter().find(|shown| shown.primary))
+        .or_else(|| shared.displays.first())
+        .map_or_else(
+            || {
+                let width = shared.viewport_width.max(1.0);
+                Rect::new(0.0, 0.0, width, (width * UNNAMED_DISPLAY_ASPECT).round())
+            },
+            crate::desktop::display_rect,
+        )
+}
+
+/// Every strip the shell shows, one section per display it is shown on.
+fn sections(shared: &Shared) -> Vec<Section> {
+    let tree = &shared.tree;
+    if tree.is_partitioned() {
+        return displays::display_strips(tree)
+            .into_iter()
+            .flat_map(|plan| {
+                plan.displays
+                    .iter()
+                    .map(|display| Section {
+                        strip: plan.strip,
+                        display: Some(*display),
+                        area: work_area(shared, Some(*display)),
+                        groups: plan
+                            .groups
+                            .iter()
+                            .copied()
+                            .filter(|group| plan.assignment.get(group) == Some(display))
+                            .collect(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+    }
+    let Some(strip) = tree.active_strip_id() else {
+        return Vec::new();
+    };
+    let groups = floats::workspace_with(tree, strip)
+        .and_then(|workspace| workspace.strips.iter().find(|held| held.id == strip))
+        .map(|held| held.window_groups.iter().map(|group| group.id).collect())
+        .unwrap_or_default();
+    vec![Section {
+        strip,
+        display: None,
+        area: work_area(shared, None),
+        groups,
+    }]
+}
+
+/// The offset that brings the window spanning `x0..x1` of a strip's canvas into a view `width`
+/// wide panned to `scroll`, on a strip whose windows end at `end`: clear of the view's edges by
+/// the gap between two windows, its start first when it is wider than the view, and flush with
+/// either end of the strip when it is within a gutter of it.
+fn revealing(scroll: f64, x0: f64, x1: f64, width: f64, end: f64) -> f64 {
+    let wide = x1 - x0;
+    let margin = HANDLE_SLOT_PX.min((width - wide).max(0.0) / 2.0);
+    let (left, right) = (scroll + margin, scroll + width - margin);
+    let mut to = scroll;
+    if wide > right - left {
+        to += x0 - left;
+    } else if x1 > right {
+        to += x1 - right;
+    } else if x0 < left {
+        to -= left - x0;
+    }
+    let max = (end + STRIP_EDGE_GUTTER_PX - width).max(0.0);
+    if to > 0.0 && to <= STRIP_EDGE_GUTTER_PX + 0.5 && x1 <= width - margin + 0.5 {
+        to = 0.0;
+    } else if to < max && to >= max - STRIP_EDGE_GUTTER_PX - 0.5 && x0 - max >= margin - 0.5 {
+        to = max;
+    }
+    to.clamp(0.0, max)
+}
+
+/// Lay out every strip the shell shows from the tree: each window where its strip puts it on its
+/// display, panned to the window the person moved to, and each window floating over the shell
+/// where the workspace holds it. The windows a host places and the ones it tiers by what is in
+/// view read this ([`DesktopHandle::shown_tabs`], [`DesktopHandle::float_covers`]). Whether
+/// anything moved.
+pub fn lay_out(shared: &mut Shared) -> bool {
+    let reveal_asked = std::mem::take(&mut shared.reveal_asked);
+    let mut laid = Laid::default();
+    for section in sections(shared) {
+        lay_out_section(shared, &section, &reveal_asked, &mut laid);
+    }
+    let shown = ShownTabs(laid.shown);
+    let moved = shared.shown_tabs != shown
+        || shared.float_covers != laid.covers
+        || shared.pans != laid.pans;
+    shared.shown_tabs = shown;
+    shared.float_covers = laid.covers;
+    shared.pans = laid.pans;
+    moved
+}
+
+/// What one layout gathers across the strips the shell shows.
+#[derive(Default)]
+struct Laid {
+    shown: Vec<ShownTab>,
+    covers: Vec<(TabId, Rect)>,
+    pans: std::collections::HashMap<(StripId, Option<u32>), StripPan>,
+}
+
+/// Lay out the windows of one strip on one display into `laid`.
+fn lay_out_section(
+    shared: &Shared,
+    section: &Section,
+    reveal_asked: &[(StripId, GroupId)],
+    laid: &mut Laid,
+) {
+    let Some(workspace) = floats::workspace_with(&shared.tree, section.strip) else {
+        return;
+    };
+    let Some(strip) = workspace
+        .strips
+        .iter()
+        .find(|held| held.id == section.strip)
+    else {
+        return;
+    };
+    let area = section.area;
+    let groups: Vec<&tilo_desktop_model::WindowGroup> = section
+        .groups
+        .iter()
+        .filter_map(|id| strip.window_groups.iter().find(|group| group.id == *id))
+        .collect();
+    let floating = floats::floats_of(shared, section.strip, floats::area_of(area));
+    let top = area.y0 + shared.top_overlay + STRIP_TOP_GAP_PX;
+    let bottom = (area.y1 - STRIP_BOTTOM_GUTTER_PX).max(top + 1.0);
+    let bar = ui::widget::tabs::TAB_BAR_HEIGHT.min(bottom - top);
+    let framed = |group: &tilo_desktop_model::WindowGroup, window: Rect, floated: bool| ShownTab {
+        tab: group.active_tab,
+        group: group.id,
+        window,
+        content: Some(Rect::new(window.x0, window.y0 + bar, window.x1, window.y1)),
+        bar_over_content: None,
+        floated,
+    };
+    // A window covering its display, or one the person maximised, is the one its display shows:
+    // the others on it are out of sight until it gives the display back.
+    let fullscreen = shared.tree.fullscreen_group();
+    if let Some(group) = groups.iter().find(|group| Some(group.id) == fullscreen) {
+        laid.shown.push(ShownTab {
+            content: Some(area),
+            ..framed(group, area, false)
+        });
+        return;
+    }
+    if let Some(group) = groups.iter().find(|group| group.maximized) {
+        let window = Rect::new(
+            area.x0 + STRIP_EDGE_GUTTER_PX,
+            top,
+            area.x1 - STRIP_EDGE_GUTTER_PX,
+            bottom,
+        );
+        laid.shown.push(framed(group, window, false));
+        return;
+    }
+    let in_strip: Vec<&tilo_desktop_model::WindowGroup> = groups
+        .iter()
+        .copied()
+        .filter(|group| !floating.contains_key(&group.id))
+        .collect();
+    if workspace.layout.kind == LayoutKind::Canvas {
+        for group in in_strip {
+            if let Some(place) = workspace.layout.place_of(group.id) {
+                laid.shown
+                    .push(framed(group, on_area(floats::rect_of(place), area), false));
+            }
+        }
+    } else {
+        // Each window of the strip in its run of the canvas, from the display's left edge.
+        let usable = (area.width() - 2.0 * STRIP_EDGE_GUTTER_PX).max(1.0);
+        let alone = in_strip.len() == 1;
+        let mut x = STRIP_EDGE_GUTTER_PX;
+        let spans: Vec<(GroupId, f64, f64)> = in_strip
+            .iter()
+            .map(|group| {
+                let width = group.width.resolve_in_strip(usable, alone);
+                let span = (group.id, x, x + width);
+                x += width + HANDLE_SLOT_PX;
+                span
+            })
+            .collect();
+        let pan = pan_section(shared, section, &spans, reveal_asked);
+        laid.pans.insert((section.strip, section.display), pan);
+        for (group, (_, x0, x1)) in in_strip.iter().zip(spans) {
+            let window = Rect::new(
+                area.x0 + x0 - pan.scroll,
+                top,
+                area.x0 + x1 - pan.scroll,
+                bottom,
+            );
+            laid.shown.push(framed(group, window, false));
+        }
+    }
+    for group in groups {
+        let Some(at) = floating.get(&group.id) else {
+            continue;
+        };
+        laid.shown.push(framed(group, *at, true));
+        // What the shell draws whole over the windows under a floating window: its card, once a
+        // window fills it. A place still waiting for its window draws nothing over them.
+        let filled = group.tabs.iter().any(|tab| {
+            tab.id == group.active_tab && matches!(tab.tile, TileContent::Foreign { .. })
+        });
+        if filled {
+            laid.covers.push((group.active_tab, *at));
+        }
+    }
+}
+
+/// `at`, a place on the canvas of the work area `area`, in the surface's coordinates.
+fn on_area(at: Rect, area: Rect) -> Rect {
+    Rect::new(
+        area.x0 + at.x0,
+        area.y0 + at.y0,
+        area.x0 + at.x1,
+        area.y0 + at.y1,
+    )
+}
+
+/// How far the strip of `section`, its windows at `spans` of its canvas, is panned now: to the
+/// window asked into view since the last layout, else to the window the person moved to, else
+/// where it was.
+fn pan_section(
+    shared: &Shared,
+    section: &Section,
+    spans: &[(GroupId, f64, f64)],
+    reveal_asked: &[(StripId, GroupId)],
+) -> StripPan {
+    let width = section.area.width();
+    let end = spans.last().map_or(0.0, |(_, _, x1)| *x1);
+    let mut pan = shared
+        .pans
+        .get(&(section.strip, section.display))
+        .copied()
+        .unwrap_or_default();
+    let laid_here = |group: GroupId| spans.iter().any(|span| span.0 == group);
+    let active = shared
+        .tree
+        .active_group_for(section.strip)
+        .filter(|group| laid_here(*group));
+    let asked = reveal_asked
+        .iter()
+        .rev()
+        .find(|(strip, group)| *strip == section.strip && laid_here(*group))
+        .map(|(_, group)| *group);
+    let moved_to = active.filter(|group| pan.revealed != Some(*group));
+    if let Some((_, x0, x1)) = asked
+        .or(moved_to)
+        .and_then(|target| spans.iter().find(|span| span.0 == target))
+    {
+        pan.scroll = revealing(pan.scroll, *x0, *x1, width, end);
+    }
+    if active.is_some() {
+        pan.revealed = active;
+    }
+    pan.scroll = pan
+        .scroll
+        .clamp(0.0, (end + STRIP_EDGE_GUTTER_PX - width).max(0.0));
+    pan
+}
+
+/// The room the card of a window opened over the shell takes beside the window it opened next to:
+/// the card, and the margin it keeps on either side.
+#[must_use]
+pub fn float_card_room() -> f64 {
+    FLOAT_CARD_SIZE.0 + 2.0 * FLOAT_CARD_MARGIN
 }

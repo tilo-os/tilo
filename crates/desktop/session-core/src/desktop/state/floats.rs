@@ -198,3 +198,94 @@ pub fn collapse(dock: &mut Dock, group: u64, header: f64) -> bool {
     }
     true
 }
+
+/// Open the window `group` of `strip` over the shell as a card docked in the floating layer's
+/// column of the work area `area`, beside the window it opened next to: that window gives up
+/// the room the card stands in ([`tilo_desktop_model::width::share_for_float`]), so the card
+/// stands beside what the person was reading rather than over it. The record keeps where the
+/// card stands as it opens, so every member finds it there, not only the host that turns the ask
+/// into an arranging action. Returns the window it opened beside, which the strip brings into
+/// view.
+pub fn dock_beside(shared: &mut Shared, strip: StripId, group: u64, area: Rect) -> Option<u64> {
+    let beside = share_with_card(shared, strip, group, area);
+    let at = docked_place(area);
+    shared.dock.born.insert(group);
+    shared.dock.cards.insert(
+        group,
+        DockedCard {
+            group,
+            size: (at.width(), at.height()),
+        },
+    );
+    let place = FloatPlace::of_rect(area_of(area), place_of(at));
+    set(shared, strip, group, Some(place));
+    if let Some(workspace) = shared
+        .tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
+        && workspace.layout.set_float(group, Some(place))
+    {
+        shared.changed();
+    }
+    beside
+}
+
+/// Give the card of `group` its room beside the window before it on its display, else the one
+/// after it: the window it opened next to. Returns that window, when the strip has room for it
+/// beside the card.
+fn share_with_card(shared: &mut Shared, strip: StripId, group: u64, area: Rect) -> Option<u64> {
+    let display = shared.tree.outputs.display_of(group);
+    let floating: std::collections::BTreeSet<u64> = workspace_with(&shared.tree, strip)?
+        .strips
+        .iter()
+        .find(|held| held.id == strip)?
+        .window_groups
+        .iter()
+        .filter(|held| holds(shared, strip, held.id))
+        .map(|held| held.id)
+        .collect();
+    let partition = shared.tree.outputs.clone();
+    let held = shared
+        .tree
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.strips)
+        .find(|held| held.id == strip)?;
+    let index = held
+        .window_groups
+        .iter()
+        .position(|held| held.id == group)?;
+    let beside = |at: usize| {
+        held.window_groups.get(at).is_some_and(|next_to| {
+            !next_to.maximized
+                && !floating.contains(&next_to.id)
+                && partition.display_of(next_to.id) == display
+        })
+    };
+    let neighbour = match index.checked_sub(1) {
+        Some(left) if beside(left) => left,
+        _ if beside(index.saturating_add(1)) => index.saturating_add(1),
+        _ => return None,
+    };
+    let usable = (area.width() - 2.0 * ui::widget::STRIP_EDGE_GUTTER_PX).max(1.0);
+    let (beside_width, card_width) = tilo_desktop_model::width::share_for_float(
+        super::shown::float_card_room(),
+        usable,
+        ui::widget::HANDLE_SLOT_PX,
+    )?;
+    let mut changed = false;
+    for (at, width) in [(neighbour, beside_width), (index, card_width)] {
+        if let Some(sized) = held.window_groups.get_mut(at)
+            && sized.width != width
+        {
+            sized.width = width;
+            changed = true;
+        }
+    }
+    let id = held.window_groups.get(neighbour).map(|held| held.id);
+    if changed {
+        shared.changed();
+    }
+    id
+}

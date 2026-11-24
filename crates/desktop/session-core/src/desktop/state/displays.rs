@@ -299,6 +299,7 @@ impl DesktopHandle {
     /// [`OutputPartition::reconcile`]: tilo_desktop_model::OutputPartition::reconcile
     pub fn set_displays(&self, displays: &[Display]) -> bool {
         let mut shared = self.shared.borrow_mut();
+        displays.clone_into(&mut shared.displays);
         let changed = shared.tree.reconcile_displays(displays);
         if changed {
             shared.changed();
