@@ -96,8 +96,8 @@ use tilo_content::{ContentStore, WorkspaceStores};
 /// record's wire name (`""` for the app's primary).
 type Route = (String, String, String);
 
-/// How often the records written to since the last pass are read: a workspace
-/// takes many writes a second, and one pass sees their content.
+/// How often the limits are looked at; the records written to since the last
+/// read are read then too, though a write wakes their read itself.
 const READ_EVERY: Duration = Duration::from_secs(2);
 /// How often the content being gathered is looked at for the pieces a lost
 /// one left missing, so a member's answer arrives whole without waiting for
@@ -202,8 +202,8 @@ struct State {
     /// Content asked for and not whole yet, named by the record that
     /// references it.
     wants: ContentWants<Route>,
-    /// Records a member's write reached since the last pass: they are read
-    /// now rather than when the retry comes due.
+    /// Records a member's write reached since the last read: the write wakes
+    /// their read, rather than the retry coming due.
     written: BTreeSet<Route>,
     /// Content that arrived whole and verified, by workspace, waiting to be
     /// written to the store with whatever else arrived meanwhile.
@@ -289,6 +289,9 @@ pub struct KeptContent {
     /// a large file's answer ended short of the file
     /// ([`ContentWants::take_continued`]).
     ask_now: tokio::sync::Notify,
+    /// Poked when a write reached a record this host reads for its content
+    /// ([`State::written`]).
+    written: tokio::sync::Notify,
 }
 
 fn now_ms() -> u64 {
@@ -413,6 +416,7 @@ impl KeptContent {
             limits: Mutex::default(),
             arrived: tokio::sync::Notify::new(),
             ask_now: tokio::sync::Notify::new(),
+            written: tokio::sync::Notify::new(),
         })
     }
 
@@ -461,6 +465,13 @@ impl KeptContent {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
+                // A write wakes the read of what it reached; the writes that
+                // land while those records are read are read together next.
+                () = self.written.notified() => {
+                    for route in self.written_since() {
+                        self.keep(&route).await;
+                    }
+                }
                 _ = read.tick() => {
                     self.read_limits().await;
                     for route in self.written_since() {
@@ -695,8 +706,8 @@ impl KeptContent {
         );
     }
 
-    /// Note that `write` reached a record this host reads for its content, to
-    /// read once the writes it takes settle.
+    /// Note that `write` reached a record this host reads for its content, and
+    /// wake the read of it.
     fn written(&self, write: &ResourceWrite) {
         if another_keeper(&write.app) {
             return;
@@ -706,6 +717,7 @@ impl KeptContent {
             write.app.clone(),
             write.record.clone(),
         ));
+        self.written.notify_one();
     }
 
     /// Ask the workspaces again for the content being gathered that a lost
