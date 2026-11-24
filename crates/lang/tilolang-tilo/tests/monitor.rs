@@ -58,9 +58,10 @@ const READING: &str = r#"{
      "state": "running", "run_secs": 80000, "kernel_thread": false, "endable": true,
      "cpu_history": [1.0, 2.0]},
     {"pid": 12, "ppid": 11, "started_at": 120, "name": "bash", "app_id": "so.tilo.terminal",
-     "user": "ada", "cpu": 0.1, "memory_bytes": 4000000, "virtual_bytes": 20000000,
+     "user": "ada", "cpu": 5.0, "memory_bytes": 4000000, "virtual_bytes": 20000000,
      "threads": 1, "state": "sleeping", "run_secs": 1000, "kernel_thread": false,
-     "endable": true, "cpu_history": [0.1, 0.1]},
+     "endable": true, "cpu_history": [5.0, 5.0],
+     "cmd": "bash --login", "open_files": 12},
     {"pid": 13, "ppid": 10, "started_at": 130, "name": "kworker/0:1", "app_id": null,
      "user": "root", "cpu": 0.0, "memory_bytes": 0, "virtual_bytes": 0, "threads": 1,
      "state": "idle", "run_secs": 90000, "kernel_thread": true, "endable": false,
@@ -218,6 +219,34 @@ fn shown(view: &ViewInstance) -> Vec<String> {
     out
 }
 
+/// The first node under `node` whose words satisfy `wanted`.
+fn find<'a>(node: &'a UiNode, wanted: &dyn Fn(&str) -> bool) -> Option<&'a UiNode> {
+    let own = ["value", "title", "label", "text", "message", "action"]
+        .iter()
+        .filter_map(|prop| node.props.get(*prop))
+        .filter_map(Value::as_text)
+        .any(wanted);
+    if own {
+        return Some(node);
+    }
+    node.children.iter().find_map(|child| find(child, wanted))
+}
+
+/// The nodes of `kind`, in order.
+fn of_kind<'a>(tree: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
+    let mut found = Vec::new();
+    fn walk<'a>(node: &'a UiNode, kind: &str, found: &mut Vec<&'a UiNode>) {
+        if node.kind == kind {
+            found.push(node);
+        }
+        for child in &node.children {
+            walk(child, kind, found);
+        }
+    }
+    walk(tree, kind, &mut found);
+    found
+}
+
 fn has(view: &ViewInstance, wanted: &str) -> bool {
     shown(view).iter().any(|text| text == wanted)
 }
@@ -336,7 +365,7 @@ fn sorting_by_name_orders_the_list_rising() {
 fn a_chosen_process_shows_its_facts_and_the_verbs_that_end_it() {
     let app = Installed::new(READING);
     let mut window = app.window();
-    pick(&mut window, "chosen", Value::Int(11));
+    pick(&mut window, "chosen", Value::Int(12));
     let words = shown(&window);
     for wanted in [
         "PID",
@@ -345,6 +374,10 @@ fn a_chosen_process_shows_its_facts_and_the_verbs_that_end_it() {
         "Threads",
         "Virtual memory",
         "Running for",
+        "Command line",
+        "bash --login",
+        "Open files",
+        "12",
         "End process",
         "Kill process",
     ] {
@@ -353,6 +386,26 @@ fn a_chosen_process_shows_its_facts_and_the_verbs_that_end_it() {
             "{wanted} shows: {words:?}"
         );
     }
+}
+
+#[test]
+fn a_persons_cadence_is_their_window_state_and_reaches_the_device() {
+    let app = Installed::new(READING);
+    let mut window = app.window();
+    let item = find(&window.tree(), &|text| text == "Every 3 seconds")
+        .expect("the cadence menu");
+    window.fire(&item.key, "choose").expect("the cadence is chosen");
+    window.poll_patches().expect("the window runs again");
+    assert_eq!(
+        window.view_state("interval_ms"),
+        Some(Value::some(Value::Int(3000))),
+        "the cadence is the person's own state, not the app's document"
+    );
+    let timers = of_kind(window.tree(), "ui.Timer");
+    assert_eq!(timers.len(), 1, "the window carries the cadence's clock");
+    window.fire(&timers[0].key, "tick").expect("the clock strikes");
+    let asked = app.sent.asked("set-interval");
+    assert_eq!(asked[1], Value::Int(3000), "the device follows the person");
 }
 
 #[test]
@@ -412,4 +465,33 @@ fn a_computer_with_no_system_information_service_says_so_and_offers_to_try_again
         "{words:?}"
     );
     assert!(words.iter().any(|text| text == "Try again"), "{words:?}");
+}
+
+#[test]
+fn a_process_uses_what_stands_under_it_when_the_person_asks() {
+    let app = Installed::new(READING);
+    let window = app.window();
+    assert!(has(&window, "2%"), "the parent's own use: {:?}", shown(&window));
+    let mut window = app.window();
+    pick(&mut window, "with_children", Value::Bool(true));
+    assert!(
+        has(&window, "7%"),
+        "the parent's use with its child's: {:?}",
+        shown(&window)
+    );
+}
+
+#[test]
+fn a_failed_end_says_why() {
+    let reading = READING.replace(
+        r#""problem": null"#,
+        r#""problem": "the operating system refused the process signal""#,
+    );
+    let app = Installed::new(&reading);
+    let window = app.window();
+    assert!(
+        contains(&window, "the operating system refused the process signal"),
+        "{:?}",
+        shown(&window)
+    );
 }

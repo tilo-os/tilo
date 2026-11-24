@@ -63,6 +63,7 @@ d-ty7iq25n = Laufzeitwörter
     .w-m = { $minutes }m
 
 d-byhoiade = Fenster
+    .w-include-children = Unterprozesse einbeziehen
     .w-system-monitor = Systemüberwachung
     .w-sort-by = Sortieren nach
     .w-processor = Prozessor
@@ -99,6 +100,8 @@ d-prvlvs67 = Engine fehlt
     .w-try-again = Erneut versuchen
 
 d-rbjilrpa = Prozessdetails
+    .w-command-line = Kommandozeile
+    .w-open-files = Offene Dateien
     .w-cpu = CPU
     .w-memory-rss = Speicher (RSS)
     .w-pid = PID
@@ -144,3 +147,26 @@ d-fvsvp5iz = Ressourcenbereich
     .w-uptime = Laufzeit
     .w-pressure = Druck
     .w-some = { $percent_words } teilweise
+
+d-22v7oibb = CPU
+    .doc = Was er nutzt, mit dem, was unter ihm steht, wenn die Person das verlangt.
+
+
+d-cwilirks = Threads
+
+d-mycnv7ws = Takt übernehmen
+    .doc = Hält die Messung dieses Geräts im Takt, in dem die Person sie beobachtet.
+
+d-mycnv7ws-ms = Millisekunden
+
+d-mycnv7ws-paused = Pausiert
+
+
+d-syvxuusz-filter-cpu = CPU
+d-syvxuusz-filter-depth = Tiefe
+d-syvxuusz-filter-has_children = Hat Unterprozesse
+d-syvxuusz-filter-memory_bytes = Speicher
+d-syvxuusz-filter-process = Prozess
+d-syvxuusz-filter-threads = Threads
+
+d-u6hj324t = Speicher
