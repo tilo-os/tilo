@@ -142,21 +142,22 @@ pub(crate) async fn answered(
     };
     let here = service.in_workspace(workspace_id);
     let workspace = workspace_id.to_string();
-    // Whether it waits for its person, or ends first.
+    // Whether it waits for its person, or ends first. Its record is written before the call
+    // is recorded as waiting there, so only once it says so is the record one to answer.
     let kept = tilo_test_env::within("the call waits for its person or ends", async {
         loop {
-            if let Some(waiting) = store
-                .waiting_in(&workspace)
-                .into_iter()
-                .find(|waiting| waiting.invocation == request.invocation)
-            {
-                return Some(waiting);
-            }
-            if here
-                .observe(caller, &request.invocation)
-                .is_some_and(|state| state.is_terminal())
-            {
-                return None;
+            match here.observe(caller, &request.invocation) {
+                Some(state) if state.is_terminal() => return None,
+                Some(state) if super::invocation_states::waits_asked(&state) => {
+                    if let Some(waiting) = store
+                        .waiting_in(&workspace)
+                        .into_iter()
+                        .find(|waiting| waiting.invocation == request.invocation)
+                    {
+                        return Some(waiting);
+                    }
+                }
+                _ => {}
             }
             tokio::task::yield_now().await;
         }
