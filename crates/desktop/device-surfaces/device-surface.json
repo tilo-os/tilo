@@ -11123,6 +11123,58 @@
           "stored": "value",
           "type": "text",
           "readonly": true
+        },
+        {
+          "path": "shipped",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "catalogue",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "ShippedWallpaper"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "ShippedWallpaper",
+          "doc": "One picture the image ships, with what it credits and a thumbnail a view shows.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "author",
+              "type": "text"
+            },
+            {
+              "name": "license",
+              "type": "text"
+            },
+            {
+              "name": "license_url",
+              "type": "text"
+            },
+            {
+              "name": "tone",
+              "type": "text"
+            },
+            {
+              "name": "thumbnail",
+              "type": "text"
+            }
+          ]
         }
       ]
     },

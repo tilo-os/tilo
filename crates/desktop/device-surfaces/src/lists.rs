@@ -5,7 +5,8 @@
 use fs::tree_sync::{Refusal, Waiting};
 use tilo_resource::Effect;
 
-/// The picture a workspace shows behind its windows, as the person's choice names it.
+/// The picture a workspace shows behind its windows, as the person's choice names it, and the
+/// pictures the image ships for a person to choose from.
 #[derive(
     Clone,
     Debug,
@@ -17,7 +18,42 @@ use tilo_resource::Effect;
     tilo_resource::JsonSchema,
 )]
 pub struct Wallpaper {
+    /// The value `appearance.wallpaper` holds for the workspace in front, empty for the picture
+    /// the image ships.
     pub picture: String,
+    /// The picture the image ships, by its id: what shows while the person chooses none.
+    pub shipped: String,
+    /// Every picture the image ships, in the order a picker shows them.
+    pub catalogue: Vec<ShippedWallpaper>,
+}
+
+/// One picture the image ships, with what it credits and a thumbnail a view shows.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub struct ShippedWallpaper {
+    /// The `appearance.wallpaper` value that chooses it.
+    pub id: String,
+    /// What the picture is called, as its source does.
+    pub title: String,
+    /// Who made it.
+    pub author: String,
+    /// The licence it is used under, by its identifier (`CC0-1.0`).
+    pub license: String,
+    /// Where the licence reads.
+    pub license_url: String,
+    /// How light it is: `light`, `mid` or `dark`.
+    pub tone: String,
+    /// The thumbnail, as an address a view shows (`data:image/webp;base64,...`); empty while
+    /// this device has not installed the image's pictures.
+    pub thumbnail: String,
 }
 
 /// The empty shell's welcome cards this device offers, as the launcher lists them.

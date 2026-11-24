@@ -48,8 +48,8 @@ pub(crate) const WALLPAPER_RESOURCE: &str = "session:wallpaper";
 
 pub(crate) use tilo_device_surfaces::lists::{
     AgentsEffect, Folder, Folders, Invite, InviteEffect, Launchpad, LaunchpadCard, Said,
-    SaidAction, SaidEffect, Search, SearchGroup, SearchResult, Tray, TrayEffect, TrayItem,
-    Wallpaper,
+    SaidAction, SaidEffect, Search, SearchGroup, SearchResult, ShippedWallpaper, Tray, TrayEffect,
+    TrayItem, Wallpaper,
 };
 
 /// The glyph a welcome card shows: the app's own glyph where it opens one, and the shell's own for
@@ -654,7 +654,12 @@ impl DeviceLists {
             .as_deref()
             .and_then(|workspace| self.wallpapers.value(workspace))
             .unwrap_or_default();
-        Wallpaper { picture }
+        Wallpaper {
+            picture,
+            shipped: tilo_wallpapers::default_wallpaper()
+                .map_or_else(String::new, |wallpaper| wallpaper.id.clone()),
+            catalogue: shipped_wallpapers().to_vec(),
+        }
     }
 
     /// The passing notice the shell says over the windows now, as the reading spells it: empty
@@ -958,6 +963,51 @@ impl DeviceLists {
             ApiError::Failed("this session reaches no daemon keeping its workspaces".to_owned())
         })
     }
+}
+
+/// Every picture the image ships, with the thumbnail a picker shows: read once, as the image's
+/// files do not change under a running session.
+fn shipped_wallpapers() -> &'static [ShippedWallpaper] {
+    static SHIPPED: std::sync::OnceLock<Vec<ShippedWallpaper>> = std::sync::OnceLock::new();
+    SHIPPED.get_or_init(|| {
+        tilo_wallpapers::all()
+            .iter()
+            .map(|wallpaper| ShippedWallpaper {
+                id: wallpaper.id.clone(),
+                title: wallpaper.title.clone(),
+                author: wallpaper.author.clone(),
+                license: wallpaper.license.clone(),
+                license_url: wallpaper.license_url.clone(),
+                tone: match wallpaper.tone {
+                    tilo_wallpapers::Tone::Light => "light",
+                    tilo_wallpapers::Tone::Mid => "mid",
+                    tilo_wallpapers::Tone::Dark => "dark",
+                }
+                .to_owned(),
+                thumbnail: thumbnail_address(wallpaper),
+            })
+            .collect()
+    })
+}
+
+/// `wallpaper`'s thumbnail, as a view loads it: the installed file's bytes carried in a `data:`
+/// address, empty unless the file is the one the catalogue names.
+fn thumbnail_address(wallpaper: &tilo_wallpapers::Wallpaper) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let Some(path) = wallpaper.thumbnail_path() else {
+        return String::new();
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        return String::new();
+    };
+    if hex::encode(sha2::Sha256::digest(&bytes)) != wallpaper.thumbnail.sha256 {
+        return String::new();
+    }
+    format!(
+        "data:image/webp;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    )
 }
 
 /// What an invitation verb answers when this device reaches none of the workspace's holders: its
