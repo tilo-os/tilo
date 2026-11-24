@@ -94,7 +94,7 @@ pub(super) fn launch(
         // The process draws nothing, takes the app's actions and publishes what it offers, and
         // ends after the idle time a tilolang process does; the dispatch starts it again.
         env.push((
-            OsString::from(ui::process::WINDOWLESS_ENV),
+            OsString::from(ui::process::NO_WINDOW_ENV),
             OsString::from("1"),
         ));
         env.push((

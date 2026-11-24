@@ -2303,7 +2303,7 @@ impl Apps {
             .map_err(|error| ApiError::Failed(refusal_said(&error)))?;
         planned
             .env
-            .insert(ui::window_link::WINDOWLESS_ENV.to_owned(), "1".to_owned());
+            .insert(ui::window_link::NO_WINDOW_ENV.to_owned(), "1".to_owned());
         let Some(reservation) = links
             .reserve_unless_running(&planned.app, &workspace.id)
             .map_err(ApiError::Failed)?

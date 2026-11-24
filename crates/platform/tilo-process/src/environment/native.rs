@@ -107,7 +107,7 @@ pub fn process_environment() -> super::ProcessEnvironment {
         dev_session: path("TILO_DEV_SESSION"),
         ui_graph_dir: path("TILO_UI_GRAPH_DIR"),
         reveal: text(super::REVEAL_ENV),
-        windowless: std::env::var_os(super::WINDOWLESS_ENV).is_some_and(|value| value == "1"),
+        windowless: std::env::var_os(super::NO_WINDOW_ENV).is_some_and(|value| value == "1"),
         no_window_idle: seconds(super::NO_WINDOW_IDLE_ENV),
     }
 }

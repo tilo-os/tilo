@@ -152,10 +152,9 @@ pub struct RunnerDiagnostics {
 
 pub const REVEAL_ENV: &str = "TILO_WINDOW_REVEAL";
 
-/// The variable a launch sets (`1`) for a process the session starts with no
-/// window: the app takes its actions and publishes what it offers, and makes
-/// a window only once the shell asks it for one.
-pub const WINDOWLESS_ENV: &str = "TILO_WINDOWLESS";
+/// The variable a launch sets (`1`) for a process started with no window: the app takes its
+/// actions and publishes what it offers, and makes a window only once a shell asks it for one.
+pub const NO_WINDOW_ENV: &str = "TILO_NO_WINDOW";
 
 /// The seconds a process the daemon started with no window runs on with no call for, after
 /// which it ends: the daemon starts it again on the next call. A process the session starts

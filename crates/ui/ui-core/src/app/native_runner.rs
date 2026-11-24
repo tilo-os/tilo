@@ -193,7 +193,7 @@ struct AppHandler {
     /// other closes alone ([`process_windows`]).
     closing: std::cell::Cell<bool>,
     /// The session started this app with no window
-    /// ([`crate::process::WINDOWLESS_ENV`]): it serves its actions and records
+    /// ([`crate::process::NO_WINDOW_ENV`]): it serves its actions and records
     /// and makes no window. The first window the shell asks of the process
     /// takes its place ([`process_windows`]).
     windowless: bool,

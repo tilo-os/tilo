@@ -139,7 +139,7 @@ pub const REVEAL_ENV: &str = crate::process::REVEAL_ENV;
 
 /// The variable the session sets on a launch it makes with no window: the app answers its
 /// actions and serves no window link, and its first window is the first one the shell asks for here.
-pub const WINDOWLESS_ENV: &str = crate::process::WINDOWLESS_ENV;
+pub const NO_WINDOW_ENV: &str = crate::process::NO_WINDOW_ENV;
 
 /// The item the window being built opens on: what the shell's request named for a window
 /// of a process already running, or, for the process's first window, the item its launch

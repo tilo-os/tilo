@@ -74,7 +74,7 @@ impl super::App {
     }
 
     /// One wake of an app the session runs with no window
-    /// ([`crate::process::WINDOWLESS_ENV`]): the passes a frame runs before it
+    /// ([`crate::process::NO_WINDOW_ENV`]): the passes a frame runs before it
     /// paints, so it takes its actions and publishes. Answers when it wakes
     /// next.
     ///

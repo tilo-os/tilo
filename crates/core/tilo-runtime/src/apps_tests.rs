@@ -531,7 +531,7 @@ tilo_test_env::scenario! {
         let env = wait_for(&format!("{}.env", said.display()));
         let idle = format!("TILO_NO_WINDOW_IDLE={}", crate::IDLE.as_secs());
         assert!(
-            env.lines().any(|line| line == "TILO_WINDOWLESS=1"),
+            env.lines().any(|line| line == "TILO_NO_WINDOW=1"),
             "the process takes its actions and draws nothing: {env}"
         );
         assert!(

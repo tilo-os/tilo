@@ -55,7 +55,7 @@ impl Apps {
         self.admitted(workspace)?;
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
-        let windowless = planned.env.contains_key(ui::window_link::WINDOWLESS_ENV);
+        let windowless = planned.env.contains_key(ui::window_link::NO_WINDOW_ENV);
         // The launch's share in the launch-latency log runs from the request to the first presented
         // frame: the launcher's and the app's in this log, the surface's in the compositor's. A
         // launch with no window presents none.
