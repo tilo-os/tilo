@@ -110,10 +110,12 @@ d-leo66m26-filter-geotag = Standort
 d-leo66m26-filter-hdr = HDR
 d-leo66m26-filter-default_lens = Default lens
 d-leo66m26-filter-lens = Objektiv
+d-leo66m26-filter-cameras_prompt = Kamera-Abfrage
 d-leo66m26-filter-found_x = Found x
 d-leo66m26-filter-found_y = Found y
 d-leo66m26-filter-found_w = Found w
 d-leo66m26-filter-found_h = Found h
+d-leo66m26-filter-recording_since = Aufnahme seit
 d-leo66m26-filter-shutter_at = Shutter at
 d-czua3iyv = Gescannte Seite
     .doc = Eine gescannte Seite: ihr Bild, der gelesene Text und wo sie im Dokument steht.
@@ -223,7 +225,8 @@ d-j7b7gllt = Kameragerät
         [one] camera device
        *[other] camera devices
     }
-d-cowbxfqn = Kennung
+d-e6k5e5oe = Gerät
+    .doc = Der Name der Kamera in der Engine, wie sie ihn abfragt.
 d-umm5rpj4 = Bezeichnung
 d-teae7rnw = Kameraantwort
     .noun = { $count ->

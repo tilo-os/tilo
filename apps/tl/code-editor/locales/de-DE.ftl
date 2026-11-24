@@ -820,6 +820,13 @@ d-cbzbgevx = Ausrücken
 
 d-cbzbgevx-line = Zeile
 
+d-jrfrdinx = Suchen
+    .doc = Die Suche des Fensters findet die Wörter in der offenen Datei und über die Dateien des Projekts: die erste Stelle in der Datei wird gezeigt, sodass ein Treffer schon beim Tippen im Blick ist.
+
+d-jrfrdinx-entry = Eintrag
+
+d-jrfrdinx-text = Text
+
 d-pyrg5gaw = Suchen in file
     .doc = Suchens the words `text` in a file, the case of their letters aside unless `case` says otherwise; `word` matches only where they stand alone as a word.
     .w-type-something-to-find = Type something to find
@@ -1174,6 +1181,7 @@ d-2lxnmz5v = Suchen panel
 
 d-d3ucmsac = Gefunden
     .w-found-in-this-file = In dieser Datei gefunden
+    .w-line = Zeile { $value }
 
 d-bbheeez5 = Datei view
     .w-write-the-file = Write the file

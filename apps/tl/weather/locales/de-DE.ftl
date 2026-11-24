@@ -541,4 +541,8 @@ d-ghfrburs = Umbenennen
     .did = benannte einen Ort um
     .w-a-place-needs-a-name = Ein Ort braucht einen Namen
 
+d-ghfrburs-place = Ort
+
+d-ghfrburs-name = Name
+
 d-mcbmxei2 = Ort umbenennen

@@ -136,6 +136,9 @@ d-4nlkcuks = Pausiert
 d-dedg3fev = Schritte
     .doc = Was in der Seite getan wurde, das Neueste zuletzt.
 
+d-cjwvjr5r = Suchtext
+    .doc = Die Wörter, die die Suche des Fensters zuletzt fand: wonach die Weitersuche zum nächsten und zurück zum vorigen Treffer die Seite fragt.
+
 d-j257iaef = Seitenschritt
     .doc = Eine Sache, die in einer Seite getan wurde: wer gefragt hat, was getan wurde, worauf es wirkte und wie es endete.
     .noun = { $count ->

@@ -327,6 +327,7 @@ d-vrra64ga = Distrobox-Seite
     .w-enter = Betreten
 
 d-pgwyi64n = Container zeigen
+    .doc = Zeigt, was die Engine von einer Art hält.
 
 d-ijt6urg5 = Images zeigen
 
@@ -335,3 +336,4 @@ d-k2tjtdvx = Volumes zeigen
 d-syp6cif7 = Distroboxen zeigen
 
 d-3uis6yzh = Neuer Container
+    .doc = Öffnet das Formular für einen neuen Container, wie es `n` aus dem Fenster tut.

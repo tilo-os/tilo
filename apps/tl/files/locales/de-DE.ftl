@@ -265,17 +265,12 @@ d-6rs9uy5i-hidden = Versteckt
 d-7di40kuf = Eintrag öffnen
     .doc = Öffnet den Eintrag `e`: einen Ordner in diesem Fenster, eine Datei in der App, die ihre Art öffnet.
 
-d-7di40kuf-e = E
-
-d-f2p3xu5w = Zuletzt öffnen
-    .doc = Öffnet eine Datei aus Zuletzt erneut, als den Eintrag, der sie war.
-
-d-f2p3xu5w-r = R
+d-7di40kuf-path = Pfad
 
 d-0ibyyurl = Eintrag berühren
     .doc = Ein Druck auf einen Eintrag: ein Ordner öffnet sich bei einem einzigen Druck, und eine Datei wird in den Prüfer neben der Liste gelesen.
 
-d-0ibyyurl-e = E
+d-0ibyyurl-path = Pfad
 
 d-3nuuco40 = Zuletzt merken
     .doc = Merkt, dass die Datei `path` geöffnet wurde, damit sie unter Zuletzt steht.
@@ -315,7 +310,7 @@ d-eaysxl23-files = Dateien
 d-6x2g4o5k = Laufwerk öffnen
     .doc = Öffnet das Laufwerk `drive` und geht dorthin, wo es offen ist, damit ein Wechseldatenträger ein Ort wie jeder andere Ordner ist.
 
-d-6x2g4o5k-drive = Laufwerk
+d-6x2g4o5k-drive_id = Laufwerkskennung
 
 d-2b6epu9v = Eintrag umbenennen
     .doc = Benennt den Eintrag unter `path` in seinem eigenen Ordner in `name` um.
@@ -370,12 +365,12 @@ d-a5nwzp2a-place = Ort
 d-r9tivfaz = Aus Favoriten entfernen
     .doc = Nimmt den Favoriten `favorite` aus der Seitenleiste.
 
-d-r9tivfaz-favorite = Favorit
+d-r9tivfaz-place = Ort
 
 d-0nodt7ql = Prüfen
     .doc = Liest, was der gewählte Eintrag ist, damit der Prüfer seine Größe, seine Art und seinen Pfad sagt und das Bild einer Bilddatei oder die ersten Worte einer Textdatei zeigt.
 
-d-0nodt7ql-e = E
+d-0nodt7ql-path = Pfad
 
 d-uswipaet = Wird geöffnet
     .doc = Der Pfad des Eintrags, den die Person mit einer App öffnen will, und die Apps, die ihn öffnen.
@@ -513,8 +508,6 @@ d-z6cheebf = Orte
 d-jwdlcu14 = Eintragsraster
     .w-files = Dateien
 
-d-kovpbjhk = Eintragszeile
-
 d-wsk8uwkt = Zuletzt geöffnete Dateien
     .w-no-recent-files-yet = Noch keine zuletzt geöffneten Dateien
     .w-files-you-open-stand-here-one = Dateien, die du öffnest, stehen hier, einen Druck entfernt.
@@ -578,7 +571,7 @@ d-dpvi52wp = Auswahl komprimieren~present
 d-gcytlgzo = App öffnen
     .doc = Öffnet die App `a`, wie ein Druck auf ihre Zeile es tut.
 
-d-gcytlgzo-a = App
+d-gcytlgzo-app_key = App-Kennung
 
 d-4dnpiqnl = Apps
     .w-no-apps-yet = Noch keine Apps

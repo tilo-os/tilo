@@ -64,6 +64,11 @@ d-jo2tztsx = Nach Titel sortieren
     .doc = Bringt die Notizen einer Notiz einmal in die Reihenfolge ihrer Titel.
     .w-it-holds-no-notes = Sie enthält keine Notizen
 
+d-srjjaw3t = Notizbuch durchsuchen
+    .doc = Die Suche des Fensters verengt den Baum des Notizbuchs auf die Notizen, die sie findet, und öffnet die erste: die Notiz, nach der jemand gesucht hat, ist die, die er liest.
+
+d-srjjaw3t-text = Text
+
 d-qhmjwgei = Anheften
     .doc = Heftet eine Notiz an oder löst sie.
     .w-pin = Anheften
