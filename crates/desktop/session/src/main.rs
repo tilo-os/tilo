@@ -656,7 +656,15 @@ fn start(
     } else {
         tilo_session::Machine::Owned
     };
-    let (mut services, _following) = services(&wake, power.clone(), machine);
+    // This computer's Windows programs, as the device publishes them: the compatibility service
+    // fills this cell as it starts, and the system service serves what it reads.
+    let windows_manager = compat_service::ManagerOut::new();
+    let windows: Option<std::sync::Arc<dyn tilo_system_service::windows_apps::WindowsManager>> =
+        Some(crate::windows_manager::SessionWindows::new(
+            windows_manager.clone(),
+            Some(wake.handle()),
+        ));
+    let (mut services, _following) = services(&wake, power.clone(), machine, windows);
     let (capture, captures) =
         tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
     // The portal's side of the desktop, which the session answers.
@@ -709,6 +717,7 @@ fn start(
         portal,
         power,
         machine,
+        windows_manager: windows_manager.clone(),
         agent_key,
         test_control,
         admin_control,
@@ -1245,6 +1254,7 @@ fn services(
     wake: &tilo_service::LoopWake,
     power: Option<tilo_session_power::PowerLink>,
     machine: tilo_session::Machine,
+    windows: Option<std::sync::Arc<dyn tilo_system_service::windows_apps::WindowsManager>>,
 ) -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     use std::sync::Arc;
     use tilo_connectivity_service::{Connectivity, device::OsDevice};
@@ -1292,6 +1302,7 @@ fn services(
         Arc::new(tilo_system_service::device::OsSystem),
         Some(wake.handle()),
         active_power.as_ref(),
+        windows,
     ) {
         Ok(mut system) => {
             if let Err(error) = system.follow_location() {

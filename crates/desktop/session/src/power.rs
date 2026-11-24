@@ -142,14 +142,24 @@ pub fn system_service(
     system: Arc<dyn tilo_system_service::device::System>,
     wake: Option<tilo_service::Wake>,
     power: Option<&PowerLink>,
+    windows: Option<Arc<dyn tilo_system_service::windows_apps::WindowsManager>>,
 ) -> std::io::Result<tilo_system_service::SystemService> {
-    match power {
-        Some(link) => tilo_system_service::SystemService::with_power_profiles(
+    match (power, windows) {
+        (Some(link), Some(windows)) => tilo_system_service::SystemService::with_power_and_windows(
+            system,
+            wake,
+            Arc::new(LivePowerProfiles(link.clone())),
+            windows,
+        ),
+        (Some(link), None) => tilo_system_service::SystemService::with_power_profiles(
             system,
             wake,
             Arc::new(LivePowerProfiles(link.clone())),
         ),
-        None => tilo_system_service::SystemService::new(system, wake),
+        (None, Some(windows)) => {
+            tilo_system_service::SystemService::with_windows_manager(system, wake, windows)
+        }
+        (None, None) => tilo_system_service::SystemService::new(system, wake),
     }
 }
 

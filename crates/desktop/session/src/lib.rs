@@ -250,6 +250,7 @@ pub mod invite;
 #[cfg(target_os = "linux")]
 mod item_lending;
 #[cfg(target_os = "linux")]
+mod kept;
 #[cfg(target_os = "linux")]
 pub mod keyboard;
 mod keyboard_shortcuts;
@@ -447,6 +448,7 @@ mod window_warmth;
 pub mod windows;
 #[cfg(target_os = "linux")]
 mod windows_compat;
+mod windows_manager;
 #[cfg(target_os = "linux")]
 mod workspace_branch;
 #[cfg(target_os = "linux")]

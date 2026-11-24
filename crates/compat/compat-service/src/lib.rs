@@ -66,9 +66,9 @@ pub use service::{
     VmSharedSessionLeaseSummary, VmUninstallation,
 };
 pub use session::{
-    CapabilityAuthority, CompatSessionHandle, LauncherAuthenticator, ManagedCompatibility,
-    SessionClient, SessionError, SessionHandoff, TrustedLauncherRegistry,
-    account_administers_computer, spawn_session_service,
+    CapabilityAuthority, CompatSessionHandle, DeviceManager, EndedProgram, LauncherAuthenticator,
+    ManagedCompatibility, ManagerList, ManagerOut, SessionClient, SessionError, SessionHandoff,
+    SessionManager, TrustedLauncherRegistry, account_administers_computer, spawn_session_service,
 };
 pub use store::{
     CAPSULE_SCHEMA_VERSION, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore,

@@ -24,6 +24,8 @@ use thiserror::Error;
 use tilo_clock::try_unix_now;
 use wire_frame::{FrameError, Framing};
 
+mod manager;
+
 use crate::programs::{EndsRead, Programs};
 use crate::service::published_vm_explanation;
 use crate::{
@@ -33,6 +35,8 @@ use crate::{
     RegisteredProgram, Reopenings, RouteKind, RuntimeRegistry, SandboxExecutor, ServiceError,
     VmDelegate,
 };
+
+pub use manager::{DeviceManager, EndedProgram, ManagerList, ManagerOut, SessionManager};
 
 use tilo_app_id::apps::WINDOWS as MANAGER_APP_ID;
 /// Requests and responses: a little-endian `u32` length, then JSON. A request

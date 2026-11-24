@@ -994,6 +994,7 @@ fn a_dbus_profile_change_reaches_the_sessions_power_reading_live() {
         Arc::clone(&fake_system) as Arc<dyn System>,
         Some(wake.handle()),
         Some(&link),
+        None,
     )
     .expect("system service");
 
@@ -1370,6 +1371,7 @@ fn session_on_bus(
         Arc::clone(&fake_system) as Arc<dyn System>,
         Some(wake.handle()),
         Some(&link),
+        None,
     )
     .expect("system service");
     let session = crate::common::headless(Options {

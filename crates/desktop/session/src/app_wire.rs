@@ -45,6 +45,9 @@ use crate::lists::Lists;
 /// that connection was last sent.
 struct Watch {
     id: ResourceWatch,
+    /// The app and workspace reading it: a device resource that answers for its reader is read
+    /// as theirs.
+    caller: Caller,
     resource: String,
     /// The services' revision this watch was last served at.
     revision: Option<u64>,
@@ -196,13 +199,23 @@ impl Link {
                         %action,
                         "an app invokes a published action"
                     );
-                    if services.read(&resource).is_none() {
+                    if services
+                        .read_for(&caller.app_id, &caller.workspace, &resource)
+                        .is_none()
+                    {
                         let _ = reply.send(Receipt::Refused {
                             code: "refused".to_owned(),
                             message: format!("this session publishes no `{resource}` resource"),
                         });
                     } else {
-                        answer(services, &resource, &action, &arguments, reply);
+                        answer(
+                            services,
+                            &caller,
+                            &resource,
+                            &action,
+                            &arguments,
+                            reply,
+                        );
                     }
                 }
             }
@@ -223,7 +236,7 @@ impl Link {
             Err(reason) => {
                 let _ = reply.send(Err(reason));
             }
-            Ok(()) => match services.read(&resource) {
+            Ok(()) => match services.read_for(&caller.app_id, &caller.workspace, &resource) {
                 Some(value) => {
                     let _ = reply.send(Ok((services.revision(), Some(encoded(&value)))));
                 }
@@ -253,7 +266,9 @@ impl Link {
             if watch.revision == Some(revision) {
                 return true;
             }
-            let reading = services.read(&watch.resource).map(|value| encoded(&value));
+            let reading = services
+                .read_for(&watch.caller.app_id, &watch.caller.workspace, &watch.resource)
+                .map(|value| encoded(&value));
             watch.revision = Some(revision);
             if reading.is_none() {
                 // No service publishes it yet: the app is told once, and
@@ -309,6 +324,7 @@ impl PublishedResources for Link {
         let id = ResourceWatch::new(self.next_watch.fetch_add(1, Ordering::Relaxed));
         self.watches.lock_recover().push(Watch {
             id,
+            caller: caller.clone(),
             resource: resource.to_owned(),
             revision: None,
             missing: None,
@@ -1339,6 +1355,7 @@ fn encoded(value: &serde_json::Value) -> Vec<u8> {
 /// async work it started lands.
 fn answer(
     services: &mut Services,
+    caller: &Caller,
     resource: &str,
     action: &str,
     arguments: &[u8],
@@ -1354,7 +1371,13 @@ fn answer(
             return;
         }
     };
-    let done = match services.invoke(resource, action, &arguments) {
+    let done = match services.invoke_for(
+        &caller.app_id,
+        &caller.workspace,
+        resource,
+        action,
+        &arguments,
+    ) {
         Some(Ok(Started::Done(output))) => Ok(output),
         Some(Ok(Started::Accepted)) => {
             let _ = reply.send(Receipt::Accepted);

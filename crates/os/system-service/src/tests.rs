@@ -2195,3 +2195,157 @@ fn the_firmware_resource_reads_the_updates_and_installs_them() {
         json!("connect power before updating firmware")
     );
 }
+
+/// The Windows programs this device has, in memory: what the resource reads, and what its
+/// actions asked for, by the workspace they were asked in.
+#[derive(Default)]
+struct FakeWindows {
+    reading: Mutex<tilo_system_resources::windows_apps::WindowsApps>,
+    changes: Mutex<Vec<(String, String)>>,
+    refusal: Mutex<Option<String>>,
+}
+
+impl FakeWindows {
+    fn changes(&self) -> Vec<(String, String)> {
+        self.changes.lock().unwrap().clone()
+    }
+}
+
+impl crate::windows_apps::WindowsManager for FakeWindows {
+    fn reading(&self, _workspace: &str) -> tilo_system_resources::windows_apps::WindowsApps {
+        self.reading.lock().unwrap().clone()
+    }
+
+    fn change(
+        &self,
+        workspace: &str,
+        action: &tilo_system_resources::windows_apps::WindowsAppsAction,
+    ) -> Result<(), String> {
+        use tilo_resource::Effect as _;
+        if let Some(refusal) = self.refusal.lock().unwrap().clone() {
+            return Err(refusal);
+        }
+        self.changes
+            .lock()
+            .unwrap()
+            .push((workspace.to_owned(), action.id().to_owned()));
+        Ok(())
+    }
+}
+
+#[test]
+fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_workspace() {
+    use tilo_system_resources::windows_apps::{
+        Access, AppStatus, Confidence, Route, Source, WindowsApp, WindowsApps, WINDOWS_APPS,
+    };
+
+    let fake = Fake::new();
+    let windows = Arc::new(FakeWindows::default());
+    *windows.reading.lock().unwrap() = WindowsApps {
+        serving: true,
+        summary: "The Windows appliance is ready.".to_owned(),
+        apps: vec![WindowsApp {
+            id: "adobe-reader".to_owned(),
+            name: "Adobe Acrobat Reader".to_owned(),
+            publisher: "Adobe".to_owned(),
+            route: Route::Wine,
+            recommended_route: Route::Wine,
+            runner: "Wine 11.0".to_owned(),
+            capsule: "Adobe Reader".to_owned(),
+            setup_name: Some("Adobe Acrobat Reader".to_owned()),
+            source: Source::Catalogue,
+            confidence: Confidence::Verified,
+            reason: "A verified recipe opens Reader in Wine.".to_owned(),
+            status: AppStatus::Ready,
+            access: Access {
+                files_read_only: 1,
+                ..Access::default()
+            },
+            fallback_detail: String::new(),
+            launch_available: true,
+            launch_unavailable_reason: None,
+            portal_file_open_available: false,
+            portal_file_open_unavailable_reason: None,
+            route_override_available: true,
+            route_override_unavailable_reason: None,
+            can_retry_install: false,
+            can_escalate_install_to_vm: false,
+            can_remove_launcher: true,
+            can_vendor_uninstall: true,
+            can_delete_data: true,
+            can_publish_vm_candidate: false,
+            installation: None,
+            vm_fallback_available: false,
+            vm_fallback_unavailable_reason: None,
+        }],
+        ..WindowsApps::default()
+    };
+    let system: Arc<dyn System> = Arc::clone(&fake) as Arc<dyn System>;
+    let mut service = SystemService::with_windows_manager(
+        system,
+        None,
+        Arc::clone(&windows) as Arc<dyn crate::windows_apps::WindowsManager>,
+    )
+    .unwrap();
+    service.settle();
+
+    let reading = service
+        .read_for("so.tilo.windows", "w1", WINDOWS_APPS)
+        .expect("the Windows programs are published");
+    assert_eq!(reading["apps"][0]["name"], json!("Adobe Acrobat Reader"));
+    assert_eq!(reading["apps"][0]["route"], json!("wine"));
+
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == WINDOWS_APPS)
+        .expect("the resource is published");
+    let actions: Vec<&str> = published
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    for action in ["launch", "stop", "open-file", "install", "set-route", "delete-data"] {
+        assert!(
+            actions.contains(&action),
+            "{action} is published: {actions:?}"
+        );
+    }
+
+    assert_eq!(
+        service.invoke_for(
+            "so.tilo.windows",
+            "w1",
+            WINDOWS_APPS,
+            "launch",
+            &arguments(json!({"program": "adobe-reader"})),
+        ),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    assert_eq!(
+        windows.changes(),
+        [("w1".to_owned(), "launch".to_owned())]
+    );
+
+    // The action's own refusal is said in the reading until the next.
+    *windows.refusal.lock().unwrap() = Some("The capsule's runner is not installed.".to_owned());
+    service
+        .invoke_for(
+            "so.tilo.windows",
+            "w1",
+            WINDOWS_APPS,
+            "launch",
+            &arguments(json!({"program": "adobe-reader"})),
+        )
+        .unwrap();
+    service.settle();
+    let reading = service
+        .read_for("so.tilo.windows", "w1", WINDOWS_APPS)
+        .unwrap();
+    assert_eq!(
+        reading["problem"],
+        json!("The capsule's runner is not installed.")
+    );
+    assert_eq!(reading["pending"], json!([]));
+}

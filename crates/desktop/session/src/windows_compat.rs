@@ -810,6 +810,7 @@ pub(crate) struct Serving {
     tilo_launcher: PathBuf,
     display: Arc<Display>,
     assembly: Assembly,
+    manager: compat_service::ManagerOut,
 }
 
 /// What a session started with `options` serves Windows programs with: nothing when it starts no
@@ -821,6 +822,7 @@ pub(crate) fn serving(options: &mut crate::Options) -> Option<Serving> {
         tilo_launcher: apps.launcher()?,
         display: apps.windows_display(),
         assembly: std::mem::take(&mut options.windows),
+        manager: options.windows_manager.clone(),
     })
 }
 
@@ -832,6 +834,7 @@ pub(crate) fn serve(serving: Serving, wake: tilo_service::Wake) -> Result<Served
         tilo_launcher,
         display,
         assembly,
+        manager,
     } = serving;
     let capsules = tilo_paths::xdg::data_home()
         .ok_or_else(|| "this login has no data directory".to_owned())?
@@ -853,6 +856,7 @@ pub(crate) fn serve(serving: Serving, wake: tilo_service::Wake) -> Result<Served
         capsules,
         entries: entries.clone(),
         reopenings,
+        manager,
         administrator: Arc::new(compat_service::account_administers_computer),
     };
     let service = Arc::new(Mutex::new(None));

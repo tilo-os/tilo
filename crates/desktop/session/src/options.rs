@@ -64,6 +64,9 @@ pub struct Options {
     /// How the Windows compatibility service the Windows Apps manager reaches is put together:
     /// the computer's own Windows stack, or what a test stands in for it.
     pub windows: compat_service::Assembly,
+    /// Where the service publishes the device's Windows programs as it starts: the session's
+    /// system service serves them from here.
+    pub windows_manager: compat_service::ManagerOut,
     /// The drives the person plugs in, which this session announces and acts on when they open or
     /// eject one.
     pub drives: Option<Rc<crate::drives::Drives>>,
@@ -128,13 +131,10 @@ pub struct Options {
     /// acts on it and what holds it awake. Without one, this session runs no idle, lid, key or
     /// battery policy — it is a session in a window of another desktop, or a test's.
     pub power: Option<tilo_session_power::PowerLink>,
-    /// This device's state directory, where the session's own services keep their files. Without
-    /// one, they keep nothing (tests and screenshots).
+    /// Where this device keeps what outlives a session: the shell as it was left, and the pictures
+    /// on it. Without one, the session starts on a fresh shell and keeps nothing (tests and
+    /// screenshots).
     pub state: Option<std::path::PathBuf>,
-    /// The device's records, where the session keeps what outlives it: the shell as it was left,
-    /// the pictures on it, the notification centre. The session fills it in from its daemon's
-    /// link; without one, it starts on a fresh shell and keeps nothing.
-    pub records: Option<tilo_session_client::device_records::DeviceRecords>,
     /// Whether the session takes part in the peer network: who is here in each workspace,
     /// over Iroh. Off, this desktop has no members but its own person; the workspaces it makes
     /// are still founded on its own workspace service, so what it lays out comes back after a
@@ -393,7 +393,6 @@ impl Default for Options {
             machine: Machine::default(),
             power: None,
             state: None,
-            records: None,
             collab: true,
             fabric: None,
             vpn: None,
@@ -405,6 +404,7 @@ impl Default for Options {
             admin_control: None,
             launches: std::sync::Arc::default(),
             windows: compat_service::Assembly::system(),
+            windows_manager: compat_service::ManagerOut::new(),
             drives: None,
             #[cfg(unix)]
             shell_link: None,

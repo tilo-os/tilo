@@ -209,23 +209,22 @@ Bottles catalogues; a computer without them, or without the runtime payloads,
 still answers the manager, and a launch says that Windows support is not
 installed.
 
-Only the Windows Apps manager (`so.tilo.windows`) connects. The launcher
-writes an authenticated app and workspace preamble to a connected descriptor;
-the service accepts it only from a process running the session's
-`tilo-launcher`, whose parent is the session, and that the session itself
-started for the manager in that workspace and that is still alive (pid and kernel
-start time against the session's launch list). Each launch hands off once: a
-second connection of the same launcher process is refused. Requests carry only
-bounded typed methods. Launch and remove-launcher use opaque server entry IDs;
-installer inspection and either confirmed destination are the only methods
-allowed a descriptor; retry, vendor uninstall, publication removal and data
-deletion use opaque server-owned IDs the session already authorized.
+The programs, the appliance and the layer are the device's `windows-apps`
+resource, which the session's system service serves beside `windows-compat`:
+an app reads what this computer has and calls its actions through the device's
+daemon like any other device resource, and nothing of the manager is a second
+channel. Workspace grants are re-read from the workspace's sandbox in the
+session's layout for every operation, so a program opens under the sandbox of
+the workspace the calling app is in.
 
-Workspace grants are re-read from the workspace's sandbox in the session's
-layout for every operation. Application query, executable, capsule path,
-environment, VM fallback intent and grants never come from the client.
-Blocking service I/O happens on the Windows Apps worker thread; the render thread
-paints a bounded cache and clears it after an invalid or disconnected response.
+Application query, executable, capsule path, environment, VM fallback intent
+and grants never come from an app. Launch and remove-launcher use opaque server
+entry IDs; installer inspection and either confirmed destination are the only
+calls given a file, which the session opens itself from the path the person
+chose; retry, vendor uninstall, publication removal and data deletion use
+opaque server-owned IDs. Blocking service I/O happens on the system service's
+worker thread; a view paints a bounded cache and clears it after an invalid or
+disconnected response.
 
 A launch is answered once its program started, never held for its lifetime.
 The service watches each program it started: a list says which entries have

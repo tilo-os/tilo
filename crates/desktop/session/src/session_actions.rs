@@ -1269,6 +1269,7 @@ mod tests {
                 as std::sync::Arc<dyn tilo_system_service::device::System>,
             None,
             Some(&power_link),
+            None,
         )
         .expect("system");
         tilo_service::Service::settle(&mut system_service);
@@ -1461,6 +1462,7 @@ mod tests {
                 as std::sync::Arc<dyn tilo_system_service::device::System>,
             None,
             Some(&power_link),
+            None,
         )
         .expect("system");
         tilo_service::Service::settle(&mut system_service);

@@ -28,6 +28,7 @@ pub mod scanners;
 pub mod storage;
 pub mod update;
 pub mod users;
+pub mod windows_apps;
 pub mod windows_compat;
 
 pub use codec_pack::CODEC_PACK;
@@ -44,6 +45,7 @@ pub use processes::PROCESSES;
 pub use scanners::SCANNERS;
 pub use storage::STORAGE;
 pub use users::USERS;
+pub use windows_apps::WINDOWS_APPS;
 pub use windows_compat::WINDOWS_COMPAT;
 
 /// The resources' ids.

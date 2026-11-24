@@ -63,6 +63,9 @@ pub struct SessionSide {
     pub entries: EntryDirectory,
     /// What the session asks as itself: a saved tab's program, opened again.
     pub reopenings: Reopenings,
+    /// Where the service publishes the device's manager as it starts: the session's system
+    /// service reads this computer's Windows programs through it.
+    pub manager: crate::ManagerOut,
     /// Whether the desktop's person administers the computer
     /// ([`crate::account_administers_computer`]): only they choose how a program opens.
     pub administrator: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -139,21 +142,29 @@ where
     V: VmDelegate + 'static,
 {
     let store = CapsuleStore::new(&side.capsules).map_err(|error| error.to_string())?;
-    let managed = ManagedCompatibility::new(
-        catalogue,
-        store,
-        runtimes,
-        resources,
-        executor,
-        vm,
-        side.displays,
-    )
-    .map_err(|error| error.to_string())?
-    .with_administrator_check(side.administrator);
+    let managed = Arc::new(
+        ManagedCompatibility::new(
+            catalogue,
+            store,
+            runtimes,
+            resources,
+            executor,
+            vm,
+            side.displays,
+        )
+        .map_err(|error| error.to_string())?
+        .with_administrator_check(side.administrator),
+    );
+    // What this device's apps read of the programs and the appliance, before any manager
+    // connects: the session's system service publishes it as the device's `windows-apps`.
+    side.manager.set(Arc::new(crate::DeviceManager::new(
+        Arc::clone(&managed),
+        Arc::clone(&side.sandboxes),
+    )));
     let authenticator = LauncherAuthenticator::new(side.launcher, side.parent_pid, side.launches);
     spawn_session_service(
         side.socket,
-        Arc::new(managed),
+        managed,
         side.sandboxes,
         authenticator,
         side.entries,

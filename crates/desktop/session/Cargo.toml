@@ -410,6 +410,9 @@ compat-service = { path = "../../compat/compat-service" }
 block-devices = { path = "../../os/block-devices" }
 tilo-connectivity-service = { path = "../../os/connectivity-service" }
 tilo-system-service = { path = "../../os/system-service" }
+tilo-system-resources = { path = "../../desktop/tilo-system-resources" }
+# The appliance's owner status, read from the files the owner leaves.
+windows-vm = { path = "../../compat/windows-vm" }
 # The sound resource's specs and system sound cues, for the audio service the session starts.
 tilo-audio-service = { path = "../../os/audio-service", default-features = false, features = ["sounds"] }
 # The desktop services the session starts on the buses; screen shares
@@ -465,9 +468,6 @@ settings-store = { package = "tilo-settings-store", path = "../../desktop/settin
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
-# What a session keeps for the next one, held in the test's process as the device's daemon keeps
-# it.
-tilo-session-client = { path = "../../core/session-client", features = ["test-support"] }
 # A test runs a session in its own process as the device's daemon's shell
 # (`shell_session`), on the link the daemon hands out behind this feature.
 tilo-runtime = { path = "../../core/tilo-runtime", features = ["test-support"] }
@@ -514,7 +514,6 @@ tilo-app-launch = { path = "../app-launch", features = ["test-support"] }
 # and the catalogue that routes it.
 compat-service = { path = "../../compat/compat-service", features = ["test-support"] }
 compat-catalogue = { path = "../../compat/compat-catalogue" }
-windows-vm = { path = "../../compat/windows-vm" }
 # The stand-in logind and UPower a power test serves over a socket pair.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 # A packet relay on this machine's loopback, for two of the person's devices

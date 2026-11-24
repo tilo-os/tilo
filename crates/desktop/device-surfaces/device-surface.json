@@ -3078,72 +3078,6 @@
             "option": "int"
           },
           "readonly": true
-        },
-        {
-          "path": "charge_limit",
-          "stored": "value",
-          "type": {
-            "option": {
-              "named": "ChargeLimit"
-            }
-          },
-          "readonly": true
-        }
-      ],
-      "types": [
-        {
-          "name": "ChargeLimit",
-          "doc": "Where the pack stops charging, and the values this machine takes.",
-          "fields": [
-            {
-              "name": "current",
-              "type": "int"
-            },
-            {
-              "name": "choices",
-              "type": {
-                "list": "int"
-              }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "kind": "battery_history",
-      "label": "Battery history",
-      "version": 1,
-      "verbs": [],
-      "fields": [
-        {
-          "path": "points",
-          "stored": "value",
-          "type": {
-            "list": {
-              "named": "HistoryPoint"
-            }
-          },
-          "readonly": true
-        }
-      ],
-      "types": [
-        {
-          "name": "HistoryPoint",
-          "doc": "The battery's charge at one moment.",
-          "fields": [
-            {
-              "name": "unix_minute",
-              "type": "int"
-            },
-            {
-              "name": "capacity",
-              "type": "int"
-            },
-            {
-              "name": "on_ac",
-              "type": "bool"
-            }
-          ]
         }
       ]
     },
@@ -4874,6 +4808,1012 @@
         }
       ],
       "types": [
+        {
+          "name": "WindowsState",
+          "doc": "How the compatibility layer stands.",
+          "cases": [
+            {
+              "name": "ready",
+              "label": "Ready"
+            },
+            {
+              "name": "needs-install",
+              "label": "Needs install"
+            },
+            {
+              "name": "installing",
+              "label": "Installing"
+            },
+            {
+              "name": "waiting-for-network",
+              "label": "Waiting for network"
+            },
+            {
+              "name": "failed",
+              "label": "Failed"
+            },
+            {
+              "name": "not-offered",
+              "label": "Not offered"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "windows-apps",
+      "label": "Windows Apps",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "install",
+          "label": "Install a Windows app",
+          "description": "Install an `.exe` or `.msi` in a private capsule, or offer to set it up in Windows.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "path",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "import-iso",
+          "label": "Import a Windows ISO",
+          "description": "Import a Windows ISO and set up the managed appliance from it.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "path",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "recovery",
+          "label": "Open the recovery desktop",
+          "description": "Open the appliance's recovery desktop.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "start",
+          "label": "Start Windows",
+          "description": "Start Windows.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "restart",
+          "label": "Restart Windows",
+          "description": "Restart Windows.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "suspend",
+          "label": "Suspend Windows",
+          "description": "Suspend Windows.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "resume",
+          "label": "Resume Windows",
+          "description": "Resume Windows.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "shutdown",
+          "label": "Shut Windows down",
+          "description": "Shut Windows down.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        },
+        {
+          "id": "temporary-network",
+          "label": "Connect for activation",
+          "description": "Connect the appliance long enough to activate Windows.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "update-network",
+          "label": "Connect for Windows Update",
+          "description": "Connect the appliance long enough for Windows Update.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "revoke-network",
+          "label": "End the temporary connection",
+          "description": "End the appliance's temporary connection.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        },
+        {
+          "id": "install-private-capsule",
+          "label": "Set it up in a private capsule",
+          "description": "Set the waiting setup up in a private capsule.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "install-windows-appliance",
+          "label": "Set it up in Windows",
+          "description": "Set the waiting setup up in the Windows appliance.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "launch",
+          "label": "Open the app",
+          "description": "Open a program.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "program",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "stop",
+          "label": "Stop the app",
+          "description": "End a running program of a private capsule.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "program",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "launch-vm-fallback",
+          "label": "Open it in Windows instead",
+          "description": "Open a private-capsule program in the Windows appliance instead.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "program",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "open-file",
+          "label": "Open a file in it",
+          "description": "Open one document this computer chose in an appliance application.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "program",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "path",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "publish",
+          "label": "Add it to Windows Apps",
+          "description": "Add an application the appliance published to this computer's apps.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "program",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "retry-install",
+          "label": "Run the setup again",
+          "description": "Run the setup whose private capsule this is again.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "capsule",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "escalate-install",
+          "label": "Continue the setup in Windows",
+          "description": "Continue a setup that did not finish in the Windows appliance.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "capsule",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "remove-launcher",
+          "label": "Remove the launcher",
+          "description": "Remove a program's launcher; its files stay.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "program",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "uninstall",
+          "label": "Uninstall the app",
+          "description": "Run the program's own uninstaller.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "program",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "delete-data",
+          "label": "Delete the app's data",
+          "description": "Delete everything the setup installed into its private capsule.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "capsule",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-route",
+          "label": "Choose how the app opens",
+          "description": "Choose how an application opens from now on, or let the catalogue recommend it.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "program",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "route",
+              "required": false,
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "const": "wine"
+                      },
+                      {
+                        "type": "string",
+                        "const": "proton"
+                      },
+                      {
+                        "type": "string",
+                        "const": "vm",
+                        "description": "The managed Windows appliance."
+                      }
+                    ]
+                  }
+                ],
+                "description": "How a program opens."
+              },
+              "type": {
+                "option": {
+                  "named": "Route"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "serving",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "summary",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "apps",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "WindowsApp"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "appliance",
+          "stored": "value",
+          "type": {
+            "named": "Appliance"
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending_install",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "PendingInstall"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "support",
+          "stored": "value",
+          "type": {
+            "named": "WindowsCompat"
+          },
+          "readonly": true
+        },
+        {
+          "path": "ended",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "EndedProgram"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Access",
+          "doc": "What a program may reach, as the compatibility layer's plan for it allows.",
+          "fields": [
+            {
+              "name": "files_read_only",
+              "type": "int"
+            },
+            {
+              "name": "files_read_write",
+              "type": "int"
+            },
+            {
+              "name": "network",
+              "type": "text"
+            },
+            {
+              "name": "microphone",
+              "type": "bool"
+            },
+            {
+              "name": "sound",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "AppStatus",
+          "doc": "Where a program's installation stands.",
+          "cases": [
+            {
+              "name": "ready",
+              "label": "Ready"
+            },
+            {
+              "name": "running",
+              "label": "Running"
+            },
+            {
+              "name": "needs-attention",
+              "label": "Needs attention"
+            },
+            {
+              "name": "installing",
+              "label": "Installing"
+            },
+            {
+              "name": "uninstalling",
+              "label": "Uninstalling"
+            },
+            {
+              "name": "failed",
+              "label": "Failed"
+            },
+            {
+              "name": "uninstalled",
+              "label": "Uninstalled"
+            }
+          ]
+        },
+        {
+          "name": "Appliance",
+          "doc": "The managed Windows appliance: one Windows, set up for this computer's apps.",
+          "fields": [
+            {
+              "name": "configured",
+              "type": "bool"
+            },
+            {
+              "name": "phase",
+              "type": {
+                "named": "AppliancePhase"
+              }
+            },
+            {
+              "name": "license",
+              "type": {
+                "named": "License"
+              }
+            },
+            {
+              "name": "power_state",
+              "type": {
+                "named": "PowerState"
+              }
+            },
+            {
+              "name": "published_applications",
+              "type": "int"
+            },
+            {
+              "name": "recovery_available",
+              "type": "bool"
+            },
+            {
+              "name": "temporary_connection",
+              "type": {
+                "option": {
+                  "named": "TemporaryConnection"
+                }
+              }
+            },
+            {
+              "name": "shared_session",
+              "type": {
+                "named": "SharedSession"
+              }
+            },
+            {
+              "name": "detail",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "AppliancePhase",
+          "doc": "How the managed Windows appliance stands.",
+          "cases": [
+            {
+              "name": "not-set-up",
+              "label": "Not set up"
+            },
+            {
+              "name": "installing",
+              "label": "Installing"
+            },
+            {
+              "name": "finishing-setup",
+              "label": "Finishing setup"
+            },
+            {
+              "name": "ready",
+              "label": "Ready"
+            },
+            {
+              "name": "needs-recovery",
+              "label": "Needs recovery"
+            },
+            {
+              "name": "unavailable",
+              "label": "Unavailable"
+            }
+          ]
+        },
+        {
+          "name": "Confidence",
+          "doc": "How well this computer's catalogue knows that a program runs.",
+          "cases": [
+            {
+              "name": "verified",
+              "label": "Verified"
+            },
+            {
+              "name": "community",
+              "label": "Community"
+            },
+            {
+              "name": "heuristic",
+              "label": "Heuristic"
+            },
+            {
+              "name": "fallback",
+              "label": "Fallback"
+            }
+          ]
+        },
+        {
+          "name": "EndedProgram",
+          "doc": "A program that ended, as its manager hears it once.",
+          "fields": [
+            {
+              "name": "program",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "success",
+              "type": "bool"
+            },
+            {
+              "name": "exit_code",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "error",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "said",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "License",
+          "doc": "What Windows says of its licence.",
+          "cases": [
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            },
+            {
+              "name": "digital",
+              "label": "Digital"
+            },
+            {
+              "name": "product-key",
+              "label": "Product key"
+            },
+            {
+              "name": "managed",
+              "label": "Managed"
+            },
+            {
+              "name": "evaluation",
+              "label": "Evaluation"
+            },
+            {
+              "name": "unlicensed",
+              "label": "Unlicensed"
+            }
+          ]
+        },
+        {
+          "name": "PendingInstall",
+          "doc": "A setup that was inspected and waits for the person to choose where it goes.",
+          "fields": [
+            {
+              "name": "display_name",
+              "type": "text"
+            },
+            {
+              "name": "detail",
+              "type": "text"
+            },
+            {
+              "name": "recommended_route",
+              "type": {
+                "named": "Route"
+              }
+            }
+          ]
+        },
+        {
+          "name": "PowerState",
+          "doc": "What the appliance is doing now.",
+          "cases": [
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            },
+            {
+              "name": "running",
+              "label": "Running"
+            },
+            {
+              "name": "suspended",
+              "label": "Suspended"
+            },
+            {
+              "name": "paused",
+              "label": "Paused"
+            },
+            {
+              "name": "shut-down",
+              "label": "Shut down"
+            }
+          ]
+        },
+        {
+          "name": "Route",
+          "doc": "How a program opens.",
+          "cases": [
+            {
+              "name": "wine",
+              "label": "Wine"
+            },
+            {
+              "name": "proton",
+              "label": "Proton"
+            },
+            {
+              "name": "vm",
+              "label": "Vm"
+            }
+          ]
+        },
+        {
+          "name": "SharedSession",
+          "doc": "What the appliance's one interactive Windows session reaches: the grants its programs use, and who has programs open in it.",
+          "fields": [
+            {
+              "name": "active",
+              "type": "bool"
+            },
+            {
+              "name": "grants",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "contributors",
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Source",
+          "doc": "Where this computer learned that a program runs.",
+          "cases": [
+            {
+              "name": "catalogue",
+              "label": "Catalogue"
+            },
+            {
+              "name": "default",
+              "label": "Default"
+            },
+            {
+              "name": "installed-in-windows",
+              "label": "Installed in windows"
+            },
+            {
+              "name": "added-from-file",
+              "label": "Added from file"
+            },
+            {
+              "name": "found-by-setup",
+              "label": "Found by setup"
+            }
+          ]
+        },
+        {
+          "name": "TemporaryConnection",
+          "doc": "A temporary connection the appliance was given, for activation or Windows Update.",
+          "fields": [
+            {
+              "name": "purpose",
+              "type": "text"
+            },
+            {
+              "name": "expires_in_seconds",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "WindowsApp",
+          "doc": "One Windows program a person can open.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "publisher",
+              "type": "text"
+            },
+            {
+              "name": "route",
+              "type": {
+                "named": "Route"
+              }
+            },
+            {
+              "name": "recommended_route",
+              "type": {
+                "named": "Route"
+              }
+            },
+            {
+              "name": "runner",
+              "type": "text"
+            },
+            {
+              "name": "capsule",
+              "type": "text"
+            },
+            {
+              "name": "setup_name",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "source",
+              "type": {
+                "named": "Source"
+              }
+            },
+            {
+              "name": "confidence",
+              "type": {
+                "named": "Confidence"
+              }
+            },
+            {
+              "name": "reason",
+              "type": "text"
+            },
+            {
+              "name": "status",
+              "type": {
+                "named": "AppStatus"
+              }
+            },
+            {
+              "name": "access",
+              "type": {
+                "named": "Access"
+              }
+            },
+            {
+              "name": "fallback_detail",
+              "type": "text"
+            },
+            {
+              "name": "launch_available",
+              "type": "bool"
+            },
+            {
+              "name": "launch_unavailable_reason",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "portal_file_open_available",
+              "type": "bool"
+            },
+            {
+              "name": "portal_file_open_unavailable_reason",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "route_override_available",
+              "type": "bool"
+            },
+            {
+              "name": "route_override_unavailable_reason",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "can_retry_install",
+              "type": "bool"
+            },
+            {
+              "name": "can_escalate_install_to_vm",
+              "type": "bool"
+            },
+            {
+              "name": "can_remove_launcher",
+              "type": "bool"
+            },
+            {
+              "name": "can_vendor_uninstall",
+              "type": "bool"
+            },
+            {
+              "name": "can_delete_data",
+              "type": "bool"
+            },
+            {
+              "name": "can_publish_vm_candidate",
+              "type": "bool"
+            },
+            {
+              "name": "installation",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "vm_fallback_available",
+              "type": "bool"
+            },
+            {
+              "name": "vm_fallback_unavailable_reason",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "WindowsCompat",
+          "doc": "What this computer's Windows compatibility reads as now.",
+          "fields": [
+            {
+              "name": "available",
+              "type": "bool"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "WindowsState"
+              }
+            },
+            {
+              "name": "summary",
+              "type": "text"
+            },
+            {
+              "name": "size",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "problem",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "pending",
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        },
         {
           "name": "WindowsState",
           "doc": "How the compatibility layer stands.",

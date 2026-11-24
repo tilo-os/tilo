@@ -118,6 +118,14 @@ pub trait Service {
     /// resource it does not publish.
     fn read(&self, resource: &str) -> Option<Value>;
 
+    /// [`Self::read`] for the app `app` reading in `workspace`: a resource of the device that
+    /// answers for whoever reads it — this computer's Windows programs, whose sandbox and
+    /// running state are the workspace's — reads that app's workspace. The default is the
+    /// device's, read once for every reader.
+    fn read_for(&self, _app: &str, _workspace: &str, resource: &str) -> Option<Value> {
+        self.read(resource)
+    }
+
     /// Carry out the action `action` of its resource `resource`.
     ///
     /// # Errors
@@ -129,6 +137,23 @@ pub trait Service {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError>;
+
+    /// [`Self::invoke`] for the app `app` acting in `workspace`: a device action whose work
+    /// happens in a workspace — a Windows program opening under its sandbox — acts there. The
+    /// default is the device's.
+    ///
+    /// # Errors
+    /// The API's refusal.
+    fn invoke_for(
+        &mut self,
+        _app: &str,
+        _workspace: &str,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        self.invoke(resource, action, arguments)
+    }
 
     /// [`Self::invoke`] as `invoker` (an agent, a script), which what the change makes is
     /// attributed to. The default runs it as the person at this device, as [`Self::invoke`] does.
@@ -656,6 +681,42 @@ impl Services {
         self.started
             .iter()
             .find_map(|service| service.read(resource))
+    }
+
+    /// The reading of `resource` for the app `app` reading in `workspace`: a device resource that
+    /// answers for its reader is read as that app's workspace.
+    #[must_use]
+    pub fn read_for(&self, app: &str, workspace: &str, resource: &str) -> Option<Value> {
+        self.started
+            .iter()
+            .find_map(|service| service.read_for(app, workspace, resource))
+    }
+
+    /// Carry out `action` of `resource` for the app `app` acting in `workspace`.
+    ///
+    /// # Errors
+    /// The service's refusal.
+    pub fn invoke_for(
+        &mut self,
+        app: &str,
+        workspace: &str,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Option<Result<Started, ApiError>> {
+        let address = ActionAddress::new(resource, action);
+        let index = self.started.iter().position(|service| {
+            tilo_actions::api::resolve(&service.resources(), &address).is_some()
+        })?;
+        let service = self.started.get_mut(index)?;
+        let started = service.invoke_for(app, workspace, resource, action, arguments);
+        if let Some(stirred) = self.stirred.get_mut(index) {
+            *stirred = true;
+        }
+        if started.is_ok() {
+            self.changed();
+        }
+        Some(started)
     }
 
     /// The reading of `resource`, as what its service publishes; `None` when no service publishes

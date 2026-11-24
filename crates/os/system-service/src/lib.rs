@@ -35,6 +35,7 @@ pub mod firmware;
 pub mod host_info;
 pub mod journal;
 pub mod storage;
+pub mod windows_apps;
 pub mod windows_compat;
 pub use tilo_system_resources::effects;
 tilo_resource::declared_names!();
@@ -69,7 +70,7 @@ use update::Update;
 pub use tilo_system_resources::{
     CODEC_PACK, CONTAINERS, DISK_UNLOCK, DISKS, DRIVES, FIREWALL, FIRMWARE, HOST_INFO, JOURNAL,
     KEYBOARD_BACKLIGHT, POWER, PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE,
-    USERS, WINDOWS_COMPAT,
+    USERS, WINDOWS_APPS, WINDOWS_COMPAT,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -132,6 +133,7 @@ pub struct Readings {
     pub disks: tilo_system_resources::disks::Disks,
     pub firewall: tilo_system_resources::firewall::Firewall,
     pub journal: tilo_system_resources::journal::Journal,
+    pub windows_apps: tilo_system_resources::windows_apps::WindowsApps,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -163,6 +165,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         disks: system.disks(),
         firewall: system.firewall(),
         journal: tilo_system_resources::journal::Journal::default(),
+        windows_apps: tilo_system_resources::windows_apps::WindowsApps::default(),
     }
 }
 
@@ -196,6 +199,11 @@ enum Landed {
         /// The read replaced the entries, rather than continuing them.
         replace: bool,
         read_at_ms: u64,
+    },
+    /// An action on the Windows programs landed: what it came to, and the reading to forget.
+    Windows {
+        action: String,
+        result: Result<(), String>,
     },
 }
 
@@ -250,6 +258,31 @@ pub struct SystemService {
     process_watch: Option<Box<dyn Send>>,
     /// Follows the journal while a window asks for it.
     journal_follow: Option<JournalFollow>,
+    /// The Windows programs and appliance, when this session runs their service.
+    windows: Option<Arc<dyn windows_apps::WindowsManager>>,
+    /// What the Windows reading last answered for each workspace, and the actions still running.
+    windows_cache: std::sync::Mutex<WindowsCache>,
+}
+
+/// The Windows programs as the service last read them, by the workspace the reader is in, and
+/// the actions taken and not landed yet.
+#[derive(Default)]
+struct WindowsCache {
+    by_workspace: std::collections::HashMap<String, (std::time::Instant, tilo_system_resources::windows_apps::WindowsApps)>,
+    pending: Vec<String>,
+    problem: Option<String>,
+}
+
+/// How long a workspace's Windows reading is served before the service asks again.
+const WINDOWS_FRESH: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl WindowsCache {
+    fn fresh(&self, workspace: &str) -> Option<tilo_system_resources::windows_apps::WindowsApps> {
+        self.by_workspace
+            .get(workspace)
+            .filter(|(at, _)| at.elapsed() < WINDOWS_FRESH)
+            .map(|(_, reading)| reading.clone())
+    }
 }
 
 impl SystemService {
@@ -258,7 +291,7 @@ impl SystemService {
     /// # Errors
     /// The worker's thread did not start.
     pub fn new(system: Arc<dyn System>, wake: Option<Wake>) -> std::io::Result<Self> {
-        Self::build(system, wake, None)
+        Self::build(system, wake, None, None)
     }
 
     /// The service over `system`, taking the machine's power modes and active
@@ -271,13 +304,40 @@ impl SystemService {
         wake: Option<Wake>,
         profiles: Arc<dyn PowerProfiles>,
     ) -> std::io::Result<Self> {
-        Self::build(system, wake, Some(profiles))
+        Self::build(system, wake, Some(profiles), None)
+    }
+
+    /// The service over `system`, publishing this computer's Windows programs as the device's
+    /// `windows-apps` resource through `windows`.
+    ///
+    /// # Errors
+    /// The worker's thread did not start.
+    pub fn with_windows_manager(
+        system: Arc<dyn System>,
+        wake: Option<Wake>,
+        windows: Arc<dyn windows_apps::WindowsManager>,
+    ) -> std::io::Result<Self> {
+        Self::build(system, wake, None, Some(windows))
+    }
+
+    /// The service over `system`, with both the live power modes and the Windows programs.
+    ///
+    /// # Errors
+    /// The worker's thread did not start.
+    pub fn with_power_and_windows(
+        system: Arc<dyn System>,
+        wake: Option<Wake>,
+        profiles: Arc<dyn PowerProfiles>,
+        windows: Arc<dyn windows_apps::WindowsManager>,
+    ) -> std::io::Result<Self> {
+        Self::build(system, wake, Some(profiles), Some(windows))
     }
 
     fn build(
         system: Arc<dyn System>,
         wake: Option<Wake>,
         profiles: Option<Arc<dyn PowerProfiles>>,
+        windows: Option<Arc<dyn windows_apps::WindowsManager>>,
     ) -> std::io::Result<Self> {
         let mut readings = Readings::default();
         let live_profiles = profiles.map(|source| {
@@ -319,6 +379,8 @@ impl SystemService {
             container_watch: None,
             process_watch: None,
             journal_follow: None,
+            windows,
+            windows_cache: std::sync::Mutex::default(),
         };
         refresh(&service.worker.jobs(), live_active.clone());
         service.follow_printers(watched.as_ref(), wake.clone(), live_active.clone());
@@ -448,6 +510,79 @@ impl SystemService {
     #[must_use]
     pub const fn readings(&self) -> &Readings {
         &self.readings
+    }
+
+    /// This computer's Windows programs as an app in `workspace` reads them now, with the
+    /// actions still running and why the last one did not.
+    fn windows_reading(&self, workspace: &str) -> tilo_system_resources::windows_apps::WindowsApps {
+        let Some(manager) = &self.windows else {
+            return tilo_system_resources::windows_apps::WindowsApps {
+                summary: "This computer's Windows compatibility service is not running."
+                    .to_owned(),
+                ..tilo_system_resources::windows_apps::WindowsApps::default()
+            };
+        };
+        let fresh = {
+            let cache = self
+                .windows_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache.fresh(workspace)
+        };
+        let mut reading = match fresh {
+            Some(reading) => reading,
+            None => {
+                let reading = manager.reading(workspace);
+                self.windows_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .by_workspace
+                    .insert(workspace.to_owned(), (std::time::Instant::now(), reading.clone()));
+                reading
+            }
+        };
+        {
+            let cache = self
+                .windows_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            reading.pending.clone_from(&cache.pending);
+            reading.problem.clone_from(&cache.problem);
+        }
+        reading
+    }
+
+    /// Carry out a Windows action for an app in `workspace`, landing what it came to.
+    fn start_windows(
+        &mut self,
+        workspace: &str,
+        action: tilo_system_resources::windows_apps::WindowsAppsAction,
+    ) -> Started {
+        let id = action.id().to_owned();
+        {
+            let mut cache = self
+                .windows_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache.pending.push(id.clone());
+            cache.problem = None;
+            cache.by_workspace.clear();
+        }
+        let manager = self.windows.clone();
+        let workspace = workspace.to_owned();
+        self.worker.run(move |_system| {
+            let result = match &manager {
+                Some(manager) => manager.change(&workspace, &action),
+                None => Err(
+                    "This computer's Windows compatibility service is not running.".to_owned(),
+                ),
+            };
+            Landed::Windows {
+                action: id,
+                result,
+            }
+        });
+        Started::Accepted
     }
 
     /// Take in the power modes from the live power source when its revision moved.
@@ -741,6 +876,15 @@ impl SystemService {
                     }
                     Err(error) => firewall.blocked_error = Some(error),
                 }
+            }
+            Landed::Windows { action, result } => {
+                let mut cache = self
+                    .windows_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                cache.pending.retain(|id| *id != action);
+                cache.problem = result.err();
+                cache.by_workspace.clear();
             }
         }
     }
@@ -1656,6 +1800,28 @@ impl SystemService {
         Ok(self.start(Part::Time, id, change))
     }
 
+    /// An action on the `windows-apps` resource: the programs and the appliance the session's
+    /// compatibility service reads.
+    fn invoke_windows_apps(
+        &mut self,
+        published: &[ResourceSpec],
+        workspace: &str,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        if self.windows.is_none() {
+            return Err(ApiError::Unavailable {
+                code: "no_windows".into(),
+                reason: "This computer's Windows compatibility service is not running".into(),
+            });
+        }
+        let action = decode::<tilo_system_resources::windows_apps::WindowsAppsAction>(
+            published, resource, action, arguments,
+        )?;
+        Ok(self.start_windows(workspace, action))
+    }
+
     /// An action on the `keyboard-backlight` resource.
     fn invoke_keyboard_backlight(
         &mut self,
@@ -2203,6 +2369,7 @@ impl Service for SystemService {
             scanners::resource(&self.readings.scanners),
             codec_pack::resource(&self.readings.codec_pack),
             windows_compat::resource(&self.readings.windows_compat),
+            windows_apps::resource(&self.readings.windows_apps),
             firmware::resource(&self.readings.firmware),
             containers::resource(&self.readings.containers),
             processes::resource(&self.readings.processes),
@@ -2227,6 +2394,7 @@ impl Service for SystemService {
             SCANNERS => Some(reading(&self.readings.scanners)),
             CODEC_PACK => Some(reading(&self.readings.codec_pack)),
             WINDOWS_COMPAT => Some(reading(&self.readings.windows_compat)),
+            WINDOWS_APPS => Some(reading(&self.windows_reading(""))),
             FIRMWARE => Some(reading(&self.readings.firmware)),
             CONTAINERS => Some(reading(&self.readings.containers)),
             PROCESSES => Some(reading(&self.readings.processes)),
@@ -2235,6 +2403,31 @@ impl Service for SystemService {
             JOURNAL => Some(reading(&self.readings.journal)),
             _ => None,
         }
+    }
+
+    /// This computer's Windows programs answered for the workspace reading them: a program the
+    /// appliance shows opens under that workspace's sandbox, and its running state is read
+    /// there.
+    fn read_for(&self, _app: &str, workspace: &str, resource: &str) -> Option<Value> {
+        if resource == WINDOWS_APPS {
+            return Some(reading(&self.windows_reading(workspace)));
+        }
+        self.read(resource)
+    }
+
+    fn invoke_for(
+        &mut self,
+        _app: &str,
+        workspace: &str,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        if resource == WINDOWS_APPS {
+            let published = self.resources();
+            return self.invoke_windows_apps(&published, workspace, resource, action, arguments);
+        }
+        self.invoke(resource, action, arguments)
     }
 
     fn invoke(
@@ -2260,6 +2453,7 @@ impl Service for SystemService {
             HOST_INFO => self.invoke_host_info(&published, resource, action, arguments),
             CODEC_PACK => self.invoke_codec_pack(&published, resource, action, arguments),
             WINDOWS_COMPAT => self.invoke_windows_programs(&published, resource, action, arguments),
+            WINDOWS_APPS => self.invoke_windows_apps(&published, "", resource, action, arguments),
             FIRMWARE => self.invoke_firmware(&published, resource, action, arguments),
             CONTAINERS => self.invoke_containers(&published, resource, action, arguments),
             PROCESSES => self.invoke_processes(&published, resource, action, arguments),

@@ -20346,6 +20346,7 @@ dependencies = [
  "tilo-speaker-service",
  "tilo-startup-metrics",
  "tilo-store-engine",
+ "tilo-system-resources",
  "tilo-system-service",
  "tilo-system-stats",
  "tilo-test-env",
