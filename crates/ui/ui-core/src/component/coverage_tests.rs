@@ -11,7 +11,7 @@ use vello::kurbo::{Point, Rect};
 
 use super::tests::{given, given_with_views, sample};
 use super::{Registry, TOOLKIT, Value};
-use crate::headless::FrameHarness;
+use crate::headless::Driver;
 use crate::profiling::layout_counts::asking_for_layout;
 use crate::theme::Theme;
 use crate::widget::{Element, TaffyTreeExt as _, Widget};
@@ -236,7 +236,7 @@ fn every_described_component_settles_its_layout() {
                 continue;
             }
         };
-        let mut host = FrameHarness::for_root(
+        let mut host = Driver::for_root(
             crate::State::new(),
             Mounted(element),
             (900, 600),

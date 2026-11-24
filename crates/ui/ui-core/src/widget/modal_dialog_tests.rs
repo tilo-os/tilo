@@ -2035,7 +2035,7 @@ fn a_dialog_moves_on_the_motion_the_person_allows() {
 
 /// The published controls of a frame, by the words a person reads on them.
 fn published_controls(
-    h: &crate::headless::FrameHarness,
+    h: &crate::headless::Driver,
 ) -> std::collections::HashMap<String, tilo_actions::ResourceSpec> {
     h.resources()
         .into_iter()
