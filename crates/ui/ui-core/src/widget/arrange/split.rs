@@ -285,6 +285,24 @@ impl Arranged<SplitLayout> {
         self
     }
 
+    /// Open or close the drawer, with the panes moving as a change of what the container holds
+    /// does (the container's [`crate::motion::Feel`], reduced motion landing at once). A split
+    /// that is not collapsed ignores it.
+    pub fn set_drawer_open(&mut self, open: bool) {
+        if self.layout.drawer_open == open {
+            return;
+        }
+        self.note_change();
+        self.layout.drawer_open = open;
+        self.arguments_changed();
+    }
+
+    /// Whether the drawer is open.
+    #[must_use]
+    pub const fn drawer_open(&self) -> bool {
+        self.layout.drawer_open
+    }
+
     #[must_use]
     pub const fn axis() -> Axis {
         Axis::Inline
