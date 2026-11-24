@@ -912,7 +912,7 @@ view asking() {
 "#;
 
     /// The app's listing, `asks` its records.
-    fn listing(asks: serde_json::Value) -> String {
+    fn listing(asks: &serde_json::Value) -> String {
         json!({ "items": asks }).to_string()
     }
 
@@ -944,7 +944,7 @@ view asking() {
             let all = tilolang_runtime::foreign::listing_of("tilo.listed#Ask");
             rt.set_reading(
                 &all,
-                &listing(json!([
+                &listing(&json!([
                     {"id": "a1", "words": "Send the report?", "status": "waiting", "person": "me"},
                     {"id": "a2", "words": "Book the room?", "status": "running", "person": "me"},
                     {"id": "a3", "words": "Pay the invoice?", "status": "waiting", "person": "you"},
@@ -963,7 +963,7 @@ view asking() {
             // A record that stops waiting leaves, and a new one comes.
             rt.set_reading(
                 &all,
-                &listing(json!([
+                &listing(&json!([
                     {"id": "a1", "words": "Send the report?", "status": "running", "person": "me"},
                     {"id": "a5", "words": "Delete the draft?", "status": "waiting", "person": "me"},
                 ])),
