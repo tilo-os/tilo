@@ -101,12 +101,14 @@ struct Daemon {
 }
 
 /// The daemon of the device `key`, `cert`, logged in to `workspace` on `server`, keeping what it
-/// keeps under `dir`.
+/// keeps under `dir`. `as_server` has its service act as the device, as a machine that serves
+/// workspaces for its person does, so that `servers add` can hand it one.
 async fn daemon(
     dir: &std::path::Path,
     (key, cert): (&SigningKey, &DeviceCert),
     (server, server_cert): (&tilo_server::daemon::Server, &DeviceCert),
     workspace: &str,
+    as_server: bool,
 ) -> Daemon {
     let login = tilo_device_identity::login::Device {
         site: "https://tilo.test/".into(),
@@ -122,13 +124,12 @@ async fn daemon(
             web: None,
         }),
     };
-    let own = ServiceWorkspaces::open_for_test(
-        dir,
-        key,
-        cert,
-        &tilo_api::daemon::enter::server_of(&login).await.unwrap(),
-    )
-    .await
+    let server_address = tilo_api::daemon::enter::server_of(&login).await.unwrap();
+    let own = if as_server {
+        ServiceWorkspaces::open_for_test_as_server(dir, key, cert, &server_address).await
+    } else {
+        ServiceWorkspaces::open_for_test(dir, key, cert, &server_address).await
+    }
     .expect("the device's own service opens");
     let entered = tilo_test_env::within(
         "the device enters its workspace",
@@ -219,6 +220,7 @@ async fn flow_every_device_manages_every_other() {
         (&laptop_key, &laptop_cert),
         (&server, &server_cert),
         &person,
+        false,
     )
     .await;
     let phone = daemon(
@@ -226,6 +228,7 @@ async fn flow_every_device_manages_every_other() {
         (&phone_key, &phone_cert),
         (&server, &server_cert),
         &person,
+        false,
     )
     .await;
     let updates = Arc::new(Mutex::new(0_u32));
@@ -469,6 +472,7 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
         (&laptop_key, &laptop_cert),
         (&server, &server_cert),
         &person,
+        false,
     )
     .await;
     let phone = daemon(
@@ -476,6 +480,7 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
         (&phone_key, &phone_cert),
         (&server, &server_cert),
         &person,
+        false,
     )
     .await;
     // The laptop is the machine here: its controls govern the server's workspaces, and its
@@ -801,5 +806,237 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
         let _ = daemon.router.shutdown().await;
         daemon.entered.close();
     }
+    server.shutdown().await;
+}
+
+/// A server that stops serving a workspace over the real network path no longer controls that
+/// workspace's machine for its administrators, and the workspace refuses the removed server's
+/// later writes into it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn detaching_a_server_revokes_its_administrators_and_refuses_its_writes() {
+    use tilo_actions::remote::{ActionCallError, ActionProvider as _, Caller, InvokeArgument};
+    use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (carol, _) = tilo_user_identity::UserIdentity::generate("Carol", 1);
+    let (server_key, server_cert) = enrol(&root, "the-server", DeviceCapabilities::member());
+    let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let (_, carol_cert) = enrol(&carol, "Carol", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server has workspaces")
+        .clone();
+    let person = person_workspace_id(&root.verifying_key().to_bytes());
+    if hosted.summary(&person).await.is_err() {
+        hosted
+            .create_workspace("Servers", Some(&person))
+            .await
+            .unwrap();
+    }
+    hosted
+        .enter(&person, &laptop_cert)
+        .await
+        .expect("a device of the person enters their own workspace");
+    let studio = hosted.create("Studio").await.unwrap().workspace;
+    hosted
+        .add_member(
+            &studio,
+            &server_cert,
+            AddMemberRequest {
+                request_id: fresh_id(),
+                user_public_key: carol_cert.user_public_key,
+                place: MemberPlace::Administrator,
+                name: Some(carol_cert.device_label.clone()),
+            },
+        )
+        .await
+        .expect("the owner places Carol");
+    let laptop = daemon(
+        &state.path().join("laptop"),
+        (&laptop_key, &laptop_cert),
+        (&server, &server_cert),
+        &person,
+        true,
+    )
+    .await;
+
+    // The laptop's own line, as its operator hands it over: what `servers add` names.
+    let line = serde_json::to_string(&tilo_server_protocol::web::PageHost {
+        server_cert: laptop_cert.clone(),
+        address: Some(tilo_server_protocol::web::PageHostAddress {
+            endpoint_addr: laptop.own.endpoint().addr(),
+            relay_url: None,
+            web: None,
+        }),
+        origin: None,
+    })
+    .expect("a host line writes as JSON");
+    hosted
+        .add_server(&studio, &line, tilo_peer_state::CopyRole::KeyHolder)
+        .await
+        .expect("the server hands the studio to the laptop");
+    assert!(
+        hosted
+            .keeping_devices(&studio)
+            .await
+            .expect("the studio's keeping devices list")
+            .iter()
+            .any(|holder| holder.device == hex::encode(laptop_cert.device_public_key)),
+        "the laptop keeps the studio"
+    );
+    // `servers add` gave the studio's administrator her grant on the machine, in the machine's
+    // person's own workspace: the grant Carol's control below is decided by.
+    let carol_hex = hex::encode(carol_cert.user_public_key);
+    assert!(
+        hosted
+            .policy_of(&person)
+            .await
+            .is_some_and(|policy| policy.grants.iter().any(|grant| grant.id
+                == tilo_workspace_service::workspaces::server_controls::grant_id(
+                    &laptop_cert.device_public_key,
+                    &carol_hex,
+                ))),
+        "servers add wrote Carol's grant on the laptop"
+    );
+
+    // The machine's controls are the laptop's daemon's, which governs the studio as it is
+    // handed over.
+    let machine = tempfile::tempdir().unwrap();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let helper = root_helper(machine.path(), Arc::clone(&asked));
+    let on_the_machine = OnThisDevice(
+        laptop.tickets.clone().with_controls(Some(
+            tilo_server::operations::Controls::new(hosted.clone(), machine.path().to_path_buf())
+                .waiting(std::time::Duration::from_secs(10)),
+        )),
+    );
+    let caller = Caller::authenticated(carol_cert.user_public_key, carol_cert.device_public_key)
+        .in_workspace(studio.clone());
+    let restart = || tilo_actions::remote::InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_device_identity::login::PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(super::ticket::SERVER, "restart"),
+        },
+        argument: InvokeArgument::Json(serde_json::Map::from_iter([(
+            "service".to_owned(),
+            "tilo-runtime".into(),
+        )])),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let allowed = on_the_machine
+        .invoke(&caller, restart())
+        .await
+        .expect("the machine answers")
+        .expect("servers add gives Carol, an administrator, the machine's controls");
+    assert!(
+        matches!(
+            allowed.status,
+            tilo_actions::remote::ReceiptStatus::Completed { .. }
+        ),
+        "the machine restarted the unit for Carol: {allowed:?}"
+    );
+
+    // A keeping device may say where its copy stands while it serves the workspace. The row is
+    // what a server's own writes into the workspace are; it carries a value the workspace does
+    // not hold yet, so the write is the row's and not a matching repeat.
+    let held = tilo_peer_state::HeldCopy {
+        catching_up_from: [server_cert.device_public_key].into(),
+        ..tilo_peer_state::HeldCopy::default()
+    };
+    let says_where_it_stands = |state: &mut tilo_peer_state::StatePeer| {
+        state
+            .workspace_mut()
+            .report_copy(&laptop_cert, &held, std::time::SystemTime::now())
+    };
+    let mut governed = hosted
+        .state(&studio)
+        .await
+        .expect("the studio is governed here");
+    assert!(
+        says_where_it_stands(&mut governed).is_ok(),
+        "a server named as keeping the studio writes its copy's row"
+    );
+
+    // `servers remove` over the real path: the laptop is reached and told to let the studio go,
+    // and it stops being named among the devices keeping it.
+    let removed = hosted
+        .remove_server(&studio, &hex::encode(laptop_cert.device_public_key))
+        .await
+        .expect("the server stops serving the studio");
+    assert!(removed, "the laptop said it let the studio go");
+    assert!(
+        !hosted
+            .keeping_devices(&studio)
+            .await
+            .expect("the studio's keeping devices list")
+            .iter()
+            .any(|holder| holder.device == hex::encode(laptop_cert.device_public_key)),
+        "the studio no longer names the laptop"
+    );
+
+    // The grant `servers add` wrote is taken back with the serving: Carol's next control is
+    // refused, in words.
+    assert!(
+        !hosted
+            .policy_of(&person)
+            .await
+            .is_some_and(|policy| policy.grants.iter().any(|grant| grant.id
+                == tilo_workspace_service::workspaces::server_controls::grant_id(
+                    &laptop_cert.device_public_key,
+                    &carol_hex,
+                ))),
+        "servers remove took Carol's grant on the laptop back"
+    );
+    let refused = ActionCallError::Refused {
+        reason: "Only the person this server belongs to, and the administrators of the \
+                 workspaces it serves, control it."
+            .into(),
+    };
+    let answer = on_the_machine
+        .invoke(&caller, restart())
+        .await
+        .expect("the machine answers");
+    assert_eq!(
+        answer.err(),
+        Some(refused),
+        "a server that serves the studio no more controls nothing for its administrators"
+    );
+
+    // The removed server's later write into the studio is refused: it left the workspace's
+    // roster with the serving.
+    let mut governed = hosted
+        .state(&studio)
+        .await
+        .expect("the studio is governed here");
+    let later = says_where_it_stands(&mut governed)
+        .expect_err("the studio refuses the removed server's write");
+    assert!(
+        later.contains("absent from governed roster"),
+        "the studio no longer holds the removed server as one of its devices: {later}"
+    );
+
+    helper.abort();
+    let _ = laptop.router.shutdown().await;
+    laptop.entered.close();
     server.shutdown().await;
 }

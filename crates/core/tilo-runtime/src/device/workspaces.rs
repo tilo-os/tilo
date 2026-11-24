@@ -1204,6 +1204,36 @@ impl ServiceWorkspaces {
         cert: &tilo_user_identity::DeviceCert,
         server: &tilo_server_client::ServerAddress,
     ) -> Result<Arc<Self>, String> {
+        Self::open_for_test_as(dir, key, cert, server, None).await
+    }
+
+    /// [`Self::open_for_test`] for a machine that serves workspaces for its person, as a server
+    /// does: it acts as its device, under the device's own key and certificate, so a workspace
+    /// handed to it answers with the device the hand-over reached.
+    pub(crate) async fn open_for_test_as_server(
+        dir: &Path,
+        key: &SigningKey,
+        cert: &tilo_user_identity::DeviceCert,
+        server: &tilo_server_client::ServerAddress,
+    ) -> Result<Arc<Self>, String> {
+        let itself = Some(tilo_workspace_service::service::ServiceIdentity {
+            user_public_key: cert.user_public_key,
+            device_signing_key: key.clone(),
+            device_cert: cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        });
+        Self::open_for_test_as(dir, key, cert, server, itself).await
+    }
+
+    /// [`Self::open_for_test`], with `itself` the identity its service acts as, when it acts as
+    /// its device rather than under a key of its own.
+    async fn open_for_test_as(
+        dir: &Path,
+        key: &SigningKey,
+        cert: &tilo_user_identity::DeviceCert,
+        server: &tilo_server_client::ServerAddress,
+        itself: Option<tilo_workspace_service::service::ServiceIdentity>,
+    ) -> Result<Arc<Self>, String> {
         let endpoint = server
             .bind(Some(key.to_bytes()))
             .await
@@ -1216,7 +1246,7 @@ impl ServiceWorkspaces {
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: None,
             configure: None,
-            itself: None,
+            itself,
         })
         .await
     }

@@ -1111,7 +1111,10 @@ impl Workspaces {
 
     /// Stop having the holder `device` hold `workspace`, as its owners chose:
     /// its address leaves the workspace's holders, and the holder is asked to
-    /// stop ([`UNHOST_WORKSPACE`]) at `addr` when given. A device this one
+    /// stop ([`UNHOST_WORKSPACE`]) at `addr` when given. A device the workspace
+    /// held only to serve it leaves its roster too, so nothing it writes
+    /// reaches the workspace after this: it is admitted there again only as a
+    /// device its person's root certifies afresh. A device this one
     /// reaches hands over what it keeps first: this device takes in every
     /// change of the workspace that device's store keeps and its own lacks,
     /// so none of them goes with it. This device itself goes only once another
@@ -1175,10 +1178,26 @@ impl Workspaces {
         } else {
             None
         };
+        let named = self.names_server(workspace, device).await;
         self.name_host(workspace, |governance, key, now| {
             governance.author_keeping_device_removed(&device, key, now)
         })
         .await?;
+        // A device the workspace held because it was handed it to serve stops being one of its
+        // devices with the serving: what it writes into the workspace from then on is refused,
+        // and it is admitted again only as a device its person's root certifies afresh. A row
+        // that carries an admission, a delegation or a revocation stays, as one the workspace
+        // keeps for its own sake.
+        if named
+            && device != self.inner.host.cert.device_public_key
+            && let Err(error) = self
+                .name_host(workspace, |governance, key, now| {
+                    governance.forget_device(device, key, now)
+                })
+                .await
+        {
+            tracing::warn!(%workspace, host = %hex::encode(device), %error, "a detached server's row was not taken out of the workspace");
+        }
         let _ = self.inner.changes.send(workspace.to_owned());
         // A server that serves the workspace no more controls the machines it ran for its
         // administrators, unless another workspace keeps them there.
