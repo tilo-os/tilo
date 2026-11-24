@@ -162,6 +162,7 @@ export class Gateway {
   #seq = null;
   #session = null;
   #beat = null;
+  #firstBeat = null;
   #acked = true;
   #attempt = 0;
   #stopped = false;
@@ -257,7 +258,9 @@ export class Gateway {
 
   #stopBeat() {
     if (this.#beat !== null) clearInterval(this.#beat);
+    if (this.#firstBeat !== null) clearTimeout(this.#firstBeat);
     this.#beat = null;
+    this.#firstBeat = null;
   }
 
   #beatNow() {
@@ -273,11 +276,12 @@ export class Gateway {
   #startBeat(interval) {
     this.#stopBeat();
     this.#acked = true;
-    const first = setTimeout(() => this.#beatNow(), Math.floor(Math.random() * interval));
-    this.#beat = setInterval(() => {
-      clearTimeout(first);
+    // Discord says to wait some part of the interval before the first beat, then keep its rhythm.
+    this.#firstBeat = setTimeout(() => {
+      this.#firstBeat = null;
       this.#beatNow();
-    }, interval);
+      this.#beat = setInterval(() => this.#beatNow(), interval);
+    }, Math.floor(Math.random() * interval));
   }
 
   #identify() {
