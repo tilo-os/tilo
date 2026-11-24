@@ -154,6 +154,12 @@ impl Installed {
     /// The window with the view state `states` names, drawn with every row: what a person sees
     /// rather than what a scroll would have to reach.
     fn window_showing(&self, states: &[(&str, &str)]) -> ViewInstance {
+        for (state, value) in states {
+            self.host
+                .runtime()
+                .stage_view_state(APP, state, value)
+                .expect("the window's state");
+        }
         let mut window = self
             .host
             .runtime()
@@ -162,9 +168,6 @@ impl Installed {
         window
             .set_lazy_rows(false)
             .expect("the window draws its rows");
-        for (state, value) in states {
-            window.set_view_state(state, Value::text(*value));
-        }
         window.poll_patches().expect("the window answers");
         window
     }

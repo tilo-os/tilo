@@ -37,7 +37,20 @@ fn replica(name: &str, doc: Workspace) -> (Replica, Meta) {
         &[(PLAYBACK_SOURCE, PLAYBACK_IDS), (SOURCE, IDS)],
         Some(access(name)),
     );
+    load_platform(&replica.host);
     (replica, packages.last().unwrap().meta.clone())
+}
+
+/// The platform's packages the client's source names, as the window's host holds them: its
+/// presses reach the session's own actions, served by the device.
+fn load_platform(host: &Host) {
+    for meta in tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
+        .expect("the platform's packages read")
+    {
+        host.runtime()
+            .load_foreign(meta)
+            .expect("the platform package loads");
+    }
 }
 
 const TUBE: &str = "so.tilo.tube";
@@ -820,6 +833,7 @@ struct TubeWindow;
 
 impl Platform for TubeWindow {
     fn load(&self, host: &Host) -> u64 {
+        load_platform(host);
         host.load_builtin(PLAYBACK_SOURCE, PLAYBACK_IDS).unwrap();
         host.load_builtin(SOURCE, IDS).unwrap();
         0
