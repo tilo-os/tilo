@@ -67,6 +67,9 @@ pub struct NavRowFace<'a> {
     pub disclosure: Option<bool>,
     /// Selected (`active`), hovered, pressed.
     pub state: SelectionState,
+    /// How much of its hover the row shows this frame, `0..=1` ([`crate::widget::FaceMotions::hover`]);
+    /// `1`, so a row handed only `hovered` paints its tint whole.
+    pub hover: f32,
     /// Keyboard focus is on this row.
     pub focused: bool,
     /// Trailing actions shown on hover or focus, in order.
@@ -116,6 +119,7 @@ impl<'a> NavRowFace<'a> {
             under_section: false,
             disclosure: None,
             state: SelectionState::default(),
+            hover: 1.0,
             focused: false,
             actions: &[],
             action_hover: None,
@@ -184,6 +188,16 @@ impl<'a> NavRowFace<'a> {
     #[must_use]
     pub fn hovered(mut self, hovered: bool) -> Self {
         self.state.hover = hovered;
+        self.hover = if hovered { 1.0 } else { 0.0 };
+        self
+    }
+
+    /// The share of its hover the row shows this frame, `0..=1`: part way while the pointer's tint
+    /// comes in or goes. Hovered for as long as any of it is drawn.
+    #[must_use]
+    pub fn hover_amount(mut self, amount: f32) -> Self {
+        self.hover = amount.clamp(0.0, 1.0);
+        self.state.hover = self.hover > 0.0;
         self
     }
 
@@ -874,6 +888,18 @@ pub fn paint_nav_row(
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     let ground = colors.surfaces.content;
+    // A hover on its way in or out is drawn as much of the tint as the pointer has brought it:
+    // the fill the row lands on, laid over the ground in one layer at its share.
+    let hover_partial = face.state.hover && face.hover < 1.0;
+    if hover_partial {
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            face.hover,
+            transform,
+            &layout.selection,
+        );
+    }
     paint_row_selection(
         scene,
         transform,
@@ -882,11 +908,18 @@ pub fn paint_nav_row(
         ground,
         theme,
     );
+    if hover_partial {
+        scene.pop_layer();
+    }
     if face.focused {
         paint_focus(scene, transform, theme, layout.selection);
     }
-    let ink = if face.lifted() || face.state.hover || face.unread {
+    let ink = if face.lifted() || face.unread {
         colors.text_primary
+    } else if face.state.hover {
+        // The person's pointer brings the label out of its quiet ink as far as it has brought the
+        // row's tint, so the row arrives in one motion rather than in two.
+        crate::tokens::colors::mix8(colors.text_dim, colors.text_primary, face.hover)
     } else {
         colors.text_dim
     };

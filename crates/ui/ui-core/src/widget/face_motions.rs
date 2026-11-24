@@ -4,8 +4,9 @@
 
 use super::checkbox::{CheckGlyph, CheckMotion, CheckPose};
 use super::toggle::{SwitchMotion, SwitchPose};
+use crate::motion::Presence;
 use crate::time::Instant;
-use crate::tokens::EffectiveMotion;
+use crate::tokens::{EffectiveMotion, MotionSource};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -15,6 +16,7 @@ use std::hash::{Hash, Hasher};
 pub struct FaceMotions {
     switches: RefCell<HashMap<u64, SwitchMotion>>,
     checks: RefCell<HashMap<u64, CheckMotion>>,
+    hovers: RefCell<HashMap<u64, Presence>>,
     painted_moving: Cell<bool>,
 }
 
@@ -59,6 +61,29 @@ impl FaceMotions {
         pose
     }
 
+    /// How much of its hover the control `key` shows this frame: `0` when the pointer is not over
+    /// it, `1` once it has come in, part way while it comes or goes. A row the pointer reaches
+    /// eases its tint in on the theme's control motion rather than switching it on in one frame.
+    #[track_caller]
+    pub fn hover(&self, key: impl Hash, hovered: bool, motion: EffectiveMotion) -> f32 {
+        let now = crate::motion::frame_now();
+        let source = crate::motion::recent_input(now).unwrap_or(MotionSource::Pointer);
+        let mut hovers = self.hovers.borrow_mut();
+        let presence = hovers.entry(key_of(key)).or_insert_with(Presence::closed);
+        presence.show(
+            hovered,
+            crate::motion::ControlChange::SHOW,
+            motion,
+            source,
+            now,
+        );
+        let level = presence.progress(now);
+        let moving = presence.is_moving(now);
+        drop(hovers);
+        self.painted(moving, now);
+        crate::num::f32_of_f64(level)
+    }
+
     fn painted(&self, moving: bool, now: Instant) {
         if moving {
             self.painted_moving.set(true);
@@ -87,6 +112,11 @@ impl FaceMotions {
                 .borrow()
                 .values()
                 .any(|check| check.is_moving(now))
+            || self
+                .hovers
+                .borrow()
+                .values()
+                .any(|hover| hover.is_moving(now))
     }
 }
 
@@ -148,6 +178,50 @@ mod tests {
                 SwitchPose::at_rest(false)
             );
             assert!(!faces.is_moving(at(1_000)), "a key lands");
+        });
+    }
+
+    #[test]
+    fn a_hover_comes_in_and_goes_out_with_the_pointer() {
+        let motion = EffectiveMotion::new(Motion::default(), false);
+        let faces = FaceMotions::default();
+        let t0 = crate::time::now();
+        let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+        with_monotonic_time(t0, || {
+            assert_eq!(faces.hover("row", false, motion), 0.0, "at rest, no tint");
+            crate::motion::note_source(MotionSource::Pointer);
+            assert_eq!(
+                faces.hover("row", true, motion),
+                0.0,
+                "the tint comes in from nothing"
+            );
+        });
+        with_monotonic_time(at(30), || {
+            let level = faces.hover("row", true, motion);
+            assert!(level > 0.0 && level < 1.0, "part way in: {level}");
+            assert!(
+                crate::motion::frames_wanted(at(30)),
+                "a hover on its way asks the motion clock for its frames"
+            );
+        });
+        with_monotonic_time(at(1_000), || {
+            assert_eq!(faces.hover("row", true, motion), 1.0, "the tint arrived");
+            assert!(!faces.is_moving(at(1_000)), "settled: no frames");
+        });
+        with_monotonic_time(at(1_010), || {
+            assert_eq!(
+                faces.hover("row", false, motion),
+                1.0,
+                "the pointer left: the tint goes from where it stood"
+            );
+        });
+        with_monotonic_time(at(1_040), || {
+            let level = faces.hover("row", false, motion);
+            assert!(level > 0.0 && level < 1.0, "part way out: {level}");
+        });
+        with_monotonic_time(at(3_000), || {
+            assert_eq!(faces.hover("row", false, motion), 0.0, "gone");
+            assert!(!faces.is_moving(at(3_000)), "settled: no frames");
         });
     }
 }

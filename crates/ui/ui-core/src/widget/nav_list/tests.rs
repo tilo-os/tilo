@@ -2439,6 +2439,42 @@ fn assert_sidebar_hovers_damage_only_their_rows(content: crate::widget::Element)
     }
 }
 
+/// The pointer's tint comes in over the theme's motion instead of switching on in one frame: the
+/// frame that first draws it asks the host for the next, and the frame past the motion's end shows
+/// the row at rest.
+#[test]
+fn a_hover_comes_in_over_the_theme_motion_and_then_rests() {
+    use crate::time::testing::with_monotonic_time;
+    let items = (0..6)
+        .map(|row| NavItem::new(format!("row-{row}"), format!("Row {row}")))
+        .collect();
+    let list = NavList::new(vec![NavSection::untitled("all", items)]);
+    let mut h = harness(list, Theme::dark());
+    let at = h
+        .root::<NavList>()
+        .row_rect("row-2")
+        .expect("row 2 shown")
+        .center();
+    let t0 = crate::time::now();
+    with_monotonic_time(t0, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        h.dispatch_to_root(&crate::synthetic_input::cursor_moved(at.x, at.y));
+        h.poll_frame().expect("the frame paints");
+        assert!(
+            h.frame_schedule().needs_animation_frame,
+            "the tint is part way in: the row asks the host for the next frame"
+        );
+    });
+    let settled = t0 + crate::time::Duration::from_millis(1_000);
+    with_monotonic_time(settled, || {
+        h.poll_frame().expect("the frame paints");
+        assert!(
+            !h.frame_schedule().needs_animation_frame,
+            "the tint has arrived: the row rests and asks for no more frames"
+        );
+    });
+}
+
 /// A test action taking the gesture's input as its one `value`.
 fn bound<I: serde::Serialize + 'static>() -> tilo_actions::ActionBinding<I> {
     crate::widget::test_value_action_binding(tilo_actions::ParamType::Array)
