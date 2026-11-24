@@ -78,7 +78,7 @@ fn chat(messages: &[Value]) -> crate::tilo::ChatRead {
             {
                 "member": {"person": "u_bo"},
                 "name": "Bo",
-                "avatar": "https://eu1.tilo.sh/peer/v1/avatars/bo",
+                "avatar": "https://eu1.tilo.sh/avatars/bo",
             },
             {"member": {"agent": "x"}, "name": "Discord Scribe"}
         ]
@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
         let send = &plan_post(&guild(), &chat, "m1", &context()).sends[0].op;
         assert_eq!(
             send.avatar_url.as_deref(),
-            Some("https://eu1.tilo.sh/peer/v1/avatars/bo")
+            Some("https://eu1.tilo.sh/avatars/bo")
         );
         assert!(send.avatar_blob.is_none());
     }

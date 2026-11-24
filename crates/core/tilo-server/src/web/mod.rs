@@ -1255,8 +1255,7 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
         && let Some(token) = request
             .uri()
             .path()
-            .strip_prefix(API_PREFIX)
-            .and_then(|route| route.strip_prefix(tilo_server_protocol::public_avatars::ROUTE))
+            .strip_prefix(tilo_server_protocol::public_avatars::ROUTE)
     {
         return avatar(web, token);
     }

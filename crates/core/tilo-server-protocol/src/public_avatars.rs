@@ -6,8 +6,9 @@
 /// The largest avatar published.
 pub const MAX_AVATAR_BYTES: usize = 1024 * 1024;
 
-/// Where a host serves its members' pictures, below
-/// [`crate::web::API_PREFIX`]: `/avatars/<token>`.
+/// Where a host serves its members' pictures, on the host's own listener:
+/// `/avatars/<token>`. Like a published file, the address is the whole name
+/// and carries no version: the token already names one picture of one person.
 pub const ROUTE: &str = "/avatars/";
 
 /// The token a person's picture is served under: a digest of the person and
@@ -30,9 +31,8 @@ pub fn token(root: &[u8; 32], photo: &[u8]) -> String {
 #[must_use]
 pub fn url(origin: &str, root: &[u8; 32], photo: &[u8]) -> String {
     format!(
-        "{}{}{}{}",
+        "{}{}{}",
         origin.trim_end_matches('/'),
-        crate::web::API_PREFIX,
         ROUTE,
         token(root, photo)
     )
@@ -110,7 +110,7 @@ mod tests {
             );
             assert_eq!(
                 url("https://eu1.tilo.sh/", &root, png),
-                format!("https://eu1.tilo.sh/peer/v1/avatars/{name}")
+                format!("https://eu1.tilo.sh/avatars/{name}")
             );
         }
     }

@@ -1487,9 +1487,8 @@ async fn a_persons_picture_is_served_at_a_public_address_until_they_replace_it()
         .unwrap();
 
     let token = tilo_server_protocol::public_avatars::token(&root, &photo);
-    let head = format!(
-        "GET {API_PREFIX}/avatars/{token} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-    );
+    let head =
+        format!("GET /avatars/{token} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     let (addr, serving) = serve_web(Arc::clone(&web)).await;
     let (status, headers, body) = exchange(addr, &head, b"").await;
     assert_eq!(status, 200, "{headers}");
