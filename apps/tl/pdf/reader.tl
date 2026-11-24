@@ -55,10 +55,13 @@ fn pages_said(d: Document) -> Text {
 /// The reader: the pages down the window, the rail beside them, and the review panel with what
 /// people said, the contents and the signing.
 view reader(d: Document) {
-    // What the window is doing: which page it stands on, the zoom in percent, the tool and its
-    // colour, and what it says.
+    // What the window is doing: which page it stands on, the zoom in percent, how the pages fit the
+    // room they have, the tool and its colour, and what it says.
     state page_at: Int = at_page(d)
     state zoom: Float = if d.reading_zoom <= 0.0 { 100.0 } else { d.reading_zoom }
+    // "" for the person's own zoom, "width" or "page" for the pages fitted to the column they
+    // stand in: the fit is the view's, so it is kept while the window shows the document.
+    state fit: Text = ""
     state rail: Bool = true
     state review: Bool = false
     state tab: Int = 0
@@ -75,13 +78,17 @@ view reader(d: Document) {
     state stroke: List<Float> = []
     state finding: Bool = false
     state query: Text = ""
+    // The room the pages area has, from this view's own space: what a whole page is fitted to.
+    // Each page reads the width of the row it stands in for itself.
+    let tall = space.height
+    let rem = space.rem
     ui.NavShell(content_kind: .page, title: meta(d).title) {
         // The window's search is the find in this PDF: what the person searches for is marked
         // on the pages, counted above them and stepped through there.
         on search(words: Text): set(query, words).then(set(finding, words.trim() != ""))
         actions: {
             std.header {
-                reader_head(d, page_at, zoom, rail, review, tool, colour)
+                reader_head(d, page_at, zoom, fit, rail, review, tool, colour)
             }
         }
         content: {
@@ -124,6 +131,9 @@ view reader(d: Document) {
                                                 d,
                                                 p,
                                                 zoom,
+                                                fit,
+                                                tall,
+                                                rem,
                                                 tool,
                                                 colour,
                                                 from,
@@ -162,6 +172,7 @@ view reader_head(
     d: Document,
     page_at: State<Int>,
     zoom: State<Float>,
+    fit: State<Text>,
     rail: State<Bool>,
     review: State<Bool>,
     tool: State<Text>,
@@ -182,19 +193,22 @@ view reader_head(
             }
             ui.ToolbarSeparator()
             ui.ToolbarButton("Zoom out", icon: .zoom_out) {
-                on press: set(zoom, (zoom * 0.8).clamp(25.0, 1600.0))
+                on press: set(fit, "").then(set(zoom, (zoom * 0.8).clamp(25.0, 1600.0)))
             }
             ui.ToolbarButton("Zoom in", icon: .zoom_in) {
-                on press: set(zoom, (zoom * 1.25).clamp(25.0, 1600.0))
+                on press: set(fit, "").then(set(zoom, (zoom * 1.25).clamp(25.0, 1600.0)))
             }
-            ui.ToolbarButton("Fit width", icon: .expand) {
-                on press: set(zoom, 100.0)
+            ui.ToolbarButton("Fit width", icon: .expand, toggled: fit == "width") {
+                on press: set(fit, if fit == "width" { "" } else { "width" })
+            }
+            ui.ToolbarButton("Fit page", icon: .maximize, toggled: fit == "page") {
+                on press: set(fit, if fit == "page" { "" } else { "page" })
             }
             ui.ToolbarButton("{percent}%", icon: .zoom_in) {
                 menu: {
                     for step in zoom_steps() {
-                        ui.MenuItem("{step}%", checked: percent == step) {
-                            on choose: set(zoom, step.to_float())
+                        ui.MenuItem("{step}%", checked: fit == "" and percent == step) {
+                            on choose: set(fit, "").then(set(zoom, step.to_float()))
                         }
                     }
                 }
@@ -270,7 +284,7 @@ view reader_head(
         row(gap: .related, align: .center, padding: .related) {
             ui.Text("Page {page_now} of {page_count}", role: .caption, secondary: true)
             ui.Text("·", role: .caption, secondary: true)
-            ui.Text("{percent}%", role: .caption, secondary: true)
+            ui.Text(zoom_said(fit, percent), role: .caption, secondary: true)
             ui.Text("·", role: .caption, secondary: true)
             ui.Text("{d.source_name}", role: .caption, secondary: true)
             spacer()
@@ -278,9 +292,36 @@ view reader_head(
     }
 }
 
+/// What the zoom stands at, in words: the fit the person chose, else the percent.
+fn zoom_said(fit: Text, percent: Int) -> Text {
+    if fit == "width" { "Fit width" } else if fit == "page" { "Fit page" } else { "{percent}%" }
+}
+
 /// The zoom steps the zoom menu offers, in percent.
 fn zoom_steps() -> List<Int> {
     [50, 75, 100, 125, 150, 200, 400]
+}
+
+/// The zoom, in percent, a page stands at: the person's own, or the one that fits it to the room
+/// it has — its width, or the whole page in the column's height, whichever is smaller.
+fn page_zoom(p: Page, fit: Text, zoom: Float, room: Float, tall: Float) -> Float {
+    if fit == "width" {
+        fitted(room, p.width)
+    } else if fit == "page" {
+        fitted(room, p.width).min(fitted(tall, p.height))
+    } else {
+        zoom
+    }
+}
+
+/// A PDF point in device-independent pixels: 72 to the inch, against the screen's 96.
+fn point() -> Float {
+    4.0 / 3.0
+}
+
+/// The zoom, in percent, at which a page `size` points across stands in `room` pixels.
+fn fitted(room: Float, size: Float) -> Float {
+    if size <= 0.0 { 100.0 } else { (room / (size * point()) * 100.0).clamp(10.0, 1600.0) }
 }
 
 /// The colours a marker comes in.
@@ -358,6 +399,9 @@ view page_sheet(
     d: Document,
     p: Page,
     zoom: State<Float>,
+    fit: Text,
+    tall: Float,
+    rem: Float,
     tool: Text,
     colour: Text,
     from: State<Option<List<Float>>>,
@@ -372,7 +416,10 @@ view page_sheet(
 ) {
     let picture = d.pictures.find(x -> x.page == p)
     let shown = if let held = picture { held.url } else { "" }
-    let width = p.width * zoom * 1dp
+    // The page's own room is the width of the row it stands in; the whole page's is the room the
+    // pages area has, which the reader passes down.
+    let scale = page_zoom(p, fit, zoom, space.width * rem, tall * rem)
+    let width = p.width * point() * (scale / 100.0) * 1dp
     let at = d.pages.index_of(p) ?? 0
     stack(gap: .related) {
         layers(fill) {

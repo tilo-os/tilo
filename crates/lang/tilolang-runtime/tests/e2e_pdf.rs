@@ -11,7 +11,9 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::clipboard::ClipboardHost;
-    use tilolang_runtime::{AmStore, InvokeOutcome, PdfHost, ResourceRef, Runtime, UiNode, Value};
+    use tilolang_runtime::{
+        AmStore, InvokeOutcome, PdfHost, ResourceRef, Runtime, Space, UiNode, Value,
+    };
 
     const SOURCE: &str = concat!(
         include_str!("../../../../apps/tl/pdf/app.tl"),
@@ -548,6 +550,109 @@ mod cases {
             said.contains("The document needs this field filled."),
             "the field the document needs says so:\n{said}"
         );
+    }
+
+    /// The width each page stands at, in pixels, as the engine draws it.
+    fn page_widths(window: &tilolang_runtime::ViewInstance) -> Vec<f64> {
+        of_kind(window.tree(), "ui.Image")
+            .into_iter()
+            .map(|image| match image.props.get("max.dp") {
+                Some(Value::Float(width)) => *width,
+                other => panic!("a page names its width in pixels: {other:?}"),
+            })
+            .collect()
+    }
+
+    /// Press the toolbar control `label`.
+    fn press(window: &mut tilolang_runtime::ViewInstance, label: &str) {
+        let control = of_kind(window.tree(), "ui.ToolbarButton")
+            .into_iter()
+            .find(|button| {
+                matches!(button.props.get("label"), Some(Value::Text(said)) if said == label)
+            })
+            .unwrap_or_else(|| panic!("no {label} control in\n{}", dump(window.tree())));
+        window.fire(&control.key.clone(), "press").unwrap();
+        window.poll_patches().unwrap();
+    }
+
+    #[test]
+    fn a_page_fits_the_width_it_is_given_and_stands_whole_in_the_room_it_has() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        // Both pages drawn, as the reader's own trigger draws them: a page with no picture stands
+        // as its waiting state.
+        for at in 0..2 {
+            let page = reader.page(&doc, at);
+            reader.call(
+                "show_page",
+                vec![Value::resource(&doc), Value::resource(&page), Value::Int(800)],
+            );
+        }
+        let mut window = reader.window("reader", vec![Value::resource(&doc)]);
+        // The pages are rows built as they scroll into view: a test reads them all.
+        window.set_lazy_rows(false).unwrap();
+        window.poll_patches().unwrap();
+        // The reader's own view reads the room the pages area has, and each page's row the width
+        // of the row it stands in: no other view asks for its size.
+        let readers = window.space_readers();
+        assert_eq!(readers.len(), 2, "the two rows of pages: {readers:?}");
+        let rem = 16.0;
+
+        // Fit width: every page fills the width of the row it stands in, at any window size.
+        press(&mut window, "Fit width");
+        for room in [30.0_f64, 50.0] {
+            window.set_space("", Space::from_rem(room, 40.0));
+            for key in &readers {
+                window.set_space(key, Space::from_rem(room, room));
+            }
+            window.poll_patches().unwrap();
+            let widths = page_widths(&window);
+            assert_eq!(widths.len(), 2, "both pages are drawn");
+            for width in widths {
+                assert!(
+                    (width - room * rem).abs() < 0.5,
+                    "a page fills the {room} rem it is given: {width} px at {rem} px a rem"
+                );
+            }
+        }
+
+        // Fit page: the whole page stands in the room the column has, at two window sizes.
+        press(&mut window, "Fit page");
+        for (room, tall) in [(30.0_f64, 30.0_f64), (50.0, 20.0)] {
+            window.set_space("", Space::from_rem(room, tall));
+            for key in &readers {
+                window.set_space(key, Space::from_rem(room, room));
+            }
+            window.poll_patches().unwrap();
+            let widths = page_widths(&window);
+            assert_eq!(widths.len(), 2);
+            // A page is 612 by 792 points: its height is its width times 792/612.
+            let fits = (tall * rem * 612.0 / 792.0).min(room * rem);
+            for width in widths {
+                assert!(
+                    (width - fits).abs() < 0.5,
+                    "the whole page stands in {room} by {tall} rem: {width} px, not {fits}"
+                );
+                assert!(
+                    width * 792.0 / 612.0 <= tall * rem + 0.5,
+                    "the page is no taller than the column: {width} px wide"
+                );
+            }
+        }
+
+        // The person's own zoom is back the moment they step it: the page is the zoom's size,
+        // whatever room it is in.
+        press(&mut window, "Fit page");
+        press(&mut window, "Zoom in");
+        let widths = page_widths(&window);
+        // A page is 612 by 792 points, and a point is four thirds of a pixel.
+        let zoomed = 612.0 * (4.0 / 3.0) * 1.25;
+        for width in widths {
+            assert!(
+                (width - zoomed).abs() < 0.5,
+                "the page is its own zoom again: {width} px, not {zoomed}"
+            );
+        }
     }
 
     #[test]
