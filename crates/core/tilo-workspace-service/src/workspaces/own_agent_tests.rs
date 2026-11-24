@@ -322,7 +322,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         .unwrap()
         .expect("Chat is built in");
     let as_bea = crate::tl_records::member(tilo_actions::MemberId::person(bea_person.clone()));
-    beas.with_tl_record(&workspace, &chat, as_bea, |opened| {
+    beas.with_tl_record(&workspace, &chat, (as_bea, &bea_person), |opened| {
         opened.open_root().map(drop)
     })
     .await

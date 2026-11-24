@@ -338,9 +338,9 @@ pub struct Record {
     workspaces: crate::workspaces::Workspaces,
     workspace: String,
     app: String,
-    /// The person a record opened to be read reads it as: what of it they may read, and
-    /// nothing else. `None` for a record a host changes, which reads as this device.
-    reader: Option<String>,
+    /// The person the record reads as: what of it they may read, and nothing else. Every
+    /// record names one, so nothing reads as the person whose device serves it by default.
+    reader: String,
     /// The reactor a command waits on. A record without one only reads, waiting as a search
     /// does.
     runtime: Option<tokio::runtime::Handle>,
@@ -367,13 +367,13 @@ impl Record {
     /// `command` carried out by the workspace service, a refusal kept as [`Self::refused`].
     async fn carry(
         workspaces: crate::workspaces::Workspaces,
-        (workspace, app, reader): (String, String, Option<String>),
+        (workspace, app, reader): (String, String, String),
         command: Command,
         refused: Arc<std::sync::Mutex<Option<String>>>,
     ) -> Result<Reply, String> {
         use crate::workspaces::RecordFailure;
         workspaces
-            .record_command(&workspace, &app, reader.as_deref(), command)
+            .record_command(&workspace, &app, &reader, command)
             .await
             .map_err(|failure| match failure {
                 RecordFailure::Refused(why) => {
@@ -1111,19 +1111,19 @@ pub struct RecordCall<'a> {
 }
 
 impl crate::workspaces::Workspaces {
-    /// `app`'s record of `workspace`, as this device's workspace service holds it, its commands
-    /// waiting on the reactor this is called on.
+    /// `app`'s record of `workspace`, as this device's workspace service holds it, read as
+    /// `reader` reads it, its commands waiting on the reactor this is called on.
     ///
     /// # Errors
     /// This is called outside a reactor.
-    pub fn tl_record(&self, workspace: &str, app: &str) -> Result<Record, String> {
+    pub fn tl_record(&self, workspace: &str, app: &str, reader: &str) -> Result<Record, String> {
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|error| format!("{app}'s record is read on a reactor: {error}"))?;
         Ok(Record {
             workspaces: self.clone(),
             workspace: workspace.to_owned(),
             app: app.to_owned(),
-            reader: None,
+            reader: reader.to_owned(),
             runtime: Some(runtime),
             refused: Arc::default(),
         })
@@ -1241,15 +1241,13 @@ impl crate::workspaces::Workspaces {
                     code: "runs_elsewhere".into(),
                     reason: runs_elsewhere(app),
                 })?;
+        // The record reads only what the person the caller acts for may read, a write's reads too.
+        let person = crate::workspaces::person_reading(caller);
         let record = if read {
-            // A read reads only what the person the caller acts for may read.
-            let person = viewer
-                .member_id()
-                .and_then(tilo_actions::MemberId::person_id)
-                .ok_or_else(|| ApiError::Failed("a record is read as a person".to_owned()))?;
-            self.record_to_read(workspace, app, person)
+            self.record_to_read(workspace, app, &person)
         } else {
-            self.tl_record(workspace, app).map_err(ApiError::Failed)?
+            self.tl_record(workspace, app, &person)
+                .map_err(ApiError::Failed)?
         };
         let policy = self
             .policy_of(workspace)
@@ -1280,17 +1278,17 @@ impl crate::workspaces::Workspaces {
         .map_err(|error| ApiError::Failed(error.to_string()))?
     }
 
-    /// The changes of `route`'s record of `workspace`, each version of its resources as its
-    /// history lists it, read through its app's built-in package ([`Opened::changes`]). `None`
-    /// for an app this build runs no package of, or a record that does not read now. Nothing is
-    /// written.
+    /// The changes of `route`'s record of `workspace` that `person` may read, each version of its
+    /// resources as its history lists it, read through its app's built-in package
+    /// ([`Opened::changes`]). `None` for an app this build runs no package of, or a record that
+    /// does not read now. Nothing is written.
     pub fn record_changes(
         &self,
         workspace: &str,
         route: &tilo_peer_state::document_frame::DocumentRoute,
+        person: &str,
     ) -> Option<Vec<Json>> {
-        let owner = self.policy_now(workspace)?.owner?;
-        let opened = self.opened_to_read(workspace, route, &owner)?;
+        let opened = self.opened_to_read(workspace, route, person)?;
         match opened.changes() {
             Ok(changes) => Some(changes),
             Err(error) => {
@@ -1307,7 +1305,7 @@ impl crate::workspaces::Workspaces {
             workspaces: self.clone(),
             workspace: workspace.to_owned(),
             app: app.to_owned(),
-            reader: Some(person.to_owned()),
+            reader: person.to_owned(),
             runtime: None,
             refused: Arc::default(),
         }
@@ -1341,7 +1339,8 @@ impl crate::workspaces::Workspaces {
         }
     }
 
-    /// Open `packages`' app's record of `workspace` for `viewer` and run `work` on it: what
+    /// Open `packages`' app's record of `workspace` for `viewer`, reading what `reader` may read,
+    /// and run `work` on it: what
     /// `work` answered. Each write `work` makes reaches the workspace as it is made, so a write
     /// the workspace refuses fails `work` and leaves what came before it standing.
     ///
@@ -1351,10 +1350,10 @@ impl crate::workspaces::Workspaces {
         &self,
         workspace: &str,
         packages: &Packages,
-        viewer: Actor,
+        (viewer, reader): (Actor, &str),
         work: impl FnOnce(&mut Opened) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
-        let record = self.tl_record(workspace, packages.app())?;
+        let record = self.tl_record(workspace, packages.app(), reader)?;
         let packages = packages.clone();
         let policy = self.policy_of(workspace).await.map(std::sync::Arc::new);
         tokio::task::spawn_blocking(move || {

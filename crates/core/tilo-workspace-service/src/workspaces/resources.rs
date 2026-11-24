@@ -1400,9 +1400,7 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         if !writing {
-            let reader = context
-                .viewer()
-                .map_or_else(|| hex::encode(device.cert.user_public_key), viewer_reader);
+            let reader = person_reading(context.reader());
             return self.resource_read(&state, &reader, &command).await;
         }
         let governed = state.lock_owned().await;
@@ -1415,8 +1413,8 @@ impl Workspaces {
 
     /// Carry out `command` on `app`'s record of `workspace` for this device's own roles (the agent
     /// engine writing a reply, a record served where no window of its app is open), as the
-    /// device this service signs its own writes as: a read answers what `reader` may read (this
-    /// device's own person when it names nobody), and each write is stamped with the invoker the command names before it reaches the
+    /// device this service signs its own writes as: a read answers what `reader` may read, and each
+    /// write is stamped with the invoker the command names before it reaches the
     /// workspace ([`crate::tl_records`]).
     ///
     /// # Errors
@@ -1427,7 +1425,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         app: &str,
-        reader: Option<&str>,
+        reader: &str,
         command: tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, RecordFailure> {
         let device = self.signing_device();
@@ -1436,11 +1434,8 @@ impl Workspaces {
             .await
             .map_err(|error| RecordFailure::Failed(error.to_string()))?;
         if !command.writes() {
-            // Read as the person the record was opened for, else as this device's own.
-            let reader =
-                reader.map_or_else(|| hex::encode(device.cert.user_public_key), str::to_owned);
             return self
-                .resource_read(&state, &reader, &command)
+                .resource_read(&state, reader, &command)
                 .await
                 .map_err(RecordFailure::Failed);
         }
@@ -1694,8 +1689,7 @@ impl Workspaces {
         context: &crate::apps::services::ResourceRequestContext,
         query: tilo_resource_store::Query,
     ) -> Result<tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page>, String> {
-        let device = hex::encode(self.member_identity()?.cert.user_public_key);
-        let reader = context.viewer().map_or(device, viewer_reader);
+        let reader = person_reading(context.reader());
         let state = self
             .workspace(context.workspace_id())
             .await
@@ -1761,11 +1755,11 @@ fn stamp_resource_invoker(
     device.1.clone_into(&mut stamp.device_name);
 }
 
-/// Who a view's caller reads as: a member as the person they are or act for, and a visitor, who
+/// Who a caller reads records as: a member as the person they are or act for, and a visitor, who
 /// is in no resource's reader set, as nobody ([`may_read`]).
 #[cfg(feature = "apps")]
-fn viewer_reader(viewer: &tilo_actions::remote::Caller) -> String {
-    let acting = viewer.acting();
+pub(crate) fn person_reading(caller: &tilo_actions::remote::Caller) -> String {
+    let acting = caller.acting();
     acting
         .by
         .member_id()

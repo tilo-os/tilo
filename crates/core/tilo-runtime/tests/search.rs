@@ -190,7 +190,7 @@ fn a_task_no_window_wrote_is_found_from_the_store_and_lost_once_deleted() {
         // Tasks runs, so nothing publishes it to search but the daemon reading the store.
         let who = person.clone();
         let (id, ty) = workspaces
-            .with_tl_record(&workspace, &tasks, person.clone(), move |opened| {
+            .with_tl_record(&workspace, &tasks, (person.clone(), &host.person()), move |opened| {
                 opened.open_root()?;
                 let made = opened.invoke(
                     &who,
@@ -228,7 +228,7 @@ fn a_task_no_window_wrote_is_found_from_the_store_and_lost_once_deleted() {
 
         let who = person.clone();
         workspaces
-            .with_tl_record(&workspace, &tasks, person, move |opened| {
+            .with_tl_record(&workspace, &tasks, (person, &host.person()), move |opened| {
                 let task = ResourceRef::parse_id(&id, ty).ok_or("the task's id parses")?;
                 opened
                     .invoke(&who, (TASKS, "remove"), vec![Value::resource(&task)], None)
@@ -305,7 +305,7 @@ fn a_conversation_sealed_to_its_people_is_found_by_them_alone() {
         // a channel's message, and a message the person writes to themselves.
         let who = person.clone();
         workspaces
-            .with_tl_record(&workspace, &chat, person, move |opened| {
+            .with_tl_record(&workspace, &chat, (person, &host.person()), move |opened| {
                 let all = Value::resource(&opened.open_root()?);
                 let rich = |text: &str| Value::Rich(RichValue::from_text(text));
                 let general = opened.invoke(

@@ -205,7 +205,7 @@ impl BuiltInRecords {
         }
         let viewer = super::member(tilo_actions::MemberId::person(person.to_owned()));
         self.workspaces
-            .with_tl_record(workspace, &packages, viewer, move |opened| {
+            .with_tl_record(workspace, &packages, (viewer, person), move |opened| {
                 opened
                     .host()
                     .root_of(app)
@@ -488,15 +488,16 @@ mod tests {
         }
     }
 
-    /// The versions of the record's resources `write_to` made, as its history lists them.
-    fn written(workspaces: &Workspaces, workspace: &str) -> Vec<serde_json::Value> {
+    /// The versions of the record's resources `write_to` made that `person` may read, as its
+    /// history lists them.
+    fn written(workspaces: &Workspaces, workspace: &str, person: &str) -> Vec<serde_json::Value> {
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
             cluster_id: workspace.to_owned(),
             document: String::new(),
         };
         workspaces
-            .record_changes(workspace, &route)
+            .record_changes(workspace, &route, person)
             .unwrap_or_default()
             .into_iter()
             .filter(|version| {
@@ -599,7 +600,7 @@ mod tests {
             "an agent outside its delegation writes nothing: {refused:?}"
         );
         assert!(
-            written(&workspaces, &workspace).is_empty(),
+            written(&workspaces, &workspace, &person).is_empty(),
             "nothing of the refused write reaches the store"
         );
         assert!(
@@ -619,13 +620,13 @@ mod tests {
         run(&workspaces, &delegated, request)
             .await
             .expect("an agent within its delegation writes");
-        let versions = written(&workspaces, &workspace);
+        let versions = written(&workspaces, &workspace, &person);
         assert!(!versions.is_empty(), "the write reaches the store");
         let agent =
-            serde_json::to_value(super::super::member(tilo_actions::MemberId::agent("scout")))
+            serde_json::to_value(crate::tl_records::member(tilo_actions::MemberId::agent("scout")))
                 .unwrap();
         let device_person =
-            serde_json::to_value(super::super::member(tilo_actions::MemberId::person(person)))
+            serde_json::to_value(crate::tl_records::member(tilo_actions::MemberId::person(person)))
                 .unwrap();
         for version in &versions {
             assert_eq!(
@@ -706,6 +707,83 @@ mod tests {
         assert!(
             format!("{found:?}").contains("4711"),
             "search finds it for the conversation's own person"
+        );
+        let page = |person: &str| {
+            let page = workspaces
+                .record_page(
+                    &workspace,
+                    &records.route(&workspace),
+                    person,
+                    &tilo_actions::remote::CatalogueQuery::default(),
+                )
+                .expect("the record's page reads");
+            serde_json::to_string(&page).unwrap()
+        };
+        assert!(
+            !page(&cy_person).contains("4711"),
+            "a page of the record shows nothing of it to a member outside the conversation"
+        );
+        assert!(
+            page(&ada_person).contains("4711"),
+            "a page of the record shows it to the conversation's own person"
+        );
+        server.shutdown().await;
+    }
+
+    /// Search over Tasks, read with no window of it open, finds a workspace's task for its
+    /// members and nothing for a person who is not one: the record reads as the person searching,
+    /// never as the person whose device serves it.
+    #[tokio::test]
+    async fn search_finds_nothing_of_another_apps_record_for_a_person_outside_the_workspace() {
+        use crate::tl_records::runtime::Value;
+        const TASKS: &str = "so.tilo.tasks";
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
+        let workspace = workspaces.create("Team").await.unwrap().workspace;
+        let ada_person = hex::encode(owner.user_public_key);
+        let tasks = crate::tl_records::built_in(TASKS)
+            .unwrap()
+            .expect("Tasks is built in");
+        let ada = crate::tl_records::member(tilo_actions::MemberId::person(ada_person.clone()));
+        let who = ada.clone();
+        workspaces
+            .with_tl_record(&workspace, &tasks, (ada, &ada_person), move |opened| {
+                opened.open_root()?;
+                opened
+                    .invoke(
+                        &who,
+                        (TASKS, "new_tasks"),
+                        vec![
+                            Value::List(vec![Value::Text("Quokka census".to_owned())]),
+                            Value::Opt(None),
+                        ],
+                        None,
+                    )
+                    .map(drop)
+            })
+            .await
+            .expect("Ada writes a task");
+
+        let found = |person: &str| {
+            let found = workspaces
+                .record_entries(&workspace, TASKS, None, person)
+                .expect("search reads Tasks' record");
+            format!("{found:?}")
+        };
+        assert!(
+            found(&ada_person).contains("Quokka census"),
+            "search finds the task for a member"
+        );
+        let stranger = hex::encode(
+            ed25519_dalek::SigningKey::from_bytes(&[5; 32])
+                .verifying_key()
+                .to_bytes(),
+        );
+        assert!(
+            !found(&stranger).contains("Quokka census"),
+            "search finds nothing of it for a person outside the workspace"
         );
         server.shutdown().await;
     }

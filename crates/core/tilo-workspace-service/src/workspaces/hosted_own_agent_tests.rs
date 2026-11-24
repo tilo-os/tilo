@@ -359,9 +359,9 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         let chat = crate::tl_records::built_in(CHAT)
             .unwrap()
             .expect("Chat is built in");
-        let as_bea = crate::tl_records::member(tilo_actions::MemberId::person(person));
+        let as_bea = crate::tl_records::member(tilo_actions::MemberId::person(person.clone()));
         workspaces
-            .with_tl_record(&workspace, &chat, as_bea, |opened| {
+            .with_tl_record(&workspace, &chat, (as_bea, &person), |opened| {
                 opened.open_root().map(drop)
             })
             .await

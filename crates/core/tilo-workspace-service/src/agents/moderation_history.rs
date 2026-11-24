@@ -148,15 +148,17 @@ impl TurnHistory {
         }
     }
 
-    /// The versions of `app`'s record, oldest first, read as the workspace's owner.
-    async fn versions(&self, app: &str) -> Result<Vec<Value>, ActionCallError> {
+    /// The versions of `app`'s record, oldest first, read as the person `caller` acts for: an
+    /// agent sees no more of the record's history than its person may read.
+    async fn versions(&self, caller: &Caller, app: &str) -> Result<Vec<Value>, ActionCallError> {
+        let reader = crate::workspaces::person_reading(caller);
         let route = DocumentRoute {
             app_id: app.to_owned(),
             cluster_id: self.workspace.clone(),
             document: String::new(),
         };
         let (workspaces, workspace) = (self.workspaces.clone(), self.workspace.clone());
-        tokio::task::spawn_blocking(move || workspaces.record_changes(&workspace, &route))
+        tokio::task::spawn_blocking(move || workspaces.record_changes(&workspace, &route, &reader))
             .await
             .map_err(|error| unavailable(error.to_string()))?
             .ok_or_else(|| unavailable("this app's record does not read here"))
@@ -178,7 +180,7 @@ impl TurnHistory {
         self.admitted(caller, &app, ACTIVITY, ActionKind::Read)
             .await?;
         let mut mine: Vec<Value> = self
-            .versions(&app)
+            .versions(caller, &app)
             .await?
             .into_iter()
             .filter(|version| writes(version, &person))
@@ -221,7 +223,7 @@ impl TurnHistory {
             .ok_or(ActionCallError::NotPermitted)?
             .to_owned();
         let mut invocations: Vec<String> = Vec::new();
-        for version in self.versions(&app).await? {
+        for version in self.versions(caller, &app).await? {
             let change = version
                 .get("change")
                 .and_then(Value::as_str)
@@ -250,9 +252,11 @@ impl TurnHistory {
             title: String::new(),
         };
         let actor = Actor::Member(MemberId::agent(agent));
+        // The agent reads what the person it works for may read, never the moderated person.
+        let reader = crate::workspaces::person_reading(caller);
         let undone = self
             .workspaces
-            .with_tl_record(&self.workspace, &packages, actor.clone(), move |opened| {
+            .with_tl_record(&self.workspace, &packages, (actor.clone(), &reader), move |opened| {
                 let store = opened.host().store();
                 store.set_run(Some(run.clone()));
                 let mut undone = 0_u32;

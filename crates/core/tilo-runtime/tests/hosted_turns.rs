@@ -100,7 +100,7 @@ async fn read_root(host: &Host, workspace: &str, person: &str) -> Value {
     let reader = viewer.clone();
     host.daemon()
         .workspaces()
-        .with_tl_record(workspace, &packages, viewer, move |opened| {
+        .with_tl_record(workspace, &packages, (viewer, person), move |opened| {
             opened
                 .host()
                 .answer_read(&json!({"item": CONVERSATIONS}), &reader)

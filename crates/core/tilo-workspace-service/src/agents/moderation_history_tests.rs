@@ -327,7 +327,7 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     post(&workspaces, &workspace, &cert, "a spam offer").await;
     post(&workspaces, &workspace, &cert, "and another").await;
     let before = workspaces
-        .record_changes(&workspace, &route(&workspace))
+        .record_changes(&workspace, &route(&workspace), &owner)
         .unwrap();
     let taken = changes_of(&before, &owner);
     assert!(
@@ -382,7 +382,7 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
 
     // The undo took exactly those back, as one run.
     let after = workspaces
-        .record_changes(&workspace, &route(&workspace))
+        .record_changes(&workspace, &route(&workspace), &owner)
         .unwrap();
     let undone: Vec<&Value> = after
         .iter()
@@ -466,7 +466,7 @@ async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
         "the turn is told it may not: {shown}"
     );
     let after = workspaces
-        .record_changes(&workspace, &route(&workspace))
+        .record_changes(&workspace, &route(&workspace), &owner)
         .unwrap();
     assert!(
         !after.iter().any(|version| version["action"]

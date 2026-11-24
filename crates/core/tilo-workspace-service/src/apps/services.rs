@@ -751,6 +751,13 @@ impl ResourceRequestContext {
         self.opened_for.as_ref()
     }
 
+    /// The caller this route reads as: the one its view was opened for, else the caller it
+    /// serves. Never the person whose device serves it, unless that is who called.
+    #[must_use]
+    pub fn reader(&self) -> &tilo_actions::remote::Caller {
+        self.opened_for.as_ref().unwrap_or(&self.caller)
+    }
+
     /// The context, with the invocations `serving` the workspace service delivered to its app and is
     /// waiting on, each with who invoked it.
     /// A route's context as the broker certifies it, for a test that stands in for the broker.

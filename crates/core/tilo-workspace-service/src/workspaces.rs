@@ -193,6 +193,8 @@ mod record_authority;
 mod resources;
 #[cfg(feature = "agents")]
 pub use resources::RecordFailure;
+#[cfg(feature = "apps")]
+pub(crate) use resources::person_reading;
 mod revocations;
 pub use own::OwnWorkspaceOffer;
 pub(crate) mod sealed_documents;
