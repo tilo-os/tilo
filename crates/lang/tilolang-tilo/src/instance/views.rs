@@ -194,6 +194,9 @@ impl Instance {
             target: wire::resource(target),
             tree,
             front,
+            // The facts page shows the system's words for a resource, never one of the app's
+            // views.
+            capture_protected: false,
         });
     }
 
@@ -325,11 +328,13 @@ impl Instance {
         // The item the window draws its page for, when its view lists it there.
         view.in_place = in_place_of(view.view.borrow().tree());
         let target = wire::resource(&view.target);
+        let capture_protected = view.view.borrow().capture_protected();
         self.out.push(ToUi::Open {
             level,
             target,
             tree,
             front,
+            capture_protected,
         });
         self.track_lists(level);
         self.send_bound(level);
@@ -451,6 +456,7 @@ impl Instance {
             target,
             tree: gone_page(&words),
             front: None,
+            capture_protected: false,
         });
     }
 

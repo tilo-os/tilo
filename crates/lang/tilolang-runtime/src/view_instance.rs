@@ -215,6 +215,21 @@ impl ViewInstance {
         &self.live.window
     }
 
+    /// Whether the view it shows declares `protect capture`: wherever it is shown, a capture or a
+    /// stream leaves it out.
+    #[must_use]
+    pub fn capture_protected(&self) -> bool {
+        let Some(root) = self.live.bound(crate::live::ROOT) else {
+            return false;
+        };
+        let Some(package) = self.core.registry.borrow().view_package(&root.target.view) else {
+            return false;
+        };
+        package
+            .view(&root.target.view)
+            .is_some_and(|view| view.capture_protected)
+    }
+
     /// The person looking.
     pub fn viewer(&self) -> &Actor {
         &self.live.viewer

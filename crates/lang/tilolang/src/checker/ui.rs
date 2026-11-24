@@ -1307,6 +1307,12 @@ impl Checker<'_> {
             self.err("E061", span, format!("`{}` is {} {}, not a view or a UI primitive; an action goes in an event: `on: {}(...)`", v.name, super::expr::article(v.kind.word()), v.kind.word(), v.name));
             return self.dead_node();
         }
+        // A view showing a view a capture leaves out is part of a frame a capture leaves out.
+        self.view_edges
+            .push((self.st.view_id.clone(), v.id.clone()));
+        if v.capture_protected {
+            self.protected.insert(v.id.clone());
+        }
         if c.block.is_some() {
             self.err(
                 "E063",

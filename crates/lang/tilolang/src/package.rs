@@ -486,6 +486,7 @@ fn row_views(
             presents: None,
             row_of: Some(v.owner.clone()),
             show: None,
+            capture_protected: ir.capture_protected.contains(&v.id),
         })
         .collect()
 }
@@ -828,6 +829,7 @@ fn build_meta(
                         presents: Some(c.id.clone()),
                         row_of: None,
                         show: None,
+                        capture_protected: ir.capture_protected.contains(&v.id),
                     });
                 }
             }
@@ -868,6 +870,7 @@ fn build_meta(
                     presents: None,
                     row_of: None,
                     show: show_of(shows, &c.id, &c.name, app),
+                    capture_protected: ir.capture_protected.contains(&c.id),
                 });
             }
             Item::Fn(f) => {

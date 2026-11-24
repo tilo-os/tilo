@@ -557,6 +557,7 @@ mod tests {
             presents: None,
             row_of: None,
             show: None,
+            capture_protected: false,
         });
         meta
     }

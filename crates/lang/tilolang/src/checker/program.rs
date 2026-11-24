@@ -47,6 +47,8 @@ pub fn check_program(
         at_event: Vec::new(),
         shows: Vec::new(),
         words: Vec::new(),
+        protected: BTreeSet::new(),
+        view_edges: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
         at: None,
@@ -99,6 +101,7 @@ pub fn check_program(
             at_event: Vec::new(),
             shows: Vec::new(),
             words: Vec::new(),
+            capture_protected: Vec::new(),
         },
         lets,
     }

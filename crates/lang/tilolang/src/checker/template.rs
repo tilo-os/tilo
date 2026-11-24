@@ -446,6 +446,15 @@ impl Checker<'_> {
     ) -> LocalId {
         let span = c.call.span;
         let view = &t.decl;
+        // A template that shows a secret or a code is part of every view it expands in, so each
+        // of those is left out of a capture too.
+        if view
+            .protect
+            .iter()
+            .any(|protect| protect.what.name == "capture")
+        {
+            self.protected.insert(self.st.view_id.clone());
+        }
         let itself = (t.ns.clone(), view.name.name.clone());
         if self.st.expanding.contains(&itself) {
             self.err(

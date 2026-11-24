@@ -163,6 +163,9 @@ pub struct Module {
     /// action to apply.
     pub shows: Vec<ViewShow>,
     pub words: Vec<crate::meta::WordMeta>,
+    /// The views a capture or a stream leaves out, by id: those that declare `protect capture`,
+    /// those a protected template expanded in, and those showing one of either.
+    pub capture_protected: Vec<String>,
 }
 
 /// An argument of an action a view applies that computes from view state (`set(open, not open)`),

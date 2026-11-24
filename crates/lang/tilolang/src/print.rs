@@ -1179,6 +1179,11 @@ impl Printer<'_> {
                     .map(|name| format!(" window {}", quote(name)))
                     .unwrap_or_default();
                 self.head(&lead, &v.params, &window, &[], " {", param_text);
+                self.level += 1;
+                for protect in &v.protect {
+                    self.line(&format!("protect {}", protect.what.name));
+                }
+                self.level -= 1;
                 self.ui_body(&v.body);
                 self.line("}");
             }

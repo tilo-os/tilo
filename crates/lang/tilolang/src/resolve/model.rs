@@ -202,6 +202,9 @@ pub struct Callable {
     /// A view the package does not offer: an action's presentation view, a loop's row view. Only a
     /// `template view` of the same package may call it.
     pub private: bool,
+    /// A view that declares `protect capture`: a capture or a stream leaves it out wherever it is
+    /// shown.
+    pub capture_protected: bool,
 }
 
 /// What a button or a menu shows for an action, from its declaration.

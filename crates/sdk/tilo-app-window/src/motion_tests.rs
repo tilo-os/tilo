@@ -38,7 +38,8 @@ impl Meter {
             target,
             tree,
             front: None,
-        };
+        
+            capture_protected: false,};
         app.send(wire::encode_batch(&[open]).expect("encodes"))
             .expect("sends");
         let window = Box::new(AppWindow::new(Box::new(end), Vec::new()));

@@ -11,6 +11,7 @@ mod actor;
 mod agent;
 mod blocks;
 mod calendar_origins;
+mod capture;
 mod common;
 mod components;
 mod coverage;

@@ -458,25 +458,28 @@ impl Env {
                 present: Presentation::default(),
                 scenario: false,
                 private: true,
+                capture_protected: v.capture_protected,
             });
         }
-        let mut add = |kind, name: &str, id: &str, params, result, class, uses, present| {
-            self.callables.push(Callable {
-                kind,
-                name: name.to_string(),
-                id: id.to_string(),
-                app: app.clone(),
-                own: false,
-                func: None,
-                params,
-                result,
-                class,
-                uses,
-                present,
-                scenario: false,
-                private: false,
-            });
-        };
+        let mut add =
+            |kind, name: &str, id: &str, params, result, class, uses, present, capture_protected| {
+                self.callables.push(Callable {
+                    kind,
+                    name: name.to_string(),
+                    id: id.to_string(),
+                    app: app.clone(),
+                    own: false,
+                    func: None,
+                    params,
+                    result,
+                    class,
+                    uses,
+                    present,
+                    scenario: false,
+                    private: false,
+                    capture_protected,
+                });
+            };
         for a in meta.callable_actions() {
             let present = Presentation {
                 label: if a.label.is_empty() {
@@ -509,6 +512,7 @@ impl Env {
                 Some(a.class),
                 effects::declared(&a.uses),
                 present,
+                false,
             );
         }
         for v in meta.offered_views() {
@@ -521,6 +525,7 @@ impl Env {
                 None,
                 BTreeSet::new(),
                 Presentation::default(),
+                v.capture_protected,
             );
         }
         // The views a package does not offer — an action's presentation view, a loop's row view —
@@ -547,6 +552,7 @@ impl Env {
                 None,
                 BTreeSet::new(),
                 Presentation::default(),
+                false,
             );
         }
     }
@@ -1850,6 +1856,13 @@ impl Resolver<'_> {
                 present,
                 scenario: false,
                 private: false,
+                capture_protected: matches!(
+                    item,
+                    Item::View(v) if v
+                        .protect
+                        .iter()
+                        .any(|protect| protect.what.name == "capture")
+                ),
             });
             if let Item::View(v) = item {
                 self.anchors(v, lock);
@@ -1871,6 +1884,7 @@ impl Resolver<'_> {
                 present: Presentation::default(),
                 scenario: false,
                 private: false,
+                capture_protected: false,
             });
             func += 1;
         }
@@ -1960,6 +1974,7 @@ impl Resolver<'_> {
             },
             scenario: true,
             private: false,
+            capture_protected: false,
         });
     }
 

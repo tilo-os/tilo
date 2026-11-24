@@ -47,7 +47,7 @@ pub mod unix;
 pub mod validate;
 
 /// The version both ends name. A newer end must still read this one's messages.
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 3;
 
 /// Whether a node of `kind` is a virtual list on the wire: a `ui.VirtualList` or a
 /// `ui.TreeView`, whose rows the app sends apart from the tree ([`ToUi::Rows`]) as the list
@@ -574,12 +574,14 @@ pub enum ToUi {
     Loading,
     /// A level opened (or opened anew): its view's tree, without the rows of its virtual lists,
     /// and the resource it shows. A detail opening with `front` comes to the front of a narrow
-    /// window.
+    /// window. `capture_protected` says the view declares `protect capture`: wherever it is
+    /// shown, a capture or a stream leaves it out.
     Open {
         level: Level,
         target: ResourceRef,
         tree: Node,
         front: Option<Front>,
+        capture_protected: bool,
     },
     /// The detail level closed.
     Close,
@@ -1012,7 +1014,8 @@ mod tests {
                 },
                 tree: text("t", "Notes"),
                 front: None,
-            },
+            
+                capture_protected: false,},
             ToUi::Patch {
                 level: Level::Root,
                 patches: vec![Patch::SetProp {
@@ -1163,7 +1166,8 @@ mod tests {
                 },
                 tree: node.clone(),
                 front: None,
-            },
+            
+                capture_protected: false,},
             ToUi::Patch {
                 level: Level::Root,
                 patches: vec![splice.clone()],

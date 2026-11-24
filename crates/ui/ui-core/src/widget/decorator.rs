@@ -291,6 +291,19 @@ decorator_trait! {
 
         fn inner_mut(&mut self) -> &mut Self::Inner;
 
+        /// Whether what this widget shows may not be captured or streamed: the paint of it is a
+        /// secret's, so a screenshot, a recording, a share and a remote viewer leave it out. A
+        /// decorator standing for a view that declared `protect capture` answers true.
+        fn withholds_captures(&self) -> bool {
+            false
+        }
+
+        /// [`Widget::draw`], noting the paint as a secret's when
+        /// [`Self::withholds_captures`] says so.
+        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+            self.inner_mut().draw(ctx)
+        }
+
         #[doc(hidden)]
         fn concrete_type_name(&self) -> &'static str {
             std::any::type_name::<Self>()
@@ -389,6 +402,19 @@ decorator_trait! {
         #[doc(hidden)]
         fn concrete_type_name(&self) -> &'static str {
             Decorator::concrete_type_name(self)
+        }
+
+        /// [`Widget::draw`], noting the paint as a secret's when
+        /// [`Decorator::withholds_captures`] says so.
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
+        )]
+        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+            if Decorator::withholds_captures(self) {
+                crate::secret_paint::note_secret_painted();
+            }
+            Decorator::draw(self, ctx);
         }
 
         fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
@@ -610,11 +636,6 @@ decorator_trait! {
             text: &mut TextRenderer,
         ) -> bool;
         fn apply_layout(taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
-        )]
-        fn draw(ctx: &mut crate::draw::DrawCtx<'_>);
         fn observe_physical_input(input: crate::widget::PhysicalInput);
         fn handle_event(event: &WindowEvent, ctx: &mut EventCtx<'_>);
         fn children_mut() -> Vec<&mut (dyn Widget + '_)>;

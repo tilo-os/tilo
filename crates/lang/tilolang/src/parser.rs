@@ -2009,7 +2009,24 @@ impl<'a> Parser<'a> {
             None
         };
         let body_start = self.span();
-        let body = self.ui_block()?;
+        // `protect capture`, heading the body: a view-level declaration, read before the
+        // statements the view's window shows.
+        self.expect(&Tok::LBrace)?;
+        let mut protect = Vec::new();
+        loop {
+            self.skip_nl();
+            if !matches!(self.peek(), Tok::Ident(word) if word == "protect") {
+                break;
+            }
+            let at = self.span();
+            self.bump();
+            let what = self.ident("`capture` after `protect`")?;
+            protect.push(crate::ast::Protect {
+                what,
+                span: at.to(Span::new(self.prev_end(), self.prev_end())),
+            });
+        }
+        let body = self.ui_block_rest()?;
         let end = Span::new(self.prev_end(), self.prev_end());
         Ok(ViewDecl {
             node,
@@ -2019,6 +2036,7 @@ impl<'a> Parser<'a> {
             type_params,
             params,
             window,
+            protect,
             body,
             body_span: body_start.to(end),
             span: start.to(end),
@@ -3062,6 +3080,13 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::Colon)?;
                 let value = self.expr()?;
                 UiKind::Fact { node, label, value }
+            }
+            Tok::Ident(word)
+                if word == "protect" && matches!(self.peek_at(1), Tok::Ident(_)) =>
+            {
+                // `protect capture` is a declaration heading a view's body, never a statement
+                // among what it shows.
+                return self.unexpected("a view to declare `protect capture` before what it shows");
             }
             _ => UiKind::Call(self.ui_call()?),
         };

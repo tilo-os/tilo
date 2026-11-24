@@ -179,6 +179,7 @@ fn what_a_primary_action_made_opens_its_page_with_its_first_field_focused() {
                 target,
                 tree,
                 front,
+                ..
             } => Some((target.clone(), tree.clone(), *front)),
             _ => None,
         })

@@ -55,6 +55,13 @@ impl AppPage {
         })
     }
 
+    /// Whether what the page shows declares `protect capture`: a capture or a stream of the page
+    /// leaves the view out.
+    #[must_use]
+    pub fn capture_protected(&self) -> bool {
+        self.window.harness.capture_protected()
+    }
+
     /// The page's stylesheet: the theme's colours and the page's own rules.
     #[must_use]
     pub fn css(&self) -> String {

@@ -885,6 +885,10 @@ pub struct ViewMeta {
     /// show(x: T): ...`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show: Option<ShowMeta>,
+    /// The view declares `protect capture`: wherever it is shown, a capture or a stream leaves it
+    /// out. A view showing this one, or a view it is a row of, says the same.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub capture_protected: bool,
 }
 
 /// What a view answers a request to show an item of a type with: the action it applies in its
@@ -1008,6 +1012,14 @@ impl PackageMeta {
         self.views
             .iter()
             .find(|view| view.name == name && view.row_of.is_none() && view.presents.is_none())
+    }
+
+    /// Whether a capture or a stream leaves out the view `id`, wherever it is shown.
+    #[must_use]
+    pub fn view_capture_protected(&self, id: &str) -> bool {
+        self.views
+            .iter()
+            .any(|view| view.id == id && view.capture_protected)
     }
 
     #[must_use]

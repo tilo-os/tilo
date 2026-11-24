@@ -549,8 +549,20 @@ pub struct ViewDecl {
     /// `window "Desktop shell"`: what assistive technology knows the window this view fills by,
     /// when it is the view a whole window shows. A view that names none is known by its name.
     pub window: Option<String>,
+    /// `protect capture`, heading the view's body: what a capture or a stream leaves out
+    /// wherever the view is shown.
+    pub protect: Vec<Protect>,
     pub body: Vec<UiStmt>,
     pub body_span: Span,
+    pub span: Span,
+}
+
+/// `protect capture`: a view-level declaration that a capture or a stream leaves the view out
+/// of, wherever it is shown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Protect {
+    /// What is protected. Only `capture` is declared today.
+    pub what: Ident,
     pub span: Span,
 }
 

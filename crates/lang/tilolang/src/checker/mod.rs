@@ -292,6 +292,12 @@ pub(crate) struct Checker<'a> {
     migrating: bool,
     /// The string literals the module shows as words, by span.
     shown: std::collections::HashSet<Span>,
+    /// The views a capture or a stream leaves out, by id: those that declare `protect capture`,
+    /// those a protected template expanded in, and those showing one of either
+    /// ([`Self::view_edges`]).
+    protected: BTreeSet<String>,
+    /// (the view showing, the view it shows) for each view a view embeds.
+    view_edges: Vec<(String, String)>,
 }
 
 type FieldWritten = (String, String, Ty);
@@ -349,7 +355,16 @@ fn lower(
         outer_at: None,
         migrating: false,
         shown,
+        protected: BTreeSet::new(),
+        view_edges: Vec::new(),
     };
+    // A view's `protect capture`, before any body is read: what it shows may be left out of a
+    // capture wherever it is.
+    for item in &module.items {
+        if let Item::View(v) = item {
+            c.check_protect(v);
+        }
+    }
     let mut funcs = Vec::new();
     let mut declaring: Vec<(usize, Span)> = Vec::new();
     // The function of each action the module declares, by its declaration's node.
@@ -533,6 +548,7 @@ fn lower(
             );
         }
     }
+    let capture_protected = c.protected_closure();
     let module = ir::Module {
         funcs,
         views,
@@ -540,6 +556,7 @@ fn lower(
         at_event,
         shows,
         words: c.words,
+        capture_protected,
     };
     let shown = c.shown;
     // Every prop a view gives a described component is one that component declares.
@@ -561,6 +578,8 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         at_event: Vec::new(),
         shows: Vec::new(),
         words: Vec::new(),
+        protected: BTreeSet::new(),
+        view_edges: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
         at: None,
@@ -594,6 +613,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
             at_event: Vec::new(),
             shows: Vec::new(),
             words: Vec::new(),
+            capture_protected: Vec::new(),
         },
         ty,
         suggested: proposal,
@@ -612,6 +632,8 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         at_event: Vec::new(),
         shows: Vec::new(),
         words: Vec::new(),
+        protected: BTreeSet::new(),
+        view_edges: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
         at: None,
@@ -630,6 +652,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
             at_event: Vec::new(),
             shows: Vec::new(),
             words: Vec::new(),
+            capture_protected: Vec::new(),
         },
         ty: Ty::View,
         suggested: false,
@@ -852,6 +875,67 @@ impl Checker<'_> {
         let mut f = self.end(kind, &c.name, &format!("{prefix}{}", c.id));
         f.nparams = c.params.len();
         f
+    }
+
+    /// Reads a view's `protect capture` declaration: only `capture` may follow `protect`, and a
+    /// view declares it once. The view it protects is recorded by id.
+    fn check_protect(&mut self, view: &ast::ViewDecl) {
+        let mut declared = false;
+        let mut id = None;
+        for protect in &view.protect {
+            if protect.what.name != "capture" {
+                self.err(
+                    "E146",
+                    protect.what.span,
+                    format!(
+                        "`protect` takes `capture`, not `{}`: a view that shows a secret or a code declares `protect capture`, and a capture or a stream leaves it out",
+                        protect.what.name
+                    ),
+                );
+                continue;
+            }
+            if declared {
+                self.err(
+                    "E147",
+                    protect.span,
+                    "a view declares `protect capture` once",
+                );
+                continue;
+            }
+            declared = true;
+            id = self.env.own_callable(&view.name.name).map(|c| c.id.clone());
+        }
+        if let Some(id) = id {
+            self.protected.insert(id);
+        }
+    }
+
+    /// The views a capture or a stream leaves out, by id: each that declares `protect capture`,
+    /// each a protected template expanded in, and, since a window showing one view shows its
+    /// frame too, each showing another ([`Self::view_edges`]). A row view protects the view it is
+    /// a row of.
+    fn protected_closure(&self) -> Vec<String> {
+        let mut out = self.protected.clone();
+        loop {
+            let mut grew = false;
+            let owners: Vec<String> = out
+                .iter()
+                .filter_map(|id| id.split_once('~'))
+                .map(|(owner, _)| owner.to_owned())
+                .collect();
+            for owner in owners {
+                grew |= out.insert(owner);
+            }
+            for (caller, callee) in &self.view_edges {
+                if out.contains(callee) {
+                    grew |= out.insert(caller.clone());
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        out.into_iter().collect()
     }
 
     fn run_view(&mut self, c: &Callable, v: &ast::ViewDecl) -> ir::Func {

@@ -91,6 +91,8 @@ struct View {
     target: ResourceRef,
     /// Its tree, without the rows of its virtual lists.
     tree: UiNode,
+    /// The view declares `protect capture`: a capture or a stream leaves it out.
+    capture_protected: bool,
 }
 
 /// What a bound control holds, as the person's typing left it: the text it showed when they began
@@ -836,8 +838,10 @@ impl AppWindow {
                     target,
                     tree,
                     front: brought,
+                    capture_protected,
                 } => {
-                    opened_for_input |= self.opened(level, target, tree, brought);
+                    opened_for_input |=
+                        self.opened(level, target, tree, brought, capture_protected);
                     content = true;
                     front = brought.or(front);
                 }
@@ -926,12 +930,17 @@ impl AppWindow {
         target: ResourceRef,
         tree: UiNode,
         brought: Option<wire::Front>,
+        capture_protected: bool,
     ) -> bool {
         if level == Level::Root {
             self.failed = None;
         }
         self.forget_level(level);
-        let view = View { target, tree };
+        let view = View {
+            target,
+            tree,
+            capture_protected,
+        };
         match level {
             Level::Root => {
                 self.root = Some(view);
@@ -2655,6 +2664,16 @@ impl AppWindow {
         .map(|view| view.target.clone())
     }
 
+    /// Whether what the window shows now declares `protect capture` — in its root or its detail
+    /// view, since the window draws both: a capture or a stream leaves the whole window out.
+    #[must_use]
+    pub fn capture_protected(&self) -> bool {
+        [self.root.as_ref(), self.detail.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|view| view.capture_protected)
+    }
+
     #[must_use]
     pub fn composed(&self) -> Option<&UiNode> {
         self.built.as_ref()
@@ -3205,6 +3224,12 @@ fn audio_of(root: &dyn Widget, samples: &mut Vec<i16>) {
 
 impl ui::widget::Decorator for AppWindow {
     type Inner = dyn Widget;
+
+    /// A view that declared `protect capture` is left out of captures and streams wherever the
+    /// window shows it.
+    fn withholds_captures(&self) -> bool {
+        self.capture_protected()
+    }
 
     // The window is the publisher of the app's actions and the one that answers choosing one
     // ([`crate::catalogue`]), and it answers for the views' search where their frame says where it

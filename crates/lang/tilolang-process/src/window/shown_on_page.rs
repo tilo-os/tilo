@@ -37,6 +37,8 @@ pub struct Shown {
     /// The theme's stylesheet and the page's own.
     pub css: String,
     pub body: String,
+    /// The view declares `protect capture`: a capture or a stream of the page leaves it out.
+    pub capture_protected: bool,
 }
 
 /// The frame a page lays out `window` in, where nobody draws it.
@@ -91,6 +93,7 @@ impl ShownOnPage {
                 .to_owned(),
             css: theme_css(frame.theme()) + PAGE_CSS,
             body: self.page.render(&composition),
+            capture_protected: frame.capture_protected(),
         }
     }
 
@@ -202,7 +205,9 @@ pub fn serve(
     while let Some(ask) = window::receive::<WindowAsk>(link)? {
         let answer = match ask {
             WindowAsk::Open { show } => {
-                let Shown { title, css, body } = page.open(frame, show.as_deref());
+                let Shown {
+                    title, css, body, ..
+                } = page.open(frame, show.as_deref());
                 WindowAnswer::Shown { title, css, body }
             }
             WindowAsk::Act {
