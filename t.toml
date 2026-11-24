@@ -525,29 +525,25 @@ git = true
 when = { test = "ci_select" }
 git = true
 
-# The installer test stages the session layer's fonts, whose artifacts are reviewed pins
-# fetched from the release store rather than files of the tree. The node's build directory
-# keeps them, as it does for the checks that build with fonts, so a run reads them there
-# instead of fetching 55 MB into a cache this job's home does not outlive.
+# The font tests, the installer test (which stages the session layer's fonts) and the catalog's
+# own test (whose build script prepares the catalog) read the reviewed font pins, artifacts of
+# the release store rather than files of the tree. They read them from the font-seed check's
+# output, every pin of this tree laid out by its digest, as the machine's seed, so none of them
+# reaches the network for a font.
 [[check.matrix.set]]
 when = { test = "component_manifest" }
-env = { TILO_FONT_ASSET_CACHE = "/target/font-artifacts" }
-egress = { to = ["code.tilo.so:443"], pinned = true }
+needs = ["font-seed"]
+env = { TILO_FONT_IMAGE_SEED = "/target/font-seed" }
 
-# The reviewed font pins both font tests read are artifacts fetched from the release store, not
-# files of the tree. The node's build directory keeps the prepared catalogues, as it does for the
-# checks that build with fonts, so a run reads them there instead of fetching into a cache this
-# job's home does not outlive; a cold one fetches the pins.
 [[check.matrix.set]]
 when = { test = "font_artifacts" }
-env = { TILO_FONT_ASSET_CACHE = "/target/font-artifacts" }
-egress = { to = ["code.tilo.so:443"], pinned = true }
+needs = ["font-seed"]
+env = { TILO_FONT_IMAGE_SEED = "/target/font-seed" }
 
-# The catalog's own test builds tilo-font-catalog, whose build script fetches the pinned fonts
-# a cold build directory lacks from the release store.
 [[check.matrix.set]]
 when = { test = "font_catalog" }
-egress = { to = ["code.tilo.so:443"], pinned = true }
+needs = ["font-seed"]
+env = { TILO_FONT_IMAGE_SEED = "/target/font-seed" }
 
 [[check.matrix.set]]
 when = { test = "image_builder_inputs" }
@@ -559,8 +555,8 @@ git = true
 
 [[check.matrix.set]]
 when = { test = "macos_font_catalog" }
-env = { TILO_FONT_ASSET_CACHE = "/target/font-artifacts" }
-egress = { to = ["code.tilo.so:443"], pinned = true }
+needs = ["font-seed"]
+env = { TILO_FONT_IMAGE_SEED = "/target/font-seed" }
 
 [[check.matrix.set]]
 when = { test = "signal_runtime_staging" }
