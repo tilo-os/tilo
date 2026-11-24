@@ -48,6 +48,7 @@ pub mod task_reads;
 pub mod triggers;
 pub mod upgrade;
 pub mod used;
+pub mod versions;
 pub mod views;
 
 pub use action::{Authorship, DynAction, register_actions};

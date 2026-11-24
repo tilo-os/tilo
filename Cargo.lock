@@ -21760,7 +21760,6 @@ dependencies = [
  "tilo-workspace-emoji",
  "tilo-workspace-keys",
  "tilolang-calendar",
- "tilolang-service",
  "tilolang-tilo",
  "tokio",
  "tokio-rustls",

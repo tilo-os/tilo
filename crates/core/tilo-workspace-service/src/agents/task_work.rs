@@ -825,27 +825,30 @@ mod session_tests {
         answer: mpsc::Sender<(Result<ActionOutput, String>, Documents)>,
     }
 
-    /// The person's device: tilolang's host over a store of its own, on a thread of its own (a
-    /// host is held by one thread), invoked as the device's action service invokes it.
+    /// The person's device: its record opened over a store of its own, on a thread of its own
+    /// (a host is held by one thread), each ask run as the record's published action.
     fn device(person: String, asks: mpsc::Receiver<Ask>, opened: mpsc::Sender<Documents>) {
-        use tilo_service::Service as _;
-        use tilolang_tilo::resources::{LocalPort, Port, ResourceStore};
+        use crate::tl_records::{LocalPort, Opened, Packages, ResourceStore};
+        use tilolang_tilo::resources::Port;
 
         let port = Rc::new(LocalPort::in_memory());
         let store = ResourceStore::new(Rc::clone(&port) as Rc<dyn Port>);
-        let viewer = tilo_actions::Actor::Member(tilo_actions::MemberId::person(person.clone()));
-        let host = tilolang_tilo::host::Host::open(store, viewer, None, || None).unwrap();
-        for (source, ids) in PACKAGES {
-            host.load_builtin(source, ids).unwrap();
-        }
+        let viewer = tilo_actions::Actor::Member(tilo_actions::MemberId::person(person));
+        let packages = Packages::compile(&PACKAGES).unwrap();
+        let mut record = Opened::open(store, &packages, viewer, None).unwrap();
         // The roots of the device's apps (its Tasks, which a new task is added to, its
         // Notebook, which a task's note is made in): made as an app makes its root, by the
-        // document each is kept in.
+        // id each is published under.
         let roots: BTreeMap<String, String> = [TASKS, "so.tilo.notes"]
             .into_iter()
-            .map(|app| (format!("tl:{app}"), host.root_of(app).unwrap().doc))
+            .map(|app| {
+                let root = record.host().root_of(app).unwrap();
+                (
+                    format!("tl:{app}"),
+                    tilolang_tilo::publish::resource_id(app, &root.id_string()),
+                )
+            })
             .collect();
-        let mut service = tilolang_service::ResourceService::new(host, person);
         let mut sent: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         let mut moved = || {
             let mut documents = Vec::new();
@@ -863,30 +866,16 @@ mod session_tests {
         opened.send(moved()).unwrap();
         while let Ok(ask) = asks.recv() {
             // An app's own actions are asked of the app (`tl:<app>`): its root, as the
-            // device's service publishes it.
-            let resource = match roots.get(&ask.resource) {
-                Some(doc) => service
-                    .resources()
-                    .into_iter()
-                    .find(|resource| resource.id.as_str().contains(doc.as_str()))
-                    .unwrap_or_else(|| panic!("the device publishes {}'s root", ask.resource))
-                    .id
-                    .as_str()
-                    .to_owned(),
-                None => ask.resource.clone(),
-            };
-            let started = service.invoke_as(&ask.invoker, &resource, &ask.action, &ask.arguments);
-            let done = match started {
-                Ok(tilo_service::Started::Done(output)) => Ok(output),
-                Ok(tilo_service::Started::Accepted) => Ok(ActionOutput::default()),
-                Ok(tilo_service::Started::Later(later)) => later
-                    .wait_timeout(std::time::Duration::from_secs(10))
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| panic!("{} did not end", ask.action))
-                    .map_err(|error| error.to_string()),
-                Err(error) => Err(error.to_string()),
-            };
+            // device publishes it.
+            let resource = roots.get(&ask.resource).unwrap_or(&ask.resource);
+            let done = record
+                .invoke_published(
+                    &ActionAddress::new(resource.as_str(), ask.action.as_str()),
+                    &ask.arguments,
+                    &ask.invoker,
+                    &tilo_actions::ActionContext::default(),
+                )
+                .map_err(|error| error.to_string());
             let _ = ask.answer.send((done, moved()));
         }
     }

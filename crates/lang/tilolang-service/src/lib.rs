@@ -39,6 +39,7 @@ use tilolang_tilo::publish::{
     Planner, Publications, publish_package, resource_id, split_published,
 };
 use tilolang_tilo::readings::{reading_of, resource_at};
+use tilolang_tilo::versions::{each_published, version_entry, versions};
 
 pub mod notices;
 
@@ -875,72 +876,6 @@ pub fn history(
     Ok(serde_json::json!({ "versions": listed, "total": total }))
 }
 
-/// `version`, of a resource of `app` that `host` reads, as its history lists it: the version,
-/// its resource by the id it is published under, and the label the app's history calls it by.
-#[must_use]
-pub fn version_entry(host: &Host, app: &str, version: &Version) -> Json {
-    let published = resource_id(app, &version.resource);
-    let label = history_label(host, &version.resource);
-    let mut entry = serde_json::to_value(version).unwrap_or_default();
-    if let Some(entry) = entry.as_object_mut() {
-        entry.insert("resource".to_owned(), Json::String(published));
-        entry.insert("label".to_owned(), Json::String(label));
-    }
-    entry
-}
-
-/// What the app's history calls the resource `id` (as [`ResourceRef::id_string`] writes it): an
-/// item by its label as published, a package's root by its type ("Notebook"), as the app's name
-/// it is published under says nothing in the app's own history.
-fn history_label(host: &Host, id: &str) -> String {
-    let Some(at) = host
-        .store()
-        .type_of_id(id)
-        .and_then(|ty| ResourceRef::parse_id(id, ty))
-    else {
-        return String::new();
-    };
-    match (&at.item, tilolang_tilo::schema::lookup(&at.ty)) {
-        (None, Some(schema)) => schema.spoken_name(),
-        _ => host.label_at(&at),
-    }
-}
-
-/// The versions of the published resource `tree`, which `host` reads, and of every resource
-/// published in it, oldest first.
-///
-/// # Errors
-/// The store did not read a resource's versions.
-pub fn versions(host: &Host, tree: &ResourceSpec) -> Result<Vec<Version>, String> {
-    let store = host.store();
-    let mut versions = Vec::new();
-    let mut failed = None;
-    each_published(tree, &mut |spec| {
-        let Some((_, path)) = split_published(spec.id.as_str()) else {
-            return;
-        };
-        let Some(ty) = store
-            .kinds()
-            .of_kind(&spec.kind)
-            .map(|entry| entry.id.clone())
-        else {
-            return;
-        };
-        let Some(at) = ResourceRef::parse_id(path, ty) else {
-            return;
-        };
-        match store.versions(&at) {
-            Ok(held) => versions.extend(held),
-            Err(error) => failed = Some(error.to_string()),
-        }
-    });
-    if let Some(error) = failed {
-        return Err(error);
-    }
-    versions.sort_by(|a, b| a.order().cmp(&b.order()));
-    Ok(versions)
-}
-
 /// The scalar a register holds for `value`.
 fn scalar_of(value: &Value) -> Result<Scalar, String> {
     Ok(match value {
@@ -950,14 +885,6 @@ fn scalar_of(value: &Value) -> Result<Scalar, String> {
         Value::Text(text) => Scalar::Text(text.clone()),
         other => Scalar::Json(tilolang_runtime::value::to_json(other)?),
     })
-}
-
-/// Call `visit` with `spec` and every resource published in it, depth first.
-fn each_published(spec: &ResourceSpec, visit: &mut dyn FnMut(&ResourceSpec)) {
-    visit(spec);
-    for child in &spec.children {
-        each_published(child, visit);
-    }
 }
 
 /// The place the `open` effect `payload` names: the resource the invocation addresses — the
