@@ -52,16 +52,12 @@ pub enum ResourceOpenError {
     /// alone, and nobody else opens it.
     #[error("this is someone else's own record, which only they open")]
     NotYours,
-    /// The resource left this workspace (see [`transfer`]); its history stays, but
-    /// it is never opened as a live document again.
-    #[error("record was moved out of this workspace")]
-    Retired,
 }
 
 /// Whether `doc` is the live resource `want` names in `workspace`.
 ///
 /// # Errors
-/// It is another resource, of another workspace, or retired.
+/// It is another resource, or of another workspace.
 pub fn validate_identity(
     doc: &AutoCommit,
     want: &DocumentCheckout,
@@ -80,9 +76,6 @@ pub fn validate_identity(
         ObjectAt::Missing | ObjectAt::Invalid => {
             return Err(ResourceOpenError::IdentityMismatch);
         }
-    }
-    if crate::document::retirement::is_retired(doc) {
-        return Err(ResourceOpenError::Retired);
     }
     if want.id.is_package_primary() {
         return if primary_document(doc)

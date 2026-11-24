@@ -1045,8 +1045,7 @@ impl ApplicationOwner {
     /// factory. Restore presentation from this exact device/workspace/instance.
     /// A saved view pointing at a missing record is an error, never a blank replacement, unless the
     /// window shows a file or folder: the record is made again from that, as the launch on it made it.
-    /// A record moved out of this workspace is never reopened: a view still naming
-    /// it is dropped, and a retired record gives way to its successor.
+    /// A record moved out of this workspace is gone from it: a view still naming it is dropped.
     /// `initial_view` is used only when this instance has no saved presentation.
     /// # Errors
     /// Rejects invalid/foreign views, contested writers, corrupt records and denied authority.
@@ -1189,12 +1188,10 @@ impl ApplicationOwner {
         definition: &ApplicationDefinition,
         records: ResourceStore,
         instance_id: InstanceId,
-        mut checkout: DocumentCheckout,
+        checkout: DocumentCheckout,
         mut saved: Option<SavedInstanceView>,
         initial_view: Option<ApplicationLocalView>,
     ) -> Result<(ProcessContext, LaunchTarget, RestoreInput), LaunchError> {
-        const MAX_SUCCESSORS: usize = 64;
-        let mut successors = 0;
         let mut asked_again = false;
         let target = loop {
             match records.try_open_resource(&checkout) {
@@ -1226,14 +1223,6 @@ impl ApplicationOwner {
                     refuse_copy_while_joining(&LaunchTarget::New)?;
                     saved = None;
                     break LaunchTarget::New;
-                }
-                Err(ResourceOpenError::Retired) if successors < MAX_SUCCESSORS => {
-                    successors += 1;
-                    saved = None;
-                    checkout = DocumentCheckout::new(
-                        DocumentId::derived("successor", &checkout.id),
-                        checkout.kind.clone(),
-                    );
                 }
                 Err(error) => return Err(LaunchError::Record(error)),
             }
@@ -1801,7 +1790,7 @@ mod native_process_tests {
             assert_eq!(DocumentId::window_default_of_storage_key(&forged), None);
         }
 
-        phase a_saved_view_names_the_record_and_a_retired_one_gives_way;
+        phase a_saved_view_names_the_record;
         {
             use crate::application_test_support as probe;
             use automerge::transaction::Transactable as _;
@@ -1859,7 +1848,7 @@ mod native_process_tests {
                 .prepare_default(
                     &definition,
                     7,
-                    default.clone(),
+                    default,
                     None,
                     probe::runner_inputs(),
                 )
@@ -1870,31 +1859,6 @@ mod native_process_tests {
             );
             assert!(matches!(prepared.restore, RestoreInput::Local(_)));
             drop(prepared);
-
-            {
-                let mut owners = ResourceOwners::writing(port.clone());
-                let records = owners.open(probe::APP, workspace).unwrap();
-                records.try_open_resource(&carried).unwrap();
-                records
-                    .with(&carried.id, |doc| {
-                        crate::resource::transfer::stamp_retired(
-                            doc,
-                            &crate::resource::transfer::Retirement::Moved(None),
-                        )
-                    })
-                    .unwrap()
-                    .unwrap();
-                records.try_flush().unwrap();
-            }
-            let prepared = host(temp.path())
-                .prepare_default(&definition, 7, default, None, probe::runner_inputs())
-                .unwrap();
-            assert!(
-                matches!(prepared.target, LaunchTarget::New),
-                "a record that left the workspace is never reopened; its successor starts fresh"
-            );
-            assert!(matches!(prepared.restore, RestoreInput::None));
-            assert_ne!(prepared.context.record().id, carried.id);
         }
     }
 

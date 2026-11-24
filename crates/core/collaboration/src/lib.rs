@@ -476,7 +476,7 @@ pub enum CollabRequest {
     /// Remove the last continuation report after the app can no longer
     /// produce a safe projection.
     ClearContinuation,
-    /// Answer a handoff request, or report a retirement
+    /// Answer a handoff request
     /// ([`handoff::HandoffReport`], encoded). Session-local, on the primary
     /// route; never relayed to peers.
     ReportHandoff {

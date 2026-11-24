@@ -789,3 +789,13 @@ reason = "a page's request to its host on a live connection, never stored: the `
 file = "crates/core/package-actions/src/lib.rs"
 enum = "Change"
 reason = "a change a program asks the device for: JSON with the variant's name, never by position, and never stored as bytes a later build reads back: what the device kept is the change's report"
+
+[[break]]
+file = "crates/core/collab-types/src/handoff.rs"
+enum = "HandoffRequest"
+reason = "the shell and one app of its own session speak it as JSON on that app's primary route, as session-local control frames never relayed to peers or kept: both ends are the same build, so no bytes written before are read back"
+
+[[break]]
+file = "crates/core/collab-types/src/handoff.rs"
+enum = "HandoffReport"
+reason = "the app's answers on the same session-local route as `HandoffRequest`: JSON between ends of one build, never relayed or kept, so no bytes written before are read back"

@@ -922,7 +922,7 @@ tilo_test_env::scenario! {
 
     phase the_instance_answers_every_handoff_step_the_shell_asks;
     {
-        use collaboration::handoff::{HandoffReport, HandoffRequest, Successor};
+        use collaboration::handoff::{HandoffReport, HandoffRequest};
         let (mut host, mut window, sent, inbox, _route) = running("ada");
         settle(&mut host, &mut window);
         let reports = |sent: &Sent| -> Vec<HandoffReport> {
@@ -937,16 +937,6 @@ tilo_test_env::scenario! {
         inbox.borrow_mut().push_back(CollabEvent::Handoff {
             request: HandoffRequest::Checkpoint { token: 7 },
         });
-        inbox.borrow_mut().push_back(CollabEvent::Handoff {
-            request: HandoffRequest::Retire {
-                token: 8,
-                successor: Successor {
-                    workspace: uuid::Uuid::new_v4().to_string(),
-                    document: "elsewhere".to_owned(),
-                    by: "ada".to_owned(),
-                },
-            },
-        });
         settle(&mut host, &mut window);
         let reports = reports(&sent);
         assert!(
@@ -954,13 +944,6 @@ tilo_test_env::scenario! {
                 .iter()
                 .any(|report| matches!(report, HandoffReport::Done { token: 7, .. })),
             "a checkpoint is done: {reports:?}"
-        );
-        assert!(
-            reports.iter().any(|report| matches!(
-                report,
-                HandoffReport::Failed { token: 8, reason } if !reason.is_empty()
-            )),
-            "a retirement is refused with why: {reports:?}"
         );
     }
 }

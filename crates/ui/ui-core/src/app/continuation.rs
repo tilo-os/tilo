@@ -334,9 +334,7 @@ impl App {
         if self.private_continuity_route().is_none() {
             return;
         }
-        let protected = self.accessibility.focus_trap_active
-            || self.withholds_captures()
-            || self.continuation.retired;
+        let protected = self.accessibility.focus_trap_active || self.withholds_captures();
         let metadata = if protected {
             None
         } else {
@@ -510,7 +508,6 @@ impl App {
         if self.private_continuity_route().is_none()
             || self.accessibility.focus_trap_active
             || self.withholds_captures()
-            || self.continuation.retired
         {
             self.continuation.owner_view.pending = None;
             return;

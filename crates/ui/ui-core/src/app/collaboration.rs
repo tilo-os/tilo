@@ -840,7 +840,6 @@ impl App {
             }
             CollabEvent::Document { route, mutation } => {
                 self.apply_document_collab_event(&route, mutation);
-                self.observe_primary_retirement();
             }
             CollabEvent::Handoff { request } => self.apply_handoff(request),
             CollabEvent::CommittedDocument { route, read } => {

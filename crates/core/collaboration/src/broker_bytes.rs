@@ -403,11 +403,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
                     meter.add_product(metadata.bytes.capacity(), 1);
                 }
             }
-            if let HandoffRequest::Retire { successor, .. } = request {
-                meter.string_capacity(&successor.workspace);
-                meter.string_capacity(&successor.document);
-                meter.string_capacity(&successor.by);
-            }
             "Handoff"
         }
         CollabEvent::ResourcesArrived { records } => {

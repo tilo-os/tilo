@@ -1,33 +1,17 @@
-//! Transfer: the explicit verb that takes a resource across a workspace boundary.
+//! Branching: a whole workspace forked into a new one, each of its resources forked with it.
 //!
-//! A resource id names a document only inside the workspace whose replica hydrates it
-//! ([`super::workspace_scope`]), so nothing crosses workspaces by reference. Transfer is the
-//! counterpart of duplicating a resource in a workspace index for a document that already has content: the
-//! destination workspace receives the resource's whole change graph under a fresh id of its own,
-//! scoped to that workspace, with the source id kept in its `formerly` list as provenance. Nothing
-//! ever looks a resource up through that list.
-//!
-//! Moving is transfer followed by [`stamp_retired`]: the source resource gets one last change saying it
-//! left, which stays in its history the way a deletion does, and it is never opened as a live
-//! document again ([`super::ResourceOpenError::Retired`]). Copying is transfer alone: the source
-//! keeps going and the two histories diverge from here. An app that keeps one document for itself
-//! in a workspace (its resource index) transfers the same way ([`Origin::AppDocument`]).
-//!
-//! Every function here works on documents alone: a caller reads the source from its workspace and
-//! writes what comes out to the destination's, both through the workspace's one store.
+//! A resource id names a document only inside the workspace whose store holds it
+//! ([`super::workspace_scope`]). A branch is the one place a document crosses into another
+//! workspace with its history: a record moving between workspaces is the store's own `move`,
+//! which founds it afresh in the workspace it goes to.
 
 use automerge::transaction::{CommitOptions, Transactable};
-use automerge::{AutoCommit, ChangeHash, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ScalarValue};
 use tilo_automerge::ApplyIncoming as _;
 
-use super::{
-    DocumentCheckout, DocumentId, FORMERLY, ObjectAt, ResourceOpenError, ResourceType, identity,
-    meta_obj, meta_ro, object_at, validate_identity,
-};
+use super::{ResourceOpenError, identity, meta_obj, validate_identity};
 
-use crate::document::retirement::RETIRED;
-pub use crate::document::retirement::{Retirement, Successor, is_retired, retirement};
-
+/// Why a document could not be branched.
 #[derive(Debug, thiserror::Error)]
 pub enum TransferError {
     #[error(transparent)]
@@ -36,220 +20,6 @@ pub enum TransferError {
     NotTransferable(&'static str),
     #[error("automerge: {0}")]
     Automerge(String),
-}
-
-/// Stamp `doc` retired, in one change of its own, unless it already is.
-/// The shell does this to a resource at rest; an app does it to the live
-/// document it shows, so the stamp travels to everyone holding that resource
-/// over its normal route.
-///
-/// # Errors
-/// A document whose metadata cannot hold the stamp.
-pub fn stamp_retired(doc: &mut AutoCommit, why: &Retirement) -> Result<(), TransferError> {
-    if is_retired(doc) {
-        return Ok(());
-    }
-    let automerge = |error: automerge::AutomergeError| TransferError::Automerge(error.to_string());
-    let meta = meta_obj(doc).ok_or(ResourceOpenError::IdentityMismatch)?;
-    let stamp = doc
-        .put_object(&meta, RETIRED, ObjType::Map)
-        .map_err(automerge)?;
-    doc.put(&stamp, "reason", why.reason()).map_err(automerge)?;
-    if let Retirement::Moved(Some(successor)) = why {
-        doc.put(&stamp, "workspace", successor.workspace.as_str())
-            .map_err(automerge)?;
-        doc.put(&stamp, "document", successor.document.as_str())
-            .map_err(automerge)?;
-        doc.put(&stamp, "by", successor.by.as_str())
-            .map_err(automerge)?;
-    }
-    doc.commit_with(
-        CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
-    );
-    Ok(())
-}
-
-/// What a transfer takes out of the source workspace.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Origin {
-    Record(DocumentCheckout),
-    /// The document an app keeps for itself in a workspace, its resource index.
-    /// It has no resource identity of its own there, and arrives in the
-    /// destination as a resource of this kind.
-    AppDocument(ResourceType),
-}
-
-impl Origin {
-    /// Refuse anything but this origin's live document in `workspace`.
-    pub fn validate(&self, doc: &AutoCommit, workspace: &str) -> Result<(), TransferError> {
-        match self {
-            Self::Record(checkout) => Ok(validate_identity(doc, checkout, workspace)?),
-            Self::AppDocument(_) if is_retired(doc) => Err(ResourceOpenError::Retired.into()),
-            Self::AppDocument(_) if identity(doc).is_some() => {
-                Err(ResourceOpenError::IdentityMismatch.into())
-            }
-            Self::AppDocument(_) => Ok(()),
-        }
-    }
-
-    /// The kind the document has, or takes once it arrives as a resource.
-    pub fn kind(&self) -> &ResourceType {
-        match self {
-            Self::Record(checkout) => &checkout.kind,
-            Self::AppDocument(kind) => kind,
-        }
-    }
-}
-
-/// Identity keys a resource's meta map may hold; anything else could claim
-/// more than the one resource the document is.
-const IMPORTABLE_META: [&str; 7] = [
-    "id",
-    "kind",
-    "home",
-    super::WORKSPACE,
-    FORMERLY,
-    "refs",
-    "blobs",
-];
-
-/// Check `bytes` offered to become resource `id` of `workspace` with their whole
-/// history, before anything keeps them: at most `max_bytes`, a complete
-/// document whose identity is exactly that freshly minted resource scoped to
-/// that workspace, live, holding no workspace index and no references to other
-/// resources, and naming earlier ids only as provenance.
-///
-/// # Errors
-/// Bytes that are too large, malformed, or not exactly that resource.
-pub fn validate_import(
-    bytes: &[u8],
-    workspace: &str,
-    id: &DocumentId,
-    max_bytes: usize,
-) -> Result<(AutoCommit, DocumentCheckout), TransferError> {
-    if bytes.len() > max_bytes {
-        return Err(TransferError::NotTransferable("the document is too large"));
-    }
-    let minted = id.as_str().strip_prefix("uuid:").is_some_and(|text| {
-        uuid::Uuid::parse_str(text).is_ok_and(|uuid| uuid.hyphenated().to_string() == text)
-    });
-    if !minted || DocumentId::parse(id.as_str()).as_ref() != Some(id) {
-        return Err(TransferError::NotTransferable(
-            "a document joins a workspace only as a newly minted resource",
-        ));
-    }
-    let doc =
-        AutoCommit::load(bytes).map_err(|error| TransferError::Automerge(error.to_string()))?;
-    let checkout = identity(&doc)
-        .filter(|found| &found.id == id)
-        .ok_or(ResourceOpenError::IdentityMismatch)?;
-    validate_identity(&doc, &checkout, workspace)?;
-    if super::workspace_scope(&doc).as_deref() != Some(workspace) {
-        return Err(ResourceOpenError::IdentityMismatch.into());
-    }
-    if doc
-        .get(automerge::ROOT, super::INDEX)
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return Err(TransferError::NotTransferable(
-            "a document listing other resources cannot join a workspace",
-        ));
-    }
-    let meta = meta_ro(&doc).ok_or(ResourceOpenError::IdentityMismatch)?;
-    if doc
-        .keys(&meta)
-        .any(|key| !IMPORTABLE_META.contains(&key.as_str()))
-    {
-        return Err(ResourceOpenError::IdentityMismatch.into());
-    }
-    if matches!(object_at(&doc, &meta, "refs", ObjType::List), ObjectAt::Object(list) if doc.length(&list) != 0)
-    {
-        return Err(TransferError::NotTransferable(
-            "a document referring to other resources cannot join a workspace",
-        ));
-    }
-    let formerly = match object_at(&doc, &meta, FORMERLY, ObjType::List) {
-        ObjectAt::Object(list) => doc.length(&list),
-        ObjectAt::Missing => 0,
-        ObjectAt::Invalid => return Err(ResourceOpenError::IdentityMismatch.into()),
-    };
-    let provenance = provenance(&doc);
-    if formerly > super::MAX_FORMER_IDS
-        || provenance.len() != formerly
-        || provenance.iter().any(|former| former == id)
-    {
-        return Err(ResourceOpenError::IdentityMismatch.into());
-    }
-    Ok((doc, checkout))
-}
-
-/// The destination's copy of `source`, read from `origin` in `from_workspace`:
-/// its whole history, one more change giving it `target`'s id and
-/// `to_workspace`'s scope, and a resource's origin id kept as provenance. `source`
-/// is not changed.
-pub fn rehome(
-    source: &AutoCommit,
-    origin: &Origin,
-    from_workspace: &str,
-    to_workspace: &str,
-    target: &DocumentId,
-) -> Result<AutoCommit, TransferError> {
-    if target.is_package_primary()
-        || matches!(origin, Origin::Record(checkout) if checkout.id.is_package_primary())
-    {
-        return Err(TransferError::NotTransferable(
-            "a workspace's own package document never leaves its workspace",
-        ));
-    }
-    if DocumentId::parse(target.as_str()).as_ref() != Some(target)
-        || matches!(origin, Origin::Record(checkout) if &checkout.id == target)
-    {
-        return Err(ResourceOpenError::IdentityMismatch.into());
-    }
-    origin.validate(source, from_workspace)?;
-    if from_workspace == to_workspace || to_workspace.is_empty() || from_workspace.is_empty() {
-        return Err(TransferError::NotTransferable(
-            "the resource is already in that workspace",
-        ));
-    }
-    let automerge = |error: automerge::AutomergeError| TransferError::Automerge(error.to_string());
-    // A fork continues the same change graph under a writer of its own.
-    let mut doc = source.clone().fork();
-    match origin {
-        Origin::Record(checkout) => {
-            let meta = meta_obj(&mut doc).ok_or(ResourceOpenError::IdentityMismatch)?;
-            doc.put(&meta, "id", target.as_str()).map_err(automerge)?;
-            doc.put(&meta, super::WORKSPACE, to_workspace)
-                .map_err(automerge)?;
-            let formerly = match object_at(&doc, &meta, FORMERLY, ObjType::List) {
-                ObjectAt::Object(list) => list,
-                ObjectAt::Missing => doc
-                    .put_object(&meta, FORMERLY, ObjType::List)
-                    .map_err(automerge)?,
-                ObjectAt::Invalid => return Err(ResourceOpenError::IdentityMismatch.into()),
-            };
-            let len = doc.length(&formerly);
-            doc.insert(&formerly, len, checkout.id.as_str())
-                .map_err(automerge)?;
-        }
-        // The app's own document becomes a resource the moment it leaves: it
-        // was minted in the source workspace and is now scoped to the destination.
-        Origin::AppDocument(kind) => {
-            if !super::init_scoped(&mut doc, target, kind, from_workspace, Some(to_workspace)) {
-                return Err(ResourceOpenError::IdentityMismatch.into());
-            }
-        }
-    }
-    doc.commit_with(
-        CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
-    );
-    let arrived = DocumentCheckout::new(target.clone(), origin.kind().clone());
-    validate_identity(&doc, &arrived, to_workspace)?;
-    Ok(doc)
 }
 
 /// A branch's copy of `source`, a document of a workspace branched into `to_workspace`: its whole
@@ -389,29 +159,4 @@ fn minted_again(
     }
     validate_identity(&doc, &checkout, to_workspace)?;
     Ok(Some(doc))
-}
-
-/// The changes `source` holds beyond the `known` heads of an earlier read:
-/// what its writer committed after that read.
-pub fn changes_since(source: &AutoCommit, known: &[ChangeHash]) -> usize {
-    source.clone().get_changes(known).len()
-}
-
-/// The origin ids a transferred resource came from, oldest first.
-pub fn provenance(doc: &AutoCommit) -> Vec<DocumentId> {
-    let Some(meta) = meta_ro(doc) else {
-        return Vec::new();
-    };
-    let ObjectAt::Object(list) = object_at(doc, &meta, FORMERLY, ObjType::List) else {
-        return Vec::new();
-    };
-    (0..doc.length(&list))
-        .filter_map(|index| match doc.get(&list, index) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Str(id) => DocumentId::parse(id),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect()
 }

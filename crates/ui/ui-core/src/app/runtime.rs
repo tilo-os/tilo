@@ -727,9 +727,6 @@ pub(super) struct ContinuationRuntime {
     /// republish unchanged metadata and playback through that route only.
     pub(super) last_private_route: Option<crate::collaboration::AcceptedRoute>,
     pub(super) private_instance: Option<u64>,
-    /// The document this window shows has left its workspace, and the
-    /// window knows: it stopped editing and told its shell once.
-    pub(super) retired: bool,
     /// What the primary route last published to the session's persistent
     /// search index, so only changes cross again.
     pub(super) search_index: crate::search::index_publication::Publisher,
@@ -747,7 +744,6 @@ impl ContinuationRuntime {
             pending_view: None,
             last_private_route: None,
             private_instance: None,
-            retired: false,
             search_index: crate::search::index_publication::Publisher::default(),
             search_index_route: None,
         }

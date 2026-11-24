@@ -422,6 +422,7 @@ window-move-failed-body = Das Fenster blieb in { $workspace }.
 window-move-record-failed-title = { $app } konnte nicht nach { $workspace } mitnehmen, was es zeigt
 window-move-record-failed-body = Das Fenster blieb in { $workspace }: { $reason }.
 window-move-reason-record = sein Eintrag lässt sich nicht in diesen Arbeitsbereich verschieben
+window-move-reason-unsaved = die App hat nicht gesichert, was sie zeigt
 window-move-reason-storage = dieser Rechner konnte ihn dort nicht ablegen
 window-move-reason-no-window = die App hat dort kein Fenster geöffnet
 window-move-reason-no-start = die App ist dort nicht gestartet
