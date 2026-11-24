@@ -39,6 +39,9 @@ d-3vgrlwgv = Standbild
 d-vddvspwk = Ausschläge
     .doc = Ihre Lautstärke über die ganze Datei, ein Anteil des Vollpegels, wie die Wellenform sie zeichnet.
 
+d-v4yfudyw = Fehlt
+    .doc = Ob dieses Gerät die Bytes der Quelle nicht lesen kann: sie wurden nie hierher gebracht, oder sie liegen auf einem anderen Gerät des Arbeitsbereichs.
+
 d-e7atusb5 = Worte
     .doc = Die Worte eines Titels.
 
@@ -1400,6 +1403,32 @@ d-e7mxkoe3 = Aufnehmen
 
 d-e7mxkoe3-file = Datei
 
+d-s34s56u6 = Gelesenes übernehmen
+    .doc = Schreibt, was das Gerät von einer Quelle gelesen hat, auf sie: was sie ist, wie lange sie läuft, ihre Größe und Rate, und ob sie Ton trägt.
+
+d-s34s56u6-m = Quelle
+
+d-s34s56u6-probed = Gelesen
+
+d-trebb62h = Quelle prüfen
+    .doc = Prüft, ob die Bytes einer Quelle hier sind: liest erneut, was sie sind, zeichnet ihr Vorschaubild und ihre Wellenform und markiert sie als nicht auf diesem Gerät, wenn die Engine sie nicht erreicht.
+
+d-trebb62h-m = Quelle
+
+d-rf7qyeis = Quelle neu verknüpfen
+    .doc = Verweist eine Quelle auf eine Datei, die die Person gewählt hat: die Clips sind Schnitte der Quelle und behalten sie, und die Quelle liest, was ihre neue Datei sagt.
+
+d-rf7qyeis-m = Quelle
+
+d-rf7qyeis-file = Datei
+
+d-g77prxmq = Als fehlend markieren
+    .doc = Sagt, dass die Bytes der Quelle nicht auf diesem Gerät sind, und warum die Engine sie nicht lesen konnte.
+
+d-g77prxmq-m = Quelle
+
+d-g77prxmq-why = Warum
+
 d-o5pyx57x = Korbbild zeichnen
     .doc = Das Bild der Quelle, wie der Korb es zeigt.
 
@@ -1445,7 +1474,8 @@ d-p2rzlwd5 = Projekt löschen
 d-p2rzlwd5-p = P
 
 d-jly5vvua = Dateien aufnehmen
-    .doc = Fügt jede gewählte oder abgelegte Datei als Quelle hinzu.
+    .doc = Fügt jede gewählte oder abgelegte Datei als Quelle hinzu und sagt, welche Dateien nicht ankamen und was das Gerät zu jeder sagte.
+    .w-not-added = Nicht hinzugefügt: { $join }
 
 d-jly5vvua-files = Dateien
 
@@ -1738,6 +1768,7 @@ d-kga7o3ur = Fenster
     .w-sources = Quellen
     .w-drop-video-sound-or-pictures = Video, Ton oder Bilder ablegen
     .w-they-become-clips-of-this-cut = Sie werden Clips dieses Schnitts
+    .w-not-on-this-device = Nicht auf diesem Gerät
     .w-title = Titel
     .w-nothing-to-show-yet = Noch nichts zu sehen
     .w-add-a-source-and-the-frame = Füge eine Quelle hinzu, dann steht hier das Bild an der Abspielmarke
@@ -1835,7 +1866,10 @@ d-kga7o3ur = Fenster
     .w-left = Links
     .w-centre = Mitte
     .w-right = Rechts
+    .w-this-device-cannot-read-the-source = Dieses Gerät kann die Quelle nicht lesen: sie ist nicht hier, oder ein anderes Gerät hält sie. Verknüpfe sie neu mit einer ihrer Dateien.
     .w-place-at-the-playhead = An die Abspielmarke legen
+    .w-relink-the-source = Quelle neu verknüpfen
+    .w-check-this-device = Dieses Gerät prüfen
     .w-choose-a-clip-or-a-source = Wähle einen Clip oder eine Quelle
     .w-markers = Marken
     .w-remove-the-mark = Marke entfernen

@@ -32,6 +32,9 @@ mod cases {
         asked: Rc<RefCell<Vec<(String, String)>>>,
         /// The job's state as the next ask answers it: `running` until it is `done`.
         ready: Rc<RefCell<bool>>,
+        /// What this device cannot read: an ask whose input names one of these is refused as
+        /// bytes it does not hold.
+        unreadable: Rc<RefCell<Vec<String>>>,
     }
 
     impl Engine {
@@ -57,6 +60,14 @@ mod cases {
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
+            if self
+                .unreadable
+                .borrow()
+                .iter()
+                .any(|name| input.contains(name.as_str()))
+            {
+                return Err("that source's bytes are not on this device yet".to_owned());
+            }
             match op {
                 "probe" => Ok(r#"{"kind":"video","duration":10.0,"width":1920,"height":1080,"fps":30.0,"has_audio":true,"codec":"h264"}"#.to_owned()),
                 "still" => Ok(format!(r#"{{"url":"{STILL}"}}"#)),
@@ -177,12 +188,7 @@ mod cases {
 
         /// A source a person chose, as the device hands it over.
         fn file(name: &str) -> Value {
-            Value::file(FileValue::new(
-                name,
-                "video/mp4",
-                1024,
-                format!("h{}", name.len()),
-            ))
+            Value::file(FileValue::new(name, "video/mp4", 1024, format!("h-{name}")))
         }
 
         fn new_project(&self) -> ResourceRef {
@@ -190,7 +196,7 @@ mod cases {
         }
 
         fn import(&self, p: &ResourceRef, name: &str) {
-            self.call("import_one", vec![Value::resource(p), Self::file(name)]);
+            self.call("import_one", vec![Value::resource(p), Studio::file(name)]);
         }
 
         fn place(&self, p: &ResourceRef, media: &ResourceRef, track: &ResourceRef, at: f64) {
@@ -235,6 +241,23 @@ mod cases {
                 Value::Text(text) => text,
                 other => panic!("{field} reads {other:?}"),
             }
+        }
+
+        fn flag(&self, r: &ResourceRef, field: &str) -> bool {
+            match self.rt.read(r, field).unwrap() {
+                Value::Bool(flag) => flag,
+                other => panic!("{field} reads {other:?}"),
+            }
+        }
+
+        /// The bin's second line for the row of the source called `title`.
+        fn bin_meta(&self, title: &str) -> Option<String> {
+            let window = self.window();
+            of_kind(window.tree(), "ui.ListRow")
+                .into_iter()
+                .find(|row| row.props.get("title").and_then(Value::as_text) == Some(title))
+                .and_then(|row| row.props.get("meta").and_then(Value::as_text))
+                .map(str::to_owned)
         }
 
         fn number(&self, r: &ResourceRef, field: &str) -> f64 {
@@ -661,6 +684,88 @@ mod cases {
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
             assert!(rows.iter().any(|r| r == "Harbour.mp4"), "the bin lists it: {rows:?}");
+        }
+
+
+        phase a_batch_names_the_files_that_did_not_arrive;
+        {
+            let s = Studio::new();
+            let p = s.new_project();
+            s.engine
+                .unreadable
+                .borrow_mut()
+                .push("Notes.txt".to_owned());
+            s.call(
+                "import_files",
+                vec![
+                    Value::resource(&p),
+                    Value::List(vec![
+                        Studio::file("Harbour.mp4"),
+                        Studio::file("Notes.txt"),
+                    ]),
+                ],
+            );
+            assert_eq!(s.media(&p).len(), 1, "the file it could read became a source");
+            assert_eq!(
+                s.text(&p, "trouble"),
+                "Not added: Notes.txt: that source's bytes are not on this device yet",
+                "the report names the file and what the device said of it"
+            );
+            // A batch it could read whole leaves no report behind.
+            s.engine.unreadable.borrow_mut().clear();
+            s.call(
+                "import_files",
+                vec![Value::resource(&p), Value::List(vec![Studio::file("Quay.mp4")])],
+            );
+            assert_eq!(s.text(&p, "trouble"), "", "nothing refused, nothing to say");
+            assert_eq!(s.media(&p).len(), 2);
+        }
+
+        phase a_source_this_device_cannot_read_is_marked_and_relinked;
+        {
+            let s = Studio::new();
+            let (p, media, clip) = s.placed();
+            // The bytes go away: another device holds them now.
+            s.engine
+                .unreadable
+                .borrow_mut()
+                .push("Harbour.mp4".to_owned());
+            s.call("refresh_source", vec![Value::resource(&p), Value::resource(&media)]);
+            assert!(s.flag(&media, "missing"), "the source is marked not on this device");
+            assert_eq!(
+                s.text(&p, "trouble"),
+                "that source's bytes are not on this device yet",
+                "and the window says why"
+            );
+            assert_eq!(
+                s.bin_meta("Harbour.mp4").as_deref(),
+                Some("Not on this device"),
+                "the bin's row says it where the person looks"
+            );
+            // The person finds the file again and points the source at it.
+            s.engine.unreadable.borrow_mut().clear();
+            s.call(
+                "relink",
+                vec![
+                    Value::resource(&p),
+                    Value::resource(&media),
+                    Studio::file("Harbour-found.mp4"),
+                ],
+            );
+            assert!(!s.flag(&media, "missing"), "the source reads again");
+            assert_eq!(s.text(&media, "name"), "Harbour-found.mp4");
+            assert_eq!(s.number(&media, "duration"), 10.0, "what its new file says");
+            assert_eq!(
+                s.bin_meta("Harbour-found.mp4").as_deref(),
+                Some("0:10.0"),
+                "the row shows its length again"
+            );
+            // The clip is a cut of the source, not of the file: it keeps the source it had.
+            let clip_media = match s.rt.read(&clip, "media").unwrap() {
+                Value::Ref(r) => std::rc::Rc::unwrap_or_clone(r.target),
+                other => panic!("media reads {other:?}"),
+            };
+            assert_eq!(clip_media.id_string(), media.id_string());
         }
 
         phase pressing_a_clip_opens_what_its_place_shows;

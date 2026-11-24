@@ -51,6 +51,9 @@ type Media (title: name, untitled: "Untitled source") {
     still: Text = ""
     /// Its loudness across the whole file, a fraction of full scale, as the waveform draws it.
     peaks: List<Float>
+    /// Whether this device cannot read the source's bytes: they were never brought here, or they
+    /// live on another device of the workspace. Its clips draw nothing until it is relinked.
+    missing: Bool = false
     /// A title's words.
     words: Text = ""
     /// A title's cap height, a fraction of the frame height.
@@ -1010,26 +1013,21 @@ action trouble(p: Project, why: Text) {
     p.trouble = why
 }
 
-/// Asks the device what a file is, adds it as a source and draws its swatch and waveform.
-action absorb(p: Project, file: File) -> Bool {
+/// Asks the device what a file is, adds it as a source and draws its swatch and waveform. What
+/// the device said when it could not be added, or empty when it was: a batch names each file
+/// that did not arrive and why, so a person knows what to do about it.
+action absorb(p: Project, file: File) -> Text {
     let asked = engine.call("probe", json.encode(ProbeAsk(url: file.url)))
     match asked {
-        .err(why) => {
-            trouble(p, why)
-            false
-        }
+        .err(why) => why,
         .ok(text) => match json.decode<Probed>(text) {
-            .err(why) => {
-                trouble(p, why)
-                false
-            }
+            .err(why) => why,
             .ok(probed) => {
-                let length = if probed.kind == "image" { 5.0 } else { probed.duration }
                 let made = p.media.insert(
                     Media(
                         name: file.name,
                         form: form_of(probed.kind),
-                        duration: length,
+                        duration: if probed.kind == "image" { 5.0 } else { probed.duration },
                         width: probed.width,
                         height: probed.height,
                         fps: probed.fps,
@@ -1038,19 +1036,79 @@ action absorb(p: Project, file: File) -> Bool {
                         palette: p.media.len(),
                     ),
                 )
-                if not p.explicit_format and probed.width > 0 and probed.height > 0 {
-                    p.width = probed.width
-                    p.height = probed.height
-                    if probed.fps > 0.0 {
-                        p.fps = probed.fps
-                    }
-                }
+                adopt_probe(p, made, probed)
                 draw_swatch(made, 200)
                 if made.has_audio or made.form == .audio { hear(made) }
-                true
+                ""
             }
         },
     }
+}
+
+/// Writes what the device read of a source onto it: what it is, how long it runs, its size and
+/// rate, and whether it carries sound.
+action adopt_probe(p: Project, m: Media, probed: Probed) {
+    m.form = form_of(probed.kind)
+    m.duration = if probed.kind == "image" { 5.0 } else { probed.duration }
+    m.width = probed.width
+    m.height = probed.height
+    m.fps = probed.fps
+    m.has_audio = probed.has_audio
+    if not p.explicit_format and probed.width > 0 and probed.height > 0 {
+        p.width = probed.width
+        p.height = probed.height
+        if probed.fps > 0.0 {
+            p.fps = probed.fps
+        }
+    }
+}
+
+/// Checks that a source's bytes are here: reads what they are again, draws its swatch and
+/// waveform, and marks it not on this device when the engine cannot reach them.
+action refresh_source(p: Project, m: Media) {
+    match engine.call("probe", json.encode(ProbeAsk(url: m.path))) {
+        .err(why) => mark_missing(p, m, why),
+        .ok(text) => match json.decode<Probed>(text) {
+            .err(why) => mark_missing(p, m, why),
+            .ok(probed) => {
+                m.missing = false
+                adopt_probe(p, m, probed)
+                draw_swatch(m, 200)
+                if m.has_audio or m.form == .audio { hear(m) }
+                trouble(p, "")
+                redraw(p)
+            }
+        },
+    }
+}
+
+/// Points a source at a file the person chose: the clips are cuts of the source, so they keep
+/// it, and the source reads what its new file says.
+action relink(p: Project, m: Media, file: File) (icon: .link, label: "Relink the source") {
+    match engine.call("probe", json.encode(ProbeAsk(url: file.url))) {
+        .err(why) => mark_missing(p, m, why),
+        .ok(text) => match json.decode<Probed>(text) {
+            .err(why) => mark_missing(p, m, why),
+            .ok(probed) => {
+                m.path = file.url
+                m.name = file.name
+                m.missing = false
+                m.still = ""
+                m.peaks = []
+                adopt_probe(p, m, probed)
+                draw_swatch(m, 200)
+                if m.has_audio or m.form == .audio { hear(m) }
+                trouble(p, "")
+                redraw(p)
+            }
+        },
+    }
+}
+
+/// Says the source's bytes are not on this device, and why the engine could not read them.
+action mark_missing(p: Project, m: Media, why: Text) {
+    m.missing = true
+    trouble(p, why)
 }
 
 /// The source's picture as the bin shows it.
@@ -1271,15 +1329,26 @@ action forget_project(e: Editor, p: Project) (icon: .trash_2, label: "Delete pro
     e.projects.remove(p)
 }
 
-/// Adds every file a person chose or dropped as a source.
+/// Adds every file a person chose or dropped as a source, and says which files did not arrive
+/// and what the device said of each.
 action import_files(p: Project, files: List<File>) {
+    let refused: List<Text> = []
     for file in files {
-        absorb(p, file)
+        let why = absorb(p, file)
+        if why != "" {
+            refused = [refused, ["{file.name}: {why}"]].flat_map(x -> x)
+        }
+    }
+    if refused.is_empty() {
+        trouble(p, "")
+    } else {
+        trouble(p, std.say("Not added: {refused.join("; ")}"))
     }
 }
 
 action import_one(p: Project, file: File) {
-    absorb(p, file)
+    let why = absorb(p, file)
+    trouble(p, why)
 }
 
 /// Opens a video, a sound or a picture in a cut of its own: what Files and the person's own
@@ -1311,13 +1380,14 @@ action open_media(e: Editor, file: File) -> Project (
     let p = e.projects.insert(Project(name: file.name))
     p.tracks.insert(Track(name: "V1", form: .video, index: 1))
     p.tracks.insert(Track(name: "A1", form: .audio, index: 1))
-    if absorb(p, file) {
-        if let m = p.media.find(x -> x.path == file.url) {
-            let track = if m.form == .audio {
-                p.tracks.find(t -> t.form == .audio)
-            } else { p.tracks.find(t -> t.form == .video) }
-            if let track = track { place(p, m, track, 0.0) }
-        }
+    let why = absorb(p, file)
+    if why != "" {
+        trouble(p, why)
+    } else if let m = p.media.find(x -> x.path == file.url) {
+        let track = if m.form == .audio {
+            p.tracks.find(t -> t.form == .audio)
+        } else { p.tracks.find(t -> t.form == .video) }
+        if let track = track { place(p, m, track, 0.0) }
     }
     draw_still(p, 0.0)
     e.open = .some(p)
@@ -2853,12 +2923,16 @@ view window(e: Editor) {
                             ui.ListRow(
                                 m.name,
                                 item: m,
-                                icon: if m.form == .audio {
+                                icon: if m.missing {
+                                    .triangle_alert
+                                } else if m.form == .audio {
                                     .music
                                 } else if m.form == .image {
                                     .image
                                 } else if m.form == .title { .pencil } else { .film },
-                                meta: if m.form == .title {
+                                meta: if m.missing {
+                                    std.say("Not on this device")
+                                } else if m.form == .title {
                                     std.say("Title")
                                 } else { clock(m.duration) },
                                 selected: m.id() == picked_media,
@@ -3903,12 +3977,39 @@ template view inspector(
                 }
             }
         } else {
+            if m.missing {
+                ui.Text(
+                    std.say(
+                        "This device cannot read the source: it is not here, or another device holds it. Relink it to a file of its own.",
+                    ),
+                    role: .caption,
+                    secondary: true,
+                )
+            }
             row(gap: .tight, align: .center, wrap: true) {
                 ui.Button(std.say("Place at the playhead"), icon: .plus) {
                     on press: place_media(p, m, playhead)
                 }
                 ui.Button(std.say("Use its format"), icon: .crop) {
                     on press: adopt_format(p, m)
+                }
+                ui.Button(std.say("Relink the source"), icon: .link) {
+                    on press: file.choose(
+                        relink(p, m),
+                        accept: [
+                            "video/mp4",
+                            "video/quicktime",
+                            "video/x-matroska",
+                            "video/webm",
+                            "audio/mpeg",
+                            "audio/wav",
+                            "image/png",
+                            "image/jpeg",
+                        ],
+                    )
+                }
+                ui.Button(std.say("Check this device"), icon: .refresh) {
+                    on press: refresh_source(p, m)
                 }
                 ui.Button(std.say("Delete the source"), icon: .trash_2) {
                     on press: delete_media(p, m)

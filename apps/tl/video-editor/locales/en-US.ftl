@@ -39,6 +39,9 @@ d-3vgrlwgv = Still
 d-vddvspwk = Peaks
     .doc = Its loudness across the whole file, a fraction of full scale, as the waveform draws it.
 
+d-v4yfudyw = Missing
+    .doc = Whether this device cannot read the source's bytes: they were never brought here, or they live on another device of the workspace.
+
 d-e7atusb5 = Words
     .doc = A title's words.
 
@@ -1470,6 +1473,32 @@ d-e7mxkoe3 = Absorb
 
 d-e7mxkoe3-file = File
 
+d-s34s56u6 = Adopt probe
+    .doc = Writes what the device read of a source onto it: what it is, how long it runs, its size and rate, and whether it carries sound.
+
+d-s34s56u6-m = M
+
+d-s34s56u6-probed = Probed
+
+d-trebb62h = Refresh source
+    .doc = Checks that a source's bytes are here: reads what they are again, draws its swatch and waveform, and marks it not on this device when the engine cannot reach them.
+
+d-trebb62h-m = M
+
+d-rf7qyeis = Relink the source
+    .doc = Points a source at a file the person chose: the clips are cuts of the source, so they keep it, and the source reads what its new file says.
+
+d-rf7qyeis-m = M
+
+d-rf7qyeis-file = File
+
+d-g77prxmq = Mark missing
+    .doc = Says the source's bytes are not on this device, and why the engine could not read them.
+
+d-g77prxmq-m = M
+
+d-g77prxmq-why = Why
+
 d-o5pyx57x = Draw swatch
     .doc = The source's picture as the bin shows it.
 
@@ -1515,7 +1544,8 @@ d-p2rzlwd5 = Delete project
 d-p2rzlwd5-p = P
 
 d-jly5vvua = Import files
-    .doc = Adds every file a person chose or dropped as a source.
+    .doc = Adds every file a person chose or dropped as a source, and says which files did not arrive and what the device said of each.
+    .w-not-added = Not added: { $join }
 
 d-jly5vvua-files = Files
 
@@ -1907,6 +1937,7 @@ d-kga7o3ur = Window
     .w-sources = Sources
     .w-drop-video-sound-or-pictures = Drop video, sound or pictures
     .w-they-become-clips-of-this-cut = They become clips of this cut
+    .w-not-on-this-device = Not on this device
     .w-title = Title
     .w-nothing-to-show-yet = Nothing to show yet
     .w-add-a-source-and-the-frame = Add a source and the frame at the playhead stands here
@@ -2032,7 +2063,10 @@ d-kga7o3ur = Window
     .w-left = Left
     .w-centre = Centre
     .w-right = Right
+    .w-this-device-cannot-read-the-source = This device cannot read the source: it is not here, or another device holds it. Relink it to a file of its own.
     .w-place-at-the-playhead = Place at the playhead
+    .w-relink-the-source = Relink the source
+    .w-check-this-device = Check this device
     .w-delete-the-source = Delete the source
     .w-choose-a-clip-or-a-source = Choose a clip or a source
     .w-tracks = Tracks
