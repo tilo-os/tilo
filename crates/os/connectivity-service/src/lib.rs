@@ -91,6 +91,21 @@ enum Landed {
         result: Result<(), String>,
         readings: Box<Readings>,
     },
+    /// What a modem answered an action that asks it something, which its reading then shows.
+    Answered {
+        action: String,
+        modem: String,
+        result: Result<Answer, String>,
+        readings: Box<Readings>,
+    },
+}
+
+/// What an action that asks the modem answered, kept in its reading.
+enum Answer {
+    /// The operators a scan found.
+    Operators(Vec<model::Operator>),
+    /// What the network said to a code; `None` when the session was ended.
+    Code(Option<model::Code>),
 }
 
 /// Where this device's own network policy is kept: the leaves Tilo holds itself, beside what
@@ -223,6 +238,24 @@ impl Connectivity {
                 let (_, problem) = self.status(part);
                 *problem = result.err();
             }
+            Landed::Answered {
+                action,
+                modem,
+                result,
+                readings,
+            } => {
+                self.take(*readings);
+                {
+                    let (pending, problem) = self.status(Part::Modem);
+                    if let Some(at) = pending.iter().position(|id| *id == action) {
+                        pending.remove(at);
+                    }
+                    *problem = result.as_ref().err().cloned();
+                }
+                if let Ok(answer) = result {
+                    self.show_answer(&modem, answer);
+                }
+            }
         }
         // An open network this device keeps that joined by itself while it asks first is put
         // back in step once, when it starts doing so: a change that fails leaves the reading as
@@ -261,6 +294,24 @@ impl Connectivity {
         });
     }
 
+    /// Show what a modem answered in its reading: the operators a scan found, or the code's
+    /// answer.
+    fn show_answer(&mut self, modem: &str, answer: Answer) {
+        let Some(unit) = self
+            .readings
+            .modem
+            .modems
+            .iter_mut()
+            .find(|unit| unit.path == modem)
+        else {
+            return;
+        };
+        match answer {
+            Answer::Operators(operators) => unit.operators = operators,
+            Answer::Code(code) => unit.code = code,
+        }
+    }
+
     /// Take a fresh reading, keeping what is the service's own: the actions
     /// pending, the last problem and the person's network policy.
     fn take(&mut self, mut readings: Readings) {
@@ -276,6 +327,14 @@ impl Connectivity {
         readings.tethering.pending = std::mem::take(&mut old.tethering.pending);
         readings.tethering.problem = old.tethering.problem.take();
         readings.network.ask_before_open_networks = self.asking;
+        // What the service itself asked a modem: the operators a scan found and the code the
+        // network answered stay across the readings the device publishes.
+        for unit in &mut readings.modem.modems {
+            if let Some(held) = old.modem.modems.iter().find(|held| held.path == unit.path) {
+                unit.operators.clone_from(&held.operators);
+                unit.code.clone_from(&held.code);
+            }
+        }
         address_rows(&mut readings);
         self.readings = readings;
     }
@@ -1306,6 +1365,11 @@ pub fn modem_resource(modem: &Modem) -> ResourceSpec {
             "change-sim-pin",
             "use-sim",
             "set-preferred-network",
+            "scan-operators",
+            "select-operator",
+            "send-code",
+            "answer-code",
+            "cancel-code",
         ] {
             unavailable(
                 &mut resource,
@@ -1382,6 +1446,44 @@ fn network_modes(key: &str) -> Result<os_actions::NetworkModes, String> {
 impl Connectivity {
     fn modem(&mut self, action: ModemAction) -> Result<Started, ApiError> {
         let id = action.id();
+        // What the modem answers is the reading's to show, not a change's.
+        match &action {
+            ModemAction::ScanOperators { modem } => {
+                let path = self.modem_at(modem.as_deref())?;
+                return Ok(self.answer_from_modem(id, path, |device, path| {
+                    device.scan_operators(path).map(|found| {
+                        Answer::Operators(model::ordered_operators(
+                            found.iter().map(model::Operator::from).collect(),
+                        ))
+                    })
+                }));
+            }
+            ModemAction::SendCode { modem, code } => {
+                let path = self.modem_at(modem.as_deref())?;
+                let code = code.clone();
+                return Ok(self.answer_from_modem(id, path, move |device, path| {
+                    device
+                        .send_code(path, &code)
+                        .map(|answer| Answer::Code(Some(model::Code::from(&answer))))
+                }));
+            }
+            ModemAction::AnswerCode { modem, answer } => {
+                let path = self.modem_at(modem.as_deref())?;
+                let answer = answer.clone();
+                return Ok(self.answer_from_modem(id, path, move |device, path| {
+                    device
+                        .answer_code(path, &answer)
+                        .map(|answer| Answer::Code(Some(model::Code::from(&answer))))
+                }));
+            }
+            ModemAction::CancelCode { modem } => {
+                let path = self.modem_at(modem.as_deref())?;
+                return Ok(self.answer_from_modem(id, path, |device, path| {
+                    device.cancel_code(path).map(|()| Answer::Code(None))
+                }));
+            }
+            _ => {}
+        }
         let change = match action {
             ModemAction::RefreshModems => {
                 refresh(&self.worker.jobs());
@@ -1428,8 +1530,70 @@ impl Connectivity {
                 let path = self.modem_path(modem.as_deref(), &network)?;
                 Change::ModemModes { modem: path, modes }
             }
+            ModemAction::SelectOperator { modem, operator } => {
+                let path = self.modem_at(modem.as_deref())?;
+                Change::ModemRegister {
+                    modem: path,
+                    operator,
+                }
+            }
+            ModemAction::ScanOperators { .. }
+            | ModemAction::SendCode { .. }
+            | ModemAction::AnswerCode { .. }
+            | ModemAction::CancelCode { .. } => {
+                unreachable!("answered above, before the change")
+            }
         };
         Ok(self.start(Part::Modem, id, change))
+    }
+
+    /// Run `work` on the worker: what the modem at `path` answered, which its reading then shows
+    /// when it lands.
+    fn answer_from_modem(
+        &mut self,
+        action: &str,
+        path: String,
+        work: impl FnOnce(&dyn Device, &str) -> Result<Answer, String> + Send + 'static,
+    ) -> Started {
+        let action = action.to_owned();
+        self.status(Part::Modem).0.push(action.clone());
+        let (answer, answered) = tilo_actions::remote::pending();
+        let modem = path;
+        let asked = modem.clone();
+        self.worker.run(move |device| {
+            let result = work(device, &asked);
+            let readings = Box::new(device.read());
+            answer.complete(
+                result
+                    .as_ref()
+                    .map(|_| ActionOutput::default())
+                    .map_err(|why| ApiError::Failed(why.clone())),
+            );
+            Landed::Answered {
+                action,
+                modem,
+                result,
+                readings,
+            }
+        });
+        Started::Later(answered)
+    }
+
+    /// The modem the person names, by its path or name, or the first one this device has.
+    fn modem_at(&self, wanted: Option<&str>) -> Result<String, ApiError> {
+        self.readings
+            .modem
+            .modems
+            .iter()
+            .find(|modem| wanted.is_none_or(|wanted| modem.path == wanted || modem.name == wanted))
+            .map(|modem| modem.path.clone())
+            .ok_or_else(|| ApiError::Unavailable {
+                code: "no_such_modem".into(),
+                reason: match wanted {
+                    Some(wanted) => format!("{wanted} is not a modem of this device"),
+                    None => "this device has no modem".into(),
+                },
+            })
     }
 
     fn sim_path(

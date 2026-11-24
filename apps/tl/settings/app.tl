@@ -1011,11 +1011,7 @@ fn shared_name(screen: device.SharedScreen) -> Text {
 fn shared_status(screen: device.SharedScreen) -> Text {
     if not screen.online {
         "Offline"
-    } else if not screen.reachable {
-        "Online, away from your other screens"
-    } else {
-        "Online"
-    }
+    } else if not screen.reachable { "Online, away from your other screens" } else { "Online" }
 }
 
 /// The layout as assistive technology hears it: every screen, and where it stands.
@@ -1100,9 +1096,7 @@ fn shared_shapes(
     let across = (drag.at(0) ?? 0.0) - (start.at(0) ?? 0.0)
     let down = (drag.at(1) ?? 0.0) - (start.at(1) ?? 0.0)
     let moving = screens.at(picked)?.device ?? ""
-    screens.flat_map(
-        (screen, i) -> shared_tile(screen, i, picked, moving, across, down, bounds),
-    )
+    screens.flat_map((screen, i) -> shared_tile(screen, i, picked, moving, across, down, bounds))
 }
 
 /// Move the device whose screen was dragged so that screen stands where the pointer was let go,
@@ -1318,14 +1312,9 @@ view displays_pane() {
                 label: shared_label(person.screens),
                 height: .some(240.0),
             ) {
-                on press(at: Int): set(
-                    picked_shared,
-                    (at / 2).min(person.screens.len() - 1),
-                )
-                on drag_start(x: Float, y: Float): set(start_shared, [x, y]).then(set(
-                    drag_shared,
-                    [x, y],
-                ))
+                on press(at: Int): set(picked_shared, (at / 2).min(person.screens.len() - 1))
+                on drag_start(x: Float, y: Float): set(start_shared, [x, y])
+                    .then(set(drag_shared, [x, y]))
                 on drag_at(at: List<Float>): set(drag_shared, at)
                 on release_at(at: List<Float>): move_shared_screen(
                     night,
@@ -1546,10 +1535,7 @@ view displays_pane() {
                 ui.ListRow(tool.name, icon: .shield) {
                     trailing: {
                         ui.Button("Ask again") {
-                            on press: device.forget_display_tool(
-                                device.displays,
-                                tool.executable,
-                            )
+                            on press: device.forget_display_tool(device.displays, tool.executable)
                         }
                     }
                 }

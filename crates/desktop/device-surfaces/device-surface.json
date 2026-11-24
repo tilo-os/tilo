@@ -2216,6 +2216,140 @@
               "type": "text"
             }
           ]
+        },
+        {
+          "id": "scan-operators",
+          "label": "Look for the operators the modem can reach",
+          "description": "Look for the operators the modem can reach, and list them.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "modem",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "select-operator",
+          "label": "Stand on an operator's network, or choose one automatically",
+          "description": "Stand on an operator's network, or choose the one this device uses automatically.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "modem",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "operator",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "send-code",
+          "label": "Send a code the operator answers, such as *100#",
+          "description": "Send a code the operator answers, such as `*100#` for a balance.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "modem",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "code",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "answer-code",
+          "label": "Answer the question the operator's code asked",
+          "description": "Answer the question the operator's code asked.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "modem",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "answer",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "cancel-code",
+          "label": "End the code's session with the operator",
+          "description": "End the code's session with the operator.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "modem",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
         }
       ],
       "fields": [
@@ -2253,6 +2387,20 @@
         }
       ],
       "types": [
+        {
+          "name": "Code",
+          "doc": "What the network answered a code, and whether it waits for the person's answer.",
+          "fields": [
+            {
+              "name": "text",
+              "type": "text"
+            },
+            {
+              "name": "awaiting",
+              "type": "bool"
+            }
+          ]
+        },
         {
           "name": "ModemFailure",
           "doc": "Why a modem cannot be used.",
@@ -2426,6 +2574,22 @@
               }
             },
             {
+              "name": "operators",
+              "type": {
+                "list": {
+                  "named": "Operator"
+                }
+              }
+            },
+            {
+              "name": "code",
+              "type": {
+                "option": {
+                  "named": "Code"
+                }
+              }
+            },
+            {
               "name": "registration",
               "type": {
                 "named": "Registration"
@@ -2468,6 +2632,48 @@
               "type": {
                 "option": "int"
               }
+            }
+          ]
+        },
+        {
+          "name": "Operator",
+          "doc": "An operator the modem can reach.",
+          "fields": [
+            {
+              "name": "code",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "OperatorState"
+              }
+            }
+          ]
+        },
+        {
+          "name": "OperatorState",
+          "doc": "Whether a modem may use an operator it reaches.",
+          "cases": [
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            },
+            {
+              "name": "available",
+              "label": "Available"
+            },
+            {
+              "name": "current",
+              "label": "Current"
+            },
+            {
+              "name": "forbidden",
+              "label": "Forbidden"
             }
           ]
         },
@@ -15736,7 +15942,7 @@
         {
           "id": "open-link",
           "label": "Open a link",
-          "description": "Open what a `tilo://open#\u2026` link names: the app that keeps it shows it, started first when no window of it does. An app that shows a link opens it this way, whoever it was copied from.",
+          "description": "Open what a `tilo://open#…` link names: the app that keeps it shows it, started first when no window of it does. An app that shows a link opens it this way, whoever it was copied from.",
           "kind": "read",
           "params": [
             {

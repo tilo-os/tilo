@@ -184,6 +184,12 @@ pub enum Change {
         modem: String,
         modes: os_actions::NetworkModes,
     },
+    /// Stand on the operator's network whose MCC and MNC `operator` holds, or on one the modem
+    /// chooses when it is `None`.
+    ModemRegister {
+        modem: String,
+        operator: Option<String>,
+    },
 }
 
 /// What the device reads now.
@@ -207,6 +213,30 @@ pub trait Device: Send + Sync {
     /// # Errors
     /// Why the device did not make it.
     fn change(&self, change: &Change) -> Result<(), String>;
+
+    /// The operators the modem at `modem` can reach now.
+    ///
+    /// # Errors
+    /// Why the modem could not be asked.
+    fn scan_operators(&self, modem: &str) -> Result<Vec<os_actions::Operator>, String>;
+
+    /// Send `command` to the network, as `*100#` asks, and read what it answers.
+    ///
+    /// # Errors
+    /// Why the network could not be asked.
+    fn send_code(&self, modem: &str, command: &str) -> Result<os_actions::CodeAnswer, String>;
+
+    /// Answer the question the network asked.
+    ///
+    /// # Errors
+    /// Why the network could not be answered.
+    fn answer_code(&self, modem: &str, response: &str) -> Result<os_actions::CodeAnswer, String>;
+
+    /// End the code's session with the network.
+    ///
+    /// # Errors
+    /// Why the session could not be ended.
+    fn cancel_code(&self, modem: &str) -> Result<(), String>;
 }
 
 /// The device as `NetworkManager` and `BlueZ` report it.
@@ -560,7 +590,30 @@ impl Device for OsDevice {
                 })
                 .map_err(String::from)
             }
+            Change::ModemRegister { modem, operator } => {
+                os_actions::apply_modem_change(&os_actions::ModemChange::Register {
+                    modem: modem.clone(),
+                    operator: operator.clone(),
+                })
+                .map_err(String::from)
+            }
         }
+    }
+
+    fn scan_operators(&self, modem: &str) -> Result<Vec<os_actions::Operator>, String> {
+        os_actions::scan_operators(modem).map_err(String::from)
+    }
+
+    fn send_code(&self, modem: &str, command: &str) -> Result<os_actions::CodeAnswer, String> {
+        os_actions::send_code(modem, command).map_err(String::from)
+    }
+
+    fn answer_code(&self, modem: &str, response: &str) -> Result<os_actions::CodeAnswer, String> {
+        os_actions::answer_code(modem, response).map_err(String::from)
+    }
+
+    fn cancel_code(&self, modem: &str) -> Result<(), String> {
+        os_actions::cancel_code(modem).map_err(String::from)
     }
 }
 

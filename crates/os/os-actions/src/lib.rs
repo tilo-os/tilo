@@ -78,9 +78,10 @@ pub use linux_virtual_gamepad::{
     UinputGamepadDeviceProvider,
 };
 pub use modem::{
-    MobileProfile, MobileReading, ModemChange, ModemError, ModemFailure, ModemInfo, ModemState,
-    NetworkModes, Registration, SimCard, SimKind, SimLock, Technology, Traffic, UnlockRetries,
-    apply_modem_change, read_mobile, read_mobile_profile, set_mobile_apn, set_mobile_data,
+    Availability, CodeAnswer, MobileProfile, MobileReading, ModemChange, ModemError, ModemFailure,
+    ModemInfo, ModemState, NetworkModes, Operator, Registration, SimCard, SimKind, SimLock,
+    Technology, Traffic, UnlockRetries, answer_code, apply_modem_change, cancel_code, read_mobile,
+    read_mobile_profile, scan_operators, send_code, set_mobile_apn, set_mobile_data,
     set_mobile_roaming,
 };
 pub use network::{

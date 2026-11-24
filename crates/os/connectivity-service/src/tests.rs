@@ -20,6 +20,11 @@ struct Fake {
     readings: Mutex<Readings>,
     changes: Mutex<Vec<Change>>,
     refuse: Mutex<Option<String>>,
+    /// The operators a scan finds.
+    operators: Mutex<Vec<os_actions::Operator>>,
+    /// What the network answers the next code, and what it was asked, in order.
+    answers: Mutex<Vec<os_actions::CodeAnswer>>,
+    asked: Mutex<Vec<String>>,
 }
 
 impl Fake {
@@ -143,6 +148,24 @@ impl Fake {
     fn changes(&self) -> Vec<Change> {
         self.changes.lock().expect("changes").clone()
     }
+
+    /// What the network answers next: the next one queued, else a plain confirmation.
+    fn answer(&self) -> os_actions::CodeAnswer {
+        let mut answers = self.answers.lock().expect("answers");
+        if answers.is_empty() {
+            os_actions::CodeAnswer {
+                text: "Done".into(),
+                awaiting: false,
+            }
+        } else {
+            answers.remove(0)
+        }
+    }
+
+    /// The codes and answers the network was given, in order.
+    fn asked(&self) -> Vec<String> {
+        self.asked.lock().expect("asked").clone()
+    }
 }
 
 fn network(name: &str, known: bool, secure: bool, connected: bool) -> WifiNetwork {
@@ -170,6 +193,36 @@ fn saved(name: &str, id: &str, autoconnect: bool) -> SavedNetwork {
 impl Device for Fake {
     fn read(&self) -> Readings {
         self.readings.lock().expect("readings").clone()
+    }
+
+    fn scan_operators(&self, modem: &str) -> Result<Vec<os_actions::Operator>, String> {
+        let readings = self.readings.lock().expect("readings");
+        assert!(
+            readings.modem.modems.iter().any(|held| held.path == modem),
+            "a modem of this device: {modem}"
+        );
+        Ok(self.operators.lock().expect("operators").clone())
+    }
+
+    fn send_code(&self, _modem: &str, command: &str) -> Result<os_actions::CodeAnswer, String> {
+        self.asked.lock().expect("asked").push(command.to_owned());
+        if let Some(refusal) = self.refuse.lock().expect("refuse").clone() {
+            return Err(refusal);
+        }
+        Ok(self.answer())
+    }
+
+    fn answer_code(&self, _modem: &str, response: &str) -> Result<os_actions::CodeAnswer, String> {
+        self.asked
+            .lock()
+            .expect("asked")
+            .push(format!("answer {response}"));
+        Ok(self.answer())
+    }
+
+    fn cancel_code(&self, _modem: &str) -> Result<(), String> {
+        self.asked.lock().expect("asked").push("cancel".into());
+        Ok(())
     }
 
     fn change(&self, change: &Change) -> Result<(), String> {
@@ -1394,4 +1447,150 @@ fn an_open_network_waits_for_the_person_while_the_device_asks() {
     let network = read(&service, NETWORK);
     assert_eq!(network["ask-before-open-networks"], json!(false));
     assert_eq!(network["saved"][0]["autoconnect"], json!(true));
+}
+
+/// A modem lists the operators it reaches, stands on the one chosen, and the network answers the
+/// codes the person sends, asking on when it wants a reply.
+#[test]
+fn a_modem_lists_its_operators_and_the_network_answers_a_code() {
+    let fake = Fake::phone();
+    *fake.operators.lock().expect("operators") = vec![
+        os_actions::Operator {
+            code: "26202".into(),
+            name: "Feldnetz".into(),
+            availability: os_actions::Availability::Available,
+        },
+        os_actions::Operator {
+            code: "26201".into(),
+            name: "Stadtnetz".into(),
+            availability: os_actions::Availability::Current,
+        },
+    ];
+    let mut service = service(&fake);
+    assert_eq!(read(&service, MODEM)["modems"][0]["operators"], json!([]));
+
+    service
+        .invoke(MODEM, "scan-operators", &Map::new())
+        .expect("taken");
+    assert_eq!(
+        read(&service, MODEM)["pending"],
+        json!(["scan-operators"]),
+        "the scan is pending until the modem answers"
+    );
+    service.settle();
+    let modem = &read(&service, MODEM)["modems"][0];
+    let operators: Vec<(&str, &str)> = modem["operators"]
+        .as_array()
+        .expect("operators")
+        .iter()
+        .map(|operator| {
+            (
+                operator["name"].as_str().expect("a name"),
+                operator["state"].as_str().expect("a state"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        operators,
+        [("Stadtnetz", "current"), ("Feldnetz", "available")],
+        "the operator it stands on first"
+    );
+    assert_eq!(read(&service, MODEM)["pending"], json!([]));
+
+    // Choosing one by hand, and letting the modem choose.
+    service
+        .invoke(
+            MODEM,
+            "select-operator",
+            &arguments(json!({"operator": "26202"})),
+        )
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::ModemRegister {
+            modem: "/mm/modem0".into(),
+            operator: Some("26202".into()),
+        })
+    );
+    service
+        .invoke(MODEM, "select-operator", &Map::new())
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::ModemRegister {
+            modem: "/mm/modem0".into(),
+            operator: None,
+        })
+    );
+
+    // A code the network answers outright.
+    *fake.answers.lock().expect("answers") = vec![os_actions::CodeAnswer {
+        text: "Balance: 10.00".into(),
+        awaiting: false,
+    }];
+    service
+        .invoke(MODEM, "send-code", &arguments(json!({"code": "*100#"})))
+        .expect("taken");
+    service.settle();
+    let modem = &read(&service, MODEM)["modems"][0];
+    assert_eq!(modem["code"]["text"], json!("Balance: 10.00"));
+    assert_eq!(modem["code"]["awaiting"], json!(false));
+
+    // A menu, which waits for the person's answer and then ends.
+    *fake.answers.lock().expect("answers") = vec![
+        os_actions::CodeAnswer {
+            text: "1 balance, 2 bundle".into(),
+            awaiting: true,
+        },
+        os_actions::CodeAnswer {
+            text: "Bundle: 5 GB".into(),
+            awaiting: false,
+        },
+    ];
+    service
+        .invoke(MODEM, "send-code", &arguments(json!({"code": "*101#"})))
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        read(&service, MODEM)["modems"][0]["code"]["awaiting"],
+        json!(true)
+    );
+    service
+        .invoke(MODEM, "answer-code", &arguments(json!({"answer": "2"})))
+        .expect("taken");
+    service.settle();
+    let modem = &read(&service, MODEM)["modems"][0];
+    assert_eq!(modem["code"]["text"], json!("Bundle: 5 GB"));
+    assert_eq!(modem["code"]["awaiting"], json!(false));
+    assert_eq!(
+        fake.asked(),
+        ["*100#", "*101#", "answer 2"],
+        "the network was given what the person sent"
+    );
+
+    service
+        .invoke(MODEM, "cancel-code", &Map::new())
+        .expect("taken");
+    service.settle();
+    assert_eq!(read(&service, MODEM)["modems"][0]["code"], Value::Null);
+    assert_eq!(fake.asked().last().map(String::as_str), Some("cancel"));
+}
+
+/// A code the network refuses is the modem resource's problem, and leaves nothing behind.
+#[test]
+fn a_code_the_network_refuses_says_why() {
+    let fake = Fake::phone();
+    let mut service = service(&fake);
+    *fake.refuse.lock().expect("refuse") = Some("a SIM lock holds the modem".into());
+    service
+        .invoke(MODEM, "send-code", &arguments(json!({"code": "*100#"})))
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        read(&service, MODEM)["problem"],
+        json!("a SIM lock holds the modem")
+    );
+    assert_eq!(read(&service, MODEM)["modems"][0]["code"], Value::Null);
 }
