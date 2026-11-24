@@ -1723,6 +1723,15 @@ fn read_from(
                 .map_err(|error| error.to_string())?
                 .map(|children| tilo_resource_store::wire::PastChildren::page(children, *from)),
         ),
+        // A review reads the documents of what it restores, wherever they are kept.
+        Command::ReviewRestore { resources, change } => {
+            let readable = tilo_resource_store::wire::readable(&store, resources, &may_read);
+            Reply::Review(
+                store
+                    .review_restore(&readable, change)
+                    .map_err(|error| error.to_string()),
+            )
+        }
         _ => read(&store, command, &may_read).unwrap_or(Reply::Written),
     };
     Ok(answer)
@@ -2347,8 +2356,9 @@ fn stamp_resource_invoker(
     let (kind, stamp) = match command {
         Command::Put { kind, stamp, .. }
         | Command::Remove { kind, stamp, .. }
-        | Command::Edit { kind, stamp, .. } => (kind.as_str(), stamp),
-        Command::Undo { stamp, .. } => ("", stamp),
+        | Command::Edit { kind, stamp, .. }
+        | Command::Checkpoint { kind, stamp, .. } => (kind.as_str(), stamp),
+        Command::Undo { stamp, .. } | Command::Restore { stamp, .. } => ("", stamp),
         Command::Batch(commands) => {
             for command in commands {
                 stamp_resource_invoker(command, device, served, otherwise, person, unserved);
@@ -2376,6 +2386,7 @@ fn stamp_resource_invoker(
         | Command::Reach { .. }
         | Command::RecordChanges { .. }
         | Command::RecordChange { .. }
+        | Command::ReviewRestore { .. }
         | Command::Records => return,
     };
     let invoker = served(&stamp.invocation).unwrap_or_else(|| {

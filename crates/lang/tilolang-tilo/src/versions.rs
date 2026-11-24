@@ -55,31 +55,32 @@ fn history_label(host: &Host, id: &str) -> String {
 pub fn versions(host: &Host, tree: &ResourceSpec) -> Result<Vec<Version>, String> {
     let store = host.store();
     let mut versions = Vec::new();
-    let mut failed = None;
-    each_published(tree, &mut |spec| {
-        let Some((_, path)) = split_published(spec.id.as_str()) else {
-            return;
-        };
-        let Some(ty) = store
-            .kinds()
-            .of_kind(&spec.kind)
-            .map(|entry| entry.id.clone())
-        else {
-            return;
-        };
-        let Some(at) = ResourceRef::parse_id(path, ty) else {
-            return;
-        };
-        match store.versions(&at) {
-            Ok(held) => versions.extend(held),
-            Err(error) => failed = Some(error.to_string()),
-        }
-    });
-    if let Some(error) = failed {
-        return Err(error);
+    for at in published_refs(host, tree) {
+        versions.extend(store.versions(&at).map_err(|error| error.to_string())?);
     }
     versions.sort_by(|a, b| a.order().cmp(&b.order()));
     Ok(versions)
+}
+
+/// The published resource `tree`, which `host` reads, and every resource published in it, as
+/// the store names them; those of no type loaded here left out.
+#[must_use]
+pub fn published_refs(host: &Host, tree: &ResourceSpec) -> Vec<ResourceRef> {
+    let mut refs = Vec::new();
+    each_published(tree, &mut |spec| refs.extend(store_ref(host, spec)));
+    refs
+}
+
+/// The published resource `spec`, as the store names it; `None` for one of no type loaded here.
+#[must_use]
+pub fn store_ref(host: &Host, spec: &ResourceSpec) -> Option<ResourceRef> {
+    let (_, path) = split_published(spec.id.as_str())?;
+    let ty = host
+        .store()
+        .kinds()
+        .of_kind(&spec.kind)
+        .map(|entry| entry.id.clone())?;
+    ResourceRef::parse_id(path, ty)
 }
 
 /// Call `visit` with `spec` and every resource published in it, depth first.

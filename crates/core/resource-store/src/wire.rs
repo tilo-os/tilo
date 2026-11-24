@@ -17,7 +17,7 @@ use crate::admit::Stamp;
 use crate::history::Version;
 use crate::index::Indexed;
 use crate::query::{Filter, Page, Query};
-use crate::store::{Resource, Store, StoreError, Written};
+use crate::store::{Resource, Review, Store, StoreError, Written};
 use crate::value::Value;
 
 /// The most a command or its answer takes on the wire.
@@ -182,6 +182,30 @@ pub enum Command {
         change: String,
         from: u64,
     },
+    /// Name the version the resource `id` of `kind` stands at now `name`, as `stamp`: a change
+    /// with no operations, which its history lists ([`Store::checkpoint`]).
+    Checkpoint {
+        kind: String,
+        id: String,
+        name: String,
+        stamp: Stamp,
+    },
+    /// Bring `resources` (by kind and id), and what is nested in them, back to the version
+    /// `change`, as `stamp`; with `only`, just the resources it names, and with `live`, only while
+    /// their documents stand where a review saw them ([`Store::restore_version`]).
+    Restore {
+        resources: Vec<(String, String)>,
+        change: String,
+        only: Option<Vec<String>>,
+        live: Option<Vec<String>>,
+        stamp: Stamp,
+    },
+    /// What restoring `resources` to the version `change` would change, answered as
+    /// [`Reply::Review`] of the resources the person may read.
+    ReviewRestore {
+        resources: Vec<(String, String)>,
+        change: String,
+    },
 }
 
 /// One edit of a resource's content.
@@ -272,6 +296,8 @@ pub enum Reply {
     /// The resources nested in a parent at a version, a page of them, and where the next page
     /// starts ([`Command::ChildrenAt`]); `None` where the store holds no such change.
     ChildrenAt(Option<PastChildren>),
+    /// What a restore would change ([`Command::ReviewRestore`]), or why there is nothing to review.
+    Review(Result<Review, String>),
 }
 
 /// A page of the resources nested in a parent at a version ([`Reply::ChildrenAt`]).
@@ -367,6 +393,8 @@ impl Command {
                 | Self::Edit { .. }
                 | Self::Batch(_)
                 | Self::RecordChange { .. }
+                | Self::Checkpoint { .. }
+                | Self::Restore { .. }
         )
     }
 }
@@ -447,10 +475,13 @@ impl DraftScope {
                     resource.parent.as_ref().unwrap_or(kind).clone(),
                 ));
             }
-            Command::Remove { kind, id, .. } | Command::Edit { kind, id, .. } => {
+            Command::Remove { kind, id, .. }
+            | Command::Edit { kind, id, .. }
+            | Command::Checkpoint { kind, id, .. } => {
                 self.resources.insert((kind.clone(), id.clone()));
             }
-            Command::Undo { .. } => self.undo = true,
+            // A restore writes resources it does not name: those nested in what it names.
+            Command::Undo { .. } | Command::Restore { .. } => self.undo = true,
             Command::Batch(commands) => {
                 for step in commands {
                     self.add(step);
@@ -475,6 +506,25 @@ fn write_into(
         } => written.extend(store.put(&kind, &id, resource, &stamp)?),
         Command::Remove { kind, id, stamp } => written.push(store.remove(&kind, &id, &stamp)?),
         Command::Undo { invocation, stamp } => written.extend(store.undo(&invocation, &stamp)?),
+        Command::Checkpoint {
+            kind,
+            id,
+            name,
+            stamp,
+        } => written.push(store.checkpoint(&kind, &id, &name, &stamp)?),
+        Command::Restore {
+            resources,
+            change,
+            only,
+            live,
+            stamp,
+        } => written.extend(store.restore_version(
+            &resources,
+            &change,
+            only.as_deref(),
+            live.as_deref(),
+            &stamp,
+        )?),
         Command::Edit {
             kind,
             id,
@@ -512,6 +562,7 @@ fn write_into(
         | Command::Reach { .. }
         | Command::RecordChanges { .. }
         | Command::RecordChange { .. }
+        | Command::ReviewRestore { .. }
         | Command::Records => return Err(StoreError::NotAWrite),
     }
     Ok(())
@@ -607,6 +658,11 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
                 .map(|children| PastChildren::page(children, *from)),
         ),
         Command::Reach { .. } => Reply::Reach(Reach::default()),
+        Command::ReviewRestore { resources, change } => Reply::Review(
+            store
+                .review_restore_held(&readable(store, resources, may_read), change)
+                .map_err(|error| error.to_string()),
+        ),
         Command::Put { .. }
         | Command::Remove { .. }
         | Command::Undo { .. }
@@ -615,6 +671,8 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         | Command::Turn { .. }
         | Command::RecordChanges { .. }
         | Command::RecordChange { .. }
+        | Command::Checkpoint { .. }
+        | Command::Restore { .. }
         | Command::Records => return None,
     })
 }
@@ -646,6 +704,21 @@ fn grouped_reply(store: &Store, group: &str, may_read: &dyn Fn(&str) -> bool) ->
             })
             .collect(),
     )
+}
+
+/// Those of `resources` (by kind and id) that `may_read` admits: what a review of a restore
+/// reads.
+#[must_use]
+pub fn readable(
+    store: &Store,
+    resources: &[(String, String)],
+    may_read: &dyn Fn(&str) -> bool,
+) -> Vec<(String, String)> {
+    resources
+        .iter()
+        .filter(|(kind, id)| store.get(kind, id, may_read).is_some())
+        .cloned()
+        .collect()
 }
 
 /// Makes `edit` in the content whose root is `root`.

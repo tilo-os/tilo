@@ -222,6 +222,10 @@ impl Touches {
         let heads = doc.get_heads();
         if heads != self.heads {
             for change in doc.get_changes(&self.heads) {
+                if let Some((id, version)) = checkpoint(&change) {
+                    self.by_id.entry(id).or_default().push(version);
+                    continue;
+                }
                 let Some((touched, _)) = crate::admit::touched(doc, doc_id, &change) else {
                     continue;
                 };
@@ -314,6 +318,29 @@ pub fn touched_by(
     change: &automerge::Change,
 ) -> Option<crate::admit::Touched> {
     crate::admit::touched(doc, doc_id, change).map(|(touched, _)| touched)
+}
+
+/// The resource a checkpoint names, and the version it is of it: a change with no operations,
+/// stamped with the checkpoint's verb, its name and the resource's id.
+fn checkpoint(change: &automerge::Change) -> Option<(String, Version)> {
+    if !change.is_empty() {
+        return None;
+    }
+    let stamp = Stamp::of(change).filter(|stamp| stamp.verb == Stamp::CHECKPOINT_VERB)?;
+    let id = stamp.args.get(1)?.as_str()?.to_owned();
+    Some((
+        id,
+        Version {
+            stamp: Some(stamp),
+            kind: VersionKind::Changed,
+            fields: Vec::new(),
+            content: false,
+            change: change.hash().to_string(),
+            op: change.start_op().get(),
+            parent: None,
+            nested: Vec::new(),
+        },
+    ))
 }
 
 /// The version `change` is of a resource it touched as `touch` says.

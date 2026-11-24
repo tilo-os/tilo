@@ -50,7 +50,7 @@ pub use schema::{
     Verb, Writes,
 };
 pub use store::{
-    CHANGED, CREATED, Live, PastChild, RecordReader, Resource, Source, Store, StoreError, UPDATED,
-    Written, Wrote, content_resource,
+    CHANGED, CREATED, Live, PastChild, RecordReader, Resource, Review, Source, Store, StoreError,
+    UPDATED, Written, Wrote, content_resource,
 };
 pub use value::{Cell, Value};

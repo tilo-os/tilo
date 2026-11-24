@@ -866,7 +866,9 @@ fn invokers(
         Command::Put { stamp, .. }
         | Command::Remove { stamp, .. }
         | Command::Undo { stamp, .. }
-        | Command::Edit { stamp, .. } => stamp,
+        | Command::Edit { stamp, .. }
+        | Command::Checkpoint { stamp, .. }
+        | Command::Restore { stamp, .. } => stamp,
         Command::Batch(commands) => return commands.iter().flat_map(invokers).collect(),
         _ => return Vec::new(),
     };

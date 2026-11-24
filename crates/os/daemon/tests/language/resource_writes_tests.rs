@@ -218,6 +218,24 @@ impl Writer {
         placed
     }
 
+    /// Names the version the resource `id` of [`KIND`] stands at `name`, and hands the change, which
+    /// writes nothing, to `workspace`: what the workspace answered.
+    async fn checkpoint(
+        &mut self,
+        workspaces: &Workspaces,
+        workspace: &str,
+        id: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        let written = self.store.checkpoint(KIND, id, name, &create()).unwrap();
+        let mutation =
+            collab_types::DocumentMutation::Incremental(written.change.raw_bytes().to_vec());
+        let body = self.seal(workspace, &written.doc, &mutation.encode().unwrap(), false);
+        workspaces
+            .absorb_member_write(workspace, self.key.verifying_key().to_bytes(), &body)
+            .await
+    }
+
     fn draft(
         &mut self,
         workspace: &str,
@@ -1772,6 +1790,125 @@ async fn page_reads_answer_while_the_records_index_reads_it() {
     assert!(
         slowest <= quiet * 20 + std::time::Duration::from_millis(100),
         "a page read waits for the index's pass: {slowest:?} beside a quiet {quiet:?}"
+    );
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// A person admitted to `workspace` through its owner `owner`, then made a Viewer: their
+/// device's key, which reads the workspace's records and writes none.
+async fn viewer(
+    workspaces: &Workspaces,
+    workspace: &str,
+    owner: &tilo_user_identity::DeviceCert,
+) -> SigningKey {
+    use tilo_server_protocol::workspaces::JoinReply;
+    let token = [7_u8; 8];
+    let issued = workspaces
+        .pre_admit(
+            owner,
+            tilo_workspace_service::workspaces::PreAdmitRequest {
+                request_id: [7; 32],
+                grant: tilo_workspace_service::workspaces::fixtures::signed_pre_admission(
+                    workspace, &token,
+                ),
+                recipient_user_public_key: None,
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let (key, cert) = guest_device();
+    let reply = workspaces
+        .admit_proven(
+            issued.signed_invitation,
+            (cert.clone(), &key),
+            rand::random(),
+            "Viv",
+            Some(token.as_slice()),
+        )
+        .await;
+    assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+    workspaces
+        .set_member_role(
+            workspace,
+            owner,
+            tilo_workspace_service::workspaces::SetMemberRoleRequest {
+                request_id: rand::random(),
+                user_public_key: cert.user_public_key,
+                role: tilo_peer_state::join::Role::Viewer,
+            },
+        )
+        .await
+        .unwrap();
+    key
+}
+
+/// The checkpoints the workspace's store holds of `document`, by name.
+async fn checkpoints(workspaces: &Workspaces, workspace: &str, document: &str) -> Vec<String> {
+    let bytes = workspaces
+        .resource_document(workspace, APP, document)
+        .await
+        .unwrap()
+        .expect("the store holds the document");
+    let mut store = Store::new();
+    store.load(document, &bytes).unwrap();
+    store
+        .document(document)
+        .unwrap()
+        .get_changes(&[])
+        .into_iter()
+        .filter_map(Stamp::of)
+        .filter(|stamp| stamp.verb == Stamp::CHECKPOINT_VERB)
+        .filter_map(|stamp| stamp.args.first()?.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// A checkpoint writes nothing, yet it is a write of the document it names: a Viewer's is refused
+/// by the workspace's own write check, as any write of theirs is, and an editor's is taken.
+#[tokio::test]
+async fn a_viewers_checkpoint_is_refused_by_the_workspaces_write_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+    let workspaces = server.workspaces().clone();
+    let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+    let (editor_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let mut editor = Writer::new(&workspaces, &workspace, editor_key).await;
+    let fields = BTreeMap::from([("title".to_owned(), Cell::One(Value::Text("First".into())))]);
+    let document = editor
+        .put_fields(&workspaces, &workspace, "i-1", fields)
+        .await;
+
+    // The viewer's device holds the document as the editor wrote it, and names a version of it.
+    let mut reader = Writer::new(
+        &workspaces,
+        &workspace,
+        viewer(&workspaces, &workspace, &cert).await,
+    )
+    .await;
+    let held = editor.store.document(&document).unwrap().save();
+    reader.store.load(&document, &held).unwrap();
+    reader.seq = 1;
+    let answered = reader
+        .checkpoint(&workspaces, &workspace, "i-1", "Viv's")
+        .await;
+    assert!(
+        checkpoints(&workspaces, &workspace, &document)
+            .await
+            .is_empty(),
+        "a Viewer may not write the document, a version's name included: {answered:?}"
+    );
+
+    editor
+        .checkpoint(&workspaces, &workspace, "i-1", "Reviewed")
+        .await
+        .unwrap();
+    assert_eq!(
+        checkpoints(&workspaces, &workspace, &document).await,
+        ["Reviewed"],
+        "an editor's checkpoint is taken"
     );
     drop(workspaces);
     server.shutdown().await;

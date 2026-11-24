@@ -973,7 +973,7 @@ fn toml_like(value: serde_json::Value) -> tilo_actions::surface::Surface {
 mod store {
     use super::*;
     use tilo_resource_store::store::DOCUMENT_LIMIT;
-    use tilo_resource_store::{Proposal, Received, Resource, Stamp, Store, Written};
+    use tilo_resource_store::{Proposal, Received, Resource, Stamp, Store, StoreError, Written};
 
     const MEMBERS: &str = "*";
 
@@ -2072,6 +2072,176 @@ mod store {
             Cell::One("Final".into())
         );
         assert!(store.get(ISSUE, "b", &all).is_some());
+    }
+
+    /// A stamp of `verb` in `invocation`, written at `moment`.
+    fn stamp_at(verb: &str, invocation: &str, moment: u64) -> Stamp {
+        Stamp {
+            moment,
+            ..stamp(verb, invocation)
+        }
+    }
+
+    /// An issue drafted, checkpointed as "Drafted", then retitled, given a nested part and new
+    /// content: the store, and the checkpoint's version.
+    fn drafted_then_changed() -> (Store, String) {
+        use automerge::transaction::Transactable as _;
+
+        let at = stamp_at;
+        let mut store = issues();
+        store
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "Draft", "open"),
+                &at("make", "i1", 1),
+            )
+            .unwrap();
+        let ((), _) = store
+            .edit_content(ISSUE, "a", &at("make", "i1", 1), |tx, root| {
+                tx.put(root, "note", "first")
+            })
+            .unwrap();
+        let checkpoint = store
+            .checkpoint(ISSUE, "a", "Drafted", &at("checkpoint", "i2", 2))
+            .unwrap();
+        let named = store
+            .versions(ISSUE, "a")
+            .into_iter()
+            .find(|version| version.change == checkpoint.change.hash().to_string())
+            .expect("the checkpoint is a version of what it names");
+        let named = named.stamp.unwrap();
+        assert_eq!(named.verb, Stamp::CHECKPOINT_VERB);
+        assert_eq!(named.args.first(), Some(&"Drafted".into()));
+
+        // After it: a new title, a new resource nested in it, and new content.
+        store
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "Final", "open"),
+                &at("edit", "i3", 3),
+            )
+            .unwrap();
+        store
+            .put(
+                ISSUE,
+                "b",
+                resource("a", "b0", "Part", "open"),
+                &at("edit", "i3", 3),
+            )
+            .unwrap();
+        let ((), _) = store
+            .edit_content(ISSUE, "a", &at("edit", "i3", 3), |tx, root| {
+                tx.put(root, "note", "second")
+            })
+            .unwrap();
+        (store, checkpoint.change.hash().to_string())
+    }
+
+    /// A checkpoint is a version of the resource it names; a restore to it brings the resource,
+    /// what is nested in it and its content back as they stood then, after a review that a later
+    /// change makes stale, as one step an undo takes back.
+    #[test]
+    fn a_restore_to_a_checkpoint_brings_back_what_stood_then_and_is_undone_as_one_step() {
+        use automerge::ReadDoc as _;
+
+        let all = |_: &str| true;
+        let at = stamp_at;
+        let note = |store: &mut Store| {
+            let (doc, root) = store.content(ISSUE, "a").unwrap().unwrap();
+            doc.get(&root, "note").unwrap().unwrap().0.to_string()
+        };
+        let title = |store: &Store| store.get(ISSUE, "a", &all).unwrap().fields["title"].clone();
+        let (mut store, version) = drafted_then_changed();
+        let resources = [(ISSUE.to_owned(), "a".to_owned())];
+        let review = store.review_restore(&resources, &version).unwrap();
+        assert_eq!(review.differing, ["a", "b"]);
+        // A change after the review makes it stale: the restore is refused.
+        store
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "Final", "done"),
+                &at("close", "i4", 4),
+            )
+            .unwrap();
+        let refused = store
+            .restore_version(
+                &resources,
+                &version,
+                None,
+                Some(&review.live),
+                &at("restore", "i5", 5),
+            )
+            .unwrap_err();
+        assert!(matches!(refused, StoreError::History(_)), "{refused}");
+        assert_eq!(
+            store.get(ISSUE, "a", &all).unwrap().fields["state"],
+            Cell::One("done".into())
+        );
+
+        let review = store.review_restore(&resources, &version).unwrap();
+        let restore = at("restore", "i5", 5);
+        let written = store
+            .restore_version(&resources, &version, None, Some(&review.live), &restore)
+            .unwrap();
+        assert_eq!(title(&store), Cell::One("Draft".into()));
+        assert_eq!(
+            store.get(ISSUE, "a", &all).unwrap().fields["state"],
+            Cell::One("open".into())
+        );
+        assert!(
+            store.get(ISSUE, "b", &all).is_none(),
+            "what was made after it is gone"
+        );
+        assert_eq!(note(&mut store), "\"first\"");
+        for write in &written {
+            let stamp = Stamp::of(&write.change).unwrap();
+            assert_eq!(stamp.invocation, "i5");
+            let Some(tilo_actions::Did::History(step)) = stamp.context.unwrap().what else {
+                panic!("a restore is a step through history");
+            };
+            assert_eq!(step.op, tilo_actions::HistoryOp::Restore);
+        }
+        // Everything stands as it did then: a second restore has nothing to write.
+        assert!(matches!(
+            store.restore_version(&resources, &version, None, None, &at("restore", "i6", 6)),
+            Err(StoreError::History(_))
+        ));
+
+        // Undoing the restore brings back what it replaced.
+        store
+            .undo(
+                "i5",
+                &Stamp {
+                    undoes: Some("i5".to_owned()),
+                    ..at("restore", "i7", 7)
+                },
+            )
+            .unwrap();
+        assert_eq!(title(&store), Cell::One("Final".into()));
+        assert!(store.get(ISSUE, "b", &all).is_some());
+        assert_eq!(note(&mut store), "\"second\"");
+
+        // A restore of only some of them leaves the rest.
+        let only = ["b".to_owned()];
+        store
+            .restore_version(
+                &resources,
+                "Drafted",
+                Some(&only),
+                None,
+                &at("restore", "i8", 8),
+            )
+            .unwrap();
+        assert!(store.get(ISSUE, "b", &all).is_none());
+        assert_eq!(title(&store), Cell::One("Final".into()));
+        // A change of none of them is no version of theirs.
+        assert!(matches!(
+            store.review_restore(&resources, &"0".repeat(64)),
+            Err(StoreError::History(_))
+        ));
     }
 
     #[test]

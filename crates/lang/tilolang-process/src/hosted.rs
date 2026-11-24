@@ -2734,7 +2734,7 @@ impl Hosted {
             },
         };
         let by = tilolang_tilo::runtime::Actor::Member(MemberId::person(self.spec.person.as_str()));
-        match self.history_edit(&edit, &by) {
+        match self.history_edit(&edit, &by, &[]) {
             Ok(_) => {
                 self.store_moved();
                 true
@@ -2774,11 +2774,13 @@ impl Hosted {
 
     /// Carry out the history verb `edit` on the store, as `by`'s: undo takes back the last step
     /// written from this instance (or the invocation it names, everywhere it wrote), redo brings
-    /// back what the last undo took back. What the verb did, as it answers its caller.
+    /// back what the last undo took back, and a restore or a checkpoint goes back to or names a
+    /// version of the published resources `trees`. What the verb did, as it answers its caller.
     fn history_edit(
         &self,
         edit: &HistoryEdit,
         by: &tilolang_tilo::runtime::Actor,
+        trees: &[&ResourceSpec],
     ) -> Result<Option<serde_json::Value>, String> {
         let failed = |error: tilolang_tilo::runtime::store::StoreError| error.to_string();
         match edit {
@@ -2821,10 +2823,13 @@ impl Hosted {
             }
             HistoryEdit::Restore { .. }
             | HistoryEdit::RestoreReviewed { .. }
-            | HistoryEdit::Checkpoint { .. } => Err(format!(
-                "{} is not offered for this app's resources",
-                edit.verb()
-            )),
+            | HistoryEdit::Checkpoint { .. } => {
+                let host = self
+                    .instance
+                    .host()
+                    .ok_or_else(|| "the app has not started yet".to_owned())?;
+                tilolang_service::version_edit(&host, trees, edit, by).map(Some)
+            }
         }
     }
 
@@ -3678,8 +3683,10 @@ impl Hosted {
             let edit: HistoryEdit =
                 tilo_resource_store::history::verbs::edit_from_payload(&encoded.payload)
                     .map_err(|error| Refused::new("action_invalid_arguments", error))?;
+            let resources = surface.resources(Some(&shown));
+            let trees = history_trees(&resources, &address)?;
             let value = self
-                .history_edit(&edit, &invoker.acting.by)
+                .history_edit(&edit, &invoker.acting.by, &trees)
                 .map_err(|error| Refused::new("action_failed", error))?;
             self.store_moved();
             return Ok(Ran::Done(tilo_actions::ActionOutput {
@@ -3826,25 +3833,7 @@ impl Hosted {
         let view = tilo_resource_store::history::verbs::view_from_payload(payload)
             .map_err(|error| Refused::new("action_invalid_arguments", error))?;
         let resources = surface.resources(Some(shown));
-        let tree = resources
-            .iter()
-            .find(|tree| tree.id.as_str() == address.resource)
-            .ok_or_else(|| {
-                Refused::new(
-                    "action_unavailable",
-                    format!("{} keeps no history here", address.resource),
-                )
-            })?;
-        // The app's own resource has the history of everything the app keeps.
-        let trees: Vec<&ResourceSpec> = if address
-            .resource
-            .strip_prefix("tl:")
-            .is_some_and(|app| !app.contains(':'))
-        {
-            resources.iter().collect()
-        } else {
-            vec![tree]
-        };
+        let trees = history_trees(&resources, address)?;
         let reader = tilolang_tilo::runtime::Actor::Member(MemberId::person(person));
         let mut value = tilolang_service::history(host, &trees, &view, &reader)
             .map_err(|error| Refused::new("action_failed", error))?;
@@ -4640,9 +4629,16 @@ fn say_versions(history: &mut serde_json::Value, resources: &[ResourceSpec], loc
     for version in versions {
         let text = |key: &str| version[key].as_str().unwrap_or_default().to_owned();
         let (resource, action, label) = (text("resource"), text("action"), text("label"));
+        let named = version["named"].as_str().map(str::to_owned);
         let app = tilolang_tilo::publish::app_of(&resource)
             .unwrap_or_default()
             .to_owned();
+        // A checkpoint or a restore is a step through history, said as history says it.
+        let step = match (action.as_str(), named) {
+            ("checkpoint", Some(name)) => Some(tilo_actions::HistoryOp::Checkpoint { name }),
+            ("restore", _) => Some(tilo_actions::HistoryOp::Restore),
+            _ => None,
+        };
         let entry = tilo_actions::ActionContext {
             app: Some(tilo_actions::ActionApp {
                 id: app.clone(),
@@ -4652,14 +4648,19 @@ fn say_versions(history: &mut serde_json::Value, resources: &[ResourceSpec], loc
                 id: resource,
                 label,
             }),
-            what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall {
-                action: tilo_actions::ActionKey {
-                    app,
-                    kind: String::new(),
-                    action,
+            what: Some(step.map_or_else(
+                || {
+                    tilo_actions::Did::Verb(tilo_actions::VerbCall {
+                        action: tilo_actions::ActionKey {
+                            app,
+                            kind: String::new(),
+                            action,
+                        },
+                        args: std::collections::BTreeMap::new(),
+                    })
                 },
-                args: std::collections::BTreeMap::new(),
-            })),
+                |op| tilo_actions::Did::history(op, 0, None),
+            )),
             ..tilo_actions::ActionContext::default()
         };
         let sentence = reader.sentence(&entry);
@@ -4791,4 +4792,32 @@ mod tests {
         );
         assert_eq!(script.asked(), 3, "listed, then each read once");
     }
+}
+/// The published resources whose history the resource `address` names keeps, of those
+/// `resources` the window publishes: the one it names, or every one for the app's own resource,
+/// which has the history of everything the app keeps.
+fn history_trees<'a>(
+    resources: &'a [ResourceSpec],
+    address: &ActionAddress,
+) -> Result<Vec<&'a ResourceSpec>, Refused> {
+    let tree = resources
+        .iter()
+        .find(|tree| tree.id.as_str() == address.resource)
+        .ok_or_else(|| {
+            Refused::new(
+                "action_unavailable",
+                format!("{} keeps no history here", address.resource),
+            )
+        })?;
+    Ok(
+        if address
+            .resource
+            .strip_prefix("tl:")
+            .is_some_and(|app| !app.contains(':'))
+        {
+            resources.iter().collect()
+        } else {
+            vec![tree]
+        },
+    )
 }

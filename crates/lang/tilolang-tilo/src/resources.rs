@@ -577,7 +577,9 @@ fn invocations_of(command: &Command) -> Vec<String> {
         Command::Put { stamp, .. }
         | Command::Remove { stamp, .. }
         | Command::Edit { stamp, .. }
-        | Command::Undo { stamp, .. } => vec![stamp.invocation.clone()],
+        | Command::Undo { stamp, .. }
+        | Command::Checkpoint { stamp, .. }
+        | Command::Restore { stamp, .. } => vec![stamp.invocation.clone()],
         Command::Batch(commands) => {
             let mut out: Vec<String> = Vec::new();
             for invocation in commands.iter().flat_map(invocations_of) {
@@ -879,16 +881,119 @@ impl ResourceStore {
     /// # Errors
     /// When the store refused it.
     pub fn undo(&self, invocation: &str, invoker: Option<&Actor>) -> Result<String, StoreError> {
-        // An undo ends the burst of typing: what is typed next is a step of its own.
-        *self.inner.burst.borrow_mut() = None;
-        let own = uuid::Uuid::new_v4().to_string();
         let stamp = Stamp {
-            verb: "undo".to_owned(),
+            undoes: Some(invocation.to_owned()),
+            ..self.history_stamp("undo", invoker)
+        };
+        let own = stamp.invocation.clone();
+        self.command(Command::Undo {
+            invocation: invocation.to_owned(),
+            stamp,
+        })?;
+        self.moved();
+        Ok(own)
+    }
+
+    /// Names the version `at` stands at now `name`, as `invoker`'s checkpoint: a version its
+    /// history lists, which a restore can go back to.
+    ///
+    /// # Errors
+    /// When `at` is of no type loaded here, or the store refused it.
+    pub fn name_version(
+        &self,
+        at: &ResourceRef,
+        name: &str,
+        invoker: Option<&Actor>,
+    ) -> Result<(), StoreError> {
+        let at = &*self.typed(at);
+        let kind = self.kind_of_type(&at.ty)?;
+        self.command(Command::Checkpoint {
+            kind,
+            id: id_of(at),
+            name: name.to_owned(),
+            stamp: self.history_stamp(Stamp::CHECKPOINT_VERB, invoker),
+        })?;
+        self.moved();
+        Ok(())
+    }
+
+    /// Brings `resources`, and what is nested in them, back to the version `version` (a
+    /// version's change, a checkpoint's, or a checkpoint's name), as `invoker`'s one step: with `only`, just the
+    /// resources it names (by id); with `live`, only while they stand where a review saw them.
+    /// Returns the restore's invocation, which an undo takes back.
+    ///
+    /// # Errors
+    /// When the store refused it: the version is none of theirs, they moved since the review,
+    /// or they stand as they did then.
+    pub fn restore_version(
+        &self,
+        resources: &[ResourceRef],
+        version: &str,
+        only: Option<Vec<String>>,
+        live: Option<Vec<String>>,
+        invoker: Option<&Actor>,
+    ) -> Result<String, StoreError> {
+        let stamp = self.history_stamp("restore", invoker);
+        let own = stamp.invocation.clone();
+        self.command(Command::Restore {
+            resources: self.kinds_and_ids(resources),
+            change: version.to_owned(),
+            only,
+            live,
+            stamp,
+        })?;
+        // The person's own step: their next undo takes it back.
+        self.inner.written.borrow_mut().push(own.clone());
+        self.inner.undone.borrow_mut().clear();
+        self.moved();
+        Ok(own)
+    }
+
+    /// What [`Self::restore_version`] of `resources` to `version` would change, as this device's
+    /// person may read it.
+    ///
+    /// # Errors
+    /// When the version is none of theirs.
+    pub fn review_restore(
+        &self,
+        resources: &[ResourceRef],
+        version: &str,
+    ) -> Result<tilo_resource_store::Review, StoreError> {
+        let reply = self.command(Command::ReviewRestore {
+            resources: self.kinds_and_ids(resources),
+            change: version.to_owned(),
+        })?;
+        let Reply::Review(review) = reply else {
+            return Err(backend("a review of a restore answered no review"));
+        };
+        review.map_err(StoreError::Backend)
+    }
+
+    /// Each of `resources` by its kind and id in the store; one of a type not loaded here is
+    /// another app's, and none of these.
+    fn kinds_and_ids(&self, resources: &[ResourceRef]) -> Vec<(String, String)> {
+        resources
+            .iter()
+            .filter_map(|at| {
+                let at = self.typed(at);
+                let kind = self.kind_of_type(&at.ty).ok()?;
+                Some((kind, id_of(&at)))
+            })
+            .collect()
+    }
+
+    /// The stamp of a step through history by `invoker`, an invocation of its own: it ends the
+    /// burst of typing, so what is typed next is a step of its own.
+    fn history_stamp(&self, verb: &str, invoker: Option<&Actor>) -> Stamp {
+        *self.inner.burst.borrow_mut() = None;
+        Stamp {
+            verb: verb.to_owned(),
             invoker: invoker
                 .and_then(|actor| serde_json::to_string(actor).ok())
                 .unwrap_or_default(),
-            // An undo is a write like any other: made for the person its invoker acts for, under
-            // the call its caller signed, as a step of the run it is part of.
+            // A move through history is a write like any other: made for the person its
+            // invoker acts for, under the call its caller signed, as a step of the run it is
+            // part of.
             acted_for: self.inner.serving_acted_for.borrow().clone(),
             signed: self.inner.serving_signed.borrow().clone(),
             group: self
@@ -900,18 +1005,11 @@ impl ResourceStore {
                     id: run.id,
                     label: run.title,
                 }),
-            invocation: own.clone(),
-            undoes: Some(invocation.to_owned()),
+            invocation: uuid::Uuid::new_v4().to_string(),
             at: now_text(),
             moment: self.next_moment(None),
             ..Stamp::default()
-        };
-        self.command(Command::Undo {
-            invocation: invocation.to_owned(),
-            stamp,
-        })?;
-        self.moved();
-        Ok(own)
+        }
     }
 
     /// Hold back what is committed from here on, as a scenario stages a workspace: what it
@@ -941,7 +1039,9 @@ impl ResourceStore {
                 Command::Put { stamp, .. }
                 | Command::Remove { stamp, .. }
                 | Command::Edit { stamp, .. }
-                | Command::Undo { stamp, .. } => stamps.push(stamp),
+                | Command::Undo { stamp, .. }
+                | Command::Checkpoint { stamp, .. }
+                | Command::Restore { stamp, .. } => stamps.push(stamp),
                 Command::Batch(inner) => commands.extend(inner.iter_mut()),
                 _ => {}
             }
@@ -1195,13 +1295,15 @@ impl ResourceStore {
                     }
                     stamps.push(stamp);
                 }
-                Command::Remove { id, stamp, .. } | Command::Edit { id, stamp, .. } => {
+                Command::Remove { id, stamp, .. }
+                | Command::Edit { id, stamp, .. }
+                | Command::Checkpoint { id, stamp, .. } => {
                     forget(&mut versions, id);
                     stamps.push(stamp);
                 }
                 Command::Batch(inner) => commands.extend(inner),
-                // An undo takes back changes of any resource.
-                Command::Undo { .. } => {
+                // An undo or a restore takes back changes of any resource.
+                Command::Undo { .. } | Command::Restore { .. } => {
                     versions.clear();
                     return;
                 }
@@ -3654,6 +3756,9 @@ impl ResourceStore {
         }
         let who = stamp.invoked_by();
         let acted_for = stamp.acted_for.clone();
+        let named = (stamp.verb == Stamp::CHECKPOINT_VERB)
+            .then(|| stamp.args.first()?.as_str().map(str::to_owned))
+            .flatten();
         // A step that took changes back is History's, not an action's.
         let action = if stamp.undoes.is_some() {
             tilolang_runtime::store::STEP_ACTION.to_owned()
@@ -3684,6 +3789,7 @@ impl ResourceStore {
             gesture: Some(stamp.invocation.clone()),
             invocation: Some(stamp.invocation),
             acted_for,
+            named,
         }
     }
 
@@ -6063,12 +6169,13 @@ fn ids_written(command: &Command, written: &mut BTreeMap<String, BTreeSet<String
     match command {
         Command::Put { kind, id, .. }
         | Command::Remove { kind, id, .. }
-        | Command::Edit { kind, id, .. } => {
+        | Command::Edit { kind, id, .. }
+        | Command::Checkpoint { kind, id, .. } => {
             written.entry(kind.clone()).or_default().insert(id.clone());
             true
         }
         Command::Batch(commands) => commands.iter().all(|command| ids_written(command, written)),
-        Command::Undo { .. } => false,
+        Command::Undo { .. } | Command::Restore { .. } => false,
         _ => true,
     }
 }
