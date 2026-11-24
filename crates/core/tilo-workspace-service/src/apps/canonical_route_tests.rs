@@ -57,6 +57,7 @@ fn canonical_api(
                 &workspace.cert,
                 &workspace.key,
             ),
+            false,
         )
         .unwrap();
     (caller, api)

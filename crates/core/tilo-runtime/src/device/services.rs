@@ -1030,7 +1030,7 @@ impl Daemon {
         self: &Arc<Self>,
         workspace: &str,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
-        let caller = Caller::local_person(&self.actor).in_workspace(workspace);
+        let caller = Caller::own_person(&self.actor).in_workspace(workspace);
         self.tree_in(workspace, caller)
     }
 
@@ -1085,7 +1085,7 @@ impl Daemon {
         let api = self.api()?;
         let tree =
             block_on_owned(async move { api.account_tree().await }).map_err(io::Error::other)?;
-        Ok((tree, Caller::local_person(&self.actor)))
+        Ok((tree, Caller::own_person(&self.actor)))
     }
 
     /// The tree a connection reaches in the workspace it names: the person, admitted from who is
@@ -2086,8 +2086,11 @@ fn admits_again(
             admission
                 .check(workspaces.copies())
                 .map_err(|refusal| refusal.to_string())?;
-            let provider = broker
-                .certified_local_action_provider(admission.caller(), admission.presentation())?;
+            let provider = broker.certified_local_action_provider(
+                admission.caller(),
+                admission.presentation(),
+                false,
+            )?;
             let person = admission.caller().clone();
             let provider: Arc<dyn ActionProvider + Send + Sync> = Arc::new(AdmittedAgain {
                 provider,
@@ -2961,7 +2964,11 @@ impl PersonDispatch {
                 .map_err(io::Error::other)?;
         let provider = self
             .broker
-            .certified_local_action_provider(admission.caller(), admission.presentation())
+            .certified_local_action_provider(
+                admission.caller(),
+                admission.presentation(),
+                caller.is_own_connection(),
+            )
             .map_err(io::Error::other)?;
         admission
             .check(self.workspaces.copies())
@@ -3052,7 +3059,7 @@ impl Daemon {
             .app_action_broker()
             .ok_or_else(|| io::Error::other("the action broker is unavailable"))?;
         let provider = broker
-            .certified_local_action_provider(admission.caller(), admission.presentation())
+            .certified_local_action_provider(admission.caller(), admission.presentation(), false)
             .map_err(io::Error::other)?;
         admission
             .check(self.workspaces.copies())

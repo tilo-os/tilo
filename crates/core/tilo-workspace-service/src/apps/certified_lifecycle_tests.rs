@@ -20,7 +20,7 @@ async fn certified_jobs_lifecycle_uses_exact_certificate_owner_and_live_session(
             let (caller, evidence) = local_host_evidence(&env);
             let host = rig
                 .state
-                .certified_local_action_provider(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence, false)
                 .unwrap();
             let lifecycle = rig
                 .state

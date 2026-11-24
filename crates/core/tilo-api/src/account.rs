@@ -1651,9 +1651,36 @@ impl ActionProvider for Account {
         let (done, answer) = pending();
         let account = self.clone();
         let caller = caller.clone();
+        // An account answers from the person's own workspace's copy, which the service that
+        // holds it reads on the runtime this device's programs run on: answered on a thread of
+        // its own, as a record read is, so that read never waits on the runtime it runs on.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let invocation = request.invocation;
+            let spawned = std::thread::Builder::new()
+                .name("tilo-account".into())
+                .spawn(move || {
+                    let receipt = tilo_rt::app()
+                        .block_on(account.run(caller, request))
+                        .unwrap_or_else(|error| InvocationReceipt {
+                            invocation,
+                            status: ReceiptStatus::Rejected {
+                                error: ActionCallError::Unavailable {
+                                    reason: error.to_string(),
+                                },
+                            },
+                        });
+                    done.complete(Ok(receipt));
+                });
+            if let Err(error) = spawned {
+                return Pending::ready(Err(ActionCallError::Unavailable {
+                    reason: format!("the account could not answer: {error}"),
+                }));
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
         tokio::spawn(async move {
-            let receipt = account.run(caller, request).await;
-            done.complete(Ok(receipt));
+            done.complete(Ok(account.run(caller, request).await));
         });
         answer
     }

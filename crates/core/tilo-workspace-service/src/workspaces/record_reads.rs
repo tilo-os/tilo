@@ -583,6 +583,14 @@ impl RecordReads {
             app: read.app.clone(),
             record: read.record.clone(),
         };
+        // A workspace's invocations are the calls this dispatch here kept, not a document of the
+        // workspace it may hold: read here, without asking that workspace's state where it goes.
+        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER
+            && self.broker().is_some()
+        {
+            return tilo_actions::remote::answer_read(self, caller, correlation, read);
+        }
         if self.own(caller, &address).is_some() {
             return tilo_actions::remote::answer_read(self, caller, correlation, read);
         }

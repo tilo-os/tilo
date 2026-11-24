@@ -99,7 +99,8 @@ async fn progress_native_connection(
         None,
         directories.clone(),
     );
-    let handle = opened(&rpc, &workspace.route.channel_key()).await
+    let handle = opened(&rpc, &workspace.route.channel_key())
+        .await
         .map_err(|error| error.to_string())?;
     Ok((
         state,
@@ -159,7 +160,7 @@ impl PersonSession {
     fn open(state: &Arc<AppBrokerState>, workspace: &signed_worker::OriginalWorkspace) -> Self {
         let (caller, evidence) = person(workspace);
         let provider = state
-            .certified_local_action_provider(&caller, &evidence)
+            .certified_local_action_provider(&caller, &evidence, false)
             .unwrap();
         Self { caller, provider }
     }

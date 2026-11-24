@@ -137,7 +137,7 @@ async fn certified_local_host_preserves_eager_and_directory_original_ownership()
                     rig.state.clone(),
                 );
                 let host = facade
-                    .certified_local_action_provider(&caller, &evidence)
+                    .certified_local_action_provider(&caller, &evidence, false)
                     .unwrap();
                 let request = local_host_request(directory);
                 let mut events = rig.state.subscribe_execution_activity();
@@ -182,18 +182,18 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
             let facade =
                 crate::apps::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
             let host = facade
-                .certified_local_action_provider(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence, false)
                 .unwrap();
             let mut forged = evidence.clone();
             *forged.last_mut().unwrap() ^= 1;
             assert!(
                 facade
-                    .certified_local_action_provider(&caller, &forged)
+                    .certified_local_action_provider(&caller, &forged, false)
                     .is_err()
             );
             assert!(
                 facade
-                    .certified_local_action_provider(&caller, &vec![0; 16 * 1024 + 1])
+                    .certified_local_action_provider(&caller, &vec![0; 16 * 1024 + 1], false)
                     .is_err()
             );
             let other_workspace = caller
@@ -201,7 +201,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
                 .in_workspace(uuid::Uuid::new_v4().to_string());
             assert!(
                 facade
-                    .certified_local_action_provider(&other_workspace, &evidence)
+                    .certified_local_action_provider(&other_workspace, &evidence, false)
                     .is_err()
             );
             let other_device = tilo_actions::remote::Caller::authenticated(
@@ -212,7 +212,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
             .in_new_execution();
             assert!(
                 facade
-                    .certified_local_action_provider(&other_device, &evidence)
+                    .certified_local_action_provider(&other_device, &evidence, false)
                     .is_err()
             );
             let keyless = tilo_actions::remote::Caller::local_person(person_id_for_root(
@@ -222,7 +222,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
             .in_new_execution();
             assert!(
                 facade
-                    .certified_local_action_provider(&keyless, &evidence)
+                    .certified_local_action_provider(&keyless, &evidence, false)
                     .is_err()
             );
             let other_run = caller.clone().in_new_execution();
@@ -236,7 +236,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
                 .in_new_execution();
             assert!(
                 facade
-                    .certified_local_action_provider(&other_person, &evidence)
+                    .certified_local_action_provider(&other_person, &evidence, false)
                     .is_err()
             );
             env.authority
@@ -267,7 +267,7 @@ async fn certified_local_host_directory_wait_cannot_refresh_original_authority()
                     rig.state.clone(),
                 );
                 let host = facade
-                    .certified_local_action_provider(&caller, &evidence)
+                    .certified_local_action_provider(&caller, &evidence, false)
                     .unwrap();
                 let mut pending = host.invoke(&caller, local_host_request(true));
                 assert!(matches!(
@@ -399,7 +399,7 @@ async fn certified_local_host_requires_a_registered_policy_origin() {
                     .is_ok()
             );
             let error = state
-                .certified_local_action_provider(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence, false)
                 .err()
                 .expect("a legacy wall clock is not original ownership");
             assert_eq!(error, "original policy clock unavailable");
@@ -502,7 +502,7 @@ async fn a_certified_local_continuation_ends_with_its_certificate() {
             let facade =
                 crate::apps::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
             let host = facade
-                .certified_local_action_provider(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence, false)
                 .unwrap();
             let request = local_host_request(false);
             local_host_answer(host.invoke(&caller, request.clone()))
@@ -609,7 +609,7 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
             );
             let (caller, evidence) = local_host_evidence(&env);
             ordinary
-                .certified_local_action_provider(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence, false)
                 .unwrap();
             assert!(
                 ordinary
@@ -665,7 +665,7 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
 
             let before = verifications();
             let host = facade
-                .certified_local_action_provider(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence, false)
                 .unwrap();
             assert_eq!(
                 verifications().saturating_sub(before),
@@ -736,7 +736,11 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
             );
             assert!(
                 facade
-                    .certified_local_action_provider(&caller.clone().in_new_execution(), &evidence)
+                    .certified_local_action_provider(
+                        &caller.clone().in_new_execution(),
+                        &evidence,
+                        false
+                    )
                     .is_err(),
                 "and the very next open"
             );
@@ -765,7 +769,7 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
             let facade =
                 crate::apps::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
             let host = facade
-                .certified_local_action_provider(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence, false)
                 .unwrap();
             let request = local_host_request(false);
             let mut refused = request.clone();
@@ -787,7 +791,7 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
                 let facade =
                     crate::apps::collab_broker::AppActionBroker::from_state_for_test(state.clone());
                 let host = facade
-                    .certified_local_action_provider(&ui_caller, &evidence)
+                    .certified_local_action_provider(&ui_caller, &evidence, false)
                     .unwrap();
                 receive.recv().unwrap();
                 assert!(
@@ -863,7 +867,11 @@ async fn certified_local_host_remembers_only_the_exact_verified_proof() {
                 crate::apps::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
             for _ in 0..2 {
                 facade
-                    .certified_local_action_provider(&caller.clone().in_new_execution(), &evidence)
+                    .certified_local_action_provider(
+                        &caller.clone().in_new_execution(),
+                        &evidence,
+                        false,
+                    )
                     .unwrap();
             }
             let presentation = runtime_collab::CertifiedJoinIdentity::decode(&evidence)
@@ -877,6 +885,7 @@ async fn certified_local_host_remembers_only_the_exact_verified_proof() {
                         .certified_local_action_provider(
                             &caller.clone().in_new_execution(),
                             &forged.encode().unwrap(),
+                            false,
                         )
                         .is_err(),
                     "proof byte {byte} flipped"
@@ -892,6 +901,7 @@ async fn certified_local_host_remembers_only_the_exact_verified_proof() {
                             .in_workspace(&other_workspace.workspace_id)
                             .in_new_execution(),
                         &other_workspace.encode().unwrap(),
+                        false,
                     )
                     .is_err(),
                 "a proof for one workspace never admits another"

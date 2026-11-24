@@ -590,9 +590,10 @@ impl AppActionBroker {
         &self,
         caller: &tilo_actions::remote::Caller,
         presentation: &[u8],
+        own_connection: bool,
     ) -> Result<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>, String> {
         self.state
-            .certified_local_action_provider(caller, presentation)
+            .certified_local_action_provider(caller, presentation, own_connection)
     }
 
     /// The calls of the listed agent `agent` acting for the person an already-issued signed

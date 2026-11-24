@@ -341,7 +341,7 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
             let evidence = presentation(&env.route.cluster_id, &env.cert, &env.key);
             let ordinary = rig
                 .state
-                .certified_local_action_provider(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence, false)
                 .unwrap();
             let native = rig
                 .state
@@ -403,7 +403,7 @@ async fn signed_caller_without_protected_local_person_cannot_acquire_physical_in
             let (caller, evidence) = local_host_evidence(&env);
             assert!(
                 rig.state
-                    .certified_local_action_provider(&caller, &evidence)
+                    .certified_local_action_provider(&caller, &evidence, false)
                     .is_ok()
             );
             assert!(
