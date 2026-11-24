@@ -460,6 +460,8 @@ d-pvl6wwx6 = Leistenteil
     .w-redo-layout-change = Layoutänderung wiederholen
     .w-settings = Einstellungen
     .w-about-this-computer = Über diesen Computer
+    .w-you-your-profile = { $person } (du): dein Profil
+    .w-you-your-profile-2 = (du): dein Profil
 
 d-vidcax4k = Arbeitsbereichsmenü
     .w-workspaces = Arbeitsbereiche
@@ -778,6 +780,7 @@ d-vzdj2kff = Dreh-Kachel
 d-yxl6yq2r = WLAN-Kachel
     .w-wi-fi = WLAN
     .w-this-device-has-no-wi-fi = Dieses Gerät hat kein WLAN
+    .w-a-switch-on-this-device-holds = Ein Schalter auf diesem Gerät hält WLAN aus
 
 d-d5wzqn37 = Bluetooth-Kachel
     .w-bluetooth = Bluetooth
@@ -853,6 +856,7 @@ d-thduakjg = Netzwerkbereich
     .w-stop-joining-by-itself = Nicht mehr von selbst beitreten
     .w-join-by-itself = Von selbst beitreten
     .w-forget-this-network = Dieses Netzwerk vergessen
+    .w-a-switch-on-this-device-holds = Ein Schalter auf diesem Gerät hält WLAN aus
 
 d-zjz5sskl = Bluetooth-Bereich
     .w-bluetooth = Bluetooth
@@ -1755,6 +1759,10 @@ d-ij74wfyv = Zwischenablage-Abschnitt
     .w-keep = { $copy_label } behalten
     .w-remove = { $copy_label } entfernen
     .w-clear-the-rest = Den Rest leeren
+    .w-search-copies = Kopien durchsuchen
+    .w-1-of-copies = 1 von { $len } Kopien
+    .w-of-copies = { $len } von { $len2 } Kopien
+    .w-no-copy-matches = Keine Kopie passt
 
 d-mnufvdts = Energie-Blatt
     .w-power = Ein/Aus

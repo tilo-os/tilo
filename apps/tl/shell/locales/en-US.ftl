@@ -1064,6 +1064,8 @@ d-pvl6wwx6 = Bar part
     .w-redo-layout-change = Redo layout change
     .w-settings = Settings
     .w-about-this-computer = About this computer
+    .w-you-your-profile = { $person } (you): your profile
+    .w-you-your-profile-2 = (you): your profile
 
 d-vidcax4k = Workspace menu
     .w-workspaces = Workspaces
@@ -1475,6 +1477,7 @@ d-vzdj2kff = Rotation tile
 d-yxl6yq2r = Wifi tile
     .w-wi-fi = Wi-Fi
     .w-this-device-has-no-wi-fi = This device has no Wi-Fi
+    .w-a-switch-on-this-device-holds = A switch on this device holds Wi-Fi off
 
 d-d5wzqn37 = Bluetooth tile
     .w-bluetooth = Bluetooth
@@ -1505,9 +1508,13 @@ d-ntsyqtrw = Power mode tile
 
 d-ij74wfyv = Clipboard section
     .w-clipboard = Clipboard
+    .w-search-copies = Search copies
+    .w-1-of-copies = 1 of { $len } copies
+    .w-of-copies = { $len } of { $len2 } copies
     .w-stop-keeping = Stop keeping { $copy_label }
     .w-keep = Keep { $copy_label }
     .w-remove = Remove { $copy_label }
+    .w-no-copy-matches = No copy matches
     .w-clear-the-rest = Clear the rest
 
 d-w3fe7tjv = Levels
@@ -1533,6 +1540,7 @@ d-thduakjg = Network section
     .w-wired-network = Wired network
     .w-connected = Connected
     .w-cable-unplugged = Cable unplugged
+    .w-a-switch-on-this-device-holds = A switch on this device holds Wi-Fi off
     .w-wi-fi-is-off = Wi-Fi is off
     .w-scanning-for-networks = Scanning for networks
     .w-known = Known
