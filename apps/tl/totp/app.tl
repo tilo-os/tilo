@@ -24,6 +24,9 @@ type Account (title: issuer, untitled: "Account") {
     item: Text = ""
     /// A colour slot the card shows it by.
     color: Int = 0
+    /// When its codes were last made differently: the moment the last recode ran. The settings
+    /// themselves are the vault item's, so this is what a change of them writes here.
+    tuned_at: Time = Time("1970-01-01T00:00:00Z")
 
     search {
         sort issuer a_z
@@ -277,7 +280,13 @@ action recolor_account(a: Account, color: Int) (
 
 /// Changes how an account makes its codes, and its key with them: what a person changing the
 /// algorithm, the digits, the period or the key did.
-action recode_account(a: Account, algorithm: Text, digits: Int, period: Int, secret: Text = "") (
+action recode_account(
+    a: Account,
+    algorithm: Text,
+    digits: Int,
+    period: Int,
+    secret: Text = "",
+) uses time (
     icon: .key,
     label: "Change how the codes are made",
     did: "changed how an account makes its codes",
@@ -295,6 +304,9 @@ action recode_account(a: Account, algorithm: Text, digits: Int, period: Int, sec
         period: period,
     )
     a.item = reference
+    // The settings live in the vault item; the account records when they last changed, so the
+    // change is the account's and its history names the action that made it.
+    a.tuned_at = now
 }
 
 /// Changes what an account says, and its key and how its codes are made. A key left out keeps
@@ -308,7 +320,7 @@ action update_account(
     algorithm: Text = "SHA1",
     digits: Int = 6,
     period: Int = 30,
-) (icon: .pencil, label: "Save the account", did: "changed an account") {
+) uses time (icon: .pencil, label: "Save the account", did: "changed an account") {
     require issuer.trim() != "" "The account needs a service name"
     require digits >= 4 and digits <= 10 "A code has 4 to 10 digits"
     require period >= 5 and period <= 300 "A code changes every 5 to 300 seconds"

@@ -24,6 +24,9 @@ d-sj2mtsnu = Eintrag
 d-2f4aknif = Farbe
     .doc = Ein Farbplatz, mit dem die Karte es zeigt.
 
+d-g3aq6san = Zuletzt geändert
+    .doc = Wann seine Codes zuletzt anders erzeugt wurden: der Zeitpunkt, an dem die letzte Änderung lief.
+
 d-skneduwj = Tresor
     .doc = Der Authenticator des Arbeitsbereichs: die Konten, die seine Mitglieder führen, was das Fenster zuletzt gesagt hat, und das Konto, das ein Bild gelesen hat und das auf Speichern oder Verwerfen wartet.
     .noun = { $count ->
