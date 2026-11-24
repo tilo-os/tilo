@@ -144,7 +144,7 @@ impl MemberAccess {
     /// an agent the signer is the device of.
     fn runs_agent(&self, agent: &str, invoker: &Acting) -> bool {
         let person = self.acting.people().first().copied().unwrap_or_default();
-        if self.acting.agent_id() == Some(agent.as_str()) {
+        if self.acting.agent_id() == Some(agent) {
             return true;
         }
         // A key's agent is its own key, or the grant its person signed, which
