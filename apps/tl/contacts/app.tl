@@ -51,6 +51,9 @@ type Contact (untitled: "No name yet") {
     /// The id of the person the workspace's directory holds for this card, once it is shared
     /// with the apps; empty until then, or after it stops being shared.
     person: Text = ""
+    /// The card's own id in the format that carried it here (a vCard's `UID`): what reading the
+    /// same file again finds it by, so a book is imported once however often its file is read.
+    uid: Text = ""
 
     search {
         filter "Favorites" = favorite (icon: .star)
@@ -336,6 +339,9 @@ fn number_digits(value: Text) -> Text {
 /// One contact as vCard 4.0, the text a reader of the format takes.
 fn vcard_of(c: Contact) -> Text {
     let lines = ["BEGIN:VCARD", "VERSION:4.0"]
+    if not c.uid.is_empty() {
+        lines = [lines, ["UID:{vcard_text(c.uid)}"]].flat_map(part -> part)
+    }
     if not c.name.trim().is_empty() {
         lines = [lines, ["FN:{vcard_text(c.name)}"]].flat_map(part -> part)
     }
@@ -425,7 +431,7 @@ fn cards_read(file: File) -> Bool {
 
 /// The contact a vCard card says, made in the book, or none for a card that names nobody. Its
 /// rows are filled after it stands in the book, as every resource's are.
-action add_card(book: Book, card: Text) -> Option<Contact> uses time (
+action add_card(book: Book, card: Text) -> Option<Contact> uses time, random (
     icon: .file_plus,
     label: "Add a vCard's card",
     did: "added a card",
@@ -441,6 +447,8 @@ action add_card(book: Book, card: Text) -> Option<Contact> uses time (
     let kinds = lines.find(line -> starts(line, "CATEGORIES"))
     let picture = lines.find(line -> starts(line, "PHOTO"))
     let born = lines.find(line -> starts(line, "BDAY"))
+    let said_id = lines.find(line -> starts(line, "UID"))
+    let uid = if let said = said_id { vcard_read(said) } else { random.id() }
     let name = vcard_read(named ?? "")
     let work = vcard_read(org ?? "")
     let numbers = lines.filter(line -> starts(line, "TEL"))
@@ -448,6 +456,10 @@ action add_card(book: Book, card: Text) -> Option<Contact> uses time (
     // A card that names nobody is not a person: what it holds is the card's format, not someone
     // to keep.
     if name.is_empty() and work.is_empty() and numbers.is_empty() and mails.is_empty() {
+        return .none
+    }
+    // A card the book already holds is nobody new: reading a file again changes nothing.
+    if book.contacts.any(c -> c.uid == uid) {
         return .none
     }
     let person = book.contacts.insert(
@@ -459,6 +471,7 @@ action add_card(book: Book, card: Text) -> Option<Contact> uses time (
             notes: RichText(vcard_read(said ?? "")),
             photo: photo_of(picture, name),
             birthday: birth_of(born, now),
+            uid: uid,
         ),
     )
     for line in numbers {

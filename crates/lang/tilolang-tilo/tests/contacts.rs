@@ -727,3 +727,27 @@ fn a_card_the_apps_do_not_know_is_shared_as_a_person_of_its_own() {
         "{mails:?}"
     );
 }
+
+/// A file read twice is one book: the card keeps the id its format gave it, and a card the book
+/// already holds is nobody new.
+#[test]
+fn a_book_imported_twice_keeps_one_card() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let cards = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:ada-lovelace-1\r\nFN:Ada Lovelace\r\n\
+                 EMAIL;TYPE=work:ada@example.org\r\nEND:VCARD\r\n";
+    let once = Value::file(device.keeping("Ada.vcf", "text/vcard", cards.as_bytes()));
+    let first = call(&ada, "import_vcard", vec![Value::resource(&root), once]);
+    ada.commit();
+    assert!(matches!(first, Value::Int(1)), "{first:?}");
+    let again = Value::file(device.keeping("Ada.vcf", "text/vcard", cards.as_bytes()));
+    let second = call(&ada, "import_vcard", vec![Value::resource(&root), again]);
+    ada.commit();
+    assert!(
+        matches!(second, Value::Int(0)),
+        "the file's card is already held: {second:?}"
+    );
+    let held = items(&ada, &root, "contacts");
+    assert_eq!(held.len(), 1, "one card, however often its file is read");
+    assert_eq!(text(&ada, &held[0], "uid"), "ada-lovelace-1");
+}

@@ -78,6 +78,9 @@ d-kvhikhu4 = Photo
 d-szrijd7k = Person
     .doc = The id of the person the workspace's directory holds for this card, once it is shared with the apps; empty until then, or after it stops being shared.
 
+d-q3um3t7j = Uid
+    .doc = The card's own id in the format that carried it here (a vCard's `UID`): what reading the same file again finds it by, so a book is imported once however often its file is read.
+
 d-w5adcbsy-filter-favorites = Favorites
 
 d-w5adcbsy-filter-groups = Groups

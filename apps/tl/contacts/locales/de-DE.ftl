@@ -434,3 +434,6 @@ d-so-tilo-contacts-keywords = kontakte, adressbuch, personen, telefon, e-mail, v
 d-bfuqzfia-name = Name
 
 d-zfqz2htt = Benannt oder neu~present
+
+d-q3um3t7j = Kennung
+    .doc = Die eigene Kennung der Karte in dem Format, das sie herbrachte (die `UID` einer vCard): woran ein erneutes Lesen derselben Datei sie findet, damit ein Buch einmal importiert wird, so oft seine Datei auch gelesen wird.
