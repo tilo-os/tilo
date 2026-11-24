@@ -600,6 +600,16 @@ pub trait Platform {
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
 
+    /// Open a shell in `container`, run by `engine`: what `tool.container_shell` asks.
+    ///
+    /// # Errors
+    ///
+    /// Why no shell opened.
+    fn open_container_shell(&self, container: &str, engine: &str) -> Result<(), String> {
+        let _ = (container, engine);
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
     /// Open `file` in the app that opens its kind: what `File.open` asks. The shell picks the app
     /// by the file's first bytes and its name and starts it, or says nothing here opens it or
     /// that this app may not open files.
@@ -837,6 +847,10 @@ impl tilolang_runtime::files::FilesHost for PlatformFiles {
 
     fn launch_context(&self) -> String {
         self.0.launch_context()
+    }
+
+    fn container_shell(&self, container: &str, engine: &str) -> Result<(), String> {
+        self.0.open_container_shell(container, engine)
     }
 
     fn extract(&self, from: &str, to: &str) -> Result<i64, String> {

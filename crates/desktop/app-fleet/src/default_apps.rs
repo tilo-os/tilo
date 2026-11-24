@@ -5,6 +5,7 @@
 
 /// The default collection's package ids, sorted: the apps a workspace is created with.
 pub(super) const DEFAULT: &[&str] = &[
+    "so.tilo",
     "so.tilo.activity",
     "so.tilo.api-tester",
     "so.tilo.assistant",
@@ -34,7 +35,6 @@ pub(super) const DEFAULT: &[&str] = &[
     "so.tilo.music",
     "so.tilo.notes",
     "so.tilo.osk",
-    "so.tilo.passwords",
     "so.tilo.pdf-viewer",
     "so.tilo.photos",
     "so.tilo.poker",

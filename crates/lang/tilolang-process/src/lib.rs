@@ -46,8 +46,10 @@ pub mod testing;
 pub mod wait;
 pub mod web;
 #[cfg(feature = "app-launch")]
-pub mod feed_engine;
 #[cfg(feature = "app-launch")]
+pub mod containers_engine;
+#[cfg(feature = "app-launch")]
+pub mod feed_engine;
 pub mod video_engine;
 #[cfg(feature = "app-launch")]
 pub mod window;

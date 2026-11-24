@@ -35,6 +35,30 @@ pub enum PrintChange {
     RetryJob(String),
 }
 
+/// A change to make on the containers: what a person, an agent or a script asked of the
+/// `containers` resource.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContainerChange {
+    Start(String),
+    Stop(String),
+    Restart(String),
+    Pause(String),
+    Unpause(String),
+    Remove(String),
+    Tag { image: String, tag: String },
+    RemoveImage(String),
+    CreateVolume(String),
+    RemoveVolume(String),
+    Create {
+        name: String,
+        image: String,
+        ports: String,
+        env: String,
+        volumes: String,
+        command: String,
+    },
+}
+
 /// A change to make on the drives: what a person, an agent or a script asked of the `drives`
 /// resource.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,6 +255,26 @@ pub trait System: Send + Sync {
     /// Why it did not happen.
     fn change_user(&self, _change: &UserChange) -> Result<(), String> {
         Err("this machine cannot change its accounts".to_owned())
+    }
+
+    /// What this computer's container engine holds. A machine with no podman answers with
+    /// `serving: false`.
+    fn containers(&self) -> tilo_system_resources::containers::Containers {
+        tilo_system_resources::containers::Containers::default()
+    }
+
+    /// Make `change` on the container engine.
+    ///
+    /// # Errors
+    /// Why it did not happen.
+    fn change_container(&self, _change: &ContainerChange) -> Result<(), String> {
+        Err("this machine has no container engine".to_owned())
+    }
+
+    /// Call `changed` whenever the engine reports an event. The handle keeps the subscription
+    /// alive while it is held.
+    fn follow_containers(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
+        None
     }
 
     /// The NTFS volumes this computer sees and the drives the person chose to remember. A
@@ -546,6 +590,18 @@ impl System for OsSystem {
                 os_actions::users::delete_user(user, uid, !keep_files)
             }
         }
+    }
+
+    fn containers(&self) -> tilo_system_resources::containers::Containers {
+        crate::containers::reading()
+    }
+
+    fn change_container(&self, change: &ContainerChange) -> Result<(), String> {
+        crate::containers::change(change)
+    }
+
+    fn follow_containers(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
+        crate::containers::follow(changed)
     }
 
     fn drives(&self) -> Drives {

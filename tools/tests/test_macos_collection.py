@@ -15,7 +15,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = json.loads(result.stdout)
         self.assertIn('calculator', [a['name'] for a in plan['apps']])
-        self.assertTrue(next(a for a in plan['excluded'] if a['name'] == 'containers')['reason'])
+        self.assertTrue(next(a for a in plan['excluded'] if a['name'] == 'firewall')['reason'])
         self.assertEqual(plan['notarized'], False)
 
     def test_unknown_app_fails(self):

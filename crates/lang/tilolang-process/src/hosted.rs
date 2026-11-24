@@ -685,6 +685,9 @@ impl Platform for HostPlatform {
         if app == crate::video_engine::APP {
             return crate::video_engine::call(self, app, op, input);
         }
+        if app == crate::containers_engine::APP {
+            return crate::containers_engine::call(self, app, op, input);
+        }
         crate::feed_engine::register();
         tilolang_tilo::engine::answer(app, op, input)
     }
@@ -694,6 +697,9 @@ impl Platform for HostPlatform {
         if app == crate::video_engine::APP {
             return crate::video_engine::start(self, app, op, input);
         }
+        if app == crate::containers_engine::APP {
+            return crate::containers_engine::start(self, app, op, input);
+        }
         crate::feed_engine::register();
         tilolang_tilo::engine::begin(app, op, input)
     }
@@ -701,15 +707,19 @@ impl Platform for HostPlatform {
     #[cfg(feature = "app-launch")]
     fn engine_status(&self, job: &str) -> Result<String, String> {
         crate::video_engine::status(self, job).or_else(|unknown| {
-            crate::feed_engine::register();
-            tilolang_tilo::engine::progress(job).map_err(|_| unknown)
+            crate::containers_engine::status(job).or_else(|_| {
+                crate::feed_engine::register();
+                tilolang_tilo::engine::progress(job).map_err(|_| unknown)
+            })
         })
     }
 
     #[cfg(feature = "app-launch")]
     fn engine_cancel(&self, job: &str) -> bool {
         crate::feed_engine::register();
-        crate::video_engine::cancel(job) || tilolang_tilo::engine::stop(job)
+        crate::video_engine::cancel(job)
+            || crate::containers_engine::cancel(job)
+            || tilolang_tilo::engine::stop(job)
     }
 
     fn choose_files(
@@ -861,6 +871,23 @@ impl Platform for HostPlatform {
             .ok()
             .map(|_| context)
             .unwrap_or_default()
+    }
+
+    fn open_container_shell(&self, container: &str, engine: &str) -> Result<(), String> {
+        let Some(tools) = self.tools.as_deref() else {
+            return Err("the shell is not answering a terminal".to_owned());
+        };
+        let engine = match engine {
+            "distrobox" => runtime_portal::tools::ContainerEngine::Distrobox,
+            "podman" => runtime_portal::tools::ContainerEngine::Podman,
+            other => return Err(format!("no `{other}` runs a container shell")),
+        };
+        tools
+            .ask(runtime_portal::tools::ToolIntent::ContainerShell {
+                container: container.to_owned(),
+                engine,
+            })
+            .map(drop)
     }
 
     fn extract_file(&self, from: &str, to: &str) -> Result<i64, String> {

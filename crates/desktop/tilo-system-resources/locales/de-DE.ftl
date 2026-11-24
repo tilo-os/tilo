@@ -53,3 +53,18 @@ so-tilo-system-users-set-automatic-login = Ohne Passwort anmelden
 so-tilo-system-windows-compat-install = Windows-Unterstützung installieren
 so-tilo-system-windows-compat-remove = Windows-Unterstützung entfernen
 so-tilo-system-scanners-find-scanners = Scanner suchen
+
+# Containers
+so-tilo-system-containers-refresh = Die Engine neu lesen
+so-tilo-system-containers-start = Einen gestoppten Container starten
+so-tilo-system-containers-stop = Einen laufenden Container stoppen
+so-tilo-system-containers-restart = Einen Container neu starten
+so-tilo-system-containers-pause = Die Prozesse eines Containers anhalten
+so-tilo-system-containers-unpause = Einen pausierten Container weiterlaufen lassen
+so-tilo-system-containers-remove = Einen Container entfernen
+so-tilo-system-containers-pull = Ein Image herunterladen
+so-tilo-system-containers-tag = Einem Image eine weitere Referenz geben
+so-tilo-system-containers-remove-image = Ein Image entfernen
+so-tilo-system-containers-create-volume = Ein Volume anlegen
+so-tilo-system-containers-remove-volume = Ein Volume entfernen
+so-tilo-system-containers-create = Ein Image als neuen Container ausführen

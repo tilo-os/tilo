@@ -388,6 +388,7 @@ imports! {
     (ToolOpenWith, "tool_open_with", "ii", "i"),
     (ToolTerminal, "tool_terminal", "i", "i"),
     (ToolContext, "tool_context", "", "i"),
+    (ToolContainerShell, "tool_container_shell", "ii", "i"),
     (FileOpenPath, "file_open_path", "i", "i"),
     (FileOpen, "file_open", "i", "i"),
     (ActChoose, "act_choose", "ii", "i"),

@@ -300,6 +300,17 @@ pub trait FilesHost {
         String::new()
     }
 
+    /// Open a shell in the container `container`, running `engine` (`podman` or `distrobox`):
+    /// what `tool.container_shell` does.
+    ///
+    /// # Errors
+    ///
+    /// Why no shell opened.
+    fn container_shell(&self, container: &str, engine: &str) -> Result<(), String> {
+        let _ = (container, engine);
+        Err(NO_FILES.to_owned())
+    }
+
     /// Open `file` in the app that opens its kind: the person's own view of a file, or an app
     /// whose own action takes that kind. The shell picks the app by the file's first bytes and its
     /// name and starts it, under the app's grants; the file `file` names is not read here.
@@ -403,6 +414,10 @@ impl Core {
                 self.result(host.terminal_at(&folder).map(|()| Value::Unit))
             }
             Imp::ToolContext => self.ret_h(Value::Text(host.launch_context())),
+            Imp::ToolContainerShell => {
+                let (container, engine) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
+                self.result(host.container_shell(&container, &engine).map(|()| Value::Unit))
+            }
             Imp::FileCompress => {
                 let paths = self.with_val(a.h(0)?, |value| match value {
                     Value::List(items) => items

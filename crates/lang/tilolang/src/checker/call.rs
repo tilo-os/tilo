@@ -2578,12 +2578,19 @@ impl Checker<'_> {
                 "`tool.context()`: what the shell opened this app with, as JSON, or empty text",
                 false,
             ),
+            "container_shell" => (
+                Imp::ToolContainerShell,
+                2,
+                result(Ty::Unit),
+                "`tool.container_shell(container, engine)`: a shell opened in `container`, run by `engine` (`podman` or `distrobox`)",
+                true,
+            ),
             other => {
                 self.err(
                     "E026",
                     name.span,
                     format!(
-                        "`tool` has `document_apps`, `open_with`, `terminal` and `context`, not `{other}`"
+                        "`tool` has `document_apps`, `open_with`, `terminal`, `context` and `container_shell`, not `{other}`"
                     ),
                 );
                 for a in args {

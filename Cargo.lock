@@ -2756,47 +2756,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
-name = "containers"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "bounded-command",
- "containers-model",
- "runtime-dylib",
- "runtime-portal",
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "workspace-hack",
-]
-
-[[package]]
-name = "containers-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-resource",
- "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
-name = "containers-model-wasm"
-version = "0.1.0"
-dependencies = [
- "containers-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8316,15 +8275,6 @@ dependencies = [
  "wire-frame",
  "workspace-hack",
  "zbus",
-]
-
-[[package]]
-name = "launcher-app"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "tilo-app",
- "workspace-hack",
 ]
 
 [[package]]
@@ -19292,7 +19242,6 @@ dependencies = [
  "backups-model-wasm",
  "camera-model-wasm",
  "console-model-wasm",
- "containers-model-wasm",
  "db-client-model-wasm",
  "diffmerge-model-wasm",
  "disk-usage-model-wasm",
@@ -27016,6 +26965,7 @@ dependencies = [
  "cmov",
  "cms",
  "cobs",
+ "code-engine",
  "codespan-reporting",
  "codex",
  "collab-types",
@@ -27038,9 +26988,6 @@ dependencies = [
  "const-oid 0.10.2",
  "const-oid 0.9.6",
  "constant_time_eq",
- "containers",
- "containers-model",
- "containers-model-wasm",
  "convert_case 0.10.0",
  "convert_case 0.12.0",
  "cookie-factory",
@@ -27459,7 +27406,6 @@ dependencies = [
  "kurbo",
  "landlock",
  "launcher",
- "launcher-app",
  "launcher-macos",
  "lazy_static",
  "leb128",
@@ -27641,6 +27587,7 @@ dependencies = [
  "parking_lot",
  "parking_lot_core",
  "password-hash",
+ "passwords-engine",
  "paste",
  "pastey",
  "pathdiff",
@@ -28132,6 +28079,7 @@ dependencies = [
  "tilo-extension",
  "tilo-face",
  "tilo-failure",
+ "tilo-feeds",
  "tilo-file-provider",
  "tilo-files",
  "tilo-firstboot-files",
@@ -28155,6 +28103,7 @@ dependencies = [
  "tilo-innertube",
  "tilo-input-context",
  "tilo-install-helpers",
+ "tilo-keyboard-engine",
  "tilo-keyboard-map",
  "tilo-libvirt-domain",
  "tilo-live",
@@ -28204,6 +28153,7 @@ dependencies = [
  "tilo-pdf-reader",
  "tilo-peer-facts",
  "tilo-peer-state",
+ "tilo-phone",
  "tilo-platform-caps",
  "tilo-polkit-agent",
  "tilo-portal",
@@ -28257,6 +28207,7 @@ dependencies = [
  "tilo-spotify",
  "tilo-staging-reclaim",
  "tilo-startup-metrics",
+ "tilo-store-engine",
  "tilo-subject",
  "tilo-system-info",
  "tilo-system-resources",
@@ -28281,6 +28232,8 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-vello-shaders",
+ "tilo-video-edit",
+ "tilo-video-picture",
  "tilo-view",
  "tilo-view-macros",
  "tilo-vision-service",

@@ -100,6 +100,23 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("nearby_send", "NearbySend", "session:nearby-send"),
     ("devices", "Devices", "session:devices"),
     ("server", "Server", "device:server"),
+    ("speakers", "Speakers", "session:speakers"),
+    ("printers", "Printers", "printers"),
+    ("users", "Users", "users"),
+    ("drives", "Drives", "drives"),
+    ("scanners", "Scanners", "scanners"),
+    ("storage", "Storage", "storage"),
+    ("disk_unlock", "DiskUnlock", "disk-unlock"),
+    ("host_info", "HostInfo", "host-info"),
+    ("codec_pack", "CodecPack", "codec-pack"),
+    ("windows_compat", "WindowsCompat", "windows-compat"),
+    ("firmware", "Firmware", "firmware"),
+    ("containers", "Containers", "containers"),
+    ("modem", "Modem", "modem"),
+    ("tethering", "Tethering", "tethering"),
+    // What the machine booted, what update waits, and the zone its clock keeps.
+    ("update", "SystemUpdate", "system-update"),
+    ("time_zone", "TimeZone", "time-zone"),
     ("quick_settings", "QuickSettings", "session:quick-settings"),
 ];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[

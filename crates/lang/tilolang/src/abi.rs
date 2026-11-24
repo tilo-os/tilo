@@ -469,6 +469,7 @@ imports! {
     // What the shell opened this app with, as JSON, or empty text: the folder a terminal
     // opened at, the file an app was asked to show.
     ToolContext = "tool_context" ([] -> [H]);
+    ToolContainerShell = "tool_container_shell" ([H, H] -> [H]);
     // Opening a file in the app that opens its kind: the path the app was granted, or the file an
     // action holds, by its name and the address of its bytes.
     FileOpenPath = "file_open_path" ([H] -> [H]);

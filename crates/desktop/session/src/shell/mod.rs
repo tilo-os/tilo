@@ -84,6 +84,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         tilo_system_service::codec_pack_surface(),
         tilo_system_service::windows_compat_surface(),
         tilo_system_service::firmware_surface(),
+        tilo_system_service::containers_surface(),
         tilo_system_service::update_surface(),
         tilo_system_service::time_zone_surface(),
         crate::displays::surface(),

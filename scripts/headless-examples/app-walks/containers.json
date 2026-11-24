@@ -1,0 +1,77 @@
+{
+  "app": "containers",
+  "said": "Containers",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.containers",
+    "package": "containers"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Containers on a fresh desktop",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "places",
+      "said": "The sidebar names the four things it manages",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Images"
+            ]
+          },
+          {
+            "press_any": [
+              "Volumes"
+            ]
+          },
+          {
+            "press_any": [
+              "Distrobox"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "engine",
+      "said": "A device with no podman says so, and offers to ask again",
+      "ops": {
+        "tl": [
+          {
+            "offered": [
+              "Podman isn't available",
+              "Try again"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        }
+      ],
+      "dark": true
+    }
+  ]
+}

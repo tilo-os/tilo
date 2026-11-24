@@ -10,6 +10,7 @@
 //! [`device_settings`] is the exception: the device's server settings are the
 //! daemon's, which keeps the configuration they change.
 
+pub mod containers;
 pub mod device_settings;
 pub mod effects;
 pub mod model;
@@ -26,6 +27,7 @@ pub mod users;
 pub mod windows_compat;
 
 pub use codec_pack::CODEC_PACK;
+pub use containers::CONTAINERS;
 pub use disk_unlock::DISK_UNLOCK;
 pub use firmware::FIRMWARE;
 pub use drives::DRIVES;

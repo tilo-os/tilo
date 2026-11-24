@@ -219,7 +219,7 @@ Read from the tree; build on these rather than duplicating them.
 
 - **`docs/app-model/trust.md`**: Ed25519 publisher identity; signed root over `manifest_hash || payload_root_hash || publisher_identity` whose BLAKE3 *is* the `PackageId`; attestations signed over an 82-byte preimage deliberately excluding the `PackageId` to avoid a fixed point; revocation checked **at install and at every launch**, with no "trusted once" cache.
 
-- **distrobox and podman are installed in the image and completely unconfigured.** `os/Containerfile:255-268` installs `distrobox podman fuse3 bubblewrap`. There is **no `/etc/subuid` or `/etc/subgid` entry**, no `/etc/containers/{containers,storage}.conf`, no `user_allow_other` in `/etc/fuse.conf`, no podman socket. `apps/containers/` is a podman/distrobox manager built on `ui` but is not packaged and its binary is not in the image.
+- **distrobox and podman are installed in the image and completely unconfigured.** `os/Containerfile:255-268` installs `distrobox podman fuse3 bubblewrap`. There is **no `/etc/subuid` or `/etc/subgid` entry**, no `/etc/containers/{containers,storage}.conf`, no `user_allow_other` in `/etc/fuse.conf`, no podman socket. The Containers app manages podman and distrobox, but podman is left unconfigured.
 
 - **`os/config.toml` puts `tester` in `wheel`.** Tilo today has ordinary password `sudo`. There is one polkit rule, for the greeter's power actions. No `run0` usage. `os/dev/switch-to-stock-kernel.sh` is the tree's only `bootc usr-overlay` use, and it needs root.
 

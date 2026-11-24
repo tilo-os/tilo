@@ -25,6 +25,7 @@
 //! reading's problem until the next.
 
 pub mod codec_pack;
+pub mod containers;
 pub mod device;
 pub mod disk_unlock;
 pub mod firmware;
@@ -52,8 +53,8 @@ use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
 use device::{
-    Change, CodecChange, DiskUnlockChange, DriveChange, FirmwareChange, PowerProfiles, PrintChange,
-    StorageChange, System, UserChange, WindowsChange, follow_once,
+    Change, CodecChange, ContainerChange, DiskUnlockChange, DriveChange, FirmwareChange,
+    PowerProfiles, PrintChange, StorageChange, System, UserChange, WindowsChange, follow_once,
 };
 use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
 use model::{KeyboardLight, Power, PowerMode, Time};
@@ -61,8 +62,8 @@ use update::Update;
 
 /// The resources' ids.
 pub use tilo_system_resources::{
-    CODEC_PACK, DISK_UNLOCK, DRIVES, FIRMWARE, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS,
-    SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS, WINDOWS_COMPAT,
+    CODEC_PACK, CONTAINERS, DISK_UNLOCK, DRIVES, FIRMWARE, HOST_INFO, KEYBOARD_BACKLIGHT, POWER,
+    PRINTERS, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS, WINDOWS_COMPAT,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -86,6 +87,7 @@ enum Part {
     CodecPack,
     WindowsCompat,
     Firmware,
+    Containers,
 }
 
 /// A change to one of the resources a privileged helper answers for an extension.
@@ -96,7 +98,7 @@ enum ExtensionChange {
 }
 
 /// What the machine reads now.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Readings {
     pub power: Power,
     pub update: Update,
@@ -112,6 +114,7 @@ pub struct Readings {
     pub codec_pack: tilo_system_resources::codec_pack::CodecPack,
     pub windows_compat: tilo_system_resources::windows_compat::WindowsCompat,
     pub firmware: tilo_system_resources::firmware::Firmware,
+    pub containers: tilo_system_resources::containers::Containers,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -138,6 +141,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         codec_pack: system.codec_pack(),
         windows_compat: system.windows_compat(),
         firmware: system.firmware(),
+        containers: system.containers(),
     }
 }
 
@@ -188,6 +192,8 @@ pub struct SystemService {
     live_profiles: Option<LiveProfiles>,
     /// Keeps the printer bus subscription alive while the service runs.
     print_watch: Option<Box<dyn Send>>,
+    /// Keeps the engine's event subscription alive while the service runs.
+    container_watch: Option<Box<dyn Send>>,
 }
 
 impl SystemService {
@@ -252,9 +258,11 @@ impl SystemService {
             update_watch: None,
             live_profiles,
             print_watch: None,
+            container_watch: None,
         };
         refresh(&service.worker.jobs(), live_active.clone());
-        service.follow_printers(system, wake, live_active);
+        service.follow_printers(Arc::clone(&system), wake.clone(), live_active.clone());
+        service.follow_containers(system, wake, live_active);
         // The first scan runs where the worker does, so the machine's start waits for no disk
         // scan; the reading arrives when it answers.
         service.start_storage("scan", None);
@@ -281,6 +289,28 @@ impl SystemService {
             wake();
         };
         self.print_watch = system.follow_printers(Box::new(reread));
+    }
+
+    /// Read the engine again whenever podman reports an event: a container started,
+    /// stopped, removed, an image pulled. Nothing polls.
+    fn follow_containers(
+        &mut self,
+        system: Arc<dyn System>,
+        wake: Option<Wake>,
+        live_active: Option<Arc<AtomicBool>>,
+    ) {
+        let Some(wake) = wake else {
+            return;
+        };
+        let jobs = self.worker.jobs();
+        let reread = move || {
+            let live_active = live_active.clone();
+            jobs.clone().run(move |system| {
+                Landed::Read(Box::new(read(system, is_live(live_active.as_ref()))))
+            });
+            wake();
+        };
+        self.container_watch = system.follow_containers(Box::new(reread));
     }
 
     fn live_active_flag(&self) -> Option<Arc<AtomicBool>> {
@@ -402,6 +432,10 @@ impl SystemService {
                 &mut readings.windows_compat.problem,
             ),
             Part::Firmware => (&mut readings.firmware.pending, &mut readings.firmware.problem),
+            Part::Containers => (
+                &mut readings.containers.pending,
+                &mut readings.containers.problem,
+            ),
         }
     }
 
@@ -445,6 +479,8 @@ impl SystemService {
         readings.windows_compat.problem = old.windows_compat.problem.take();
         readings.firmware.pending = std::mem::take(&mut old.firmware.pending);
         readings.firmware.problem = old.firmware.problem.take();
+        readings.containers.pending = std::mem::take(&mut old.containers.pending);
+        readings.containers.problem = old.containers.problem.take();
         readings.firmware.installing = readings
             .firmware
             .pending
@@ -652,6 +688,24 @@ impl SystemService {
                 action,
                 result,
                 readings: Box::new(readings),
+                live_power_mode: None,
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Make `change` on the engine, landing its answer and a fresh reading.
+    fn start_container(&mut self, action: &str, change: ContainerChange) -> Started {
+        self.readings.containers.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let result = system.change_container(&change);
+            Landed::Changed {
+                part: Part::Containers,
+                action,
+                result,
+                readings: Box::new(read(system, is_live(live_active.as_ref()))),
                 live_power_mode: None,
             }
         });
@@ -914,6 +968,15 @@ pub fn firmware_surface() -> tilo_resource::surface::Surface {
     >(FIRMWARE, "Firmware")
 }
 
+/// The `containers` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn containers_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::containers::Containers,
+        tilo_system_resources::containers::ContainerAction,
+    >(CONTAINERS, "Containers")
+}
+
 /// The `host-info` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]
 pub fn host_info_surface() -> tilo_resource::surface::Surface {
@@ -1127,6 +1190,7 @@ impl Service for SystemService {
             codec_pack::resource(&self.readings.codec_pack),
             windows_compat::resource(&self.readings.windows_compat),
             firmware::resource(&self.readings.firmware),
+            containers::resource(&self.readings.containers),
         ]
     }
 
@@ -1146,6 +1210,7 @@ impl Service for SystemService {
             CODEC_PACK => Some(reading(&self.readings.codec_pack)),
             WINDOWS_COMPAT => Some(reading(&self.readings.windows_compat)),
             FIRMWARE => Some(reading(&self.readings.firmware)),
+            CONTAINERS => Some(reading(&self.readings.containers)),
             _ => None,
         }
     }
@@ -1459,6 +1524,75 @@ impl Service for SystemService {
                     }
                 };
                 Ok(self.start_extension(Part::Firmware, id, ExtensionChange::Firmware(change)))
+            }
+            CONTAINERS => {
+                if !self.readings.containers.serving {
+                    return Err(ApiError::Unavailable {
+                        code: "no_podman".into(),
+                        reason: "This computer has no podman".into(),
+                    });
+                }
+                let action = decode::<tilo_system_resources::containers::ContainerAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                let change = match action {
+                    tilo_system_resources::containers::ContainerAction::Refresh => {
+                        return Ok(self.start_reread(Part::Containers, id));
+                    }
+                    tilo_system_resources::containers::ContainerAction::Start { container } => {
+                        ContainerChange::Start(container)
+                    }
+                    tilo_system_resources::containers::ContainerAction::Stop { container } => {
+                        ContainerChange::Stop(container)
+                    }
+                    tilo_system_resources::containers::ContainerAction::Restart { container } => {
+                        ContainerChange::Restart(container)
+                    }
+                    tilo_system_resources::containers::ContainerAction::Pause { container } => {
+                        ContainerChange::Pause(container)
+                    }
+                    tilo_system_resources::containers::ContainerAction::Unpause { container } => {
+                        ContainerChange::Unpause(container)
+                    }
+                    tilo_system_resources::containers::ContainerAction::Remove { container } => {
+                        ContainerChange::Remove(container)
+                    }
+                    tilo_system_resources::containers::ContainerAction::Tag { image, tag } => {
+                        ContainerChange::Tag { image, tag }
+                    }
+                    tilo_system_resources::containers::ContainerAction::RemoveImage {
+                        image,
+                    } => ContainerChange::RemoveImage(image),
+                    tilo_system_resources::containers::ContainerAction::CreateVolume { name } => {
+                        ContainerChange::CreateVolume(name)
+                    }
+                    tilo_system_resources::containers::ContainerAction::RemoveVolume {
+                        volume,
+                    } => ContainerChange::RemoveVolume(volume),
+                    tilo_system_resources::containers::ContainerAction::Create {
+                        name,
+                        image,
+                        ports,
+                        env,
+                        volumes,
+                        command,
+                    } => ContainerChange::Create {
+                        name,
+                        image,
+                        ports,
+                        env,
+                        volumes,
+                        command,
+                    },
+                    tilo_system_resources::containers::ContainerAction::Pull { .. } => {
+                        return Err(ApiError::Unavailable {
+                            code: "use_the_app".into(),
+                            reason: "Pulling an image streams in the app that started it".into(),
+                        });
+                    }
+                };
+                Ok(self.start_container(id, change))
             }
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,
