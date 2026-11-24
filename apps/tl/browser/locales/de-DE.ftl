@@ -1767,3 +1767,6 @@ d-s57t5cky = Vollbild merken
     .doc = Schreibt in den Datensatz der Seite, ob sie im Vollbild ist, wie ihr Fenster es übergibt: Ein Video oder eine Präsentation, die den Bildschirm gefüllt hat, oder ihn verlassen hat.
 
 d-s57t5cky-fullscreen = Vollbild
+
+d-m2ajq6vo = Vorschläge
+    .w-search-for = Nach „{ $words }“ suchen

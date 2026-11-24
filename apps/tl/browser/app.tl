@@ -3644,7 +3644,7 @@ fn suggestions(b: Browser, typed: Text) -> List<Suggestion> {
     let pages = (leading + once.filter(s -> not bare(s.url).starts_with(q))).take(4)
     let search = Suggestion(
         kind: .search,
-        title: "Search for “{words}”",
+        title: std.say("Search for “{words}”"),
         url: search_address(b, words),
         secondary: shown_url(origin_of(engine(b))),
     )
