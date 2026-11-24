@@ -124,6 +124,7 @@ tilolang-thread-replies = { $count ->
     [one] 1 reply
    *[other] { $count } replies
 }
+tilolang-thread-archived = Archived
 tilolang-make = Make
 # The system's command on every resource's menu, and what the window says once it ran.
 tilolang-copy-link = Copy link

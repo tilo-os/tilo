@@ -1037,7 +1037,11 @@ action send(
     let m = Message(body: words, reply_to: reply_to, turn: turn)
     let sent = match to {
         c: TextChannel => c.messages.insert(m),
-        t: Thread => t.messages.insert(m),
+        // A reply in a thread set aside picks its talk up again.
+        t: Thread => {
+            t.archived = false
+            t.messages.insert(m)
+        }
         d: Direct => {
             let sent = d.messages.insert(m)
             for p in d.people.filter(p -> p != invoker and p.kind() == .person) {
@@ -1395,6 +1399,22 @@ action archive_channel(ch: TextChannel, archived: Bool = not ch.archived) (
 ) {
     require moderates(invoker) "Only the workspace's moderators archive a channel"
     ch.archived = archived
+}
+
+/// Whether the person acting made `t`.
+fn mine(t: Thread) -> Bool {
+    created(t)?.mine ?? false
+}
+
+/// Sets a thread aside once its talk is done, keeping everything said in it, or reopens it. Its
+/// chip says so under the message it started from; a reply in it reopens it. The person who
+/// started it or a moderator does this.
+action archive_thread(t: Thread, archived: Bool = not t.archived) (
+    icon: .archive,
+    label: if archived { "Archive thread" } else { "Reopen thread" },
+) {
+    require moderates(invoker) or mine(t) "Only who started it or a moderator archives a thread"
+    t.archived = archived
 }
 
 /// Changes what a message says. Only its author may. An agent retrying its answer writes it
@@ -2002,7 +2022,7 @@ view sidebar(all: Conversations) {
                                 // A group is its channels: one with none shows no header over
                                 // nothing.
                                 if not c.channels.is_empty() {
-                                    ui.NavSection(c.name, collapsible: true) {
+                                    ui.NavSection(c.name, collapsible: true, item: c) {
                                         // What is done to the group itself stays on the group:
                                         // its heading's menu, not a place in it.
                                         menu: {
@@ -2711,6 +2731,27 @@ view thread(t: Thread) {
         thread_message(t, m, t.messages, replying, editing, revised)
         composer: {
             thread_typing_here(t)
+            // Setting the thread aside, or picking it up again, where its talk ends; a set-aside
+            // thread says so over the box, which still takes a reply that reopens it.
+            row(distribute: .end, gap: .related, align: .center) {
+                if t.archived {
+                    text(
+                        "This thread is archived. A reply reopens it.",
+                        role: .caption,
+                        secondary: true,
+                        fill: 1.0,
+                        truncate,
+                    )
+                }
+                ui.Button(
+                    if t.archived { "Reopen thread" } else { "Archive thread" },
+                    icon: .archive,
+                    size: .small,
+                    role: .plain,
+                ) {
+                    on press: archive_thread(t, archived: not t.archived)
+                }
+            }
             if let d = all.drafts.find(x -> x.conversation == t and (created(x)?.mine ?? false)) {
                 composer(t, t.messages, d, replying, "Message {t.name}")
             }
@@ -3045,7 +3086,7 @@ view message(
         }
     }
     if let t = m.thread {
-        std.thread_chip(t, count: t.messages.len())
+        std.thread_chip(t, count: t.messages.len(), last: t.messages.last(), archived: t.archived)
     }
     let listed = linked(m).filter(l -> shown.any(x -> l.of == x)).map(l -> l.of)
     std.linked(m, compact: true, without: listed)

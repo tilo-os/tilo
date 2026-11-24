@@ -38,6 +38,10 @@ pub struct NavSectionProps {
     pub title: String,
     /// Whether its heading folds it away.
     pub collapsible: bool,
+    /// The resource the group is, when it is one (a category of channels): the group is kept by
+    /// it rather than by where it stands, so a fold the person made stays with the group when it
+    /// is renamed or moved among the others.
+    pub item: Option<ResourceId>,
     /// The action that makes another place in the group ("New project"), drawn at the end of
     /// the heading.
     pub add: Option<OfferedAction>,
@@ -307,7 +311,10 @@ fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) 
             NavEntry::Item(item) => loose.push(item),
             NavEntry::Section(section) => {
                 flush(&mut loose, &mut sections);
-                let id = format!("{key}/{}", sections.len());
+                let id = match &section.item {
+                    Some(item) => format!("{key}/item:{}", item.0),
+                    None => format!("{key}/{}", sections.len()),
+                };
                 if !section.menu.is_empty() {
                     menus.insert(
                         format!("section:{id}"),

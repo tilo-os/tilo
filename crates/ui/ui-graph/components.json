@@ -10674,6 +10674,13 @@
           "type": "bool"
         },
         {
+          "name": "item",
+          "doc": "The resource the group is, when it is one (a category of channels): the group is kept by it rather than by where it stands, so a fold the person made stays with the group when it is renamed or moved among the others.",
+          "type": {
+            "option": "resource"
+          }
+        },
+        {
           "name": "add",
           "doc": "The action that makes another place in the group (\"New project\"), drawn at the end of the heading.",
           "type": {

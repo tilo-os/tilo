@@ -1173,10 +1173,23 @@ view call_input_menu<R>(of: R, inputs: List<host.CallInput>, what: Text) {
     }
 }
 
-/// Under a message that started a thread: how many replies it has, opening the thread.
-view thread_chip<T>(thread: T, count: Int) {
-    ui.Chip(phrase("tilolang-thread-replies", count: count), icon: .message_square) {
-        on press: open(thread)
+/// Under a message that started a thread: how many replies it has, opening the thread, and the
+/// latest of them as one quiet line (whose face, the start of what it says, when), so a thread
+/// that moved on reads as moving without opening it. An `archived` thread says it was set aside.
+view thread_chip<T, M>(thread: T, count: Int, last: Option<M> = .none, archived: Bool = false) {
+    row(gap: .tight, align: .center, wrap: true) {
+        ui.Chip(phrase("tilolang-thread-replies", count: count), icon: .message_square) {
+            on press: open(thread)
+        }
+        if archived {
+            ui.Text(phrase("tilolang-thread-archived"), role: .caption, secondary: true)
+        }
+        if let m = last, made = created(m) {
+            ui.Avatar(who: made.who)
+            text(meta(m).title, role: .caption, secondary: true, truncate)
+            ui.Text("·", role: .caption, secondary: true)
+            ui.Time(made.at, role: .caption, secondary: true)
+        }
     }
 }
 

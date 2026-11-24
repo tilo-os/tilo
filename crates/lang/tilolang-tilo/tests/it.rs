@@ -30,6 +30,7 @@ mod chat_copylink;
 mod chat_emoji;
 mod chat_liveshare;
 mod chat_persona_shot;
+mod chat_small;
 mod composer;
 mod contacts;
 mod containers;

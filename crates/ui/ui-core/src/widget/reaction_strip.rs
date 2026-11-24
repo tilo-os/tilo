@@ -12,6 +12,7 @@ use crate::color_compat::ColorCompat as _;
 use crate::icons::Icon;
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
+use crate::presence::{Face, FaceStack};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::{EffectiveMotion, MotionSource, TextRole};
@@ -39,6 +40,8 @@ pub struct StripMetrics {
     emoji: f64,
     count: TextStyle,
     icon: f64,
+    /// The faces of who reacted, after the count of each pill, when the strip shows them.
+    faces: Option<FaceStack>,
 }
 
 impl StripMetrics {
@@ -57,7 +60,16 @@ impl StripMetrics {
             emoji: (height - 2.0 * f64::from(spacing.s1)).round(),
             count,
             icon: f64::from(theme.tokens.metrics.icon_sm) + 2.0,
+            faces: None,
         }
+    }
+
+    /// The same strip with each pill ending in the faces of who reacted with it: up to three,
+    /// then a face counting the rest, each in its person's colour.
+    #[must_use]
+    pub fn with_faces(mut self) -> Self {
+        self.faces = Some(FaceStack::in_face(self.height));
+        self
     }
 
     #[must_use]
@@ -91,6 +103,8 @@ pub struct StripLayout {
     /// its centre to it, the face itself staying compact (0 until a host that
     /// knows its input says, see [`Self::with_minimum_target`]).
     minimum_target: f64,
+    /// How the faces of who reacted stand at the end of each pill, when they show.
+    faces: Option<FaceStack>,
 }
 
 /// How wide `emoji` is drawn in a pill: a square for a picture or a
@@ -158,6 +172,13 @@ pub fn layout(
         .cloned()
         .collect();
     let pills_count = groups.len() + alone.len();
+    // The room the faces of `count` people take after a pill's count.
+    let faces_w = |count: usize| {
+        metrics
+            .faces
+            .filter(|_| count > 0)
+            .map_or(0.0, |stack| metrics.inner_gap + stack.group_width(count))
+    };
     let mut pills = Vec::with_capacity(pills_count);
     for group in groups {
         let glyph_w = emoji_width(&group.emoji, metrics, text);
@@ -168,7 +189,7 @@ pub fn layout(
                 .0,
         )
         .ceil();
-        let width = metrics.pad_x * 2.0 + glyph_w + metrics.inner_gap + count_w;
+        let width = metrics.pad_x * 2.0 + glyph_w + metrics.inner_gap + count_w + faces_w(count);
         let rect = place(width.max(metrics.height));
         let glyph = Rect::from_center_size(
             Point::new(rect.x0 + metrics.pad_x + glyph_w / 2.0, rect.center().y),
@@ -192,7 +213,7 @@ pub fn layout(
                 .0,
         )
         .ceil();
-        let width = metrics.pad_x * 2.0 + glyph_w + metrics.inner_gap + count_w;
+        let width = metrics.pad_x * 2.0 + glyph_w + metrics.inner_gap + count_w + faces_w(count);
         let rect = place(width.max(metrics.height));
         let glyph = Rect::from_center_size(
             Point::new(rect.x0 + metrics.pad_x + glyph_w / 2.0, rect.center().y),
@@ -221,6 +242,7 @@ pub fn layout(
         me: me.cloned(),
         can_react,
         minimum_target: 0.0,
+        faces: metrics.faces,
     }
 }
 
@@ -484,6 +506,9 @@ pub struct ReactionStrip {
     layout: StripLayout,
     motion: HashMap<String, PillMotion>,
     seen: bool,
+    /// Who the members that reacted are, for the faces a strip that shows them draws: their
+    /// name, colour and picture.
+    people: HashMap<MemberId, crate::component::Person>,
 }
 
 impl ReactionStrip {
@@ -522,6 +547,11 @@ impl ReactionStrip {
         );
         self.follow(theme.motion());
         &self.layout
+    }
+
+    /// Who the members that reacted are, as their faces show them.
+    pub fn set_people(&mut self, people: HashMap<MemberId, crate::component::Person>) {
+        self.people = people;
     }
 
     fn set_layout(&mut self, layout: StripLayout, motion: EffectiveMotion) {
@@ -627,10 +657,17 @@ impl ReactionStrip {
             );
             let focused = matches!(focus, Some(StripHit::Toggle(emoji)) if *emoji == pill.emoji);
             let bounds = pill.rect.inflate(2.0, 2.0);
+            let faces = self
+                .layout
+                .faces
+                .map(|stack| (stack, pill_faces(pill, &self.people, ctx.theme)));
             let (scene, text, theme) = (&mut *ctx.scene, &mut *ctx.text, ctx.theme);
             pose.paint(scene, ctx.transform, bounds, |scene, xform| {
                 let mut ctx = PaintCtx::new(scene, xform, text, theme);
                 paint_pill(&mut ctx, pill, &counts, hovered(pill.rect), &metrics);
+                if let Some((stack, faces)) = &faces {
+                    paint_faces(&mut ctx, pill, *stack, faces, hovered(pill.rect), &metrics);
+                }
                 if focused {
                     paint_ring(&mut ctx, pill.rect);
                 }
@@ -643,6 +680,56 @@ impl ReactionStrip {
             }
         }
     }
+}
+
+/// The faces of who reacted with `pill`: each member as every surface draws them, in their
+/// colour, and each name given elsewhere in the colour that name derives.
+fn pill_faces<'a>(
+    pill: &'a StripPill,
+    people: &'a HashMap<MemberId, crate::component::Person>,
+    theme: &Theme,
+) -> Vec<Face<'a>> {
+    let palette = &theme.tokens.colors.presence;
+    let derived = |identity: &str| palette.hue(crate::tokens::PresenceHue::of_identity(identity));
+    pill.reactors
+        .iter()
+        .map(|reactor| match people.get(&reactor.by) {
+            Some(person) => Face::of(person, palette.hue(person.hue)),
+            None => {
+                let name = reactor.name.as_deref().unwrap_or(reactor.by.id());
+                Face::member(name, &reactor.by, derived(reactor.by.id()))
+            }
+        })
+        .chain(
+            pill.relayed
+                .iter()
+                .map(|name| Face::new(name, name, derived(name))),
+        )
+        .collect()
+}
+
+/// `faces` at the end of `pill`, after its count: the first of them, and a face counting the
+/// rest, each ringed on the pill's own ground.
+fn paint_faces(
+    ctx: &mut PaintCtx<'_>,
+    pill: &StripPill,
+    stack: FaceStack,
+    faces: &[Face<'_>],
+    hovered: bool,
+    metrics: &StripMetrics,
+) {
+    if faces.is_empty() {
+        return;
+    }
+    let ground = ctx.theme.tokens.colors.surfaces.content;
+    let colors = ChipStyle::Neutral.colors(ctx.theme, ground, pill.mine, hovered);
+    let (shown, more) = stack.group(faces.len());
+    stack.paint(
+        ctx,
+        (pill.rect.x1 - metrics.pad_x, pill.rect.center().y),
+        (&faces[..shown], more),
+        colors.fill,
+    );
 }
 
 fn paint_ring(ctx: &mut PaintCtx<'_>, rect: Rect) {

@@ -71,14 +71,10 @@ impl Described for ReactionStripWidget {
     type Props = ReactionsProps;
 
     fn from_props(key: &str, props: ReactionsProps) -> Self {
-        let (groups, names, relayed, can_react, toggle) = said(props);
+        let (groups, people, relayed, can_react, toggle) = said(props);
         Self::new(groups, None)
-            .with_names(move |reactor: &Reactor| {
-                names
-                    .get(&reactor.by)
-                    .cloned()
-                    .unwrap_or_else(|| reactor.by.id().to_owned())
-            })
+            .with_names(named_by(&people))
+            .with_people(people)
             .with_relayed(relayed)
             .can_react(can_react)
             .on_toggle(move |picked| toggle.fire(Some(Value::Text(picked.emoji))))
@@ -86,16 +82,12 @@ impl Described for ReactionStripWidget {
     }
 
     fn set_props(&mut self, props: ReactionsProps) -> bool {
-        let (groups, names, relayed, can_react, toggle) = said(props);
+        let (groups, people, relayed, can_react, toggle) = said(props);
         self.set_groups(groups);
         self.set_relayed(relayed);
         self.set_can_react(can_react);
-        self.set_names(move |reactor: &Reactor| {
-            names
-                .get(&reactor.by)
-                .cloned()
-                .unwrap_or_else(|| reactor.by.id().to_owned())
-        });
+        self.set_names(named_by(&people));
+        self.set_people(people);
         self.set_on_toggle(move |picked| {
             toggle.fire(Some(Value::Text(picked.emoji)));
         });
@@ -103,13 +95,29 @@ impl Described for ReactionStripWidget {
     }
 }
 
-/// The reactions `props` say, as the strip shows them: each emoji with who reacted, how those
-/// people are named, whether the person may react, and what a press reports.
+/// How a reactor is named in a pill's tooltip: their name among `people`, else their id.
+fn named_by(
+    people: &std::collections::HashMap<tilo_resource::MemberId, Person>,
+) -> impl Fn(&Reactor) -> String + 'static {
+    let names: std::collections::HashMap<tilo_resource::MemberId, String> = people
+        .iter()
+        .map(|(id, person)| (id.clone(), person.name.clone()))
+        .collect();
+    move |reactor: &Reactor| {
+        names
+            .get(&reactor.by)
+            .map_or_else(|| reactor.by.id().to_owned(), Clone::clone)
+    }
+}
+
+/// The reactions `props` say, as the strip shows them: each emoji with who reacted, who those
+/// people are (their names in a tooltip, their faces on the pill), whether the person may react,
+/// and what a press reports.
 fn said(
     props: ReactionsProps,
 ) -> (
     Vec<ReactionGroup>,
-    std::collections::HashMap<tilo_resource::MemberId, String>,
+    std::collections::HashMap<tilo_resource::MemberId, Person>,
     Vec<(String, Vec<String>)>,
     bool,
     Event,
@@ -122,7 +130,7 @@ fn said(
         can_react,
         toggle,
     } = props;
-    let mut names = std::collections::HashMap::new();
+    let mut known = std::collections::HashMap::new();
     let groups = ReactionsProps::groups(reactions, emoji, by)
         .into_iter()
         .enumerate()
@@ -132,7 +140,7 @@ fn said(
                 .into_iter()
                 .filter_map(|person| {
                     let by = person.identity.member_id()?.clone();
-                    names.insert(by.clone(), person.name);
+                    known.insert(by.clone(), person);
                     Some(Reactor {
                         by,
                         persona: None,
@@ -158,7 +166,7 @@ fn said(
             None => elsewhere.push((emoji.to_owned(), vec![name.to_owned()])),
         }
     }
-    (groups, names, elsewhere, can_react.unwrap_or(true), toggle)
+    (groups, known, elsewhere, can_react.unwrap_or(true), toggle)
 }
 
 /// A button that opens the emoji picker beside it; the emoji picked is reported (`on pick(e)`).
