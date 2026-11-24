@@ -27,13 +27,9 @@ const WS: WorkspaceId = WorkspaceId::from_u128(11);
 async fn asking(
     device: &TestDevice,
     addr: iroh_base::EndpointAddr,
-    served_by: [u8; 32],
 ) -> (iroh::Endpoint, RemoteDevice, Arc<ActionService>) {
     let endpoint = device_endpoint(device).await;
     let actions = Arc::new(ActionService::new(device.sk.clone(), Arc::new(NoActions)));
-    // A Tilo server's action service signs as its own workspace service, which
-    // its endpoint is keyed apart from.
-    actions.keyed_apart(served_by, *addr.id.as_bytes());
     let remote = actions.remote(&endpoint, &addr, &WS.to_string());
     (endpoint, remote, actions)
 }
@@ -75,14 +71,7 @@ async fn the_host_answers_its_devices_and_refuses_the_rest() {
         Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions)))),
     ))
     .await;
-    let service_device = server
-        .server
-        .workspaces()
-        .expect("the server holds workspaces")
-        .action_service()
-        .device();
-    let (a_endpoint, remote, _a_actions) =
-        asking(&a, server.server.node_addr(), service_device).await;
+    let (a_endpoint, remote, _a_actions) = asking(&a, server.server.node_addr()).await;
     let caller = Caller::authenticated(user.user_pk, a.device_pubkey());
 
     // The host answers the catalogue and the invocation through the app action server it
@@ -112,7 +101,7 @@ async fn the_host_answers_its_devices_and_refuses_the_rest() {
 
     // A device the workspace's roster does not name asks nothing, and runs nothing.
     let (stranger_endpoint, stranger_remote, _stranger_actions) =
-        asking(&stranger, server.server.node_addr(), service_device).await;
+        asking(&stranger, server.server.node_addr()).await;
     let nobody = Caller::authenticated(user.user_pk, stranger.device_pubkey());
     let refused = tilo_test_env::within(
         "the host refuses a device it does not admit",
@@ -176,14 +165,7 @@ async fn a_request_addressed_to_another_device_is_passed_on() {
 
     // A asks its host for the page's actions: the host passes the request on to the page, which
     // answers it as A.
-    let service_device = server
-        .server
-        .workspaces()
-        .expect("the server holds workspaces")
-        .action_service()
-        .device();
-    let (a_endpoint, _remote, a_actions) =
-        asking(&a, server.server.node_addr(), service_device).await;
+    let (a_endpoint, _remote, a_actions) = asking(&a, server.server.node_addr()).await;
     let caller = Caller::authenticated(user.user_pk, a.device_pubkey());
     let through = a_actions.through(
         &a_endpoint,

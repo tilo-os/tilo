@@ -870,48 +870,6 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
     b_endpoint.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_device_asking_from_an_endpoint_keyed_apart_is_answered_once_named() {
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
-    let roster = vec![a.1.clone(), b.1.clone()];
-    let dispatcher = Arc::new(TestProvider::new());
-    let endpoint = localhost_endpoint(&a.0).await;
-    let action_service = ActionService::new(a.0.clone(), dispatcher.clone());
-    action_service.hold(Replica::new(workspace(WORKSPACE, &a, &roster)));
-    let serving = Router::builder(endpoint.clone())
-        .accept(ACTIONS_ALPN, action_service.clone())
-        .spawn();
-
-    // B signs as its device but asks from an endpoint keyed by another key,
-    // as a Tilo server does.
-    let apart = SigningKey::from_bytes(&[30; 32]);
-    let b_endpoint = localhost_endpoint(&apart).await;
-    let b_action_service = ActionService::new(b.0.clone(), Arc::new(TestProvider::new()));
-    let remote = b_action_service.remote(&b_endpoint, &addr(&endpoint), WORKSPACE);
-    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
-    assert_eq!(
-        queried(&remote, &caller).await,
-        Err(ActionCallError::NotPermitted),
-        "an endpoint nobody named asks as the device it is keyed by"
-    );
-    assert!(dispatcher.callers().is_empty());
-
-    action_service.keyed_apart(b.1.device_public_key, apart.verifying_key().to_bytes());
-    let remote = b_action_service.remote(&b_endpoint, &addr(&endpoint), WORKSPACE);
-    assert_eq!(queried(&remote, &caller).await, Ok(()));
-    assert_eq!(
-        dispatcher.callers()[0].device_public_key(),
-        Some(&b.1.device_public_key),
-        "answered as the device it named"
-    );
-
-    serving.shutdown().await.unwrap();
-    endpoint.close().await;
-    b_endpoint.close().await;
-}
-
 /// `action` on the address `entry-1` left at the workspace's entry, as a visitor's page asks it.
 fn at_the_entry(action: &str) -> InvokeRequest {
     InvokeRequest {
@@ -1650,7 +1608,15 @@ async fn a_forwarded_call_runs_as_the_one_who_signed_it() {
     // The device's own unsigned call runs as that device, forwarded by nobody.
     the_devices_own_call_runs_as_itself(&forwarding, &dispatcher, &b_caller, &b).await;
     // What does not prove itself never runs as the device that sent it, or at all.
-    unproven_forwards_are_refused(&forwarding, &dispatcher, &b_caller, &helper, person, &engine).await;
+    unproven_forwards_are_refused(
+        &forwarding,
+        &dispatcher,
+        &b_caller,
+        &helper,
+        person,
+        &engine,
+    )
+    .await;
 
     engine.close().await;
     b_endpoint.close().await;

@@ -643,66 +643,8 @@ async fn host_on(
     grants: Option<usize>,
     app_files: Vec<std::path::PathBuf>,
 ) -> TestHost {
-    host_opened(
-        state_root,
-        ServiceIdentity {
-            user_public_key: cert.user_public_key,
-            device_signing_key: key.clone(),
-            device_cert: cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        key,
-        // A server of other people's workspaces takes their work in them.
-        tilo_server_protocol::WorkSetting {
-            from: tilo_server_protocol::WorkFrom::Anyone,
-            ..tilo_server_protocol::WorkSetting::own_person()
-        },
-        channels,
-        grants,
-    )
-    .await
-}
-
-/// A person's device and the service it opens beside it, as production opens them
-/// ([`crate::own_device::open`]): the service signs under a key of its own, which the device
-/// certifies, while the endpoint its people's devices dial and its member copies are the device.
-///
-/// # Panics
-///
-/// The device cannot certify the service's key, or the host cannot open.
-pub async fn test_host_beside_device(
-    state_root: &Path,
-    key: &SigningKey,
-    cert: &DeviceCert,
-    keys: Arc<TestGroupKeys>,
-) -> TestHost {
-    let signer: Arc<dyn collab_types::signer::DeviceSigner> = Arc::new(key.clone());
-    let identity = ServiceIdentity::beside_device(state_root, cert, &*signer)
-        .await
-        .expect("the device certifies its service's key");
-    host_opened(
-        state_root,
-        identity,
-        key,
-        tilo_server_protocol::WorkSetting::none(),
-        DeviceKeyGroups { keys, sink: None },
-        None,
-    )
-    .await
-}
-
-/// `identity`'s service hosting under `state_root`, its endpoint bound with `endpoint_key` and
-/// taking `work` in its workspaces, whose channels it takes part in through `channels`.
-async fn host_opened(
-    state_root: &Path,
-    identity: ServiceIdentity,
-    endpoint_key: &SigningKey,
-    work: tilo_server_protocol::WorkSetting,
-    channels: DeviceKeyGroups,
-    grants: Option<usize>,
-) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&endpoint_key.to_bytes()));
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
     #[cfg(test)]
     let home = tilo_test_relay::relay().await;
     #[cfg(test)]
@@ -719,9 +661,21 @@ async fn host_opened(
                 // process, and a surface one of them names must not change what another's stores
                 // admit.
                 surfaces: Arc::default(),
-                ..ServiceConfig::new(state_root.to_owned(), work)
+                // A server of other people's workspaces takes their work in them.
+                ..ServiceConfig::new(
+                    state_root.to_owned(),
+                    tilo_server_protocol::WorkSetting {
+                        from: tilo_server_protocol::WorkFrom::Anyone,
+                        ..tilo_server_protocol::WorkSetting::own_person()
+                    },
+                )
             },
-            identity,
+            ServiceIdentity {
+                user_public_key: cert.user_public_key,
+                device_signing_key: key.clone(),
+                device_cert: cert.clone(),
+                revocations: RevocationList::new(),
+            },
             endpoint.clone(),
             channels.into(),
         )

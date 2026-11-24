@@ -37,17 +37,14 @@ pub(crate) struct Account {
 }
 
 impl Account {
-    /// The account at `server`, the device `server_device` (a server keys its endpoint apart
-    /// from the device it signs as), asked in `workspace` through the action service of `own`,
-    /// this device's workspace service.
+    /// The account at `server`, asked in `workspace` through the action service of `own`, this
+    /// device's workspace service: the server answers as the device its endpoint is keyed by.
     pub(crate) fn at(
         own: &ServiceWorkspaces,
         server: &iroh::EndpointAddr,
-        server_device: [u8; 32],
         workspace: &str,
     ) -> Self {
         let actions = own.copies().action_service();
-        actions.keyed_apart(server_device, *server.id.as_bytes());
         Self {
             server: Arc::new(actions.remote(&own.endpoint(), server, workspace)),
         }

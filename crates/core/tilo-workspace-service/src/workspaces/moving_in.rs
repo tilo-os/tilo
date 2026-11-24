@@ -78,24 +78,22 @@ pub struct MovedIn {
     pub refused: Vec<(WorkspaceId, String)>,
 }
 
-/// What the workspace service whose state is under `root` kept, read without writing anything
-/// there: `None` when it kept nothing, or it was moved out already.
+/// What the workspace service whose state is under `root` kept, its workspaces written as the
+/// device its `cert` certifies and `key` signs for, read without writing anything there: `None`
+/// when it kept nothing, or it was moved out already.
 ///
 /// # Errors
 ///
-/// Its key, a workspace's files or its store could not be read.
-pub fn moving_out(root: &Path) -> Result<Option<MovingService>, String> {
+/// A workspace's files or its store could not be read.
+pub fn moving_out(
+    root: &Path,
+    cert: &DeviceCert,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<Option<MovingService>, String> {
     if !tilo_paths::desktop_service::kept(root) {
         return Ok(None);
     }
-    let key_dir = root.join(crate::service::OWN_KEY_DIR);
     let read = |what: &Path, error: &dyn std::fmt::Display| format!("{}: {error}", what.display());
-    let key = tilo_device_identity::persist::read_signing_key(
-        &key_dir.join(tilo_paths::desktop_service::KEY_FILE),
-    )
-    .map_err(|error| read(&key_dir, &error))?;
-    let cert = tilo_device_identity::persist::read_device_cert(&key_dir.join("cert.bin"))
-        .map_err(|error| read(&key_dir, &error))?;
     let dir = root.join("workspaces");
     let mut ids = Vec::new();
     for entry in std::fs::read_dir(&dir).map_err(|error| read(&dir, &error))? {
@@ -151,7 +149,7 @@ pub fn moving_out(root: &Path) -> Result<Option<MovingService>, String> {
     }
     Ok(Some(MovingService {
         key: key.to_bytes(),
-        cert,
+        cert: cert.clone(),
         workspaces,
     }))
 }
@@ -211,30 +209,23 @@ fn ours(name: &str, workspace: &str) -> bool {
 }
 
 impl Workspaces {
-    /// Take in what `moving`, another workspace service of this device, governed: each workspace
+    /// Take in what `moving`, this device's workspace service from before, kept: each workspace
     /// not kept here already, its writes and channel member lists into this service's store, its
-    /// files beside this service's, served from here, with this service admitted and named
-    /// among the devices keeping it in the other's place, written as the other service.
+    /// files beside this service's, served from here, with this service named among the devices
+    /// keeping it in the other's place, written as the one device both are.
     ///
     /// # Errors
     ///
-    /// `moving` is not a service of this device. A workspace that does not move is said in
+    /// `moving` is not this device's. A workspace that does not move is said in
     /// [`MovedIn::refused`] and the rest move.
     pub async fn move_in(&self, moving: MovingService) -> Result<MovedIn, String> {
         let key = ed25519_dalek::SigningKey::from_bytes(&moving.key);
         let own = self.serving_certificate().clone();
-        let device_of = |cert: &DeviceCert| {
-            cert.issuer
-                .as_deref()
-                .map(|issuer| (issuer.user_public_key, issuer.device_public_key))
-        };
         if key.verifying_key().to_bytes() != moving.cert.device_public_key
-            || moving.cert.device_public_key == own.device_public_key
-            || device_of(&moving.cert).is_none()
-            || device_of(&moving.cert) != device_of(&own)
+            || moving.cert.device_public_key != own.device_public_key
         {
             return Err(
-                "only another workspace service of this device moves its workspaces here".into(),
+                "only this device's own workspace service moves its workspaces here".into(),
             );
         }
         let mut moved = MovedIn::default();
@@ -321,11 +312,12 @@ impl Workspaces {
                 let named = candidate
                     .governance_mut()
                     .author_keeping_device(&hint, key, now)?;
-                let gone = candidate.governance_mut().author_keeping_device_removed(
-                    &from.device_public_key,
-                    key,
-                    now,
-                )?;
+                let gone = from.device_public_key != own.device_public_key
+                    && candidate.governance_mut().author_keeping_device_removed(
+                        &from.device_public_key,
+                        key,
+                        now,
+                    )?;
                 Ok(((), admitted || named || gone))
             },
             |record, _| Ok(record.collaboration.clone()),

@@ -1,7 +1,7 @@
 //! A device's own workspace service: the service a server runs, opened in the process of a
-//! device that holds its workspaces itself (a desktop, a runtime), under a key of the service's
-//! own that the device certifies, so the device's engine and the service never number changes
-//! from one count.
+//! device that holds its workspaces itself (a desktop, a runtime). It signs as the device, whose
+//! key and certificate its embedder holds, so the records it writes, the links it serves and the
+//! content it answers all name the one key the device is certified as.
 //!
 //! The service holds the workspaces the device founded and the member copies of the ones it
 //! joined, writing as the device in them, and takes part in their key groups through the
@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use collab_types::signer::DeviceSigner;
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCert, RevocationList};
 use tilo_workspace_keys::KeyProvider;
 
 use crate::service::{ServiceConfig, ServiceError, ServiceIdentity, WorkspaceService};
@@ -39,8 +39,8 @@ const _: () = assert!(OPEN_WAIT.as_secs() > tilo_workspace_keys::founding_wait()
 pub struct Device<'a> {
     pub cert: &'a DeviceCert,
     pub signer: &'a Arc<dyn DeviceSigner>,
-    /// The device itself, when its service acts as it rather than under a key of its own: a
-    /// server, whose people's devices address the workspaces it keeps to its device key.
+    /// The device itself, when its service acts as it with material beyond its key and
+    /// certificate: a server, whose revocations it carries.
     pub itself: Option<ServiceIdentity>,
 }
 
@@ -55,8 +55,11 @@ pub struct Device<'a> {
 /// is opened through here, so none of them can diverge, a server among them: it keeps a
 /// workspace of its person's that another device serves as a member copy too.
 ///
+/// The service signs as the device: one device has one key, so its links, the records it writes
+/// and what it answers name the key its certificate does.
+///
 /// # Errors
-/// The device cannot certify the service's own key, or the service's store cannot be opened.
+/// The device's key is not held in the clear, or the service's store cannot be opened.
 pub async fn open(
     store: PathBuf,
     device: Device<'_>,
@@ -66,7 +69,22 @@ pub async fn open(
 ) -> Result<WorkspaceService, ServiceError> {
     let identity = match device.itself {
         Some(itself) => itself,
-        None => ServiceIdentity::beside_device(&store, device.cert, &**device.signer).await?,
+        None => {
+            let key = device.signer.device_signing_key().ok_or_else(|| {
+                ServiceError::Identity(
+                    "this device's workspace service signs as its device, whose key it does not \
+                     hold in the clear"
+                        .into(),
+                )
+            })?;
+            ServiceIdentity {
+                user_public_key: device.cert.user_public_key,
+                device_signing_key: key,
+                device_cert: device.cert.clone(),
+                // Each workspace's own revocations reach the service through its governance.
+                revocations: RevocationList::new(),
+            }
+        }
     };
     // A person's own device takes nobody else's work, unless `configure` says otherwise, and
     // its member copies act as it.

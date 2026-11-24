@@ -330,9 +330,6 @@ struct Inner {
     content_puts: tilo_actions::remote::HostedContentPuts,
     bounds: Bounds,
     callers: Mutex<HashMap<[u8; 32], Bucket>>,
-    /// Endpoints keyed apart from the device they answer for, by endpoint
-    /// id ([`ActionService::keyed_apart`]).
-    endpoints: Mutex<HashMap<[u8; 32], [u8; 32]>>,
     /// The transports this device reaches other devices at, by device: the
     /// links they hold open to it, which it opens a bi-stream on as it dials a
     /// native device ([`ActionService::reach_device_at`]).
@@ -410,7 +407,6 @@ impl ActionService {
             content_puts: tilo_actions::remote::HostedContentPuts::default(),
             bounds,
             callers: Mutex::default(),
-            endpoints: Mutex::default(),
             held: Mutex::default(),
             dialled_in: Mutex::default(),
             invocations: Mutex::default(),
@@ -446,7 +442,6 @@ impl ActionService {
             content_puts: tilo_actions::remote::HostedContentPuts::default(),
             bounds: Bounds::default(),
             callers: Mutex::default(),
-            endpoints: Mutex::default(),
             held: Mutex::default(),
             dialled_in: Mutex::default(),
             invocations: Mutex::default(),
@@ -481,27 +476,6 @@ impl ActionService {
     #[must_use]
     pub fn reach(&self, device: [u8; 32]) -> Option<Arc<dyn Transport>> {
         self.0.held.lock_recover().get(&device).cloned()
-    }
-
-    /// A device reached at an endpoint keyed apart from its device key asks and
-    /// answers at that endpoint as the device ([`Self::device_of`]). Every other
-    /// endpoint is the device it is keyed by.
-    pub fn keyed_apart(&self, device: [u8; 32], endpoint: [u8; 32]) {
-        if device != endpoint {
-            self.0.endpoints.lock_recover().insert(endpoint, device);
-        }
-    }
-
-    /// The device a connection from `endpoint` asks as: on this device's other protocols
-    /// too, for whoever serves them beside its actions.
-    #[must_use]
-    pub fn device_of(&self, endpoint: [u8; 32]) -> [u8; 32] {
-        self.0
-            .endpoints
-            .lock_recover()
-            .get(&endpoint)
-            .copied()
-            .unwrap_or(endpoint)
     }
 
     /// A handle that does not keep this service alive
@@ -744,7 +718,7 @@ impl ActionService {
         placement: Option<Vec<u8>>,
         target: Option<[u8; 32]>,
     ) -> Arc<Device> {
-        let target = target.unwrap_or_else(|| self.device_of(*addr.id.as_bytes()));
+        let target = target.unwrap_or(*addr.id.as_bytes());
         Arc::new(Device {
             way: Way::Dial {
                 endpoint: endpoint.clone(),
@@ -1429,7 +1403,7 @@ impl ActionService {
         execution: &ExecutionLease,
     ) -> Result<(), String> {
         let named = transport.remote();
-        let remote = (named != [0; 32]).then(|| self.device_of(named));
+        let remote = (named != [0; 32]).then_some(named);
         loop {
             // The link ended, from either end.
             let Ok((send, recv)) = transport.accept_bi().await else {
@@ -1465,7 +1439,7 @@ impl ActionService {
         // over the same one, so a request addressed to that device is passed on there
         // ([`Self::reach_device_at`]).
         let transport: Arc<dyn Transport> = Arc::new(connection.clone());
-        let device = self.device_of(*connection.remote_id().as_bytes());
+        let device = *connection.remote_id().as_bytes();
         self.reach_device_at(device, Arc::clone(&transport));
         self.0.dialled_in.lock_recover().insert(device);
         // One connection is one run: its requests share an execution, which ends with the
@@ -1489,7 +1463,7 @@ impl ActionService {
     /// their own signatures ([`Self::decide`]).
     pub fn serve_link(&self, transport: Arc<dyn Transport>) {
         let named = transport.remote();
-        let device = (named != [0; 32]).then(|| self.device_of(named));
+        let device = (named != [0; 32]).then_some(named);
         if let Some(device) = device {
             self.reach_device_at(device, Arc::clone(&transport));
         }

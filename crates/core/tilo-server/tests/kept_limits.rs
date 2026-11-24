@@ -190,7 +190,7 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
     workspaces.serve_content(Arc::new(tilo_server::content::StoresContent(Arc::clone(
         &content,
     ))));
-    let kept = KeptContent::new(workspaces.clone(), host_device, Arc::clone(&content));
+    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
     let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
 
     // A file is capped at 1000 bytes and a member's share at 1500; the hourly

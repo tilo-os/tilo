@@ -84,11 +84,14 @@ impl Desktop {
         // The group's endpoints reach each other on this machine alone: no
         // other machine names where they are reached.
         config.reaching = Reaching::OnItsOwn;
-        // The service writes under a key of its own, which this desktop
-        // certifies as its workspace service, as every desktop's does.
-        let identity = ServiceIdentity::beside_device(&config.state_root, &cert, &key)
-            .await
-            .expect("this desktop certifies its workspace service");
+        // The service writes as the desktop, whose key its endpoint is bound with: one device,
+        // one key.
+        let identity = ServiceIdentity {
+            user_public_key: cert.user_public_key,
+            device_signing_key: key.clone(),
+            device_cert: cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        };
         let service = WorkspaceService::open(config, identity, endpoint.clone(), None)
             .await
             .expect("this desktop's workspace service opens");

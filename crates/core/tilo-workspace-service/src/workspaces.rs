@@ -1042,18 +1042,12 @@ impl WorkspaceServices {
     }
 
     /// The key this device's endpoint is keyed by, which its device actions sign as, and the
-    /// certificate of that key: a member device's own where its service writes under a key of
-    /// its own, else the host's.
+    /// certificate of that key: the device's own, whose one key signs the records it writes,
+    /// serves its links and answers its content.
     pub(crate) fn endpoint_identity(
         &self,
     ) -> (Arc<dyn collab_types::signer::DeviceSigner>, DeviceCert) {
-        let endpoint_key = *self.endpoint.id().as_bytes();
-        match &self.member {
-            Some(member) if member.cert.device_public_key == endpoint_key => {
-                (Arc::clone(&member.signer), member.cert.clone())
-            }
-            _ => (Arc::new(self.key.clone()), self.cert.clone()),
-        }
+        (Arc::new(self.key.clone()), self.cert.clone())
     }
 }
 
@@ -2379,9 +2373,7 @@ impl Workspaces {
         let now = tilo_clock::wall();
         let state = self.workspace(workspace).await?;
         let governed = state.lock().await;
-        let reader = self
-            .own_reader(workspace)
-            .unwrap_or(self.inner.host.cert.device_public_key);
+        let reader = self.own_reader();
         let policy = governed.peer().permissions(reader, now)?.policy;
         let people = governed.summary();
         drop(governed);
@@ -2405,9 +2397,7 @@ impl Workspaces {
         let now = tilo_clock::wall();
         let state = self.workspace(workspace).await?;
         let governed = state.lock().await;
-        let reader = self
-            .own_reader(workspace)
-            .unwrap_or(self.inner.host.cert.device_public_key);
+        let reader = self.own_reader();
         let policy = governed.peer().permissions(reader, now)?.policy;
         let people = self.people(&governed);
         drop(governed);

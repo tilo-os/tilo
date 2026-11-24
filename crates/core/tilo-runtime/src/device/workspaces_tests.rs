@@ -207,10 +207,11 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
     let found = crate::device::home::server_among(&hosts, &laptop_cert.device_public_key)
         .expect("the copy names the server");
     assert_eq!(found.endpoint_addr.id, server.node_addr().id);
-    let signs_as = found.device_certificate.device_public_key;
-    assert_eq!(signs_as, server_cert.device_public_key);
-    let account =
-        crate::device::account::Account::at(&own, &found.endpoint_addr, signs_as, &workspace);
+    assert_eq!(
+        found.device_certificate.device_public_key, server_cert.device_public_key,
+        "the server signs as the device its endpoint is keyed by"
+    );
+    let account = crate::device::account::Account::at(&own, &found.endpoint_addr, &workspace);
     tilo_test_env::within(
         "the server answers the account its copy names",
         account.listed(
@@ -632,10 +633,10 @@ async fn a_workspace_the_desktop_founded_moves_here_and_is_the_persons_own() {
         "nothing is founded before the person arrives"
     );
     let state = directory.path().join("desktop-state");
-    let person = desktop_founds_its_persons_workspace(&state, &cert, key).await;
+    let person = desktop_founds_its_persons_workspace(&state, &cert, key.clone()).await;
 
     let service_root = state.join("tilo/workspace-service");
-    let moving = moving_out(&service_root)
+    let moving = moving_out(&service_root, &cert, &key)
         .unwrap()
         .expect("the desktop's service kept workspaces");
     assert_eq!(

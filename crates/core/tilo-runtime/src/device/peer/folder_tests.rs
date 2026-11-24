@@ -274,12 +274,7 @@ impl Computer {
         })
         .await;
         let address = login.server_address.as_ref().unwrap();
-        let account = Arc::new(Account::at(
-            &own,
-            &address.endpoint_addr,
-            login.server_cert.device_public_key,
-            &login.workspace,
-        ));
+        let account = Arc::new(Account::at(&own, &address.endpoint_addr, &login.workspace));
         let peer = Arc::new(Peer::open(dir, home).await.unwrap());
         let keeping = tokio::spawn(Arc::clone(&peer).keep(Arc::clone(&own), account));
         Self { own, peer, keeping }

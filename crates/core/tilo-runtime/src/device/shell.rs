@@ -397,12 +397,11 @@ async fn ask(
     let peer = workspaces
         .peer(id)
         .ok_or("this device does not hold the workspace")?;
-    let (device, addr) = standing::keeping_device_elsewhere(&peer, &cert.device_public_key)
+    let (_, addr) = standing::keeping_device_elsewhere(&peer, &cert.device_public_key)
         .ok_or("this device reaches no device keeping the workspace")?;
     let (actions, endpoint, _) = workspaces
         .turn_action_service()
         .ok_or("this device runs no action service")?;
-    actions.keyed_apart(device, *addr.id.as_bytes());
     let followed = Arc::new(actions.remote(&endpoint, &addr, &workspace))
         .invoke_until_settled(request, tilo_peer_state::actions::FOLLOW_DEADLINE)
         .await;

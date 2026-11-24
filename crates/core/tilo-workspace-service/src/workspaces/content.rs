@@ -721,7 +721,9 @@ impl Workspaces {
         if answers.is_empty() {
             return;
         }
-        let Some(link) = self.content_link(workspace) else {
+        let Some(link) = WorkspaceId::parse(workspace)
+            .and_then(|id| self.member_link(id).or_else(|| self.inner.direct.link(id)))
+        else {
             return;
         };
         for answer in answers {
@@ -753,20 +755,10 @@ impl Workspaces {
         self.inner.content.owed.lock_recover().take(workspace, hash);
     }
 
-    /// The link of `workspace` this device answers content asks on: the one it dialled as a
-    /// member, else the one it serves.
-    fn content_link(&self, workspace: &str) -> Option<tilo_peer_state::direct::DirectSync> {
-        WorkspaceId::parse(workspace)
-            .and_then(|id| self.member_link(id).or_else(|| self.inner.direct.link(id)))
-    }
-
     fn answer_from_kept(&self, workspace: &str, asker: &[u8; 32], body: &[u8]) -> Vec<Vec<u8>> {
-        // The answer names the device of the link it travels on: a member copy answers as the
-        // device it dialled its serving device as, never under a key of its own.
-        let device = self.content_link(workspace).map_or_else(
-            || self.serving_certificate().device_public_key,
-            |link| link.device(),
-        );
+        // The answer names this device, the one its link proves: one key signs and answers
+        // everywhere.
+        let device = self.serving_certificate().device_public_key;
         neighbour_wire::content::answer(&device, asker, body, |app_id, _, hash| {
             self.app_file(workspace, hash)
                 .or_else(|| {

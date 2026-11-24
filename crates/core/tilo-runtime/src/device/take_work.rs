@@ -335,12 +335,12 @@ fn shell_runs(
     let shells = workspace_shells(profile, workspaces, replicas, browsers);
     let commands = Arc::new(EnvironmentCommands::new(shells, workspaces.operator()));
     let streams = Arc::clone(&commands);
-    let terminals: TerminalsOf = Box::new(move |actions: ActionService| {
+    let terminals: TerminalsOf = Box::new(move |_actions: ActionService| {
         // A stream is taken by the device that asked for it, as the endpoint that dials asks
         // on the action service: the server's endpoint is the server's device.
         Box::new(ush::environment_terminals::quic::Route::new(
             move |endpoint, from, to| {
-                if let Err(error) = streams.serve_terminal(actions.device_of(endpoint), from, to) {
+                if let Err(error) = streams.serve_terminal(endpoint, from, to) {
                     tracing::debug!(%error, "a terminal stream was refused");
                 }
             },

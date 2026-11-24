@@ -6,10 +6,8 @@ use std::path::{Path, PathBuf};
 
 /// The service's directory, below the state directory (`$XDG_STATE_HOME`).
 pub const DIR: &str = "tilo/workspace-service";
-/// The directory of a workspace service's own key and certificate, below its directory.
-pub const KEY_DIR: &str = "service-key";
-/// The key's file, in [`KEY_DIR`].
-pub const KEY_FILE: &str = "key.bin";
+/// The directory of the workspaces it kept, below its directory.
+const WORKSPACES: &str = "workspaces";
 /// The mark that the desktop's session handed what its service kept over, below its directory.
 pub const MOVED_OUT: &str = "moved-out";
 
@@ -22,5 +20,5 @@ pub fn dir(state_home: &Path) -> PathBuf {
 /// Whether the desktop service whose directory is `dir` kept workspaces it has not handed over.
 #[must_use]
 pub fn kept(dir: &Path) -> bool {
-    dir.join(KEY_DIR).join(KEY_FILE).exists() && !dir.join(MOVED_OUT).exists()
+    dir.join(WORKSPACES).is_dir() && !dir.join(MOVED_OUT).exists()
 }

@@ -39,9 +39,7 @@ impl Workspaces {
         let (peer, device) = self
             .replica(workspace)
             .ok_or("this service does not hold the workspace")?;
-        let reader = self
-            .own_reader(workspace)
-            .ok_or("this service acts as no device here")?;
+        let reader = self.own_reader();
         if moderation_pending {
             // The read is decided as any other is, and waits for the history rather than
             // answering with a record the workspace has but this device has not read whole.
@@ -94,9 +92,7 @@ impl Workspaces {
         let Some((peer, device)) = self.replica(workspace) else {
             return false;
         };
-        let Some(reader) = self.own_reader(workspace) else {
-            return true;
-        };
+        let reader = self.own_reader();
         crate::documents::readable(
             &peer,
             device.as_ref(),
@@ -116,7 +112,7 @@ impl Workspaces {
         workspace: &str,
     ) -> Option<tilo_action_policy::WorkspacePolicy> {
         let held = self.inner.readings.held(workspace)?;
-        let reader = self.own_reader(workspace)?;
+        let reader = self.own_reader();
         let peer = held.replica.lock();
         peer.permissions(reader, tilo_clock::wall())
             .ok()
@@ -171,13 +167,10 @@ impl Workspaces {
         self.inner.readings.workspaces()
     }
 
-    /// The device this service reads `workspace` as: its own where it governs the workspace, the
-    /// device its member copy acts as where it joins one.
-    pub(super) fn own_reader(&self, workspace: &str) -> Option<[u8; 32]> {
-        if self.inner.readings.held(workspace)?.member {
-            return self.member_identity().ok().map(|device| device.device());
-        }
-        Some(self.device_cert().device_public_key)
+    /// The device this service reads its workspaces as: the one it is certified as, whose one
+    /// key signs what it writes, serves its links and decides its reads.
+    pub(super) fn own_reader(&self) -> [u8; 32] {
+        self.device_cert().device_public_key
     }
 
     /// Whether `workspace` seals every write of its resources: its device takes part in the

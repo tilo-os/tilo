@@ -1172,94 +1172,6 @@ pub struct ServiceIdentity {
     pub revocations: RevocationList,
 }
 
-/// Where a device's workspace service keeps its own key and the certificate
-/// its device issued for it, under the service's state root.
-pub(crate) const OWN_KEY_DIR: &str = tilo_paths::desktop_service::KEY_DIR;
-
-impl ServiceIdentity {
-    /// The identity of the workspace service of the device `device`, whose
-    /// key `signer` holds, keeping its state under `root`: a
-    /// key of the service's own, made the first time and kept there, and the
-    /// certificate `device` issues for it as its workspace service
-    /// ([`tilo_user_identity::prepare_service_cert`]). The certificate is
-    /// issued again whenever the one kept no longer holds for `device` as it
-    /// is certified now.
-    ///
-    /// The service never signs under the device's key: the device and its
-    /// service each write under a key of their own, so neither takes a
-    /// sequence number the other already gave a change. A machine copied from
-    /// another serves under a key of its own too: the kept key's certificate
-    /// was issued by the device this one was copied from, which still serves
-    /// with it.
-    ///
-    /// # Errors
-    ///
-    /// The key or certificate cannot be kept under `root`, or `signer` does
-    /// not sign for `device`.
-    pub async fn beside_device(
-        root: &std::path::Path,
-        device: &DeviceCert,
-        signer: &dyn collab_types::signer::DeviceSigner,
-    ) -> Result<Self, ServiceError> {
-        use tilo_device_identity::persist;
-        let fail = |what: &str, error: &dyn std::fmt::Display| {
-            ServiceError::Identity(format!("this device's workspace service {what}: {error}"))
-        };
-        let dir = root.join(OWN_KEY_DIR);
-        let key_path = dir.join(tilo_paths::desktop_service::KEY_FILE);
-        let cert_path = dir.join("cert.bin");
-        // A certificate the person's other device issued belongs to the machine this one was
-        // copied from: two machines serving as one key would be one author, giving changes the
-        // same sequence numbers, as two devices holding one key would. The copy serves with a key
-        // of its own from then on.
-        let branched = persist::read_device_cert(&cert_path)
-            .ok()
-            .and_then(|cert| cert.issuer)
-            .is_some_and(|issuer| issuer.device_public_key != device.device_public_key);
-        let key = if key_path.exists() && !branched {
-            persist::read_signing_key(&key_path).map_err(|error| fail("key", &error))?
-        } else {
-            std::fs::create_dir_all(&dir).map_err(|error| fail("key", &error))?;
-            let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
-                getrandom::SysRng,
-            ));
-            persist::write_signing_key(&key_path, &key).map_err(|error| fail("key", &error))?;
-            key
-        };
-        let public = key.verifying_key().to_bytes();
-        let now = unix_now_ns();
-        let kept = persist::read_device_cert(&cert_path).ok().filter(|cert| {
-            cert.device_public_key == public
-                && cert.issuer.as_deref() == Some(device)
-                && verify_device_cert_at(cert, now).is_ok()
-        });
-        let cert = if let Some(cert) = kept {
-            cert
-        } else {
-            let mut cert = tilo_user_identity::prepare_service_cert(
-                device,
-                public,
-                &device.device_label,
-                now.max(device.issued_at_ns),
-            );
-            tilo_user_identity::sign_device_cert_async(&mut cert, signer)
-                .await
-                .map_err(|error| fail("certificate", &error))?;
-            persist::write_device_cert(&cert_path, &cert)
-                .map_err(|error| fail("certificate", &error))?;
-            cert
-        };
-        Ok(Self {
-            user_public_key: cert.user_public_key,
-            device_signing_key: key,
-            device_cert: cert,
-            // Each workspace's own revocations reach the service through its
-            // governance.
-            revocations: RevocationList::new(),
-        })
-    }
-}
-
 pub fn validate_service_device_identity(identity: &ServiceIdentity) -> Result<(), ServiceError> {
     verify_device_cert_at(&identity.device_cert, unix_now_ns())
         .map_err(|error| ServiceError::Identity(format!("invalid device certificate: {error}")))?;
@@ -1417,40 +1329,6 @@ mod tests {
         assert!(narrows(&list(&["a", "b"]), &list(&["b", "c"])));
         assert!(narrows(&TrustPolicy::AllowAny, &list(&["a"])));
         assert!(!narrows(&TrustPolicy::AllowAny, &TrustPolicy::AllowAny));
-    }
-
-    /// A machine copied from another serves under a key of its own: the key it carries was
-    /// certified by the device it was copied from, which still serves with it, and the same key on
-    /// two machines gives the same changes one sequence number.
-    #[tokio::test]
-    async fn a_machine_copied_from_another_serves_under_a_key_of_its_own() {
-        use ed25519_dalek::SigningKey;
-        use tilo_user_identity::DeviceCapabilities;
-
-        let state = tempfile::tempdir().unwrap();
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let source =
-            crate::workspaces::fixtures::device_cert(&root, "source", DeviceCapabilities::member());
-        let copy =
-            crate::workspaces::fixtures::device_cert(&root, "copy", DeviceCapabilities::member());
-        let first = ServiceIdentity::beside_device(state.path(), &source.1, &source.0)
-            .await
-            .unwrap();
-        let copied = ServiceIdentity::beside_device(state.path(), &copy.1, &copy.0)
-            .await
-            .unwrap();
-        assert_ne!(
-            copied.device_cert.device_public_key, first.device_cert.device_public_key,
-            "the copy serves under a key of its own"
-        );
-        assert!(copied.device_cert.is_of_device(&copy.1.device_public_key));
-        let again = ServiceIdentity::beside_device(state.path(), &copy.1, &copy.0)
-            .await
-            .unwrap();
-        assert_eq!(
-            again.device_cert.device_public_key, copied.device_cert.device_public_key,
-            "the key it chose is the key it keeps"
-        );
     }
 
     #[test]

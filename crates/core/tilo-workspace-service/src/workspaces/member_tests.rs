@@ -14,7 +14,7 @@ use super::super::WorkspaceContent;
 use super::super::WorkspaceSummary;
 use super::super::fixtures::{
     TestGroupKeys, TestHost, device_cert, governor, signed_pre_admission, test_host,
-    test_host_beside_device, test_host_holding,
+    test_host_holding,
 };
 use super::MemberDevice;
 use ed25519_dalek::SigningKey;
@@ -269,19 +269,19 @@ async fn a_device_holding_a_workspace_answers_content_as_the_device_it_joined_as
     let (serving, (key, cert), created, invitation) =
         shared(serving_state.path(), "Content", 21).await;
 
-    // The member's own service as production opens a device's: a key of its own beside the
-    // device's, with the endpoint its device dials and the link its member copy answers on.
-    let member = test_host_beside_device(member_state.path(), &key, &cert, group_keys()).await;
+    // The member's own service as production opens a device's: it signs as the device, whose
+    // key its endpoint is bound with and whose link its member copy answers on.
+    let member = test_host_holding(member_state.path(), &key, &cert, group_keys()).await;
     member
         .workspaces()
         .set_member_device(Arc::new(MemberDevice {
             cert: cert.clone(),
             signer: Arc::new(key.clone()),
         }));
-    assert_ne!(
+    assert_eq!(
         member.workspaces().serving_certificate().device_public_key,
         cert.device_public_key,
-        "the service signs under a key of its own, as a device's service does"
+        "the service signs as the one device it is"
     );
     let member_keeps = Kept(b"a picture the member keeps".to_vec());
     member

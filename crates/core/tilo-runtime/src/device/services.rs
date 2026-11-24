@@ -1049,7 +1049,6 @@ impl Daemon {
         let account = Arc::new(super::account::Account::at(
             &self.workspaces,
             &server.endpoint_addr,
-            home.server_cert.device_public_key,
             &home.workspace,
         ));
         // The person's own workspace, whose roster lists every device of theirs, is the first
@@ -1397,13 +1396,11 @@ impl Daemon {
                 // A stream is taken by the device that asked for it, as the endpoint that dials
                 // asks on the action service: the device's own endpoint is the device.
                 let streams = Arc::clone(&host);
-                let dialling = actions.clone();
                 terminals.push((
                     ush::environment_terminals::ALPN,
                     Box::new(ush::environment_terminals::quic::Route::new(
                         move |endpoint, from, to| {
-                            let device = dialling.device_of(endpoint);
-                            if let Err(error) = streams.serve_terminal(device, from, to) {
+                            if let Err(error) = streams.serve_terminal(endpoint, from, to) {
                                 tracing::debug!(%error, "a terminal stream was refused");
                             }
                         },

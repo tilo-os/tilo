@@ -1458,10 +1458,9 @@ impl Workspaces {
             .certificate()
             .await
             .map_err(|error| format!("the host did not say who it is: {error}"))?;
-        // Each operation is signed as this host, the holder its hand-overs and catch-ups name,
-        // whatever key the endpoint the link runs on is keyed by.
-        let (signer, signing): (Arc<dyn collab_types::signer::DeviceSigner>, _) =
-            (Arc::new(host.key.clone()), host.cert.clone());
+        // Each operation is signed as this host, the holder its hand-overs and catch-ups name:
+        // one device, one key.
+        let (signer, signing) = host.endpoint_identity();
         Ok(OtherHost {
             certificate,
             actions,

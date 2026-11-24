@@ -1633,11 +1633,7 @@ impl Workspaces {
                 .resources
                 .show_live(rows, hex::encode(device.cert.user_public_key));
         }
-        let reader = self
-            .member_identity()
-            .map_or(self.inner.host.cert.device_public_key, |device| {
-                device.device()
-            });
+        let reader = self.own_reader();
         let policy = governed
             .peer()
             .permissions(reader, tilo_clock::wall())

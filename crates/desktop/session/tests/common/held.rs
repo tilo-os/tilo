@@ -166,13 +166,15 @@ pub fn workspace_founded_on_this_device_then(
             .bind()
             .await
             .expect("this device's endpoint");
-        // The service writes under a key of its own beside the device's, and its member copies
-        // act as the device, as the session's own service does when it opens this store again.
+        // The service writes as the device, and its member copies act as it, as the session's
+        // own service does when it opens this store again.
         let signer: Arc<dyn collab_types::signer::DeviceSigner> = Arc::new(key.clone());
-        let identity =
-            tilo_workspace_service::service::ServiceIdentity::beside_device(&root, cert, &*signer)
-                .await
-                .expect("this device certifies its service's own key");
+        let identity = tilo_workspace_service::service::ServiceIdentity {
+            user_public_key: cert.user_public_key,
+            device_signing_key: key.clone(),
+            device_cert: cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        };
         let service = tilo_workspace_service::service::WorkspaceService::open(
             tilo_workspace_service::service::ServiceConfig {
                 // The service names no address of its own until something needs it reachable, as

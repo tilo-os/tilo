@@ -87,9 +87,12 @@ pub(crate) async fn spawn_ticking(
         Vec::new(),
     );
     let store = state.join("workspace-service");
-    let service_identity = workspace_service::ServiceIdentity::beside_device(&store, &cert, &key)
-        .await
-        .expect("the device certifies its workspace service");
+    let service_identity = workspace_service::ServiceIdentity {
+        user_public_key: cert.user_public_key,
+        device_signing_key: key.clone(),
+        device_cert: cert.clone(),
+        revocations: tilo_user_identity::RevocationList::new(),
+    };
     let mut config = ServiceConfig::new(store, tilo_server_protocol::WorkSetting::none());
     // A loopback endpoint is never reached from another network: waiting to
     // learn such an address would hold each device back for the whole wait

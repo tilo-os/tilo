@@ -151,8 +151,6 @@ impl Tickets {
             bail!("a device action asks with its arguments");
         };
         let service = ActionService::new(self.0.key.clone(), std::sync::Arc::new(NoActions));
-        // A server whose endpoint is keyed apart from its device answers as the device there.
-        service.keyed_apart(device, *addr.id.as_bytes());
         let remote = std::sync::Arc::new(service.remote(&self.0.endpoint, &addr, &workspace));
         let request = InvokeRequest {
             on_behalf_of: None,
