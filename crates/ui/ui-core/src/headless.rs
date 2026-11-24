@@ -3112,14 +3112,6 @@ impl FrameHarness {
         false
     }
 
-    /// Write out every open record and wait for it to land.
-    pub fn persist_flush(&mut self) {
-        self.invalidate_local();
-        if let Err(error) = self.try_persist_flush() {
-            tracing::error!(%error, "headless record persistence failed");
-        }
-    }
-
     /// Flush records while retaining storage failures for the command's exit status.
     pub fn try_persist_flush(&mut self) -> Result<(), String> {
         self.invalidate_local();
@@ -5362,12 +5354,6 @@ impl FrameHarness {
         })
     }
 
-    /// The text and chip (logical) of the tooltip the last frame painted.
-    #[must_use]
-    pub fn drawn_tooltip(&self) -> Option<(&str, Rect)> {
-        self.tooltips.drawn()
-    }
-
     pub fn targets(&self) -> HashMap<String, Rect> {
         self.drain_component_wakes();
         let mut out = HashMap::new();
@@ -6825,18 +6811,6 @@ impl FrameHarness {
         self.call_on_instance_as(instance, resource, action, arguments, approved)
     }
 
-    /// [`Self::call_on`] on the hosted component instance `instance`, such as one window of several.
-    pub fn call_on_instance(
-        &mut self,
-        instance: crate::application::InstanceId,
-        resource: &str,
-        action: &str,
-        arguments: serde_json::Value,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        self.invalidate_local();
-        self.call_on_instance_as(instance, resource, action, arguments, false)
-    }
-
     fn call_on_instance_as(
         &mut self,
         instance_id: crate::application::InstanceId,
@@ -7470,14 +7444,6 @@ impl FrameHarness {
         }
         let prepared = self.history.as_mut()?.prepare_pending_control(token)?;
         self.settle_history_control(prepared)
-    }
-
-    /// Whether a control's invocation is still waiting for its answer: the
-    /// frames a test keeps running until the window has answered what a click
-    /// submitted.
-    #[must_use]
-    pub fn control_invocations_pending(&self) -> bool {
-        !self.pending_control_invocations.is_empty() || !self.bound_invocations.is_empty()
     }
 
     fn dispatch_control_invocations(&mut self) {

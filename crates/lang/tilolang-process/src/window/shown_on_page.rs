@@ -41,17 +41,12 @@ pub struct Shown {
     pub capture_protected: bool,
 }
 
-/// The frame a page lays out `window` in, where nobody draws it.
-#[must_use]
-pub fn frame_of(window: HostedWindow) -> FrameHarness {
-    FrameHarness::new(ui::State::new(), Box::new(window), VIEWPORT)
-}
-
-/// The frame a page lays out the window over the patch connection `channel` in, whose other end
-/// its instance's host holds.
+/// The frame a page lays out the window over the patch connection `channel` in, where nobody
+/// draws it; its instance's host holds the other end.
 #[must_use]
 pub fn frame_over(channel: super::hosted::PatchConnection) -> FrameHarness {
-    frame_of(HostedWindow::over(channel))
+    let window = Box::new(HostedWindow::over(channel));
+    FrameHarness::new(ui::State::new(), window, VIEWPORT)
 }
 
 /// A window's frame shown on one page: the numbers its elements carry from one answer to the
@@ -75,12 +70,7 @@ impl ShownOnPage {
     pub fn open(&mut self, frame: &mut FrameHarness, show: Option<&str>) -> Shown {
         // The page opens on the first view its instance sends, not on the window waiting for it:
         // a page answered before would show an empty window and no title.
-        while let Some(window) = frame.widget_mut::<HostedWindow>()
-            && ui::widget::AwaitsContent::awaits_content(window)
-            && window.wait_for_app()
-        {
-            frame.woken();
-        }
+        await_app(frame, ui::widget::AwaitsContent::awaits_content);
         if let Some(show) = show {
             let composition = composition(frame);
             let opened = widget_of_target(&composition, show)
@@ -126,6 +116,12 @@ impl ShownOnPage {
         if let Err(reason) = acted {
             tracing::debug!(%reason, id, "a page's press was refused");
         }
+        // The page is answered once its instance ran the press, with what that changed.
+        await_app(frame, |window| {
+            window
+                .view()
+                .is_some_and(tilo_app_window::AppWindow::presses_unanswered)
+        });
         self.changed(frame)
     }
 
@@ -152,6 +148,16 @@ impl ShownOnPage {
     pub fn changed(&mut self, frame: &mut FrameHarness) -> Vec<Patch> {
         let composition = composition(frame);
         self.page.patch(&composition)
+    }
+}
+
+/// Lay `frame` out as what its instance sends arrives, while `waits` holds of its window.
+fn await_app(frame: &mut FrameHarness, waits: impl Fn(&HostedWindow) -> bool) {
+    while let Some(window) = frame.widget_mut::<HostedWindow>()
+        && waits(window)
+        && window.wait_for_app()
+    {
+        frame.woken();
     }
 }
 

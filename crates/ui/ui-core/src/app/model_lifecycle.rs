@@ -94,6 +94,9 @@ impl super::App {
             }
             drop(self.take_floating_host_messages());
         }
+        // A window shown before its record is replaced once the record is had, as a frame
+        // replaces it: with no frame, this wake is the one that takes it.
+        self.swap_requested_component();
         self.pump_hosted_model();
         self.root_widget.next_wake_deadline()
     }
@@ -103,19 +106,6 @@ impl super::App {
     pub(super) fn pump_embedded_model(&mut self) -> bool {
         self.pump_hosted_model_as(host_perf_baseline())
             .presentation_changed
-    }
-
-    /// Advance the ordinary dirty-tracked native worker without a window.
-    /// This never forces synchronization or layout to mask a missing wake.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn controlled_hosted_model_for_test(&mut self) -> bool {
-        self.pump_hosted_model_as(false).synced
-    }
-
-    /// Read the same state observer used around scheduled native inputs.
-    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
-    pub fn controlled_native_input_snapshot_for_test(&self) -> Option<serde_json::Value> {
-        self.native_input_snapshot()
     }
 
     /// Why the session action host last refused one of this window's
@@ -168,10 +158,7 @@ impl super::App {
             presentation_changed: inbound,
             ..HostedPumpReport::default()
         };
-        if force_sync
-            || invocations
-            || self.needs_sync
-            || wakes.is_some_and(|(pending, _)| pending)
+        if force_sync || invocations || self.needs_sync || wakes.is_some_and(|(pending, _)| pending)
         {
             report.updated = true;
             #[cfg(test)]

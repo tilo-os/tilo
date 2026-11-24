@@ -1743,6 +1743,12 @@ impl AppWindow {
                 .any(|rows| rows.borrow().wants())
     }
 
+    /// Whether the app has not yet said it ran every press the window sent it (`ToUi::Took`).
+    #[must_use]
+    pub fn presses_unanswered(&self) -> bool {
+        self.fired > self.took
+    }
+
     pub fn flush(&mut self) {
         // A file input the person clicked in the page waits on their choice: the host's picker
         // asks, in its own time, and answers the page with what they picked.

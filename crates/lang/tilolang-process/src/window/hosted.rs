@@ -724,14 +724,20 @@ impl HostedWindow {
         self.connected.as_ref().map(|connected| &connected.view)
     }
 
-    /// Wait until its instance sends something the window has not shown, or hangs up: whether
-    /// anything watches its connection.
+    /// Send its instance what the window owes it, and wait until the instance sends something the
+    /// window has not shown, or hangs up: whether anything watches its connection. An instance
+    /// this window runs itself runs on its passes, and is not waited for here.
     #[must_use]
-    pub fn wait_for_app(&self) -> bool {
-        let watch = self
+    pub fn wait_for_app(&mut self) -> bool {
+        let Some(connected) = self
             .connected
-            .as_ref()
-            .and_then(|connected| connected.watch.as_ref());
+            .as_mut()
+            .filter(|_| self.in_process.is_none())
+        else {
+            return false;
+        };
+        connected.view.flush();
+        let watch = connected.watch.as_ref();
         watch.inspect(|watch| watch.woke.wait(None)).is_some()
     }
 
