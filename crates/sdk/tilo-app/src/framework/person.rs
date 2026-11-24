@@ -9,11 +9,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
+use tilo_actions::{ActionContext, ActionError, ActionInvoker, ChangeKind};
 
 use super::live::Live;
 use super::resources::{Held, ResourceApi};
 use super::section::{SectionApi, SectionKind};
+use super::workspace::Pending;
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::history_mode::HistoryOwner;
@@ -44,20 +45,20 @@ impl<P: Resource> Clone for PersonResource<P> {
     }
 }
 
-struct Shared<P: Resource> {
+/// What a person's record is whatever its type: where it is kept, whose it is and the edits
+/// that wait for its store. The typed record ([`PersonResource`]) hands its work here, so each
+/// record type an app opens compiles only what reads its own state.
+struct Core {
     record: StoredResource,
     app_id: &'static str,
     app_title: &'static str,
     me: tilo_resource::MemberId,
-    /// The state, followed change by change: what views of the record read.
-    live: Live<P>,
-    /// The same state, for controls bound to it.
-    state: LocalState<Rc<P::State>>,
-    /// The record as views and the API edit it.
-    held: RefCell<Option<Rc<Held<P>>>>,
+    /// The record's type, as its changes name it.
+    kind: &'static str,
+    label: &'static str,
     /// Edits asked for while the record's store was in use, applied in order
     /// once it is free.
-    waiting: RefCell<std::collections::VecDeque<(P::Action, ActionInvoker)>>,
+    waiting: RefCell<std::collections::VecDeque<(Pending, ActionInvoker)>>,
     /// What the state shown was read with while edits waited: the record's
     /// heads and how many waited. The state then holds them, so what is
     /// read after an edit holds it although the store has not taken it yet.
@@ -68,55 +69,18 @@ struct Shared<P: Resource> {
     wake: Option<ui_core::wake::WakeHandle>,
 }
 
-impl<P: Resource> Shared<P> {
-    /// Follow the record when it moved, reading only what changed. Whether
-    /// it did.
-    fn refresh(&self) -> bool {
-        self.apply_waiting();
-        if self.owes() {
-            self.wake();
-        }
-        let mut moved = match self.record.read(|doc| self.live.sync(doc)) {
-            Some(Ok(moved)) => moved,
-            Some(Err(error)) => {
-                unreadable_person_resource(P::KIND, &error);
-                false
-            }
-            None => false,
-        };
-        if !moved && self.live.unreadable().is_none() {
-            // The record is small and read whole, so a change it cannot
-            // read is noticed here rather than by whoever publishes it. The
-            // reader reads it again only when the document moved since it
-            // last read it whole; what that read found is the state too.
-            match self.record.read(|doc| self.live.reread(doc)) {
-                Some(Ok(reread)) => moved = reread,
-                Some(Err(error)) => unreadable_person_resource(P::KIND, &error),
-                None => {}
-            }
-        }
-        // Views of the record follow it whole: it is small.
-        let _ = self.live.take_change();
-        let waiting = self.waiting.borrow().len();
-        if waiting > 0 {
-            let heads = self.record.heads();
-            let read = (heads, waiting);
-            if self.ahead.borrow().as_ref() == Some(&read) {
-                return moved;
-            }
-            if let Some(state) = self.with_waiting() {
-                self.state.set(state);
-                *self.ahead.borrow_mut() = Some(read);
-                return true;
-            }
-        }
-        if self.ahead.borrow_mut().take().is_some() || moved {
-            self.state.set(self.live.get());
-            return true;
-        }
-        moved
-    }
+/// One typed record's [`Core`] and its state, followed change by change.
+struct Shared<P: Resource> {
+    core: Core,
+    /// The state, followed change by change: what views of the record read.
+    live: Live<P>,
+    /// The same state, for controls bound to it.
+    state: LocalState<Rc<P::State>>,
+    /// The record as views and the API edit it.
+    held: RefCell<Option<Rc<Held<P>>>>,
+}
 
+impl Core {
     /// Whether edits still wait for the store.
     fn owes(&self) -> bool {
         !self.waiting.borrow().is_empty()
@@ -124,6 +88,7 @@ impl<P: Resource> Shared<P> {
 
     /// Make what waited for the store, in a frame's settle, where the store
     /// is free, and wake the window so its next pass reads what it made.
+    #[inline(never)]
     fn settle(&self) {
         if !self.owes() {
             return;
@@ -138,11 +103,25 @@ impl<P: Resource> Shared<P> {
         }
     }
 
+    /// The record's document with the edits waiting for its store made in a
+    /// copy of it, which the caller then lets go.
+    #[inline(never)]
+    fn document_with_waiting(&self) -> Option<ui_core::automerge::AutoCommit> {
+        let mut doc = self.record.read(Clone::clone)?;
+        for (action, invoker) in self.waiting.borrow().iter() {
+            if let Err(error) = self.apply_to(&mut doc, action, invoker) {
+                tracing::warn!(kind = self.kind, %error, "a waiting edit does not apply");
+            }
+        }
+        Some(doc)
+    }
+
     /// Refuse `action` now if, after the edits waiting for the store, it
     /// would be refused once the store takes it.
+    #[inline(never)]
     fn admits_after_waiting(
         &self,
-        action: &P::Action,
+        action: &Pending,
         invoker: &ActionInvoker,
     ) -> Result<(), ActionError> {
         let Some(mut doc) = self.record.read(Clone::clone) else {
@@ -155,26 +134,9 @@ impl<P: Resource> Shared<P> {
             .map_err(ActionError::Refused)
     }
 
-    /// The state the record has once the edits waiting for the store are
-    /// made: read from a copy of it they are made in, which is then let go.
-    fn with_waiting(&self) -> Option<Rc<P::State>> {
-        let mut doc = self.record.read(Clone::clone)?;
-        for (action, invoker) in self.waiting.borrow().iter() {
-            if let Err(error) = self.apply_to(&mut doc, action, invoker) {
-                tracing::warn!(kind = P::KIND, %error, "a waiting edit does not apply");
-            }
-        }
-        match tilo_resource::Reader::<P>::read(&doc) {
-            Ok(reader) => Some(Rc::clone(reader.state())),
-            Err(error) => {
-                unreadable_person_resource(P::KIND, &error);
-                None
-            }
-        }
-    }
-
     /// Apply the edits that waited for the store, in the order they were
     /// asked for, while it is free.
+    #[inline(never)]
     fn apply_waiting(&self) {
         loop {
             let Some((action, invoker)) = self.waiting.borrow_mut().pop_front() else {
@@ -186,45 +148,153 @@ impl<P: Resource> Shared<P> {
                     return;
                 }
                 Err(unavailable) => {
-                    tracing::warn!(kind = P::KIND, %unavailable, "a waiting edit was not made");
+                    tracing::warn!(kind = self.kind, %unavailable, "a waiting edit was not made");
                 }
                 Ok(Err(error)) => {
-                    tracing::warn!(kind = P::KIND, %error, "a waiting edit was refused");
+                    tracing::warn!(kind = self.kind, %error, "a waiting edit was refused");
                 }
                 Ok(Ok(())) => {}
             }
         }
     }
 
+    /// Apply `action` as `invoker` after what waits for the store, or keep it
+    /// for the store's next free moment when the store is in use.
+    #[inline(never)]
+    fn apply_as(&self, action: Pending, invoker: &ActionInvoker) -> Result<(), ActionError> {
+        // What waited for the store goes first, so edits land in the order
+        // they were asked for.
+        self.apply_waiting();
+        let waits = !self.waiting.borrow().is_empty()
+            || match self.edit(&action, invoker) {
+                Ok(result) => {
+                    result.map_err(ActionError::Refused)?;
+                    false
+                }
+                // The store is read by whatever runs now (a pass of the
+                // app's view): the edit is made once it lets go, in the
+                // window's next settle, and what is read until then holds it.
+                Err(unavailable) if unavailable.is_momentary() => true,
+                Err(unavailable) => return Err(ActionError::Refused(unavailable.to_string())),
+            };
+        if waits {
+            self.admits_after_waiting(&action, invoker)?;
+            self.waiting
+                .borrow_mut()
+                .push_back((action, invoker.clone()));
+        }
+        Ok(())
+    }
+
     /// Make `action` one change of the record, as `invoker`; why not, when
     /// the record cannot be changed now.
     fn edit(
         &self,
-        action: &P::Action,
+        action: &Pending,
         invoker: &ActionInvoker,
     ) -> Result<Result<(), String>, ui_core::resource::HistoryUnavailable> {
-        let content = action.change_kind() == ChangeKind::Content;
+        let content = action.action.change_kind() == ChangeKind::Content;
         self.record
             .try_edit(content, |doc| self.apply_to(doc, action, invoker))
     }
 
     /// Make `action` one change of `doc`, as `invoker`.
+    #[inline(never)]
     fn apply_to(
         &self,
         doc: &mut ui_core::automerge::AutoCommit,
-        action: &P::Action,
+        action: &Pending,
         invoker: &ActionInvoker,
     ) -> Result<(), String> {
-        let encoded = tilo_resource::encode::<P>(action).map_err(|error| error.to_string())?;
-        let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
+        let encoded = action.encoded.clone()?;
+        let context = ActionContext::for_resource(self.kind, self.kind, self.label)
             .with_app(self.app_id, self.app_title)
             .with_invoker(invoker.clone())
-            .with_change(action.change_kind());
+            .with_change(action.action.change_kind());
         let writer =
             ui_core::history_source::authors::device_actor(&self.me.actor_bytes(), doc.get_actor());
-        tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        tilo_actions::apply_local_with_context(
+            doc,
+            &*action.action,
+            encoded,
+            Some(&writer),
+            context,
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    }
+
+    /// What `refresh` sets the state to while edits wait for the store:
+    /// `Some(read)` names the heads and count a new state is read for, `None`
+    /// when the state shown already holds them or nothing waits.
+    fn waiting_read(&self) -> Option<(Vec<ui_core::automerge::ChangeHash>, usize)> {
+        let waiting = self.waiting.borrow().len();
+        if waiting == 0 {
+            return None;
+        }
+        let read = (self.record.heads(), waiting);
+        (self.ahead.borrow().as_ref() != Some(&read)).then_some(read)
+    }
+}
+
+impl<P: Resource> Shared<P> {
+    /// Follow the record when it moved, reading only what changed. Whether
+    /// it did.
+    fn refresh(&self) -> bool {
+        let core = &self.core;
+        core.apply_waiting();
+        if core.owes() {
+            core.wake();
+        }
+        let mut moved = match core.record.read(|doc| self.live.sync(doc)) {
+            Some(Ok(moved)) => moved,
+            Some(Err(error)) => {
+                unreadable_person_resource(P::KIND, &error);
+                false
+            }
+            None => false,
+        };
+        if !moved && self.live.unreadable().is_none() {
+            // The record is small and read whole, so a change it cannot
+            // read is noticed here rather than by whoever publishes it. The
+            // reader reads it again only when the document moved since it
+            // last read it whole; what that read found is the state too.
+            match core.record.read(|doc| self.live.reread(doc)) {
+                Some(Ok(reread)) => moved = reread,
+                Some(Err(error)) => unreadable_person_resource(P::KIND, &error),
+                None => {}
+            }
+        }
+        // Views of the record follow it whole: it is small.
+        let _ = self.live.take_change();
+        if core.owes() {
+            let Some(read) = core.waiting_read() else {
+                return moved;
+            };
+            if let Some(state) = self.with_waiting() {
+                self.state.set(state);
+                *core.ahead.borrow_mut() = Some(read);
+                return true;
+            }
+        }
+        if core.ahead.borrow_mut().take().is_some() || moved {
+            self.state.set(self.live.get());
+            return true;
+        }
+        moved
+    }
+
+    /// The state the record has once the edits waiting for the store are
+    /// made: read from a copy of it they are made in, which is then let go.
+    fn with_waiting(&self) -> Option<Rc<P::State>> {
+        let doc = self.core.document_with_waiting()?;
+        match tilo_resource::Reader::<P>::read(&doc) {
+            Ok(reader) => Some(Rc::clone(reader.state())),
+            Err(error) => {
+                unreadable_person_resource(P::KIND, &error);
+                None
+            }
+        }
     }
 }
 
@@ -273,7 +343,7 @@ impl<P: Resource> PersonResource<P> {
     /// person (or to whoever the invocation carried out here is for), recorded in its history and — for content the person made —
     /// one undo step of theirs.
     pub fn apply(&self, action: &P::Action) -> Result<(), ActionError> {
-        self.apply_as(action, &super::resources::acting(&self.shared.me))
+        self.apply_as(action, &super::resources::acting(&self.shared.core.me))
     }
 
     /// [`Self::apply`] by `invoker`: the person, or software acting for
@@ -283,31 +353,13 @@ impl<P: Resource> PersonResource<P> {
         action: &P::Action,
         invoker: &ActionInvoker,
     ) -> Result<(), ActionError> {
-        let shared = &self.shared;
-        tilo_resource::encode::<P>(action)?;
-        // What waited for the store goes first, so edits land in the order
-        // they were asked for.
-        shared.apply_waiting();
-        let waits = !shared.waiting.borrow().is_empty()
-            || match shared.edit(action, invoker) {
-                Ok(result) => {
-                    result.map_err(ActionError::Refused)?;
-                    false
-                }
-                // The store is read by whatever runs now (a pass of the
-                // app's view): the edit is made once it lets go, in the
-                // window's next settle, and what is read until then holds it.
-                Err(unavailable) if unavailable.is_momentary() => true,
-                Err(unavailable) => return Err(ActionError::Refused(unavailable.to_string())),
-            };
-        if waits {
-            shared.admits_after_waiting(action, invoker)?;
-            shared
-                .waiting
-                .borrow_mut()
-                .push_back((action.clone(), invoker.clone()));
-        }
-        shared.refresh();
+        let encoded = tilo_resource::encode::<P>(action)?;
+        let pending = Pending {
+            action: Box::new(action.clone()),
+            encoded: Ok(encoded),
+        };
+        self.shared.core.apply_as(pending, invoker)?;
+        self.shared.refresh();
         Ok(())
     }
 
@@ -342,14 +394,14 @@ impl<P: Resource> PersonResource<P> {
 
     /// Undo the person's last edit of the record. Whether there was one.
     pub fn undo(&self) -> bool {
-        let undone = self.shared.record.undo();
+        let undone = self.shared.core.record.undo();
         self.shared.refresh();
         undone
     }
 
     /// Redo the person's last undone edit of the record.
     pub fn redo(&self) -> bool {
-        let redone = self.shared.record.redo();
+        let redone = self.shared.core.record.redo();
         self.shared.refresh();
         redone
     }
@@ -358,7 +410,7 @@ impl<P: Resource> PersonResource<P> {
     /// on this device only has none.
     #[must_use]
     pub fn syncs(&self) -> bool {
-        self.shared.record.syncs()
+        self.shared.core.record.syncs()
     }
 
     /// Where the content this record references — a picture its state
@@ -367,14 +419,14 @@ impl<P: Resource> PersonResource<P> {
     /// content.
     #[must_use]
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
-        self.shared.record.content()
+        self.shared.core.record.content()
     }
 
     /// The record underneath, for a test or host that carries it between
     /// devices itself.
     #[must_use]
     pub fn record(&self) -> &StoredResource {
-        &self.shared.record
+        &self.shared.core.record
     }
 }
 
@@ -794,16 +846,20 @@ impl PersonState {
         }
         self.owners.borrow_mut().push(record.history_owner());
         let shared = Rc::new(Shared::<P> {
-            record,
-            app_id: self.app_id,
-            app_title: self.app_title,
-            me: self.me.clone(),
+            core: Core {
+                record,
+                app_id: self.app_id,
+                app_title: self.app_title,
+                me: self.me.clone(),
+                kind: P::KIND,
+                label: P::LABEL,
+                waiting: RefCell::default(),
+                ahead: RefCell::default(),
+                wake: self.wake.clone(),
+            },
             state: LocalState::new(live.get()),
             live,
             held: RefCell::new(None),
-            waiting: RefCell::default(),
-            ahead: RefCell::default(),
-            wake: self.wake.clone(),
         });
         let weak = Rc::downgrade(&shared);
         self.refreshers.borrow_mut().push(Box::new(move || {
@@ -812,7 +868,7 @@ impl PersonState {
         let weak = Rc::downgrade(&shared);
         self.settlers.borrow_mut().push(Box::new(move || {
             if let Some(shared) = weak.upgrade() {
-                shared.settle();
+                shared.core.settle();
             }
         }));
         Ok(shared)
@@ -1060,7 +1116,7 @@ fn held<P: Resource>(shared: &Rc<Shared<P>>) -> Held<P> {
     )
     .reading(move |read| {
         if let Some(shared) = reading.upgrade() {
-            shared.record.read(|doc| read(doc));
+            shared.core.record.read(|doc| read(doc));
         }
     })
 }

@@ -139,9 +139,9 @@ struct Waiting {
 
 /// An action of the record's type as the record applies it: the action, and its encoded form
 /// or why it has none.
-struct Pending {
-    action: Box<dyn tilo_actions::Action>,
-    encoded: Result<tilo_actions::EncodedAction, String>,
+pub(super) struct Pending {
+    pub(super) action: Box<dyn tilo_actions::Action>,
+    pub(super) encoded: Result<tilo_actions::EncodedAction, String>,
 }
 
 impl Pending {
