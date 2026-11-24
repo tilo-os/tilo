@@ -55,6 +55,7 @@ impl AppBrokerState {
         runtime.spawn(async move {
             match state.placed(&caller, origin.as_ref(), &request).await {
                 Ok(None) => {
+                    state.record_brought(&caller, &request);
                     let here = state.invoke_application_here(&caller, origin.as_ref(), &request);
                     done.complete(here.await.unwrap_or_else(|| {
                         Err(ActionCallError::Unavailable {
@@ -67,6 +68,52 @@ impl AppBrokerState {
             }
         });
         answer
+    }
+
+    /// `request`, a call the app `caller` names makes while it runs the invocation its
+    /// `on_behalf_of` names, carrying that invocation as its proof when this device took it and
+    /// the invocation called that app: the device's word is which app made the call, and its
+    /// signature on the request that leaves it says so. Any other call leaves as it is.
+    pub(super) fn with_served_proof(
+        &self,
+        caller: &Caller,
+        mut request: InvokeRequest,
+    ) -> InvokeRequest {
+        let (Some(served), None, Some(app)) =
+            (request.on_behalf_of, &request.signed, caller.acting().app())
+        else {
+            return request;
+        };
+        let proof = self.remote_invocations.lock().ok().and_then(|log| {
+            log.request_of(&served)
+                .and_then(|original| original.signed.clone())
+                .filter(|signed| {
+                    signed.statement().invocation == served
+                        && signed
+                            .called_app()
+                            .is_some_and(|(_, called)| called == app.as_str())
+                })
+        });
+        request.signed = proof;
+        request
+    }
+
+    /// Keep a call another device brought here in this device's record of the invocations it
+    /// was asked for: the record its status is read from, which its completion and its
+    /// cancellation end, and what proves a call its app makes for it still serves a live one.
+    fn record_brought(self: &Arc<Self>, caller: &Caller, request: &InvokeRequest) {
+        let (Some(records), Some(_)) = (self.invocations.get(), caller.forwarder()) else {
+            return;
+        };
+        let route: Arc<dyn ActionProvider + Send + Sync> =
+            Arc::new(super::AppCalls::new(Arc::downgrade(self)));
+        records.record(
+            caller,
+            caller,
+            request,
+            caller.workspace(),
+            (route, caller.clone()),
+        );
     }
 
     /// The device that runs the connection of `request`'s app, when another device than this

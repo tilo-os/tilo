@@ -731,6 +731,7 @@ impl ActionService {
             key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
             connection: Mutex::new(None),
+            answers: Arc::downgrade(&self.0),
             next_correlation: AtomicU64::new(1),
             follow: Following::default(),
         })
@@ -754,6 +755,7 @@ impl ActionService {
             key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
             connection: Mutex::new(None),
+            answers: std::sync::Weak::new(),
             next_correlation: AtomicU64::new(1),
             follow: Following::default(),
         }))
@@ -1172,7 +1174,13 @@ impl ActionService {
         workspace: &str,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<(), tilo_actions::remote::ActionCallError> {
-        let Some(signed) = &request.signed else {
+        // The invocation an app's call serves is admitted once, as its own call; every call the
+        // app makes for it carries it again, each its own request in the replay window.
+        let Some(signed) = request
+            .signed
+            .as_ref()
+            .filter(|signed| !signed.serves(request))
+        else {
             return Ok(());
         };
         self.0
@@ -1696,8 +1704,19 @@ fn invocation_signer(
     now_ns: u64,
 ) -> Result<tilo_user_identity::DeviceCert, tilo_actions::remote::ActionCallError> {
     use tilo_actions::remote::ActionCallError;
-    use tilo_server_protocol::invocation::{InvocationError, verify_invocation};
-    verify_invocation(workspace, request, revocations, now_ns).map_err(|error| match error {
+    use tilo_server_protocol::invocation::{InvocationError, verify_invocation, verify_served};
+    // A call an app makes while it runs someone's invocation carries that invocation, which
+    // proves who the call is for; any other carries its own.
+    let verified = if request
+        .signed
+        .as_ref()
+        .is_some_and(|signed| signed.serves(request))
+    {
+        verify_served(workspace, request, revocations, now_ns)
+    } else {
+        verify_invocation(workspace, request, revocations, now_ns)
+    };
+    verified.map_err(|error| match error {
         InvocationError::Revoked => ActionCallError::NotPermitted,
         other => ActionCallError::Refused {
             reason: format!("{}: {other}", other.code()),
@@ -1781,6 +1800,8 @@ struct Device {
     /// The connection to this device, kept while it lasts: one per pair, and
     /// only for a device dialled.
     connection: Mutex<Option<Connection>>,
+    /// The action service that answers what the device dialled asks back over the connection.
+    answers: std::sync::Weak<Inner>,
     next_correlation: AtomicU64,
     follow: Following,
 }
@@ -1963,6 +1984,19 @@ impl Device {
                 .await
                 .map_err(|_| unavailable("the device did not answer"))?
                 .map_err(|error| unavailable(&error.to_string()))?;
+        // The device dialled records this connection as the way to reach this one
+        // ([`ActionService::serve`]), so this one answers what it asks back over it, each request
+        // on its own signature ([`ActionService::decide`]).
+        if let Some(answers) = self.answers.upgrade() {
+            let (service, link) = (ActionService(answers), connection.clone());
+            self.runtime.spawn(async move {
+                let execution = ExecutionLease::mint();
+                if let Err(error) = service.serve_transport(&link, None, &execution).await {
+                    tracing::debug!(%error, "a dialled device's link ended in error");
+                }
+                execution.close();
+            });
+        }
         *self.connection.lock_recover() = Some(connection.clone());
         Ok(connection)
     }

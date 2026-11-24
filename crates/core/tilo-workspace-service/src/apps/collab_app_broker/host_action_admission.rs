@@ -79,9 +79,32 @@ impl AppBrokerState {
             self.owner_health().map_err(ActionCallError::unavailable)?;
         }
         let actor = BrokerActor::for_caller(caller);
-        let owner = self.host_action_owner(caller, origin, workspace, request.invocation)?;
+        let owner = match (origin, Self::forwarded_owner(caller, request)) {
+            (None, Some(owner)) => owner,
+            _ => self.host_action_owner(caller, origin, workspace, request.invocation)?,
+        };
         owner.validate().map_err(ActionCallError::unavailable)?;
         self.retain_host_action(&actor, owner, admission, start)
+    }
+
+    /// Who owns `request` when another device brought it for its caller, who signed it: that
+    /// caller, as the signature it carries proves and the device action service checked when it
+    /// came in, their own or the one an app's call serves. Nothing of it is kept but its owner.
+    /// `None` for any call this device's own connections brought.
+    fn forwarded_owner(caller: &Caller, request: &InvokeRequest) -> Option<InvocationOwner> {
+        caller.forwarder()?;
+        let (Some(root), Some(device), Some(signed)) = (
+            caller.user_public_key(),
+            caller.device_public_key(),
+            request.signed.as_deref(),
+        ) else {
+            return None;
+        };
+        (signed.statement().signer == *device).then(|| InvocationOwner::AuthenticatedLocal {
+            root: *root,
+            device: *device,
+            agent: caller.acting().agent_id().map(str::to_owned),
+        })
     }
 
     #[expect(

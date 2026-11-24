@@ -61,19 +61,23 @@ impl AppBrokerState {
     /// registration belongs to the broker rather than to the connection that published it, so it
     /// outlives every process it starts; a stopped broker answers that it is gone.
     fn register_app_calls(&self, surface: &PublishedSurface) {
+        self.answer_app_calls(&surface.route.cluster_id, &surface.app_id);
+    }
+
+    /// Answer `app`'s calls in `workspace` here, from this device and every other one of the
+    /// workspace ([`Self::register_app_calls`]), unless something answers them already.
+    pub(crate) fn answer_app_calls(&self, workspace: &str, app: &str) {
         let Some(providers) = self.services.providers.as_ref() else {
             return;
         };
-        let provider = crate::workspaces::providers::Providers::app_provider(
-            &surface.route.cluster_id,
-            &surface.app_id,
-        );
+        providers.keep_invocations(self.itself.clone());
+        let provider = crate::workspaces::providers::Providers::app_provider(workspace, app);
         if providers.get(&provider).is_some() {
             return;
         }
         providers.provide_app(
-            &surface.route.cluster_id,
-            &surface.app_id,
+            workspace,
+            app,
             crate::workspaces::providers::Reach::Devices,
             Arc::new(super::action_provider::AppCalls::new(self.itself.clone())),
         );

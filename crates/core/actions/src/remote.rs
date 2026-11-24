@@ -1067,6 +1067,11 @@ pub struct InvokeRequest {
     /// an invocation for a caller on another device requires it and acts as
     /// its verified signer; a request that never leaves its device (an app
     /// asking its own session) carries none.
+    ///
+    /// A call an app makes while it runs someone's invocation carries that invocation here
+    /// instead, the one its [`Self::on_behalf_of`] names ([`SignedInvocation::serves`]): the
+    /// original caller's signature is its proof, and the device running the app signs the
+    /// request that brings it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signed: Option<Box<SignedInvocation>>,
 }
@@ -2797,6 +2802,13 @@ impl<T> InvocationLog<T> {
             self.entries.remove(id);
             self.order.retain(|candidate| candidate != id);
         }
+    }
+
+    /// The request that admitted invocation `id`, for the provider that keeps this log: what an
+    /// app it runs the invocation in carries as the proof of a call it makes for it.
+    #[must_use]
+    pub fn request_of(&self, id: &InvocationId) -> Option<&InvokeRequest> {
+        self.entries.get(id).map(|entry| &entry.request)
     }
 
     /// The handle for an invocation `caller` admitted, or the caller it continues

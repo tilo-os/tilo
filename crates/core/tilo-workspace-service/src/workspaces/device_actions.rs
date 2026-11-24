@@ -909,10 +909,13 @@ impl ActionProvider for Answers {
     /// Records are read by the device's one reader ([`super::RecordReads`]): the workspaces it
     /// holds for another device's certificate there, every other caller by the apps it serves.
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
-        Some(Arc::new(super::RecordReads::of_device(
+        let reads = super::RecordReads::of_device(
             self.work.turns.get().cloned(),
             self.apps().and_then(ActionProvider::resource_reads),
-        )))
+        );
+        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+        let reads = reads.with_invocations(self.work.providers.invocations());
+        Some(Arc::new(reads))
     }
 
     fn serves(&self, provider: &str) -> bool {
@@ -990,6 +993,14 @@ impl ActionProvider for Answers {
         // An agent another of the person's devices handed its session to acts here under the
         // workspace's grants naming it, as one of this device's own does: its answer decides a
         // step its grants ask first, and nobody else had to let it in.
+        if caller.forwarder().is_some()
+            && request
+                .signed
+                .as_ref()
+                .is_some_and(|signed| signed.serves(&request))
+        {
+            return self.served(caller, request);
+        }
         self.admitted(caller, request)
     }
 
@@ -1294,6 +1305,33 @@ impl super::Workspaces {
 }
 
 impl Answers {
+    /// `request`, a call an app makes while it runs the invocation the request carries as its
+    /// proof, brought by the device that runs the app: decided as the invocation's caller, once
+    /// [`serves_live`] finds the proof still stands.
+    fn served(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let Some(answers) = self.work.answers.get().and_then(std::sync::Weak::upgrade) else {
+            return Pending::ready(Err(ActionCallError::Unavailable {
+                reason: "this device is shutting down".into(),
+            }));
+        };
+        let (work, caller) = (Arc::clone(&self.work), caller.clone());
+        let (done, answer) = tilo_actions::remote::pending();
+        self.work.runtime.spawn(async move {
+            done.complete(match serves_live(&work, &caller, &request).await {
+                Err(refused) => Err(refused),
+                Ok(()) => answers
+                    .admitted(&caller, request)
+                    .await
+                    .unwrap_or(Err(ActionCallError::Unanswered)),
+            });
+        });
+        answer
+    }
+
     /// `request`, of a caller this device admitted, reaching what answers it.
     #[expect(
         clippy::expect_used,
@@ -1354,4 +1392,170 @@ impl Answers {
             Pending::ready(Err(ActionCallError::UnknownAction))
         }
     }
+}
+
+/// Whether `request`, brought by `caller`'s forwarder for an app serving the invocation the
+/// request carries, may run as that invocation's caller: the forwarder runs the connection of the
+/// app the invocation called, the app's own grants reach what the request asks where it asks
+/// another app's action, and the invocation still runs, as the forwarder's record of it says
+/// through the record API. Each is read now, so a lease that moved, a grant taken back or an
+/// invocation that ended refuses the call.
+async fn serves_live(
+    work: &Arc<DeviceWork>,
+    caller: &Caller,
+    request: &InvokeRequest,
+) -> Result<(), ActionCallError> {
+    let refused = |reason: &str| ActionCallError::Refused {
+        reason: reason.into(),
+    };
+    let unavailable = |reason: String| ActionCallError::Unavailable { reason };
+    let (Some(signed), Some(&forwarder), Some(workspace)) = (
+        request.signed.as_deref(),
+        caller.forwarder(),
+        caller.workspace(),
+    ) else {
+        return Err(refused("the call carries no invocation it serves"));
+    };
+    let Some((called_in, app)) = signed.called_app() else {
+        return Err(refused("the invocation this call serves called no app"));
+    };
+    if called_in != workspace {
+        return Err(refused(
+            "the invocation this call serves is another workspace's",
+        ));
+    }
+    let workspaces = work
+        .turns
+        .get()
+        .and_then(super::WeakWorkspaces::upgrade)
+        .ok_or_else(|| unavailable("this device is shutting down".into()))?;
+    match crate::work::connection_holder(&workspaces, workspace, &app).await {
+        Ok(Some(device)) if device == forwarder => {}
+        Ok(_) => {
+            return Err(refused(
+                "the device that sent this call does not run the connection of the app it serves",
+            ));
+        }
+        Err(error) => return Err(unavailable(error.to_string())),
+    }
+    let target_app = tilo_actions::remote::application_provider(&request.target.provider)
+        .map(|(_, app)| app.to_owned())
+        .or_else(|| {
+            work.providers
+                .get(&request.target.provider)
+                .or_else(|| {
+                    work.providers
+                        .published(&request.target, super::providers::Reach::Devices)
+                })
+                .map(|registered| registered.app.to_string())
+        })
+        .ok_or_else(|| refused("an app's call for someone names no app's action"))?;
+    if target_app != app {
+        app_may(work, forwarder, workspace, (&app, &target_app), request).await?;
+    }
+    // The record is read where the call came from, the way a call to the app's connection
+    // reaches that device.
+    let link = work
+        .providers
+        .invocations()
+        .and_then(|apps| apps.upgrade())
+        .and_then(|apps| apps.hosted_workspaces()?.reach(workspace, forwarder))
+        .ok_or_else(|| {
+            unavailable("this device cannot reach the device that runs the app".into())
+        })?;
+    let read = tilo_actions::remote::ResourceReadRequest {
+        workspace: workspace.to_owned(),
+        app: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+        record: signed.statement().invocation.0.to_string(),
+        joined: false,
+        after: None,
+        wait_ms: None,
+        answer: tilo_actions::remote::ReadAnswer::Reading,
+    };
+    let reading = link
+        .ask_message(tilo_actions::remote::RemoteActionMessage::ResourceRead {
+            correlation: 0,
+            on_behalf_of: None,
+            read,
+        })
+        .await
+        .flatten();
+    let status = match reading {
+        Some(tilo_actions::remote::RemoteActionMessage::ResourceReading {
+            result: Ok(text),
+            ..
+        }) => serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|read| read.pointer("/records/0/value/status").cloned())
+            .and_then(|status| {
+                serde_json::from_value::<
+                    tilo_actions::remote::workspace_invocations::InvocationStatus,
+                >(status)
+                .ok()
+            }),
+        Some(tilo_actions::remote::RemoteActionMessage::ResourceReading {
+            result: Err(error),
+            ..
+        }) => return Err(error),
+        _ => {
+            return Err(unavailable(
+                "the device that runs the app did not answer for the invocation".into(),
+            ));
+        }
+    };
+    use tilo_actions::remote::workspace_invocations::InvocationStatus;
+    match status {
+        Some(InvocationStatus::Running | InvocationStatus::Waiting) => Ok(()),
+        _ => Err(refused(
+            "the invocation this call serves has ended, so it proves nothing",
+        )),
+    }
+}
+
+/// Whether `apps.0`'s own grants in `workspace` let it run `request`, an action of `apps.1`:
+/// what an app's call for someone is bounded by beside that person's access.
+async fn app_may(
+    work: &Arc<DeviceWork>,
+    forwarder: [u8; 32],
+    workspace: &str,
+    (app, target_app): (&str, &str),
+    request: &InvokeRequest,
+) -> Result<(), ActionCallError> {
+    let kept = work.workspaces.lock().await.get(workspace).cloned();
+    let kept = kept.ok_or_else(|| ActionCallError::Refused {
+        reason: "this device does not keep that workspace".into(),
+    })?;
+    let now = tilo_clock::wall();
+    let member = kept
+        .lock()
+        .await
+        .peer()
+        .permissions(forwarder, now)
+        .map_err(|error| ActionCallError::Refused {
+            reason: format!("the device that runs the app is not admitted here: {error}"),
+        })?;
+    let address = &request.target.address;
+    let node = tilo_action_policy::TreePath::workspace(workspace)
+        .app(target_app)
+        .rest()
+        .resource(&address.resource)
+        .rest()
+        .action(&address.action);
+    let decision = member
+        .policy
+        .party_of(tilo_action_policy::Grantee::app(app))
+        .decide(
+            &node,
+            tilo_action_policy::ActionKind::Undoable,
+            &tilo_action_policy::Context::at_secs(tilo_clock::unix_now()),
+        );
+    if decision.answer == tilo_action_policy::Answer::Allow {
+        return Ok(());
+    }
+    Err(ActionCallError::Refused {
+        reason: format!(
+            "{app} may not run {}#{} of {target_app} for anyone",
+            address.resource, address.action
+        ),
+    })
 }

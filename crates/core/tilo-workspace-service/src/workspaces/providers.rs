@@ -120,6 +120,11 @@ struct Inner {
     /// What answers for the seat while a person's shell serves it ([`Providers::serve_seat`]):
     /// held apart from the providers a call names, so no caller reaches it.
     seat: std::sync::RwLock<Option<ServedSeat>>,
+    /// What answers this device's app calls, whose record of the invocations it took
+    /// another device reads over its link ([`Providers::invocations`]).
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    invocations:
+        std::sync::RwLock<Option<std::sync::Weak<crate::apps::collab_app_broker::AppBrokerState>>>,
 }
 
 /// How a call of the seat hands the shell that serves it a file: queued on its link ahead of the
@@ -147,6 +152,25 @@ enum Taker {
 }
 
 impl Providers {
+    /// Read the invocations this device's app calls were asked for from `apps`' record from
+    /// now on: what another device reads of an invocation it was given proof of
+    /// ([`super::RecordReads`]).
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    pub(crate) fn keep_invocations(
+        &self,
+        apps: std::sync::Weak<crate::apps::collab_app_broker::AppBrokerState>,
+    ) {
+        *self.0.invocations.write_recover() = Some(apps);
+    }
+
+    /// What answers this device's app calls, whose record of invocations this device answers reads of, while it runs.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    pub(crate) fn invocations(
+        &self,
+    ) -> Option<std::sync::Weak<crate::apps::collab_app_broker::AppBrokerState>> {
+        self.0.invocations.read_recover().clone()
+    }
+
     /// This registry, by weak reference ([`WeakProviders`]): what a provider it holds keeps to
     /// answer its own calls without keeping the registry alive.
     #[must_use]

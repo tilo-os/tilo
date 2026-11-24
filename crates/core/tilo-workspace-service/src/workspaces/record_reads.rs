@@ -200,6 +200,15 @@ impl RecordReads {
         }
     }
 
+    /// The same reader, answering the workspace's invocations from `apps`' record: the
+    /// invocations this device's app calls were asked for, read over a device link.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    #[must_use]
+    pub(crate) fn with_invocations(mut self, apps: Option<std::sync::Weak<Broker>>) -> Self {
+        self.broker = apps;
+        self
+    }
+
     /// The reader of a device's dispatch: the workspaces it holds, for a caller whose
     /// certificate a workspace keeps, and the apps `broker` serves, for every caller inside it;
     /// its invocations for the callers `admitted` admits, every caller's where it admits none.

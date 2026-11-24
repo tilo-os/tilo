@@ -57,29 +57,6 @@ impl Hosts {
         let host = standing::host_elsewhere(&workspaces.peer(id)?, &own)?;
         Some((host.device, host.address))
     }
-
-    /// The actions of `device`, a device of `workspace`: over the link it holds to this device,
-    /// where it holds one; the device serving the workspace itself, or `device` through it, where
-    /// another device serves it; and otherwise `device` dialled by its key.
-    fn reach(&self, workspace: &str, device: [u8; 32]) -> Option<RemoteDevice> {
-        let workspaces = self.workspaces.upgrade()?;
-        let service = workspaces.copies().action_service();
-        if let Some(linked) = service.remote_held(device, workspace) {
-            return Some(linked);
-        }
-        let endpoint = workspaces.endpoint();
-        Some(match self.serving(workspace) {
-            Some((serving, address)) if serving == device => {
-                service.remote(&endpoint, &address, workspace)
-            }
-            Some((_, address)) => service.through(&endpoint, &address, workspace, device),
-            None => service.remote(
-                &endpoint,
-                &EndpointAddr::new(EndpointId::from_bytes(&device).ok()?),
-                workspace,
-            ),
-        })
-    }
 }
 
 impl HostedWorkspaces for Hosts {
@@ -127,6 +104,29 @@ impl HostedWorkspaces for Hosts {
                     "the device that runs this app's connection cannot be reached from here".into(),
                 ),
             }
+        })
+    }
+
+    /// The actions of `device`, a device of `workspace`: over the link it holds to this device,
+    /// where it holds one; the device serving the workspace itself, or `device` through it, where
+    /// another device serves it; and otherwise `device` dialled by its key.
+    fn reach(&self, workspace: &str, device: [u8; 32]) -> Option<RemoteDevice> {
+        let workspaces = self.workspaces.upgrade()?;
+        let service = workspaces.copies().action_service();
+        if let Some(linked) = service.remote_held(device, workspace) {
+            return Some(linked);
+        }
+        let endpoint = workspaces.endpoint();
+        Some(match self.serving(workspace) {
+            Some((serving, address)) if serving == device => {
+                service.remote(&endpoint, &address, workspace)
+            }
+            Some((_, address)) => service.through(&endpoint, &address, workspace, device),
+            None => service.remote(
+                &endpoint,
+                &EndpointAddr::new(EndpointId::from_bytes(&device).ok()?),
+                workspace,
+            ),
         })
     }
 }

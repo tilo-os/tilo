@@ -1891,6 +1891,9 @@ impl AppBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // A call an app makes for an invocation it runs carries that invocation as its proof
+        // wherever it goes from here.
+        let request = &self.with_served_proof(caller, request.clone());
         let (state, asking, asked) = (Arc::clone(self), caller.clone(), request.clone());
         self.invoke_admitted(caller, own_peer, launch, origin, request)
             .map(move |answer| match answer {

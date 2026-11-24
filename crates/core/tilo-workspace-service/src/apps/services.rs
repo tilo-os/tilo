@@ -549,6 +549,18 @@ pub trait HostedWorkspaces: Send + Sync {
         let _ = (workspace, app);
         Box::pin(std::future::ready(ConnectionActions::Here))
     }
+
+    /// The actions of `device`, a device of `workspace`, the way a call to an app's connection
+    /// reaches the device that runs it ([`Self::connection_actions`]). `None` where this device
+    /// cannot reach it.
+    fn reach(
+        &self,
+        workspace: &str,
+        device: [u8; 32],
+    ) -> Option<tilo_peer_state::actions::RemoteDevice> {
+        let _ = (workspace, device);
+        None
+    }
 }
 
 /// Where a call to an app that keeps a long-lived connection runs

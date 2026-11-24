@@ -227,6 +227,23 @@ impl SignedInvocation {
     pub fn signer_cert(&self) -> &[u8] {
         &self.signer_cert
     }
+
+    /// Whether this is the invocation `request` serves rather than `request`'s own: a call an
+    /// app makes while it runs this invocation names it as what it continues
+    /// ([`InvokeRequest::on_behalf_of`]) and carries it as its proof.
+    #[must_use]
+    pub fn serves(&self, request: &InvokeRequest) -> bool {
+        request.on_behalf_of == Some(self.statement.invocation)
+            && request.invocation != self.statement.invocation
+    }
+
+    /// The workspace and the app the signer called: the app whose process runs this
+    /// invocation, and the only one whose calls it proves. `None` where it called no app.
+    #[must_use]
+    pub fn called_app(&self) -> Option<(String, String)> {
+        super::application_provider(&self.statement.target.provider)
+            .map(|(workspace, app)| (workspace.to_owned(), app.to_owned()))
+    }
 }
 
 /// The most of an invocation's argument a change keeps beside its signed

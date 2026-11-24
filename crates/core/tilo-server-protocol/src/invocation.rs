@@ -235,6 +235,33 @@ pub fn verify_invocation(
     signer_of(signed, workspace, revocations, (now_ns, None))
 }
 
+/// Check the invocation `request` serves ([`SignedInvocation::serves`]): a call an app makes while
+/// it runs that invocation for its caller, which carries it as its proof. Checks the signature,
+/// that the invocation is this workspace's, the certificate and its revocation now, and that a
+/// grant reaches the workspace, and returns the original caller's verified certificate. Its issue
+/// time is not checked against the freshness window: the invocation runs as long as its app takes,
+/// and whether it still runs is read from its record by whoever decides the call.
+///
+/// # Errors
+///
+/// The [`InvocationError`] naming the first check that fails.
+pub fn verify_served(
+    workspace: &str,
+    request: &InvokeRequest,
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<DeviceCert, InvocationError> {
+    let signed = request.signed.as_ref().ok_or(InvocationError::Unsigned)?;
+    if !signed.serves(request) {
+        return Err(InvocationError::Mismatch(StatementMismatch::OnBehalfOf));
+    }
+    check_signature(signed)?;
+    if signed.statement().workspace != workspace {
+        return Err(InvocationError::Mismatch(StatementMismatch::Workspace));
+    }
+    signer_of(signed, workspace, revocations, (now_ns, None))
+}
+
 /// Check the invocation a change made for it keeps (`context`'s
 /// [`tilo_actions::ActionContext::signed`]), as a peer reading the change in
 /// `workspace` does, and return the certificate of the caller who asked.
