@@ -168,6 +168,20 @@ impl DeviceAsked {
         })
     }
 
+    /// Withdraw what waited before the device started again only while what asked ran: a
+    /// question the person's shell raised for a program outside Tilo, whose program waited on
+    /// a call that ended with the device. What an agent or an app's press asked waits on.
+    pub(crate) fn withdraw_what_ended(&self) {
+        for (at, context) in self.store.asked_by(DISPATCH) {
+            if matches!(
+                serde_json::from_value::<Run>(context),
+                Ok(Run::Own { pressed: None, .. })
+            ) {
+                self.store.withdraw(&at, PROGRAM_GONE);
+            }
+        }
+    }
+
     /// The store its asked records are in: what admits the approve it hands back.
     pub(crate) fn store(&self) -> &AskedStore {
         &self.store
@@ -431,6 +445,9 @@ impl AskedDispatch for DeviceAsked {
         }
     }
 }
+
+/// What a question whose program stopped waiting with the device says, once withdrawn.
+pub(crate) const PROGRAM_GONE: &str = "The program that asked is no longer running";
 
 /// What stopping a waiting call says it ended with.
 const STOPPED: &str = "stopped before its person answered";

@@ -516,6 +516,20 @@ impl AskedStore {
         }
     }
 
+    /// Every record the dispatch `name` keeps that is asked still, with what that dispatch
+    /// keeps beside it ([`AskedDispatch::context`]): what a dispatch reads once it started
+    /// again, to withdraw what asked only while it ran.
+    #[must_use]
+    pub fn asked_by(&self, name: &str) -> Vec<(RecordRef, serde_json::Value)> {
+        self.kept
+            .lock_recover()
+            .records
+            .iter()
+            .filter(|record| record.status == Status::Asked && record.dispatch == name)
+            .map(|record| (record.at.clone(), record.context.clone()))
+            .collect()
+    }
+
     /// Put the record `at` back to asked where its answer could not go on (its grant was not
     /// written): nothing of it ran.
     fn reopen(&self, at: &RecordRef) {

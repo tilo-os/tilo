@@ -790,6 +790,7 @@ impl Daemon {
             Arc::clone(&invocations),
             admits_again(&broker, &workspaces, &actor),
         );
+        asked.withdraw_what_ended();
         // An action an agent makes for the person, which asks for
         // confirmation, is put to them in the runtime's native prompt.
         // Elsewhere nobody here answers, and such an action is refused.

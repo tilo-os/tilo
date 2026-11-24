@@ -685,3 +685,45 @@ fn a_declined_pressed_shortcut_runs_nothing() {
         "Ada is asked no more"
     );
 }
+
+/// The device restarts while a question a program asked through Ada's shell waits: the program's
+/// call ended with the device, so the question is withdrawn, saying so, and answers nothing. What
+/// her agent asked before the restart still waits.
+#[test]
+fn a_programs_question_is_withdrawn_when_the_device_restarts() {
+    let (kept, workspace) = (Arc::<Kept>::default(), Arc::<Workspace>::default());
+    let (program, agents) = (send_mail(), send_mail());
+    {
+        let before = Device::start(&kept, &workspace);
+        let route: Route = (workspace.clone(), ada());
+        before
+            .asked
+            .send(
+                Run::Own {
+                    workspace: WORKSPACE.into(),
+                    pressed: None,
+                },
+                &ada(),
+                route,
+                program.clone(),
+            )
+            .wait_timeout(WAIT)
+            .ok()
+            .flatten()
+            .unwrap()
+            .unwrap();
+        before.send(&agents).unwrap();
+        assert_eq!(before.store.asked_of(&ADA).len(), 2);
+    }
+    let after = Device::start(&kept, &workspace);
+    after.asked.withdraw_what_ended();
+    let waiting = after.store.asked_of(&ADA);
+    assert_eq!(waiting.len(), 1, "only the agent's question waits");
+    assert_eq!(waiting[0].record.record, agents.invocation.0.to_string());
+    assert_eq!(
+        refusal(after.resolve(&program, &ada(), Offer::Approve)),
+        asked::ANSWERED
+    );
+    assert!(workspace.ran().is_empty(), "nothing ran");
+    assert_eq!(kept.0.lock().unwrap().len(), 1, "the withdrawn one is kept no more");
+}
