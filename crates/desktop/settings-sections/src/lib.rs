@@ -14,6 +14,7 @@ pub mod device_vpn;
 pub mod identity;
 pub mod network_usage;
 pub mod osk;
+pub mod personal_dictionary;
 pub mod prefs;
 pub mod providers;
 pub mod search;
@@ -205,6 +206,7 @@ sections!(
     prefs::InputPrefs,
     prefs::InputDevicePrefs,
     settings_model::text_assistance::TextAssistancePrefs,
+    personal_dictionary::PersonalDictionary,
     prefs::PowerPrefs,
     prefs::WidgetsPrefs,
     search::SearchHistory,

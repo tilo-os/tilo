@@ -930,6 +930,16 @@ d-qeo46jbt = Spelling pane
     .w-the-workspace-s-language = Die Sprache des Arbeitsbereichs
     .w-writing = Wird geschrieben
     .w-corrected-words-are-underlined-until-the = Korrigierte Wörter sind unterstrichen, bis der Text gesendet wird; ein Rechtsklick bietet die Wörter an, die das Wörterbuch kennt.
+    .w-your-words = Deine Wörter
+    .w-words-you-keep-are-spelled-as = Wörter, die du behältst, werden so geschrieben, wie du sie schreibst, in jeder Sprache oder in der einen, die du angibst, und werden angeboten, wenn eine Korrektur gewählt wird.
+    .w-you-keep-no-words-of-your = Du hast noch keine eigenen Wörter.
+    .w-in = In { $language }
+    .w-every-language = Jede Sprache
+    .w-remove = Entfernen
+    .w-a-word-spelled-as-you-write = Ein Wort, so geschrieben, wie du es schreibst
+    .w-its-language-tag-or-empty-for = Sein Sprach-Tag, oder leer für jede Sprache
+    .w-add-the-word = Wort hinzufügen
+    .w-remove-every-word = Alle Wörter entfernen
 
 d-m5646lnk = Default apps pane
     .w-handlers = Zuständige Apps

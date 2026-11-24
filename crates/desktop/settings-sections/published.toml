@@ -685,6 +685,51 @@ fields = [
 ]
 
 [[resources]]
+kind = "settings.personal-dictionary"
+label = "Personal dictionary"
+version = 1
+setters = true
+fields = [
+  { path = "words", type = { named = "Snapshot" }, readonly = true, stored = "record" },
+  { path = "words.revision", type = "int" },
+  { path = "words.words", type = { list = { named = "Word" } } },
+]
+
+[[resources.verbs]]
+id = "add"
+kind = "undoable"
+params = [
+  { name = "spelling", type = "text", required = true, schema = { type = "string" } },
+  { name = "language", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove"
+kind = "undoable"
+params = [
+  { name = "spelling", type = "text", required = true, schema = { type = "string" } },
+  { name = "language", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "clear"
+kind = "undoable"
+
+[[resources.types]]
+name = "Snapshot"
+fields = [
+  { name = "revision", type = "int" },
+  { name = "words", type = { list = { named = "Word" } } },
+]
+
+[[resources.types]]
+name = "Word"
+fields = [
+  { name = "spelling", type = "text" },
+  { name = "language", type = { option = "text" } },
+]
+
+[[resources]]
 kind = "settings.power"
 label = "Power"
 version = 2
@@ -1755,6 +1800,11 @@ published = "devices/{device}/settings/input"
 name = "text_assistance"
 kind = "settings.text-assistance"
 published = "settings/text-assistance"
+
+[[roots]]
+name = "personal_dictionary"
+kind = "settings.personal-dictionary"
+published = "settings/personal-dictionary"
 
 [[roots]]
 name = "power"

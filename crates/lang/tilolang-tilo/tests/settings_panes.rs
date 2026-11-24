@@ -15,7 +15,7 @@ use std::rc::Rc;
 use tilo_action_policy::MemberAccess;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::runtime::{Actor, Value, ViewInstance};
+use tilolang_tilo::runtime::{Actor, ResourceRef, Value, ViewInstance};
 
 const APP: &str = "so.tilo.settings";
 
@@ -139,17 +139,17 @@ fn labelled(tree: &tilolang_runtime::UiNode, kind: &str, label: &str) -> String 
         .clone()
 }
 
-/// The content pane opened as its own view: the window's content area is laid out for its size,
+/// The pane `name` opened as its own view: the window's content area is laid out for its size,
 /// which a host without a window has none of, so what the pane draws is read from the pane.
-fn open_content_pane(host: &Host) -> ViewInstance {
+fn open_view(host: &Host, name: &str) -> ViewInstance {
     let id = host
         .package(APP)
         .expect("the app is loaded")
         .meta
         .views
         .iter()
-        .find(|view| view.name == "content_pane")
-        .expect("the content pane is declared")
+        .find(|view| view.name == name)
+        .unwrap_or_else(|| panic!("the {name} is declared"))
         .id
         .clone();
     let mut view = host
@@ -162,6 +162,11 @@ fn open_content_pane(host: &Host) -> ViewInstance {
         .expect("the pane opens");
     view.poll_patches().expect("the pane draws");
     view
+}
+
+/// The content pane opened as its own view.
+fn open_content_pane(host: &Host) -> ViewInstance {
+    open_view(host, "content_pane")
 }
 
 /// What a person sets the limits to, past the default: a size in bytes, unset for a member.
@@ -271,4 +276,95 @@ fn an_owner_sets_the_limits_the_pane_shows() {
     assert_eq!(arg("file_bytes"), Some(Value::Int(25 * 1_048_576)));
     assert_eq!(arg("member_bytes"), Some(Value::Int(250 * 1_048_576)));
     assert_eq!(arg("hourly_bytes"), Some(Value::Int(250 * 1_048_576)));
+}
+
+/// The spelling pane keeps the person's own words: it shows the words the dictionary section
+/// holds, adds the word typed, and removes one as written, each through the section's published
+/// verbs — the same ones the word processor, the on-screen keyboard and an agent change the
+/// dictionary through, so every surface spells with one dictionary.
+#[test]
+fn the_spelling_pane_keeps_words_in_the_personal_dictionary() {
+    let (host, _) = settings();
+    let dictionary = ResourceRef::parse_id(
+        "settings/personal-dictionary",
+        "so.tilo.settings.sections#PersonalDictionary",
+    )
+    .expect("the dictionary's resource");
+    host.runtime()
+        .set_reading(
+            &dictionary,
+            r#"{"words": {"revision": 3, "words": [
+                {"spelling": "Tilo", "language": null},
+                {"spelling": "Élodie", "language": "fr"}
+            ]}}"#,
+        )
+        .expect("the words the person kept");
+    invoke(&host, "open_pane", vec![Value::text("spelling")]);
+    let mut view = open_view(&host, "spelling_pane");
+    let shown = texts(&view);
+    assert!(shown.contains(&"Tilo".to_owned()), "{shown:?}");
+    assert!(shown.contains(&"Élodie".to_owned()), "{shown:?}");
+    assert!(
+        shown.contains(&"In fr".to_owned()) && shown.contains(&"Every language".to_owned()),
+        "each word says the language it is used in: {shown:?}"
+    );
+
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+
+    // The word typed is added as written, for every language while no language is given.
+    let word_field = view
+        .tree()
+        .of_kind("ui.TextInput")
+        .into_iter()
+        .find(|node| {
+            node.props.get("placeholder") == Some(&Value::text("A word, spelled as you write it"))
+        })
+        .expect("the word field")
+        .key
+        .clone();
+    view.edit(&word_field, &Value::text("Kiitos"))
+        .expect("the word typed");
+    view.press(&labelled(view.tree(), "ui.Button", "Add the word"))
+        .expect("the word is added");
+    // A word kept is removed by the one written for it, in the language it was kept in.
+    view.press(&labelled(view.tree(), "ui.Button", "Remove"))
+        .expect("the first word is removed");
+
+    let sent = sent.borrow();
+    let [added, removed] = sent.as_slice() else {
+        panic!("the pane's two changes: {sent:?}");
+    };
+    for (invocation, verb) in [(added, "add"), (removed, "remove")] {
+        let Invocation::Action {
+            app, name, args, ..
+        } = invocation
+        else {
+            panic!("a verb of the dictionary: {invocation:?}");
+        };
+        assert_eq!(
+            (app.as_str(), name.as_str()),
+            ("so.tilo.settings.sections", verb),
+            "the section's own verb, as its surface publishes it"
+        );
+        let arg = |wanted: &str| {
+            args.iter()
+                .find(|(named, _)| named == wanted)
+                .map(|(_, value)| value.clone())
+        };
+        match verb {
+            "add" => {
+                assert_eq!(arg("spelling"), Some(Value::text("Kiitos")));
+                assert_eq!(
+                    arg("language"),
+                    Some(Value::Opt(None)),
+                    "no language given keeps the word for every language"
+                );
+            }
+            _ => {
+                assert_eq!(arg("spelling"), Some(Value::text("Tilo")));
+                assert_eq!(arg("language"), Some(Value::Opt(None)));
+            }
+        }
+    }
 }
