@@ -172,6 +172,8 @@ impl Apps {
             let candidates = launcher_candidates.clone();
             Box::new(move || linux::resolve_launcher(&candidates))
         };
+        #[cfg(target_os = "android")]
+        let finds_launcher: instances::FindsLauncher = Box::new(|| Ok(()));
         #[cfg(target_os = "macos")]
         let finds_launcher: instances::FindsLauncher = {
             let catalog = catalog.clone();
@@ -192,7 +194,6 @@ impl Apps {
             sockets: profile.to_path_buf(),
             #[cfg(target_os = "macos")]
             data_home,
-            #[cfg(target_os = "linux")]
             #[cfg(unix)]
             connectors: connectors::Connectors::default(),
             #[cfg(target_os = "linux")]
@@ -577,6 +578,14 @@ impl Apps {
             }
             return Ok(child);
         }
+        #[cfg(target_os = "android")]
+        {
+            let _ = (app, origin, socket.as_fd());
+            Err(
+                "Android starts no process for an app: its apps run in the Tilo app's own process"
+                    .to_owned(),
+            )
+        }
     }
 
     /// The app, and the workspace it runs in, that process `pid` is: exactly the process this
@@ -590,6 +599,10 @@ impl Apps {
     /// Record `pid` as the process this runtime started to run `app` in `workspace`, so a
     /// connection from it is admitted as that app: a tilolang instance, an origin connector or a
     /// task's host.
+    #[cfg_attr(
+        target_os = "android",
+        expect(dead_code, reason = "Android starts no process to record")
+    )]
     pub(crate) fn record_started(&self, pid: u32, app: &str, workspace: &str) {
         let _ = self.launched.record_started(pid, app, workspace);
     }

@@ -74,6 +74,20 @@ pub fn task_packages() -> Vec<TaskPackage> {
 ///
 /// # Errors
 /// No tilolang app installed here runs on runtimes this device has.
+#[cfg(target_os = "android")]
+pub fn task_runtimes() -> Result<(String, String), String> {
+    Err(
+        "Android starts no process for an app: its apps run in the Tilo app's own process"
+            .to_owned(),
+    )
+}
+
+/// The tilolang and Tilo runtimes an agent task's host runs on: those of the first tilolang app
+/// installed here that verifies on runtimes installed here, since the host compiles a task's
+/// programs against the apps' packages.
+///
+/// # Errors
+/// No tilolang app installed here runs on runtimes this device has.
 #[cfg(target_os = "linux")]
 pub fn task_runtimes() -> Result<(String, String), String> {
     let apps = app_catalogue::apps::read_from_env()
@@ -173,4 +187,8 @@ pub(super) fn verified_installed(_workspace: &str, app: &str) -> Result<Verified
         .map_err(|error| format!("the package store cannot be read: {error}"))?
         .ok_or_else(|| format!("{app} is not installed"))
         .and_then(|installed| crate::apps::verified_tilolang(&installed));
+    #[cfg(target_os = "android")]
+    return Err(format!(
+        "{app} runs in the Tilo app's own process: Android starts no process for an app"
+    ));
 }

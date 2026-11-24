@@ -110,6 +110,10 @@ pub trait VisionModel: Send + Sync {
 /// This device's model: the AI settings hub's local vision and face models,
 /// reached through the model gateway connection the service opens itself.
 pub struct LocalVision {
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "only Linux runs a model gateway to reach")
+    )]
     gateway: Option<Gateway>,
 }
 
@@ -171,6 +175,26 @@ impl LocalVision {
         })
     }
 
+    /// The text in the picture, read on this device with no model.
+    fn read_text(image: &[u8], language: &str) -> Result<String, ModelError> {
+        if language.is_empty()
+            || !language
+                .bytes()
+                .all(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        {
+            return Err(ModelError::Failed(
+                "A language is named by its letters only, such as `eng`".to_owned(),
+            ));
+        }
+        let decoded = Self::decode(image)?;
+        let document = tilo_ocr::recognize(&decoded, language)
+            .map_err(|error| ModelError::Failed(error.user_message().to_owned()))?;
+        Ok(crate::engine::bounded_text(
+            &document.plain_text(),
+            crate::engine::MAX_OCR_CHARS,
+        ))
+    }
+
     /// The picture's bytes decoded as the toolkit's pixels, which every model
     /// takes.
     fn decode(image: &[u8]) -> Result<tilo_image_codec::DecodedImage, ModelError> {
@@ -226,7 +250,7 @@ pub fn reading() -> ImageModelReading {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn gateway_error(error: &tilo_model_client::ClientError) -> ModelError {
     use agent_provider_config::protocol::ErrorKind;
     let kind = error.model_error().kind;
@@ -236,6 +260,30 @@ fn gateway_error(error: &tilo_model_client::ClientError) -> ModelError {
             ModelError::Refused(error.to_string())
         }
         _ => ModelError::Failed(error.to_string()),
+    }
+}
+
+/// Elsewhere no model gateway runs for the device, so no model answers.
+#[cfg(not(target_os = "linux"))]
+impl VisionModel for LocalVision {
+    fn reading(&self) -> ImageModelReading {
+        reading()
+    }
+
+    fn analyze(&self, _image: &[u8]) -> Result<Analysis, ModelError> {
+        Err(ModelError::Unavailable(
+            "No image model runs on this device".to_owned(),
+        ))
+    }
+
+    fn ocr(&self, image: &[u8], language: &str) -> Result<String, ModelError> {
+        Self::read_text(image, language)
+    }
+
+    fn faces(&self, _images: &[(String, Vec<u8>)]) -> Result<FaceBatch, ModelError> {
+        Err(ModelError::Unavailable(
+            "No face model runs on this device".to_owned(),
+        ))
     }
 }
 
@@ -271,22 +319,7 @@ impl VisionModel for LocalVision {
     }
 
     fn ocr(&self, image: &[u8], language: &str) -> Result<String, ModelError> {
-        if language.is_empty()
-            || !language
-                .bytes()
-                .all(|byte| byte.is_ascii_alphabetic() || byte == b'_')
-        {
-            return Err(ModelError::Failed(
-                "A language is named by its letters only, such as `eng`".to_owned(),
-            ));
-        }
-        let decoded = Self::decode(image)?;
-        let document = tilo_ocr::recognize(&decoded, language)
-            .map_err(|error| ModelError::Failed(error.user_message().to_owned()))?;
-        Ok(crate::engine::bounded_text(
-            &document.plain_text(),
-            crate::engine::MAX_OCR_CHARS,
-        ))
+        Self::read_text(image, language)
     }
 
     fn faces(&self, images: &[(String, Vec<u8>)]) -> Result<FaceBatch, ModelError> {

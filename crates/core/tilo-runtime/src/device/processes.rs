@@ -228,6 +228,11 @@ pub type Launcher = PathBuf;
 #[cfg(target_os = "macos")]
 pub type Launcher = package_store::Catalog;
 
+/// Nothing, on Android: the daemon starts no host there ([`spawn_host`]), since an app runs in
+/// the Tilo app's own process.
+#[cfg(target_os = "android")]
+pub type Launcher = ();
+
 /// Who plays what: what the system's media controls are told, and which process and instance
 /// plays each Playback, so a control the person presses reaches it.
 #[derive(Default)]
@@ -1260,6 +1265,20 @@ fn spawn_host(
 /// no other app's storage. Its link and a `page` window's connections are inherited at their own
 /// numbers, named in its environment. An earlier version of an app on a Mac kept nothing a host
 /// converts, so none is granted.
+#[cfg(target_os = "android")]
+fn spawn_host(
+    (): &Launcher,
+    _key: &HostKey,
+    _storage: &Path,
+    _earlier: Option<(&Path, &Path)>,
+    _page: Option<(OwnedFd, OwnedFd)>,
+) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Android starts no process for an app: its apps run in the Tilo app's own process",
+    ))
+}
+
 #[cfg(target_os = "macos")]
 fn spawn_host(
     launcher: &Launcher,

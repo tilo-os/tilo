@@ -26,7 +26,7 @@ use tilo_lock::MutexRecover as _;
 type Key = (String, String, String);
 
 /// A connector's process, as the platform's launcher started it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) type Process = std::process::Child;
 /// A connector's process, as the platform's launcher started it.
 #[cfg(target_os = "macos")]
@@ -45,8 +45,12 @@ pub(crate) type SignIns = dyn Fn(&OwnedFd, &str, &str) -> std::io::Result<()> + 
 
 /// The pid a started connector runs as, as the launch record names it; `None` where the system
 /// does not say it in a pid this daemon records.
+#[cfg_attr(
+    target_os = "android",
+    expect(dead_code, reason = "Android starts no connector process")
+)]
 pub(crate) fn pid(process: &Process) -> Option<u32> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         Some(process.id())
     }

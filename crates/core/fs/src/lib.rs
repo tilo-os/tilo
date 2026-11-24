@@ -68,9 +68,13 @@ pub mod smart_monitor;
 #[cfg(feature = "filesystem")]
 pub mod storage;
 pub mod store;
-/// The workspace's folder where nothing mounts it: Windows', and macOS's while its file provider
-/// extension cannot yet write one; built for the unit tests that keep it honest on any host too.
-#[cfg(all(feature = "filesystem", any(target_os = "macos", windows, test)))]
+/// The workspace's folder where nothing mounts it: Windows', Android's, where an app mounts
+/// nothing, and macOS's while its file provider extension cannot yet write one; built for the
+/// unit tests that keep it honest on any host too.
+#[cfg(all(
+    feature = "filesystem",
+    any(target_os = "macos", target_os = "android", windows, test)
+))]
 pub mod sync_folder;
 #[cfg(feature = "filesystem")]
 pub mod thumbs;

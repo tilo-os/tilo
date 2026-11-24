@@ -466,9 +466,8 @@ impl ServiceWorkspaces {
         &self.identity.device_cert
     }
 
-    /// The person this device belongs to: whose devices may ask it for work. Only a host that
-    /// takes work asks, which Linux is the one of today.
-    #[cfg(target_os = "linux")]
+    /// The person this device belongs to: whose devices may ask it for work, and whose own ask
+    /// stops an agent session here.
     pub(crate) fn operator(&self) -> [u8; 32] {
         self.identity.device_cert.user_public_key
     }
