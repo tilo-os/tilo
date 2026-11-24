@@ -415,21 +415,20 @@ impl Personal {
         &self.borrowed
     }
 
-    /// Whether this device is the one that made `workspace` : it hosts it, or the list names this
-    /// device as its host, or names no host for it. A workspace another device of the person's
-    /// made is hosted there, and one this device is entering from there is not its to make:
-    /// neither is founded here.
-    pub(crate) fn made_here(&self, workspace: WorkspaceId) -> bool {
+    /// Whether this device is the one that made `workspace` : it hosts it, or the person's `list`
+    /// names this device as its host, or names no host for it. A workspace another device of the
+    /// person's made is hosted there, and one this device is entering from there is not its to
+    /// make: neither is founded here. The list is the one the caller holds ([`Self::read`]), as
+    /// [`Self::publish_local`] takes it: a write of the session's own is in it before the copy
+    /// this session follows has heard it back.
+    pub(crate) fn made_here(&self, list: Option<&WorkspaceList>, workspace: WorkspaceId) -> bool {
         if self.entering.contains(&workspace) {
             return false;
         }
         self.hosts
             .get(&workspace)
             .copied()
-            .or_else(|| {
-                self.read()
-                    .and_then(|list| list.get(workspace).and_then(ListedWorkspace::host))
-            })
+            .or_else(|| list.and_then(|list| list.get(workspace).and_then(ListedWorkspace::host)))
             .is_none_or(|host| host == self.device)
     }
 
@@ -930,7 +929,10 @@ impl crate::Shared {
                 && self
                     .personal
                     .as_ref()
-                    .is_some_and(|personal| personal.borrow().made_here(workspace.id()))
+                    .is_some_and(|personal| {
+                        let personal = personal.borrow();
+                        personal.made_here(personal.read().as_deref(), workspace.id())
+                    })
                 && !workspace.id().is_nil()
                 && !borrowed.contains(&workspace.id())
                 && !view.holds(workspace.id())
@@ -1026,7 +1028,10 @@ impl crate::Shared {
         let founding = self
             .personal
             .as_ref()
-            .is_none_or(|personal| personal.borrow().made_here(workspace));
+            .is_none_or(|personal| {
+                let personal = personal.borrow();
+                personal.made_here(personal.read().as_deref(), workspace)
+            });
         (founding && !borrowed.contains(&workspace)).then(|| self.person.clone())
     }
 

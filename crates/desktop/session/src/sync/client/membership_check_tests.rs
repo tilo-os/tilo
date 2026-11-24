@@ -426,7 +426,7 @@ fn a_workspace_the_daemon_holds_elsewhere_is_listed_and_let_go_once_this_device_
         "the person's list gains the workspace"
     );
     assert!(
-        !personal.made_here(notes),
+        !personal.made_here(Some(&list), notes),
         "a workspace taken from the daemon's list is not one this device founds, nor claims"
     );
     let hint = Personal::host_hint(&list, notes)
