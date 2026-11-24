@@ -3,6 +3,30 @@
 
 d-so-tilo-shell = Shell
 
+d-ndaefmcq = Picking
+    .doc = What waits for the person's yes: every call that needs it, read from its own record in the workspace's invocations.
+    .noun = { $count ->
+        [one] picking
+       *[other] pickings
+    }
+
+d-5xjx7oct = Folder
+    .doc = The folder shown, by its path; empty until a question asks for files.
+
+d-5esxwq2o = Entries
+    .doc = What the folder holds, as it was last read.
+
+d-tlhktser = Call edit
+    .doc = One change the person made to the call before approving it: a field, by its path in the call's arguments, and what they wrote in it.
+    .noun = { $count ->
+        [one] call edit
+       *[other] call edits
+    }
+
+d-r6c6zjdg = Path
+
+d-5fhfjzcm = Text
+
 d-cejnvssb = Shell
     .doc = The person's own shell document, reached as `shell` (`root shell: Shell`).
     .noun = { $count ->
@@ -48,6 +72,9 @@ d-nz74n3iu = Dock showing
 d-wx25jsef = Dock size
 
 d-hx5alotd = Dock items
+
+d-ftcph3ii = Cards corner
+    .doc = The corner of the display in use the cards of what is live dock in: the person's choice, on every device they use.
 
 d-ffa2ohzm = Dock running
     .doc = The dock shows the apps running even when nobody pinned them.
@@ -108,6 +135,8 @@ d-cejnvssb-filter-dock_finish = Dock finish
 d-cejnvssb-filter-dock_showing = Dock showing
 
 d-cejnvssb-filter-dock_size = Dock size
+
+d-cejnvssb-filter-cards_corner = Cards corner
 
 d-cejnvssb-filter-dock_running = Dock running
 
@@ -179,7 +208,7 @@ d-bnfk7mx5-filter-badge = Badge
 d-bnfk7mx5-filter-attention = Attention
 
 d-66jw6ezz = Report pick
-    .doc = Reporting a problem: the screen dims to the desktop's ground, every window of the workspace in front stands as a card with its own live picture, and the person chooses the window the report is about: a click on its card, or a rectangle dragged over it.
+    .doc = Reporting a problem: the screen dims to the desktop's ground, every window of the workspace in front stands as a card with its own live picture, and the person chooses the window the report is about — a click on its card, or a rectangle dragged over it.
     .noun = { $count ->
         [one] report pick
        *[other] report picks
@@ -317,6 +346,9 @@ d-b2vzzczj = Name
 
 d-hwfwvs3f = Current
     .doc = Whether it is the workspace in front, which the shell shows.
+
+d-jbtiqjt4 = Home
+    .doc = Where the workspace opens as a page on the web (`/w/<workspace>/desktop`), when the shell is served there: what its card links to.
 
 d-njeklucw-filter-current = Current
 
@@ -466,6 +498,17 @@ d-tzvst7nv = Left
 
 d-qykb6xix = Right
 
+d-tcsafce7 = Card corner
+    .doc = The corner of the display the cards of what is live dock in.
+
+d-ufe4dez5 = Top left
+
+d-y4tcqd6i = Top right
+
+d-kes3aytt = Bottom left
+
+d-wt6lph2u = Bottom right
+
 d-frrucget = Fit
     .doc = How a bar or dock sits in its edge: inset with rounded corners, floating over what it covers, or edge to edge and square.
 
@@ -557,18 +600,6 @@ d-dah75qd2 = No chrome at rest; the edges reveal what the person needs
 d-zsqlezfj = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know
     .doc = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
 
-d-clhqzrkb = Width
-    .doc = How wide a strip stands within its row, in per-mille of the row's width.
-
-d-hrjwxtwf = Three tenths of the row: a list, a set of options
-    .doc = Three tenths of the row: a list, a set of options.
-
-d-ipingyqi = Two thirds of the row: a note, a conversation
-    .doc = Two thirds of the row: a note, a conversation.
-
-d-nfufnx7j = The row's whole usable width
-    .doc = The row's whole usable width.
-
 d-q7rxwd72 = Bar room
     .doc = How much room the top bar has: for the focused window's menu, and for its parts.
 
@@ -594,6 +625,19 @@ d-pkrgpzz5 = Rename strip
 d-pkrgpzz5-key = Key
 
 d-pkrgpzz5-name = Name
+
+d-aegu5nc6 = Don't allow
+    .doc = Decline the question at `key`: its asked record's own `resolve`, called by its address as any caller calls it.
+
+d-aegu5nc6-key = Key
+
+d-4pwuckls = Open folder
+    .doc = Show the folder `path` to choose files in, as this device reads it now.
+
+d-4pwuckls-path = Path
+
+d-lqtiqtq2 = Close folder
+    .doc = Stop showing a folder: the question that asked for files is answered.
 
 d-ukun4zmh = Asked on the canvas
     .doc = The person asked on the canvas: the hint the empty canvas says until then has been said (`Shell.canvas_asked`), and stays away from now on.
@@ -674,6 +718,11 @@ d-5l5rmk47 = Dock on
     .doc = Moves the dock to `edge`, keeping how it is built.
 
 d-5l5rmk47-edge = Edge
+
+d-jid2lypn = Dock cards
+    .doc = Docks the cards of what is live in the corner `corner` of the display in use.
+
+d-jid2lypn-corner = Corner
 
 d-jllttdkc = Set dock fit
 
@@ -779,20 +828,16 @@ d-fipjigt5 = Pick report window
 d-fipjigt5-key = Window
 
 d-y6cjt65t = Pick the window a report is about
-    .doc = The rectangle `area` the person dragged over the picker, with its x, y, width and height in canvas pixels, picks the window it covers first, as a click on that card does.
+    .doc = The rectangle `area` the person dragged over the picker — its x, y, width and height in canvas pixels — picks the window it covers first, as a click on that card does.
 
 d-y6cjt65t-area = Area
 
 d-zek2dnmp = Cancel
     .doc = Leave the pick with nothing attached: no window, no report.
 
-d-otlw645x = Open
-    .doc = Opens the recent resource `address` again, beside the window in front, and puts the surface away: the same `open` an agent and a reference's press run.
+d-46uwq3gq = Close History
+    .doc = Puts the surface away once a recent resource is opened again beside the window in front, by the same `open` an agent and a reference's press run.
 
-d-otlw645x-address = Address
-
-d-5giytccr = Open first
-    .doc = Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the shell's own rows do not hold.
 d-jjrvri4g = Choose launcher row
     .doc = What choosing the row the person reached does, read off the row's value: opening an application or a window here, running a row the search found, or one of the shell's own surfaces.
 
@@ -923,6 +968,23 @@ d-wln2heq6 = Bring to front
 
 d-wln2heq6-s = S
 
+d-mnpvowua = Move the window left
+    .doc = Move the window `w` before the window `before` of its strip: one place along it.
+
+d-mnpvowua-w = The window
+
+d-mnpvowua-before = The window it goes before
+
+d-c4363mpd = Move the window right
+    .doc = Move the window `w` one place to the trailing side: before the window after the next, or last in its strip while none stands there.
+
+d-c4363mpd-w = The window
+
+d-x6ly4cml = Equal widths
+    .doc = Give every window of the row the same share of it: what "every window the same" does where a person sees their windows side by side in a band.
+
+d-x6ly4cml-w = The window
+
 d-jipcl6u3 = Style settings
     .doc = The style's own settings, and the two ways of changing a style (`docs/designs/app-language/ shell.md` §6): without an agent, in the one place a person's settings live, and with an agent, by the same actions the person's controls run.
 
@@ -997,6 +1059,11 @@ d-3ezewqgy = Bar
 
 d-pvl6wwx6 = Bar part
     .w-tilo = Tilo
+    .w-overview = Overview
+    .w-undo-layout-change = Undo layout change
+    .w-redo-layout-change = Redo layout change
+    .w-settings = Settings
+    .w-about-this-computer = About this computer
 
 d-vidcax4k = Workspace menu
     .w-workspaces = Workspaces
@@ -1007,12 +1074,13 @@ d-vidcax4k = Workspace menu
     .w-delete = Delete { $name }
     .w-workspace-settings = Workspace settings
     .w-overview = Overview
+    .w-history = History
 
 d-jt4au2t2 = Strip part
     .w-strip-name = Strip name
     .w-new-strip = New strip
     .w-rename = Rename { $name }
-    .w-remove = Remove { $name }
+    .w-delete = Delete { $name }
     .w-move-left = Move { $name } left
     .w-move-right = Move { $name } right
 
@@ -1023,7 +1091,6 @@ d-qivd66vw = Strips list
     .w-history = History
 
 d-dgtjjxex = Person menu
-    .w-you = You
     .w-style-and-workspaces = { $me }: style and workspaces
     .w-settings-for = Settings for { $style_title }
     .w-workspaces = Workspaces
@@ -1059,8 +1126,69 @@ d-agni63m4 = Battery status
 d-moh3hzne = Bell
     .w-notifications-silenced = Notifications silenced
     .w-notifications = Notifications
+    .w-1-question-waiting = { $name }, 1 question waiting
+    .w-questions-waiting = { $name }, { $asked } questions waiting
     .w-1-unread = { $name }, 1 unread
     .w-unread = { $name }, { $waiting } unread
+
+d-o4f6z532 = Picking folder
+    .w-no-folder-open = No folder open
+    .w-a-question-that-asks-for-files = A question that asks for files opens one here
+
+d-buc46sub = Asked over
+
+d-i7735z6w = Asked banners
+
+d-x266v635 = More asked
+    .w-1-more-question = 1 more question
+    .w-more-questions = { $more } more questions
+
+d-vpg3b467 = Asking list
+    .w-waiting-for-you = Waiting for you
+
+d-uahwpm3g = Asked card
+
+d-xfpagjt5 = Question
+
+d-d4a7v5zp = Question body
+    .w-undo-can-t-bring-this-back = Undo can't bring this back
+    .w-this-is-answered-on-the-device = This is answered on the device that asked it
+    .w-fill-in-what-it-asks-for = Fill in what it asks for first
+    .w-don-t-answer = Don't answer
+    .w-always-let = Always let { $asker_name } { $verb } { $value }
+    .w-change = Change
+    .w-don-t-allow = Don't allow
+
+d-wo44tm5w = Files asked
+    .w-choose = Choose
+    .w-save = save
+    .w-folder = folder
+    .w-open = open
+    .w-up = Up
+    .w-there-is-no-folder-above-this = There is no folder above this one to go to
+    .w-recent = Recent
+    .w-name = Name
+    .w-modified = Modified
+    .w-size = Size
+    .w-hidden-files = Hidden files
+    .w-nothing-here-matches = Nothing here matches “{ $query }”
+    .w-no-recent-files = No recent files
+    .w-no-folders-here = No folders here
+    .w-this-folder-is-empty = This folder is empty
+    .w-folder-2 = Folder
+    .w-files-chosen = { $len } files chosen
+    .w-cancel = Cancel
+    .w-save-2 = Save
+    .w-choose-folder = Choose folder
+    .w-open-2 = Open
+    .w-recent-files-hold-no-folder-to = Recent files hold no folder to save in or to choose
+    .w-name-the-file-first = Name the file first
+    .w-choose-a-file-first = Choose a file first
+    .w-replace = Replace “{ $named }”?
+    .w-replace-2 = Replace
+    .w-already-holds-a-file-with-this = { $picker_name } already holds a file with this name. Replacing it writes over what it holds.
+
+d-nsvxusve = Asker
 
 d-s7yqm7cb = Canvas
     .w-click-anywhere-and-say-what-you = Click anywhere and say what you want
@@ -1107,7 +1235,6 @@ d-7ugeomrq = Report picker
     .w-nothing-is-open-to-report-about-2 = Nothing is open to report about.
     .w-click-the-window-that-isn-t-2 = Click the window that isn't working, or drag over it.
     .w-cancel = Cancel
-d-dk2iupmd = Identify card
 
 d-lcq7ufsf = History
     .w-clear = Clear
@@ -1115,6 +1242,8 @@ d-lcq7ufsf = History
     .w-what-you-open-shows-up-here = What you open shows up here
 
 d-6eidrgir = Recent row
+
+d-dk2iupmd = Identify card
 
 d-dpqvjh2f = Launcher
     .w-search-apps-windows-actions-and-files = Search apps, windows, actions and files
@@ -1174,24 +1303,43 @@ d-e25dashr = Dock settings
     .w-launcher-entry = Launcher entry
     .w-magnify-the-item-under-the-pointer = Magnify the item under the pointer
 
-d-7j4334cw = Live pill
+d-yd6yk7ui = Live pill
+    .w-fold-back = Fold { $live_name } back
     .w-live = { $live_name }, live
+    .w-show-as-a-card = Show as a card
     .w-more-live = { $value } more live
 
-d-7ex6327x = Live section
+d-3nryt5p3 = Live section
     .w-live-now = Live now
 
-d-zvzdkdpt = Live row
+d-5wjrqfa3 = Live row
     .w-on = On { $device }
 
-d-y6wi32pw = Live card controls
+d-nqzenak5 = Live card controls
     .w-show-on-the-bar = Show on the bar
     .w-keep-off-the-bar = Keep off the bar
+    .w-back-to-the-bar = Back to the bar
+    .w-show-as-a-card = Show as a card
     .w-put-away = Put away
 
-d-pyekmhbz = Native row
+d-3dxyousy = Native row
 
-d-rdhhbeao = Live control
+d-nraevli5 = Live control
+
+d-elqi6l5x = Live cards
+
+d-n2v5vhnx = Live card
+    .w-card = { $live_name } card
+    .w-on = { $source } on { $device }
+    .w-card-place = Card place
+    .w-back-in-the-corner = Back in the corner
+    .w-cards-at-the = Cards at the { $lower }
+    .w-back-to-the-bar = Back to the bar
+    .w-put-away = Put away
+    .w-in = { $live_name } in { $source }
+
+d-ele2mmbh = Card body
+    .w-position-in = Position in { $live_name }
 
 d-clgbrhsn = Notices
     .w-notifications = Notifications
@@ -1247,21 +1395,11 @@ d-7nxhynyj = Picture
 
 d-nxpbvfox = Window place
 
-d-6l3wldtm = Window menu
-    .w-this-window = This window
-    .w-go-there = Go there
-    .w-move-to = Move to { $strip_name }
-    .w-move-to-2 = Move to { $name }
-    .w-close = Close
-
 d-6nn35yb7 = Found
     .w-nothing-matches = Nothing matches
     .w-windows = Windows
 
 d-kxdzjhoo = Window line
-    .w-this-window = This window
-    .w-go-there = Go there
-    .w-move-here = Move here
 
 d-luuijvwf = Key hints launcher
     .w-up = Up
@@ -1290,6 +1428,11 @@ d-fehlcpo5 = Hung window
 
 d-pdda7z3y = Hung card
 
+d-tbvykixf = Crashed card
+    .w-app-ended = App ended
+    .w-reopen = Reopen
+    .w-dismiss = Dismiss
+
 d-n6arlzpq = Window elsewhere
     .w-on = { $origin_app } on { $device_name }
     .w-on-another-device = { $origin_app } on another device
@@ -1306,7 +1449,22 @@ d-uvwnwa4d = Agent chip
     .w-show-who-is-here = Show who is here
     .w-stop = Stop
 
+d-agpwsfhm = Phone
+    .w-sign-in-to-tilo = Sign in to Tilo
+    .w-on-a-device-that-has-your = On a device that has your identity, run tilo device add and type the code it prints here. If this is your first device, start new.
+    .w-not-signed-in = Not signed in
+    .w-tilo1 = tilo1…
+    .w-sign-in = Sign in
+    .w-start-new = Start new
+    .w-workspaces = Workspaces
+    .w-no-workspaces-here-yet = No workspaces here yet
+    .w-back = Back
+    .w-apps = Apps
+    .w-no-apps-yet = No apps yet
+
 d-teccuwja = Quick settings
+
+d-iworlvwt = Quick settings panel
     .w-quick-settings = Quick settings
 
 d-dd3gpi64 = Control tile
@@ -1345,6 +1503,13 @@ d-ntsyqtrw = Power mode tile
     .w-balanced = Balanced
     .w-performance = Performance
 
+d-ij74wfyv = Clipboard section
+    .w-clipboard = Clipboard
+    .w-stop-keeping = Stop keeping { $copy_label }
+    .w-keep = Keep { $copy_label }
+    .w-remove = Remove { $copy_label }
+    .w-clear-the-rest = Clear the rest
+
 d-w3fe7tjv = Levels
     .w-unmute = Unmute
     .w-mute = Mute
@@ -1380,9 +1545,9 @@ d-thduakjg = Network section
     .w-hidden-network = Hidden network
     .w-join-a-network-that-does-not = Join a network that does not broadcast its name
     .w-network-name = Network name
-    .w-saved-networks = Remembered networks
+    .w-saved-networks = Saved networks
     .w-joins-by-itself = Joins by itself
-    .w-saved = Remembered
+    .w-saved = Saved
     .w-this-network = This network
     .w-stop-joining-by-itself = Stop joining by itself
     .w-join-by-itself = Join by itself
@@ -1405,22 +1570,25 @@ d-ycck5awo = Power row
     .w-lock = Lock
     .w-settings = Settings
     .w-power = Power
-    .w-sleep = Sleep
-    .w-log-out = Log out
-    .w-restart = Restart
-    .w-shut-down = Shut down
 
 d-u2tma44r = Devices section
     .w-devices = Devices
-    .w-here-now = Here now
-    .w-away = Away
+    .w-play-here = Play { $media } here?
+    .w-asks = { $source } asks
+    .w-allow = Allow
+    .w-decline = Decline
+    .w-dismiss = Dismiss
+    .w-stop = Stop
+    .w-sounds-you-can-send = Sounds you can send
+    .w-one-app-s-sound = One app's sound
+    .w-everything-this-device-plays = Everything this device plays
+    .w-drive-with-this-pointer = Drive { $label } with this pointer
     .w-nearby-send = Nearby Send
     .w-offers-this-keep-it-in = { $peer } offers this; keep it in { $name }
     .w-offers-this = { $peer } offers this
     .w-keep-it = Keep it
     .w-no-folder-here-takes-the-file = No folder here takes the file
     .w-turn-down = Turn down
-    .w-stop = Stop
     .w-it-did-not-finish = It did not finish
     .w-try-again = Try again
     .w-kept-here = Kept here
@@ -1450,6 +1618,18 @@ d-tkt6f7u6 = About card
     .w-all-details = All details
 
 d-vv7k7lcl = Peek card
+
+d-mnufvdts = Power sheet
+    .w-power = Power
+    .w-lock = Lock
+    .w-log-out = Log out
+    .w-switch-user = Switch user
+    .w-sleep = Sleep
+    .w-restart = Restart
+    .w-shut-down = Shut down
+
+d-kvfaa7ju = Pass notice
+    .w-dismiss = Dismiss
 
 d-zzd3yipu = Strips
 
@@ -1482,6 +1662,26 @@ d-kssxjs7v = Style menu
 d-qrahog47 = Strips view
     .w-no-window-here-yet = No window here yet
 
+d-47ahldi3 = Start cards
+    .w-start-something = Start something
+    .w-only-you-see-what-you-make = Only you see what you make here until you invite someone.
+    .w-notes = Notes
+    .w-write-ideas-down = Write ideas down
+    .w-tasks = Tasks
+    .w-write-down-what-needs-doing = Write down what needs doing
+    .w-invite-people = Invite people
+    .w-work-on-this-with-someone = Work on this with someone
+    .w-catch-up = Catch up
+    .w-see-what-changed-and-why = See what changed and why
+    .w-arrows = Arrows
+    .w-move = Move
+    .w-enter = Enter
+    .w-open = Open
+    .w-super = Super
+    .w-n = N
+    .w-every-app = Every app
+    .w-open-an-app = Open an app
+
 d-4qeo26jr = Workspace rows
 
 d-54b5rqo4 = Rows of the shell
@@ -1493,18 +1693,41 @@ d-2fofsa7f = Strip window
     .w-nothing-here = Nothing here
 
 d-p5wzoqr5 = Window controls
-    .w-this-window = This window
-    .w-narrow = Narrow
-    .w-normal = Normal
-    .w-wide = Wide
-    .w-bring-to-front = Bring to front
-    .w-unpin-window = Unpin window
-    .w-pin-window = Pin window
-    .w-move-into-as-a-tab = Move into { $window_name } as a tab
-    .w-move-to = Move to { $name }
     .w-restore = Restore
     .w-maximize = Maximize
     .w-close = Close
+
+d-7pn66ekb = Author chip
+
+d-hl7f3yqb = Window bar parts
+    .w-back-in-this-window = Back in this window
+    .w-forward-in-this-window = Forward in this window
+    .w-sidebar = Sidebar
+    .w-more-actions-of-this-window = More actions of this window
+
+d-xqbtyqvn = Bar button
+
+d-kdh5crgd = Bar item
+
+d-gtvxl4ug = Bar rename
+    .w-window-name = Window name
+
+d-j5z7brtk = Bar location
+    .w-where-the-window-goes = Where the window goes
+
+d-xfexkr2v = Bar search
+    .w-search-this-window-and-replace = Search this window and replace
+    .w-search-this-window = Search this window
+    .w-previous-match = Previous match
+    .w-next-match = Next match
+    .w-close-the-search = Close the search
+
+d-6zyejo5v = Window bar actions
+    .w-new-tab-of-this-window = New tab of this window
+    .w-search-this-window = Search this window
+    .w-history-of-this-window = History of this window
+    .w-back-in-this-window = Back in this window
+    .w-forward-in-this-window = Forward in this window
 
 d-z4vc77e6 = Place controls
     .w-this-window = This window
@@ -1520,6 +1743,41 @@ d-fhub73iw = Place body
 d-6t5hb2z7 = Query view
     .w-retry = Retry
     .w-nothing-matched = Nothing matched { $text }
+
+d-vrlwh4vn = This window menu
+    .w-this-window = This window
+    .w-reveal = Reveal
+    .w-it-is-in-front-already = It is in front already
+    .w-exit-full-screen = Exit full screen
+    .w-full-screen = Full screen
+    .w-restore = Restore
+    .w-fill-the-strip = Fill the strip
+    .w-snap-back = Snap back
+    .w-float-this-window = Float this window
+    .w-half-the-strip = Half the strip
+    .w-narrow = Narrow
+    .w-normal = Normal
+    .w-wide = Wide
+    .w-every-window-the-same = Every window the same
+    .w-wider = Wider
+    .w-as-wide-as-it-gets = As wide as it gets
+    .w-narrower = Narrower
+    .w-as-narrow-as-it-gets = As narrow as it gets
+    .w-move-left = Move left
+    .w-move-right = Move right
+    .w-move-into-as-a-tab = Move into { $menu_strip_name } as a tab
+    .w-move-to = Move to { $name }
+    .w-display = Display { $number }
+    .w-move-to-a-new-strip = Move to a new strip
+    .w-new-tab-of-this-app = New tab of this app
+    .w-rename = Rename
+    .w-split-right = Split right
+    .w-new-group = New group
+    .w-unpin-window = Unpin window
+    .w-pin-window = Pin window
+    .w-stop-controlling-the-desktop = Stop controlling the desktop
+    .w-close-tab = Close tab
+    .w-close-this-window = Close this window
 
 d-b5qgd2ou = Strip rail
     .w-of = { $number } of { $len }
@@ -1537,6 +1795,15 @@ d-gncm64rz = Style sheet
 
 d-mmqndkio = Style settings body
     .w-comes-from-and-its-settings-are = { $style_label } comes from { $package }, and its settings are its package's own.
+
+d-jdungghl = Theme settings
+    .w-look = Look
+    .w-dark = Dark
+    .w-light = Light
+    .w-translucency = Translucency
+    .w-accent-follow-the-theme = Accent: follow the theme
+    .w-window-corners = Window corners
+    .w-refraction = Refraction
 
 d-g476xvac = Desktop style settings
     .w-show-the-top-bar = Show the top bar
@@ -1592,6 +1859,12 @@ d-cijhlzxf = Window commands
 d-yx7doxgr = Traditional bar
     .w-tilo = Tilo
 
+d-6l3wldtm = Window menu
+
+d-65ugxki4 = Window menu card
+
+d-vhbxgivv = Window menu row
+
 d-wdjxaekq = Workspaces
     .w-workspaces = Workspaces
     .w-name-a-new-workspace = Name a new workspace
@@ -1599,4 +1872,5 @@ d-wdjxaekq = Workspaces
     .w-join-a-workspace = Join a workspace
 
 d-7nsn4srj = Workspace card
+    .w-open = Open
     .w-here = { $len } here

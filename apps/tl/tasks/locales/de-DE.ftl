@@ -618,6 +618,7 @@ d-c6y4cxdd = Zuweisen
     .doc = Gibt eine Aufgabe jemandem, oder niemandem.
     .w-the-pieces-in-work-already-fill = Die Teile in Arbeit füllen schon, was diese Aufgabe gleichzeitig arbeiten lässt
     .w-it-is-theirs-already = Sie gehört bereits dieser Person
+    .w-a-task-is-a-member-s = Eine Aufgabe gehört einem Mitglied oder einem Kontakt, nicht beiden
 
 d-c6y4cxdd-who = Wer
 
@@ -888,6 +889,10 @@ d-doqleehr = Aufgabenzeile
     .w-no-subtasks-yet = Noch keine Teilschritte
     .w-add-a-subtask = Teilschritt hinzufügen
     .w-open-as-page = Als Seite öffnen
+    .w-nobody = Niemand
+    .w-related = Verbunden
+    .w-waiting-for-until-2 = Wartet auf { $what }, bis { $u }
+    .w-waiting-for-2 = Wartet auf { $what }
 
 d-7froalwb = Projektliste
     .w-new-task-in = Neue Aufgabe in { $name }
@@ -927,9 +932,63 @@ d-mtmufg3w = Aufgabenseite
     .w-subtasks = Teilschritte
     .w-no-subtasks-yet = Noch keine Teilschritte
     .w-add-a-subtask = Teilschritt hinzufügen
+    .w-nobody = Niemand
+    .w-related = Verbunden
+    .w-waiting-for-until-2 = Wartet auf { $what }, bis { $u }
+    .w-waiting-for-2 = Wartet auf { $what }
 
 d-fxb6wc2q = Projektseite
     .w-what-the-work-goes-towards = Worauf die Arbeit zielt
     .w-what-it-is-for = Wofür es gut ist.
     .w-people = Personen
     .w-add-someone = Jemanden hinzufügen
+    .w-remove = Entfernen
+
+d-j3fym73f = Kontakt
+    .doc = Wer es tut, wenn die Person kein Mitglied ist: jemand, mit dem der Arbeitsbereich in Kontakt steht, aus seinem Adressbuch.
+
+d-5ltuj6t2 = Verbunden
+    .doc = Die Aufgaben, mit denen diese zusammenhängt, und wie: wo die Verbindungen zwischen Aufgaben des Arbeitsbereichs liegen.
+
+d-ry4nfmba = Verbunden
+    .doc = Eine Aufgabe, mit der eine andere zusammenhängt, und wie: `blocks`, `blocked by`, `duplicate of` und so weiter.
+    .noun = { $count ->
+
+d-h62xalud = Aufgabe
+    .doc = Die Aufgabe, mit der sie zusammenhängt.
+
+d-27gmtaed = Wie
+    .doc = Wie sie zusammenhängen, in den Worten des Dienstes, wenn es aus einem kam.
+
+d-ry4nfmba-filter-task = Aufgabe
+
+d-rs3ubifz-notes = Notizen
+
+d-zjuy7y7f-notes = Notizen
+
+d-c6y4cxdd-contact = Kontakt
+
+d-al6y4s2g = Verbinden mit…
+    .doc = Verbindet eine Aufgabe mit einer anderen und sagt, wie: die eigene Verbindung des Arbeitsbereichs zwischen zwei Aufgaben, die auch die Seite der verbundenen Aufgabe zeichnet.
+    .did = hat eine Aufgabe verbunden
+    .w-a-task-does-not-relate-to = Eine Aufgabe hängt nicht mit sich selbst zusammen
+    .w-they-are-related-already = Sie hängen schon zusammen
+
+d-al6y4s2g-other = Andere
+
+d-al6y4s2g-how = Wie
+
+d-bczoku6o = Verbindung lösen
+    .doc = Löst eine Verbindung von einer Aufgabe.
+    .w-it-has-no-such-relation = Sie hat keine solche Verbindung
+
+d-bczoku6o-relation = Verbindung
+
+d-7kv3m2xq = Anhang öffnen
+    .doc = Öffnet den Anhang `attachment` in der App, die seine Art öffnet: die Datei einer Aufgabe erreicht diese App als derselbe Inhalt, den beide lesen, nie als ein Pfad, den keine hat.
+
+d-7kv3m2xq-attachment = Anhang
+
+d-s72maqeh = Verbinden~present
+
+d-5kogwdim = Entbinden~present

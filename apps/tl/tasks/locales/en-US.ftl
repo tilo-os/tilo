@@ -229,7 +229,10 @@ d-aeilucpg = Remind
     .doc = When to tell whoever is doing it that its moment came, if a reminder is set.
 
 d-2eyau2d6 = Assignee
-    .doc = Who is doing it.
+    .doc = Who is doing it: a member of the workspace, a person or an agent.
+
+d-j3fym73f = Contact
+    .doc = Who is doing it when they are not a member: someone the workspace keeps in touch with, from its Contacts book.
 
 d-ptyivutv = Assigned by
     .doc = Who gave it to the agent it is assigned to.
@@ -272,6 +275,9 @@ d-m6raucmj = Waiting until
 d-vtgi2fsa = Waiting on
     .doc = The automation that ends its wait early, when one does.
 
+d-5ltuj6t2 = Related
+    .doc = The tasks this one relates to, with how they relate: where the workspace's links between tasks are kept.
+
 d-75ojxgs3-filter-all_issues = All issues
 
 d-75ojxgs3-filter-inbox = Inbox
@@ -305,6 +311,21 @@ d-75ojxgs3-filter-labels = Labels
 d-75ojxgs3-filter-status = Status
 
 d-75ojxgs3-filter-assignee = Assignee
+
+d-ry4nfmba = Related
+    .doc = One task another relates to, and how they relate: `blocks`, `blocked by`, `duplicate of`, and so on.
+    .noun = { $count ->
+        [one] related
+       *[other] relateds
+    }
+
+d-h62xalud = Task
+    .doc = The task it relates to.
+
+d-27gmtaed = How
+    .doc = How they relate, in the service's words where it came from one.
+
+d-ry4nfmba-filter-task = Task
 
 d-fjqi4yze = Tasks
     .doc = The workspace's tasks and projects.
@@ -434,6 +455,8 @@ d-rs3ubifz-title = Title
 
 d-rs3ubifz-remind = Remind
 
+d-rs3ubifz-notes = Notes
+
 d-2rpw5inw = New tasks
     .doc = Adds every task of `titles` at once, as one change: none of them is made when one cannot be (a blank title), so a person's batch is whole or nothing.
     .did = added tasks
@@ -444,8 +467,10 @@ d-2rpw5inw-titles = Titles
 d-2rpw5inw-p = P
 
 d-zjuy7y7f = New project
-    .doc = Starts a project.
+    .doc = Starts a project, with what it is for when the caller says.
     .w-new-project = New project
+
+d-zjuy7y7f-notes = Notes
 
 d-cando5zh = Kind
     .doc = Sets whether a project is one with an end, or an ongoing responsibility.
@@ -616,11 +641,14 @@ d-dshqxolf = Inbox
     .w-it-is-in-the-inbox-already = It is in the inbox already
 
 d-c6y4cxdd = Assign
-    .doc = Gives a task to someone, or to nobody.
+    .doc = Gives a task to someone, or to nobody: a member of the workspace by their actor, or someone the workspace keeps in touch with by their contact.
+    .w-a-task-is-a-member-s = A task is a member's or a contact's, not both
     .w-the-pieces-in-work-already-fill = The pieces in work already fill what this task lets work at once
     .w-it-is-theirs-already = It is theirs already
 
 d-c6y4cxdd-who = Who
+
+d-c6y4cxdd-contact = Contact
 
 d-jwva2bcv = Assign
     .doc = Gives every chosen task to one person (or nobody), as one change.
@@ -630,6 +658,22 @@ d-jwva2bcv = Assign
 d-jwva2bcv-chosen = Chosen
 
 d-jwva2bcv-who = Who
+
+d-al6y4s2g = Relate to…
+    .doc = Links a task to another, with how they relate: the workspace's own link between two tasks, which the page of the task it relates to draws too.
+    .did = linked a task
+    .w-a-task-does-not-relate-to = A task does not relate to itself
+    .w-they-are-related-already = They are related already
+
+d-al6y4s2g-other = Other
+
+d-al6y4s2g-how = How
+
+d-bczoku6o = Remove relation
+    .doc = Takes a relation off a task.
+    .w-it-has-no-such-relation = It has no such relation
+
+d-bczoku6o-relation = Relation
 
 d-fs7nzreh = Label…
     .doc = Gives a task a label.
@@ -662,6 +706,11 @@ d-uqpc3g6w = Remove attachment
     .doc = Takes an attachment off a task.
 
 d-uqpc3g6w-attachment = Attachment
+
+d-7kv3m2xq = Open attachment
+    .doc = Opens the attachment `attachment` in the app that opens its kind: the file a task holds reaches that app as the same content both read, never as a path neither has.
+
+d-7kv3m2xq-attachment = Attachment
 
 d-xrr33hkc = Import files
     .doc = Imports files as tasks: one task for each file, under the project `p` when one is named, the file attached to it.
@@ -831,6 +880,10 @@ d-r7b5neqa = Assign~present
 
 d-x3jqfzjh = Assign many~present
 
+d-s72maqeh = Relate~present
+
+d-5kogwdim = Unrelate~present
+
 d-vtz6f5ah = Label~present
 
 d-szsksrsg = Unlabel~present
@@ -873,6 +926,7 @@ d-doqleehr = Task item
     .w-waiting-for-until = Waiting for { $waiting_for }, until { $u }
     .w-waiting-for = Waiting for { $waiting_for }
     .w-stop-waiting = Stop waiting
+    .w-nobody = Nobody
     .w-anything-worth-remembering-about-it = Anything worth remembering about it.
     .w-inbox = Inbox
     .w-points = { $e } points
@@ -882,9 +936,12 @@ d-doqleehr = Task item
     .w-reminder-set = Reminder set
     .w-remind-me = Remind me…
     .w-no-reminder = No reminder
+    .w-related = Related
     .w-work = Work
     .w-sessions-min = { $sessions } sessions, { $minutes } min
     .w-of-budget = of { $budget } budget
+    .w-waiting-for-until-2 = Waiting for { $what }, until { $u }
+    .w-waiting-for-2 = Waiting for { $what }
     .w-subtasks = Subtasks
     .w-no-subtasks-yet = No subtasks yet
     .w-add-a-subtask = Add a subtask
@@ -913,6 +970,7 @@ d-mtmufg3w = Task page
     .w-waiting-for-until = Waiting for { $waiting_for }, until { $u }
     .w-waiting-for = Waiting for { $waiting_for }
     .w-stop-waiting = Stop waiting
+    .w-nobody = Nobody
     .w-anything-worth-remembering-about-it = Anything worth remembering about it.
     .w-inbox = Inbox
     .w-points = { $e } points
@@ -922,9 +980,12 @@ d-mtmufg3w = Task page
     .w-reminder-set = Reminder set
     .w-remind-me = Remind me…
     .w-no-reminder = No reminder
+    .w-related = Related
     .w-work = Work
     .w-sessions-min = { $sessions } sessions, { $minutes } min
     .w-of-budget = of { $budget } budget
+    .w-waiting-for-until-2 = Waiting for { $what }, until { $u }
+    .w-waiting-for-2 = Waiting for { $what }
     .w-subtasks = Subtasks
     .w-no-subtasks-yet = No subtasks yet
     .w-add-a-subtask = Add a subtask
@@ -933,4 +994,5 @@ d-fxb6wc2q = Project page
     .w-what-the-work-goes-towards = What the work goes towards
     .w-what-it-is-for = What it is for.
     .w-people = People
+    .w-remove = Remove
     .w-add-someone = Add someone

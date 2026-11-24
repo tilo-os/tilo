@@ -155,18 +155,6 @@ d-bnfk7mx5-filter-badge = Abzeichen
 
 d-bnfk7mx5-filter-attention = Aufmerksamkeit
 
-d-clhqzrkb = Breite
-    .doc = Wie breit eine Leiste in ihrer Zeile steht, in Promille der Zeilenbreite.
-
-d-hrjwxtwf = Drei Zehntel der Zeile: eine Liste, eine Reihe von Optionen
-    .doc = Drei Zehntel der Zeile: eine Liste, eine Reihe von Optionen.
-
-d-ipingyqi = Zwei Drittel der Zeile: eine Notiz, eine Unterhaltung
-    .doc = Zwei Drittel der Zeile: eine Notiz, eine Unterhaltung.
-
-d-nfufnx7j = Die ganze nutzbare Breite der Zeile
-    .doc = Die ganze nutzbare Breite der Zeile.
-
 d-nxjnwtsd = Kante
     .doc = Die Shell der Person: welche Teile die obere Leiste und das Dock haben, in welcher Reihenfolge, an welcher Kante, wie sie aussehen und wann sie zeigen.
 
@@ -467,6 +455,11 @@ d-3ezewqgy = Leiste
 
 d-pvl6wwx6 = Leistenteil
     .w-tilo = Tilo
+    .w-overview = Übersicht
+    .w-undo-layout-change = Layoutänderung zurücknehmen
+    .w-redo-layout-change = Layoutänderung wiederholen
+    .w-settings = Einstellungen
+    .w-about-this-computer = Über diesen Computer
 
 d-vidcax4k = Arbeitsbereichsmenü
     .w-workspaces = Arbeitsbereiche
@@ -477,6 +470,7 @@ d-vidcax4k = Arbeitsbereichsmenü
     .w-delete = { $name } löschen
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
+    .w-history = Verlauf
 
 d-hac3p23j = Lautstärke
     .w-volume-muted = Lautstärke, stumm
@@ -522,6 +516,8 @@ d-moh3hzne = Glocke
     .w-notifications = Benachrichtigungen
     .w-1-unread = { $name }, 1 ungelesen
     .w-unread = { $name }, { $waiting } ungelesen
+    .w-1-question-waiting = { $name }, 1 Frage wartet
+    .w-questions-waiting = { $name }, { $asked } Fragen warten
 
 d-fniigjed = Einstellungen der Sicht
     .w-shell = Shell
@@ -558,8 +554,6 @@ d-i4odzov3 = Anheften~present
 
 d-u2tma44r = Gerätebereich
     .w-devices = Geräte
-    .w-here-now = Jetzt hier
-    .w-away = Abwesend
     .w-nearby-send = In der Nähe senden
     .w-offers-this-keep-it-in = { $peer } bietet das an; behalte es in { $name }
     .w-offers-this = { $peer } bietet das an
@@ -573,6 +567,15 @@ d-u2tma44r = Gerätebereich
     .w-sent = Gesendet
     .w-turned-down = Abgelehnt
     .w-no-devices-in-reach = Keine Geräte in Reichweite
+    .w-play-here = { $media } hier abspielen?
+    .w-asks = { $source } fragt
+    .w-allow = Erlauben
+    .w-decline = Ablehnen
+    .w-dismiss = Verwerfen
+    .w-sounds-you-can-send = Klänge, die du senden kannst
+    .w-one-app-s-sound = Der Klang einer App
+    .w-everything-this-device-plays = Alles, was dieses Gerät abspielt
+    .w-drive-with-this-pointer = { $label } mit diesem Zeiger bedienen
 
 d-niotqkfd = Bluetooth weitergeben
     .w-move-it-to = Verschieben nach…
@@ -722,20 +725,12 @@ d-7nxhynyj = Bild
 d-nxpbvfox = Fensterplatz
 
 d-6l3wldtm = Fenstermenü
-    .w-this-window = Dieses Fenster
-    .w-go-there = Dorthin
-    .w-move-to = Nach { $strip_name } verschieben
-    .w-move-to-2 = Nach { $name } verschieben
-    .w-close = Schließen
 
 d-6nn35yb7 = Gefunden
     .w-nothing-matches = Nichts passt
     .w-windows = Fenster
 
 d-kxdzjhoo = Fensterzeile
-    .w-this-window = Dieses Fenster
-    .w-go-there = Dorthin
-    .w-move-here = Hierher verschieben
 
 d-luuijvwf = Tastenhinweise Launcher
     .w-up = Hoch
@@ -774,7 +769,6 @@ d-uvwnwa4d = Agenten-Chip
     .w-stop = Stopp
 
 d-teccuwja = Schnelleinstellungen
-    .w-quick-settings = Schnelleinstellungen
 
 d-dd3gpi64 = Steuerungskachel
 
@@ -877,10 +871,6 @@ d-ycck5awo = Ein/Aus-Zeile
     .w-lock = Sperren
     .w-settings = Einstellungen
     .w-power = Ein/Aus
-    .w-sleep = Ruhezustand
-    .w-log-out = Abmelden
-    .w-restart = Neustart
-    .w-shut-down = Ausschalten
 
 d-wdjxaekq = Arbeitsbereiche
     .w-workspaces = Arbeitsbereiche
@@ -890,6 +880,7 @@ d-wdjxaekq = Arbeitsbereiche
 
 d-7nsn4srj = Arbeitsbereichskarte
     .w-here = { $len } hier
+    .w-open = Öffnen
 
 d-xzb2gybw = Stilumschalter
 
@@ -908,15 +899,6 @@ d-2fofsa7f = Leistenfenster
     .w-nothing-here = Nichts hier
 
 d-p5wzoqr5 = Fensterbedienelemente
-    .w-this-window = Dieses Fenster
-    .w-narrow = Schmal
-    .w-normal = Normal
-    .w-wide = Breit
-    .w-bring-to-front = Nach vorn holen
-    .w-unpin-window = Fenster lösen
-    .w-pin-window = Fenster anheften
-    .w-move-into-as-a-tab = Als Tab nach { $window_name } verschieben
-    .w-move-to = Nach { $name } verschieben
     .w-restore = Wiederherstellen
     .w-maximize = Maximieren
     .w-close = Schließen
@@ -1131,7 +1113,6 @@ d-ukun4zmh = Auf der Fläche gefragt
     .doc = Die Person hat auf der Fläche gefragt: der Hinweis, den die leere Fläche bis dahin sagt, ist gesagt (`Shell.canvas_asked`) und bleibt von nun an fort.
 
 d-dgtjjxex = Menü der Person
-    .w-you = Du
     .w-style-and-workspaces = { $me }: Stil und Arbeitsbereiche
     .w-settings-for = Einstellungen für { $style_title }
     .w-new-workspace = Neuer Arbeitsbereich
@@ -1444,9 +1425,9 @@ d-jt4au2t2 = Leistenteil
     .w-strip-name = Name der Leiste
     .w-new-strip = Neue Leiste
     .w-rename = { $name } umbenennen
-    .w-remove = { $name } entfernen
     .w-move-left = { $name } nach links
     .w-move-right = { $name } nach rechts
+    .w-delete = { $name } löschen
 
 d-qivd66vw = Leistenliste
     .w-strips = Leisten
@@ -1533,14 +1514,6 @@ d-y6cjt65t-area = Bereich
 d-zek2dnmp = Abbrechen
     .doc = Verlässt die Auswahl ohne etwas: kein Fenster, keine Meldung.
 
-d-otlw645x = Öffnen
-    .doc = Öffnet die zuletzt geöffnete Ressource `address` wieder, neben dem vorderen Fenster, und legt die Fläche weg: dasselbe `open`, das ein Agent und ein Druck auf einen Verweis ausführen.
-
-d-otlw645x-address = Adresse
-
-d-5giytccr = Zuerst öffnen
-    .doc = Die Arbeit von Eingabe auf einer Suchanfrage: die erste App, die der Text findet, öffnet sich, sodass „no“ tippen und Eingabe drücken Notizen öffnet; eine Anfrage, die keine App nennt, ist das, was die Suche überall beantwortet, wie Eingabe es immer für das getan hat, was die eigenen Zeilen der Shell nicht halten.
-
 d-d63pkwee = Zuletzt geöffnet an einem Nachmittag
     .doc = Adas Öffnungen an einem Nachmittag und zwei von Mia, das Neueste zuerst, wie die Sitzung sie auflistet.
 
@@ -1583,21 +1556,314 @@ d-nynnosmh-display = Bildschirm
 
 d-dk2iupmd = Erkennungskarte
 
-d-7j4334cw = Live-Plakette
-    .w-live = { $live_name }, live
-    .w-more-live = Noch { $value } live
+d-ndaefmcq = Wartet auf Antwort
+    .doc = Was auf das Ja der Person wartet: jeder Aufruf, der es braucht, gelesen aus seinem eigenen Eintrag in den Aufrufen des Arbeitsbereichs.
+    .noun = { $count ->
 
-d-7ex6327x = Live-Bereich
+d-5xjx7oct = Ordner
+    .doc = Der gezeigte Ordner, nach seinem Pfad; leer, bis eine Frage nach Dateien fragt.
+
+d-5esxwq2o = Einträge
+    .doc = Was der Ordner enthält, wie zuletzt gelesen.
+
+d-tlhktser = Aufruf ändern
+    .doc = Eine Änderung, die die Person am Aufruf machte, bevor sie ihn zustimmte: ein Feld, nach seinem Pfad in den Argumenten des Aufrufs, und was sie hineinschrieb.
+    .noun = { $count ->
+
+d-r6c6zjdg = Pfad
+
+d-5fhfjzcm = Text
+
+d-ftcph3ii = Ecke der Karten
+    .doc = Die Ecke des benutzten Bildschirms, in der die Karten des Live-Inhalts andocken: die Wahl der Person, auf jedem Gerät, das sie benutzt.
+
+d-cejnvssb-filter-cards_corner = Ecke der Karten
+
+d-jbtiqjt4 = Home
+    .doc = Wo der Arbeitsbereich als Seite im Web aufgeht (`/w/<workspace>/desktop`), wenn die Shell dort dient: wohin seine Karte verlinkt.
+
+d-tcsafce7 = Ecke der Karte
+    .doc = Die Ecke des Bildschirms, in der die Karten des Live-Inhalts andocken.
+
+d-ufe4dez5 = Oben links
+
+d-y4tcqd6i = Oben rechts
+
+d-kes3aytt = Unten links
+
+d-wt6lph2u = Unten rechts
+
+d-aegu5nc6 = Nicht erlauben
+    .doc = Lehnt die Frage bei `key` ab: das eigene `resolve` ihres gefragten Eintrags, aufgerufen über seine Adresse, wie jeder Aufrufer es aufruft.
+
+d-aegu5nc6-key = Schlüssel
+
+d-4pwuckls = Ordner öffnen
+    .doc = Zeigt den Ordner `path`, um Dateien darin zu wählen, wie dieses Gerät ihn gerade liest.
+
+d-4pwuckls-path = Pfad
+
+d-lqtiqtq2 = Ordner schließen
+    .doc = Hört auf, einen Ordner zu zeigen: die Frage, die nach Dateien fragte, ist beantwortet.
+
+d-jid2lypn = Karten andocken
+    .doc = Dockt die Karten des Live-Inhalts in der Ecke `corner` des benutzten Bildschirms an.
+
+d-jid2lypn-corner = Ecke
+
+d-46uwq3gq = Verlauf schließen
+    .doc = Legt die Fläche weg, sobald eine kürzliche Ressource wieder neben dem Fenster vorn geöffnet wird, durch dasselbe `open`, das ein Agent und der Druck auf einen Verweis ausführen.
+
+d-mnpvowua = Fenster nach links
+    .doc = Bewegt das Fenster `w` vor das Fenster `before` seines Streifens: einen Platz daran entlang.
+
+d-mnpvowua-w = Das Fenster
+
+d-mnpvowua-before = Das Fenster davor
+
+d-c4363mpd = Fenster nach rechts
+    .doc = Bewegt das Fenster `w` einen Platz zur hinteren Seite: vor das Fenster nach dem nächsten, oder als letztes in seinem Streifen, solange dort keines steht.
+
+d-c4363mpd-w = Das Fenster
+
+d-x6ly4cml = Gleiche Breiten
+    .doc = Gibt jedem Fenster der Reihe denselben Anteil: was „alle Fenster gleich“ tut, wo eine Person ihre Fenster nebeneinander in einem Band sieht.
+
+d-x6ly4cml-w = Das Fenster
+
+d-o4f6z532 = Ordner wählen
+    .w-no-folder-open = Kein Ordner offen
+    .w-a-question-that-asks-for-files = Eine Frage, die nach Dateien fragt, öffnet hier einen
+
+d-buc46sub = Gefragt vorbei
+
+d-i7735z6w = Gefragte Banner
+
+d-x266v635 = Mehr gefragt
+    .w-1-more-question = 1 weitere Frage
+    .w-more-questions = { $more } weitere Fragen
+
+d-vpg3b467 = Frageliste
+    .w-waiting-for-you = Wartet auf dich
+
+d-uahwpm3g = Gefragte Karte
+
+d-xfpagjt5 = Frage
+
+d-d4a7v5zp = Fragetext
+    .w-undo-can-t-bring-this-back = Rückgängig bringt das nicht zurück
+    .w-this-is-answered-on-the-device = Das wird auf dem Gerät beantwortet, das gefragt hat
+    .w-fill-in-what-it-asks-for = Fülle zuerst aus, wonach es fragt
+    .w-don-t-answer = Nicht beantworten
+    .w-always-let = { $asker_name } immer { $verb } lassen: { $value }
+    .w-change = Ändern
+    .w-don-t-allow = Nicht erlauben
+
+d-wo44tm5w = Dateien gefragt
+    .w-choose = Wählen
+    .w-save = speichern
+    .w-folder = Ordner
+    .w-open = öffnen
+    .w-up = Hoch
+    .w-there-is-no-folder-above-this = Über diesem liegt kein Ordner zum Hingehen
+    .w-recent = Zuletzt
+    .w-name = Aktionsleiste
+    .w-modified = Geändert
+    .w-size = Größe
+    .w-hidden-files = Versteckte Dateien
+    .w-nothing-here-matches = Hier passt nichts zu „{ $query }“
+    .w-no-recent-files = Keine kürzlichen Dateien
+    .w-no-folders-here = Keine Ordner hier
+    .w-this-folder-is-empty = Dieser Ordner ist leer
+    .w-folder-2 = Ordner
+    .w-files-chosen = { $len } Dateien gewählt
+    .w-cancel = Abbrechen
+    .w-save-2 = Speichern
+    .w-choose-folder = Ordner wählen
+    .w-open-2 = Öffnen
+    .w-recent-files-hold-no-folder-to = Kürzliche Dateien halten keinen Ordner zum Speichern oder Wählen
+    .w-name-the-file-first = Benenne zuerst die Datei
+    .w-choose-a-file-first = Wähle zuerst eine Datei
+    .w-replace = „{ $named }“ ersetzen?
+    .w-replace-2 = Ersetzen
+    .w-already-holds-a-file-with-this = { $picker_name } hält schon eine Datei mit diesem Namen. Sie zu ersetzen schreibt über das, was sie hält.
+
+d-nsvxusve = Fragender
+
+d-yd6yk7ui = Live-Pille
+    .w-fold-back = { $live_name } zurückfalten
+    .w-live = { $live_name }, live
+    .w-show-as-a-card = Als Karte zeigen
+    .w-more-live = { $value } weitere live
+
+d-3nryt5p3 = Live-Abschnitt
     .w-live-now = Jetzt live
 
-d-zvzdkdpt = Live-Zeile
+d-5wjrqfa3 = Live-Zeile
     .w-on = Auf { $device }
 
-d-y6wi32pw = Live-Kartenbedienung
+d-nqzenak5 = Live-Kartensteuerung
     .w-show-on-the-bar = In der Leiste zeigen
     .w-keep-off-the-bar = Aus der Leiste lassen
+    .w-back-to-the-bar = Zurück in die Leiste
+    .w-show-as-a-card = Als Karte zeigen
     .w-put-away = Weglegen
 
-d-pyekmhbz = Native Zeile
+d-3dxyousy = Native Zeile
 
-d-rdhhbeao = Live-Bedienelement
+d-nraevli5 = Live-Steuerung
+
+d-elqi6l5x = Live-Karten
+
+d-n2v5vhnx = Live-Karte
+    .w-card = Karte { $live_name }
+    .w-on = { $source } auf { $device }
+    .w-card-place = Platz der Karte
+    .w-back-in-the-corner = Zurück in die Ecke
+    .w-cards-at-the = Karten { $lower }
+    .w-back-to-the-bar = Zurück in die Leiste
+    .w-put-away = Weglegen
+    .w-in = { $live_name } in { $source }
+
+d-ele2mmbh = Kartentext
+    .w-position-in = Platz in { $live_name }
+
+d-tbvykixf = Abgestürzte Karte
+    .w-app-ended = App beendet
+    .w-reopen = Wieder öffnen
+    .w-dismiss = Verwerfen
+
+d-agpwsfhm = Telefon
+    .w-sign-in-to-tilo = Bei Tilo anmelden
+    .w-on-a-device-that-has-your = Führe auf einem Gerät mit deiner Identität `tilo device add` aus und gib den Code, den es zeigt, hier ein. Ist dies dein erstes Gerät, fange neu an.
+    .w-not-signed-in = Nicht angemeldet
+    .w-tilo1 = tilo1…
+    .w-sign-in = Anmelden
+    .w-start-new = Neu anfangen
+    .w-workspaces = Aktionsleiste
+    .w-no-workspaces-here-yet = Noch keine Arbeitsbereiche hier
+    .w-back = Zurück
+    .w-apps = Apps
+    .w-no-apps-yet = Noch keine Apps
+
+d-iworlvwt = Schnelleinstellungen
+    .w-quick-settings = Schnelleinstellungen
+
+d-ij74wfyv = Zwischenablage-Abschnitt
+    .w-clipboard = Zwischenablage
+    .w-stop-keeping = { $copy_label } nicht mehr behalten
+    .w-keep = { $copy_label } behalten
+    .w-remove = { $copy_label } entfernen
+    .w-clear-the-rest = Den Rest leeren
+
+d-mnufvdts = Energie-Blatt
+    .w-power = Ein/Aus
+    .w-lock = Sperren
+    .w-log-out = Abmelden
+    .w-switch-user = Benutzer wechseln
+    .w-sleep = Schlafen
+    .w-restart = Neu starten
+    .w-shut-down = Herunterfahren
+
+d-kvfaa7ju = Erlaubnishinweis
+    .w-dismiss = Verwerfen
+
+d-47ahldi3 = Startkarten
+    .w-start-something = Etwas anfangen
+    .w-only-you-see-what-you-make = Nur du siehst, was du hier machst, bis du jemanden einlädst.
+    .w-notes = Notizen
+    .w-write-ideas-down = Ideen aufschreiben
+    .w-tasks = Aufgaben
+    .w-write-down-what-needs-doing = Aufschreiben, was zu tun ist
+    .w-invite-people = Personen einladen
+    .w-work-on-this-with-someone = Daran mit jemandem arbeiten
+    .w-catch-up = Aufholen
+    .w-see-what-changed-and-why = Sehen, was sich änderte und warum
+    .w-arrows = Pfeile
+    .w-move = Verschieben
+    .w-enter = Eingabe
+    .w-open = Öffnen
+    .w-super = Super
+    .w-n = N
+    .w-every-app = Jede App
+    .w-open-an-app = Eine App öffnen
+
+d-7pn66ekb = Autoren-Chip
+
+d-hl7f3yqb = Fensterleisten-Teile
+    .w-back-in-this-window = Zurück in diesem Fenster
+    .w-forward-in-this-window = Vor in diesem Fenster
+    .w-sidebar = Seitenleiste
+    .w-more-actions-of-this-window = Weitere Aktionen dieses Fensters
+
+d-xqbtyqvn = Leistenschaltfläche
+
+d-kdh5crgd = Leisteneintrag
+
+d-gtvxl4ug = Leiste umbenennen
+    .w-window-name = Fenstername
+
+d-j5z7brtk = Leistenort
+    .w-where-the-window-goes = Wohin das Fenster geht
+
+d-xfexkr2v = Leistensuche
+    .w-search-this-window-and-replace = Dieses Fenster durchsuchen und ersetzen
+    .w-search-this-window = Dieses Fenster durchsuchen
+    .w-previous-match = Voriger Treffer
+    .w-next-match = Nächster Treffer
+    .w-close-the-search = Suche schließen
+
+d-6zyejo5v = Fensterleisten-Aktionen
+    .w-new-tab-of-this-window = Neuer Tab dieses Fensters
+    .w-search-this-window = Dieses Fenster durchsuchen
+    .w-history-of-this-window = Verlauf dieses Fensters
+    .w-back-in-this-window = Zurück in diesem Fenster
+    .w-forward-in-this-window = Vor in diesem Fenster
+
+d-vrlwh4vn = Dieses Fenster-Menü
+    .w-this-window = Dieses Fenster
+    .w-reveal = Zeigen
+    .w-it-is-in-front-already = Es ist schon vorn
+    .w-exit-full-screen = Vollbild verlassen
+    .w-full-screen = Vollbild
+    .w-restore = Wiederherstellen
+    .w-fill-the-strip = Streifen füllen
+    .w-snap-back = Zurückschnappen
+    .w-float-this-window = Dieses Fenster schweben lassen
+    .w-half-the-strip = Halber Streifen
+    .w-narrow = Schmal
+    .w-normal = Normal
+    .w-wide = Breit
+    .w-every-window-the-same = Alle Fenster gleich
+    .w-wider = Breiter
+    .w-as-wide-as-it-gets = So breit wie möglich
+    .w-narrower = Schmaler
+    .w-as-narrow-as-it-gets = So schmal wie möglich
+    .w-move-left = Nach links
+    .w-move-right = Nach rechts
+    .w-move-into-as-a-tab = Als Tab nach { $menu_strip_name } verschieben
+    .w-move-to = Nach { $name } verschieben
+    .w-display = Bildschirm { $number }
+    .w-move-to-a-new-strip = In einen neuen Streifen verschieben
+    .w-new-tab-of-this-app = Neuer Tab dieser App
+    .w-rename = Umbenennen
+    .w-split-right = Rechts teilen
+    .w-new-group = Neue Gruppe
+    .w-unpin-window = Fenster lösen
+    .w-pin-window = Fenster anheften
+    .w-stop-controlling-the-desktop = Den Schreibtisch nicht mehr steuern
+    .w-close-tab = Tab schließen
+    .w-close-this-window = Dieses Fenster schließen
+
+d-jdungghl = Darstellungseinstellungen
+    .w-look = Aussehen
+    .w-dark = Dunkel
+    .w-light = Hell
+    .w-translucency = Durchscheinend
+    .w-accent-follow-the-theme = Akzent: dem Thema folgen
+    .w-window-corners = Fensterecken
+    .w-refraction = Brechung
+
+d-65ugxki4 = Fenstermenü-Karte
+
+d-vhbxgivv = Fenstermenü-Zeile
