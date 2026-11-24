@@ -414,7 +414,8 @@ mod cases {
             rt.load_foreign(session.clone()).expect("the session loads");
             let app = App::compile(SOURCE, &[playback.meta().clone(), session]);
             app.load(&rt);
-            rt.set_foreign_invoker(Dispatch::new());
+            let dispatch = Dispatch::new();
+            rt.set_foreign_invoker(dispatch.clone());
             let yt = rt.create_root("YouTube").unwrap();
             Self {
                 rt,

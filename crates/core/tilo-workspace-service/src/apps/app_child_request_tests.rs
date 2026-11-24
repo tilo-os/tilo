@@ -306,7 +306,7 @@ async fn a_call_continuing_the_persons_press_is_theirs_and_an_app_cannot_make_on
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();
-            let (rig, launcher) = pressed_opens_rig(&env).await;
+            let (rig, _launcher) = pressed_opens_rig(&env).await;
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
             let delivered = |id: tilo_actions::InvocationId| {
@@ -320,9 +320,18 @@ async fn a_call_continuing_the_persons_press_is_theirs_and_an_app_cannot_make_on
 
             // The person presses in the app's window: the app's call of its own action is
             // theirs, and so is the call its code makes of another app while it runs.
-            launcher.press(&env.route.app_id);
+            rig.state.note_press(WINDOW, 7);
             let press = id(0xc4c1);
-            invoke(&app, press).await.unwrap();
+            {
+                use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+                let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(durable_request(
+                    press,
+                )))
+                .pressed(Some(7))
+                .encode()
+                .unwrap();
+                app.remote_action(&frame).await.unwrap();
+            }
             let pressed = delivered(press).await;
             let child = new_note(Some(press));
             let made = app_asks(&app, child.clone()).await;

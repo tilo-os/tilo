@@ -224,29 +224,27 @@ impl AppBrokerState {
 impl AppBrokerState {
     /// Whether application `app_id`'s `message` is its call of its own
     /// action, naming no invocation it continues, that the person's own press
-    /// in one of its windows made ([`LauncherServices::person_initiated`],
-    /// which this uses up): the person's press, admitted as theirs. An app
-    /// cannot make one by itself: its call of its own action with no press
-    /// behind it is its own.
-    ///
-    /// [`LauncherServices::person_initiated`]: crate::apps::services::LauncherServices::person_initiated
-    pub(super) fn pressed_own_call(
+    /// in one of its windows made: the compositor's serial `press` the call
+    /// names, attested for the window of `peer_id` and used up here
+    /// ([`Self::person_pressed`]). That is the person's press, admitted as
+    /// theirs. An app cannot make one by itself: its call of its own action with
+    /// no attested press behind it is its own.
+    pub(super) async fn pressed_own_call(
         &self,
+        peer_id: u64,
         app_id: &str,
         person: &Caller,
         message: &RemoteActionMessage,
+        press: Option<u32>,
     ) -> bool {
         let RemoteActionMessage::Invoke(invoke) = message else {
             return false;
         };
-        invoke.on_behalf_of.is_none()
+        press.is_some()
+            && invoke.on_behalf_of.is_none()
             && !opens_application(invoke)
             && self.app_owns(person, app_id, invoke)
-            && self
-                .services
-                .launcher
-                .as_ref()
-                .is_some_and(|launcher| launcher.person_initiated(app_id))
+            && self.person_pressed(peer_id, press).await
     }
 }
 

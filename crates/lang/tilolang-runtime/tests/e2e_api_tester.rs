@@ -92,7 +92,6 @@ mod cases {
                 method: text("method"),
                 url: text("url"),
                 headers: pairs("headers"),
-                body: text("body"),
                 auth_scheme: text("auth_scheme"),
                 vars,
             });

@@ -754,7 +754,9 @@ impl JoinedChannel {
             // theirs: what its code asks while it runs is decided as them, not as the app.
             let pressed = continued_origin.is_none()
                 && keeps
-                && state.pressed_own_call(&route.app_id, &person, &request.message);
+                && state
+                    .pressed_own_call(peer_id, &route.app_id, &person, &request.message, press)
+                    .await;
             let provider = action_provider::ConnectionActionProvider {
                 state: Arc::clone(&state),
                 own_peer: peer_id,

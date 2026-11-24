@@ -559,6 +559,7 @@ impl PeerTransport for Broker {
                     tilo_actions::remote::RemoteActionMessage::ResourceRead {
                         correlation, read, ..
                     },
+                ..
             } if read.workspace.starts_with("devices/") => {
                 self.bus.read_device_record(&self.inbox, *correlation, read);
             }
