@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 # The bytes a file's content travels as, when a save asks where it goes.
 base64.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }

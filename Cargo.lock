@@ -6122,6 +6122,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-wake",
  "tilolang-tilo",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -16609,6 +16610,7 @@ dependencies = [
  "tilo-nm",
  "tilo-rollback",
  "tilo-seal",
+ "tilo-server-protocol",
  "tilo-test-env",
  "tilo-unlock-protocol",
  "tilo-user-identity",
