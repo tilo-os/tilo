@@ -9,8 +9,8 @@ use windows_sys::Win32::{
             GetSecurityInfo, SE_FILE_OBJECT,
         },
         DACL_SECURITY_INFORMATION, GetAce, GetLengthSid, GetSecurityDescriptorControl,
-        GetTokenInformation, IsValidAcl, IsValidSid, OWNER_SECURITY_INFORMATION, PSID,
-        SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        GetSidLengthRequired, GetTokenInformation, IsValidAcl, IsValidSid,
+        OWNER_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY,
     System::Threading::{GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken},
@@ -68,11 +68,13 @@ unsafe fn sid_text(sid: PSID) -> io::Result<String> {
         return Err(io::Error::last_os_error());
     }
     let _allocation = Descriptor(raw.cast());
-    let mut len = 0;
-    // SAFETY: SDK returns a terminated SID string within its allocation.
-    while unsafe { *raw.add(len) } != 0 {
-        len += 1;
-    }
+    let len = (0..usize::MAX)
+        .take_while(|&at| {
+            // SAFETY: SDK returns a terminated SID string within its allocation.
+            let unit = unsafe { *raw.add(at) };
+            unit != 0
+        })
+        .count();
     // SAFETY: length just measured in live returned buffer.
     String::from_utf16(unsafe { std::slice::from_raw_parts(raw, len) })
         .map_err(|_| refused("invalid SID text"))
@@ -96,7 +98,7 @@ impl Principal {
             ));
         }
         let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(ERROR_NO_TOKEN as i32) {
+        if error.raw_os_error() != Some(ERROR_NO_TOKEN.cast_signed()) {
             return Err(error);
         }
         // SAFETY: pseudo process handle and writable native token output.
@@ -109,7 +111,8 @@ impl Principal {
         let sized =
             unsafe { GetTokenInformation(token.0, TokenUser, ptr::null_mut(), 0, &raw mut bytes) };
         if sized != 0
-            || io::Error::last_os_error().raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32)
+            || io::Error::last_os_error().raw_os_error()
+                != Some(ERROR_INSUFFICIENT_BUFFER.cast_signed())
             || !(size_of::<TOKEN_USER>()..=65536).contains(&(bytes as usize))
         {
             return Err(refused("cannot size process security token"));
@@ -135,14 +138,16 @@ impl Principal {
         // SAFETY: successful query initialized aligned TOKEN_USER.
         let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
         let start = buffer.as_ptr() as usize;
-        let end = start + bytes as usize;
+        let end = start
+            .checked_add(bytes as usize)
+            .ok_or_else(|| refused("invalid token size"))?;
         let address = sid as usize;
         if address < start || address.checked_add(8).is_none_or(|v| v > end) {
             return Err(refused("token SID outside buffer"));
         }
         // SID's byte 1 is the subauthority count. Bound it before SDK validation.
         // SAFETY: the fixed eight-byte SID header is within the token allocation.
-        let size = 8 + usize::from(unsafe { *sid.cast::<u8>().add(1) }) * 4;
+        let size = unsafe { GetSidLengthRequired(*sid.cast::<u8>().add(1)) } as usize;
         if address.checked_add(size).is_none_or(|v| v > end) {
             return Err(refused("token SID exceeds buffer"));
         }
@@ -184,7 +189,7 @@ pub(super) fn validate_private_security(file: &File, principal: &Principal) -> i
     };
     let descriptor = Descriptor(raw);
     if result != 0 {
-        return Err(io::Error::from_raw_os_error(result as i32));
+        return Err(io::Error::from_raw_os_error(result.cast_signed()));
     }
     if raw.is_null() || owner.is_null() || dacl.is_null() {
         return Err(refused(
@@ -227,8 +232,8 @@ pub(super) fn validate_private_security(file: &File, principal: &Principal) -> i
         let allow = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
         let sid = ptr::addr_of!(allow.SidStart).cast_mut().cast::<c_void>();
         // SAFETY: fixed SID header fits; bound subauthorities before SDK calls.
-        let sid_size = 8 + u32::from(unsafe { *sid.cast::<u8>().add(1) }) * 4;
-        if sid_size > u32::from(header.AceSize) - 8 {
+        let sid_size = unsafe { GetSidLengthRequired(*sid.cast::<u8>().add(1)) };
+        if sid_size > u32::from(header.AceSize).saturating_sub(8) {
             return Err(refused("ACL SID exceeds entry"));
         }
         // SAFETY: full SID bounded in live validated ACL.

@@ -33,9 +33,6 @@ pub use provision::{
     reconcile_directory,
 };
 
-#[cfg(feature = "test-support")]
-pub mod directory_probe;
-
 #[cfg(any(unix, windows))]
 mod directory;
 #[cfg(any(unix, windows))]

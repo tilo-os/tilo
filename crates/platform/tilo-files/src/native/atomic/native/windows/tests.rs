@@ -142,7 +142,6 @@ fn private_file_denies_a_distinct_native_principal() {
 #[test]
 fn private_creation_rejects_impersonation_before_mutation() {
     use windows_sys::Win32::Security::{ImpersonateSelf, RevertToSelf, SecurityImpersonation};
-    let (root, directory) = fixture();
     struct Revert;
     impl Drop for Revert {
         fn drop(&mut self) {
@@ -150,6 +149,7 @@ fn private_creation_rejects_impersonation_before_mutation() {
             assert_ne!(unsafe { RevertToSelf() }, 0);
         }
     }
+    let (root, directory) = fixture();
     // SAFETY: impersonates our own token on this test thread only.
     assert_ne!(unsafe { ImpersonateSelf(SecurityImpersonation) }, 0);
     let _revert = Revert;

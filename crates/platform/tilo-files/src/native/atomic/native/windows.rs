@@ -1,8 +1,6 @@
 //! Local-NTFS publication using write-through staging and held-file commits.
 
 mod acl;
-#[cfg(feature = "test-support")]
-pub(crate) mod directory_probe;
 #[cfg(test)]
 mod tests;
 
@@ -79,7 +77,7 @@ impl Identity {
                 file.as_raw_handle(),
                 FileIdInfo,
                 (&raw mut info).cast(),
-                size_of::<FILE_ID_INFO>() as u32,
+                size_u32::<FILE_ID_INFO>(),
             )
         } == 0
         {
@@ -94,6 +92,16 @@ impl Identity {
             id: info.FileId.Identifier,
         })
     }
+}
+
+/// The size of a Win32 structure, as the `u32` its calls take.
+const fn size_u32<T>() -> u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the Win32 structures passed are far below 4 GiB"
+    )]
+    let size = size_of::<T>() as u32;
+    size
 }
 
 fn refused(message: &'static str) -> io::Error {
@@ -211,7 +219,7 @@ impl Directory {
                 file.as_raw_handle(),
                 FileDispositionInfo,
                 (&raw const disposition).cast(),
-                size_of::<FILE_DISPOSITION_INFO>() as u32,
+                size_u32::<FILE_DISPOSITION_INFO>(),
             )
         } == 0
         {
@@ -228,14 +236,18 @@ impl Directory {
         // NtCreateFile consumes counted UTF-16 without DOS normalization. Keep
         // unpaired surrogates intact; prohibit separators, ADS and traversal.
         let mut units = component(name)?;
-        let length = (units.len() * 2) as u16;
+        let length = units
+            .len()
+            .checked_mul(size_of::<u16>())
+            .and_then(|bytes| u16::try_from(bytes).ok())
+            .ok_or_else(|| refused("name too long"))?;
         let mut name = UNICODE_STRING {
             Length: length,
             MaximumLength: length,
             Buffer: units.as_mut_ptr(),
         };
         let attributes = OBJECT_ATTRIBUTES {
-            Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+            Length: size_u32::<OBJECT_ATTRIBUTES>(),
             RootDirectory: self.file.as_raw_handle(),
             ObjectName: &raw mut name,
             Attributes: 0, // Deliberately no OBJ_INHERIT.
@@ -272,7 +284,7 @@ impl Directory {
         if result < 0 {
             // SAFETY: maps the returned native status; no ownership transfer.
             return Err(io::Error::from_raw_os_error(
-                unsafe { RtlNtStatusToDosError(result) } as i32,
+                unsafe { RtlNtStatusToDosError(result) }.cast_signed(),
             ));
         }
         if handle.is_null() {
@@ -290,7 +302,7 @@ fn check_status(status: i32) -> io::Result<()> {
     if status < 0 {
         // SAFETY: pure SDK conversion of a returned native status.
         return Err(io::Error::from_raw_os_error(
-            unsafe { RtlNtStatusToDosError(status) } as i32,
+            unsafe { RtlNtStatusToDosError(status) }.cast_signed(),
         ));
     }
     Ok(())
@@ -322,7 +334,7 @@ fn admit_volume(file: &File) -> io::Result<()> {
             file.as_raw_handle(),
             &raw mut status,
             (&raw mut device).cast(),
-            size_of::<FILE_FS_DEVICE_INFORMATION>() as u32,
+            size_u32::<FILE_FS_DEVICE_INFORMATION>(),
             FileFsDeviceInformation,
         )
     };
@@ -345,6 +357,7 @@ fn admit_volume(file: &File) -> io::Result<()> {
         ));
     }
     let mut fs_name = [0u16; 261];
+    let fs_name_len = size_u32::<[u16; 261]>() / 2;
     let mut flags = 0;
     // SAFETY: retained directory; optional outputs null, name buffer fully sized.
     if unsafe {
@@ -356,7 +369,7 @@ fn admit_volume(file: &File) -> io::Result<()> {
             ptr::null_mut(),
             &raw mut flags,
             fs_name.as_mut_ptr(),
-            fs_name.len() as u32,
+            fs_name_len,
         )
     } == 0
     {
@@ -377,7 +390,7 @@ fn admit_volume(file: &File) -> io::Result<()> {
 /// Drop closes handles only; it never rolls back a published name.
 pub(crate) struct CommitGuard {
     file: File,
-    _parent: Directory,
+    parent: Directory,
 }
 impl CommitGuard {
     pub(crate) fn commit(&self) -> io::Result<()> {
@@ -407,7 +420,7 @@ impl Drop for StageCleanup<'_> {
         if self.armed {
             let _ = self
                 .ownership
-                ._parent
+                .parent
                 .remove_owned(&self.name, &self.ownership.file);
         }
     }
@@ -443,7 +456,7 @@ pub(crate) fn publish(
                 staged = Some((file, name));
                 break;
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(not_published(error)),
         }
     }
@@ -453,10 +466,7 @@ pub(crate) fn publish(
             "could not allocate exclusive publication stage",
         ))
     })?;
-    let guard = CommitGuard {
-        file,
-        _parent: parent,
-    };
+    let guard = CommitGuard { file, parent };
     let mut cleanup = StageCleanup {
         ownership: &guard,
         name,
@@ -475,7 +485,7 @@ pub(crate) fn publish(
     checkpoint(CheckpointKind::PublishSubmitted, &guard.file).map_err(unknown)?;
     if let Err(error) = rename.submit(&guard.file) {
         if mode == PublishMode::IfAbsent
-            && matches!(error.raw_os_error(), Some(code) if code == ERROR_ALREADY_EXISTS as i32 || code == ERROR_FILE_EXISTS as i32)
+            && matches!(error.raw_os_error(), Some(code) if code == ERROR_ALREADY_EXISTS.cast_signed() || code == ERROR_FILE_EXISTS.cast_signed())
         {
             // A proven no-replace collision has no target effects. Cleanup
             // still independently proves this stage's held identity/name.
@@ -518,10 +528,7 @@ impl RenameBuffer {
         let bytes = size_of::<FILE_RENAME_INFO>()
             .checked_add(name_bytes)
             .ok_or_else(invalid)?;
-        let word_count = bytes
-            .checked_add(size_of::<usize>() - 1)
-            .ok_or_else(invalid)?
-            / size_of::<usize>();
+        let word_count = bytes.div_ceil(size_of::<usize>());
         let mut words = Vec::<usize>::new();
         words
             .try_reserve_exact(word_count)
@@ -547,8 +554,7 @@ impl RenameBuffer {
                 units.as_ptr(),
                 words
                     .as_mut_ptr()
-                    .cast::<u8>()
-                    .add(offset_of!(FILE_RENAME_INFO, FileName))
+                    .byte_add(offset_of!(FILE_RENAME_INFO, FileName))
                     .cast::<u16>(),
                 units.len(),
             );

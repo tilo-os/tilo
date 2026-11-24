@@ -34,9 +34,9 @@ watch = ["dep:notify", "dep:inotify"]
 # `native::atomic::json`: load-or-default reading and atomic saving of `serde`
 # values.
 json = ["dep:serde", "dep:serde_json"]
-# `native::atomic::test_support` and `directory_probe`: failure injection at
-# the publication protocol's checkpoints, for tests.
-test-support = ["windows-sys/Win32_System_LibraryLoader", "windows-sys/Win32_System_SystemInformation"]
+# `native::atomic::test_support`: failure injection at the publication
+# protocol's checkpoints, for tests.
+test-support = []
 
 # Elsewhere than Linux, the native watch speaks the platform's own API
 # (`FSEvents`, `ReadDirectoryChangesW`) through `notify`.
@@ -87,9 +87,9 @@ web-sys = { version = "=0.3.85", features = [
 ] }
 
 [dev-dependencies]
-# The package's own tests and the probe example exercise `native::atomic`'s
-# test-support hooks; enabling them here runs those tests whenever the package
-# is tested, not only when a dependant happens to unify the feature in.
+# The package's own tests exercise `native::atomic`'s test-support hooks;
+# enabling them here runs those tests whenever the package is tested, not only
+# when a dependant happens to unify the feature in.
 tilo-files = { path = ".", features = ["test-support"] }
 tempfile.workspace = true
 serde.workspace = true
@@ -100,11 +100,6 @@ tilo-test-env = { path = "../../../tools/test-env" }
 [[example]]
 name = "web_probe"
 crate-type = ["cdylib"]
-
-[[example]]
-name = "directory_commit_probe"
-required-features = ["test-support"]
-test = true
 
 [lints]
 workspace = true

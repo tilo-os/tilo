@@ -91,7 +91,7 @@ mod platform {
     }
 }
 
-/// The volume and the 128-bit id NTFS and ReFS give a file, and its change time, from a handle
+/// The volume and the 128-bit id `NTFS` and `ReFS` give a file, and its change time, from a handle
 /// opened only to read attributes, so a file another process holds open is stamped all the same.
 #[cfg(windows)]
 mod platform {

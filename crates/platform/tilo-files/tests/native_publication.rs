@@ -765,7 +765,7 @@ mod windows_publication_tests {
             .unwrap_err();
         assert_eq!(
             error.raw_os_error(),
-            Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+            Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION.cast_signed())
         );
     }
 
@@ -807,7 +807,7 @@ mod windows_publication_tests {
             },
             || tilo_files::native::atomic::write_with_mode(&path, b"secret", 0o600).unwrap(),
         );
-        let events = events.lock().unwrap();
+        let events = std::mem::take(&mut *events.lock().unwrap());
         assert_eq!(
             events.iter().map(|e| e.0).collect::<Vec<_>>(),
             vec![

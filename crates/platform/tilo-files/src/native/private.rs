@@ -462,7 +462,7 @@ mod tests {
             .arg(&target)
             .output_locked()
             .unwrap();
-        assert!(result.status.success(), "{:?}", result);
+        assert!(result.status.success(), "{result:?}");
         assert_eq!(
             directory(&link).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
@@ -491,7 +491,7 @@ mod tests {
             .args(["/grant", "*S-1-1-0:(R)"])
             .output_locked()
             .unwrap();
-        assert!(result.status.success(), "{:?}", result);
+        assert!(result.status.success(), "{result:?}");
         assert_eq!(
             read(&path).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
