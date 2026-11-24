@@ -36,7 +36,8 @@ pub struct Who {
     pub device: [u8; 32],
     /// How the person's devices name it, once a certificate does.
     pub label: Option<String>,
-    /// Whether a person's certificate names this device.
+    /// Whether this computer's identity is one its person's services can start as: a person's
+    /// certificate names this device and the account's identity store names that person.
     pub claimed: bool,
     /// Whether this computer keeps the person's root: what their backup and recovery words are
     /// made from.

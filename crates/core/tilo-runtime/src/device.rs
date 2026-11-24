@@ -40,6 +40,8 @@ mod files_tree_tests;
 pub(crate) mod first_workspace;
 #[cfg(test)]
 mod flow_laptop_phone_server;
+#[cfg(test)]
+mod founding_tests;
 pub(crate) mod home;
 mod host_runs;
 mod hosts;

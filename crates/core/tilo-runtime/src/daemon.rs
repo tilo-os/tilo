@@ -324,6 +324,13 @@ impl Running {
         &self.native
     }
 
+    /// Wait up to `within` for the person's services to run: a test's proof that the daemon
+    /// serves them, and did not end.
+    #[cfg(test)]
+    pub(crate) fn wait_for_person(&self, within: Duration) -> io::Result<()> {
+        self.person.within(within).map(drop)
+    }
+
     /// Stop serving, and return once the daemon let go of the device: its endpoints are closed
     /// and the device's lock is free, so a daemon may start on it again.
     ///
@@ -451,27 +458,43 @@ fn serve_device(
     stop: &crate::device::serve::Stop,
     person: &Person,
 ) -> io::Result<()> {
-    // Before a person's certificate names this computer's key, it is served with the key alone:
-    // a ticket it was handed is spent on the way, and the person's services start once a
-    // certificate names it, from a login or a person its own account starts (`devices#found`).
+    // Before this computer's identity is one its person's services can start as, it is served
+    // with the key alone: a ticket it was handed is spent on the way, and the person's services
+    // start once founding, a login or that ticket makes the identity, from `devices#found`. A
+    // certificate that no identity names, or one this device cannot act as, leaves the daemon
+    // answering its own actions rather than ending.
     if !device.claimed() {
         device.spend_handed_ticket();
-        if !device.until_claimed(stop) {
+        if !device.until_ready(stop) {
             return Ok(());
         }
     }
     // A device a ticket made enters through the server the ticket named until its copy of the
     // person's own workspace names it.
     let mut entered = device.entered();
-    let locked = device.into_lock();
+    let device_key = device.device_key();
+    let _lock = device.device_lock();
     loop {
         let mut stage = |stage: &str| tracing::debug!(stage, "starting the person's services");
-        let session = Arc::new(Daemon::start_locked(
-            profile,
-            &mut stage,
-            dev,
-            (locked.0, entered.take()),
-        )?);
+        let session =
+            match Daemon::start_locked(profile, &mut stage, dev, (device_key, entered.take())) {
+                Ok(session) => Arc::new(session),
+                // The identity went away before its services could start: keep answering the
+                // device's own actions, which is where founding and logging in are, until it is one
+                // its person's services can start as again.
+                Err(error) if !device.claimed() => {
+                    tracing::info!(
+                        %error,
+                        "this computer has no identity its person's services can start as yet: \
+                         answering the device's own actions"
+                    );
+                    if !device.until_ready(stop) {
+                        return Ok(());
+                    }
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
         // Migrations run on the device that holds the data they read.
         session.serve_migrations();
         // A computer that just logged in takes its workspace in while the device is held (below):

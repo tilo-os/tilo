@@ -1017,17 +1017,29 @@ fn ensure_collaboration_identity_in_context(
     drop_unreadable_certificates_of_held_root(identity_dir, paths);
     match persist::joined_device_is_ready(paths, now_ns) {
         Ok(true) => {
-            // `Existing` promises a record this account can resolve. The
-            // enrollment (person's key, device key, certificate) lives in the
-            // system identity tree, the public record in this account's
-            // config, and the two can part: a login account that never ran
-            // the join, or a config tree reset while the enrollment
-            // survived. Take the person up again here rather than report an
-            // identity that nothing can read.
-            if crate::store::resolve_active_identity(identity_dir).is_none() {
-                complete_enrolled_device(identity_dir, paths, now_ns)?;
+            // The enrollment is this account's own person's: a certificate for another person
+            // left on the device (a login or founding stopped partway, or another account's
+            // earlier identity here) is replaced by this root's below, so a home that resolves
+            // its identity never starts as someone it cannot act as.
+            let enrolled = persist::read_device_cert(&paths.device_cert)
+                .ok()
+                .map(|cert| cert.user_public_key);
+            let held = crate::store::held_root(identity_dir)
+                .and_then(|record| crate::store::load_metadata_from_path(&record).ok())
+                .map(|metadata| metadata.group_public_key);
+            if held.is_none_or(|held| Some(held) == enrolled) {
+                // `Existing` promises a record this account can resolve. The
+                // enrollment (person's key, device key, certificate) lives in the
+                // system identity tree, the public record in this account's
+                // config, and the two can part: a login account that never ran
+                // the join, or a config tree reset while the enrollment
+                // survived. Take the person up again here rather than report an
+                // identity that nothing can read.
+                if crate::store::resolve_active_identity(identity_dir).is_none() {
+                    complete_enrolled_device(identity_dir, paths, now_ns)?;
+                }
+                return Ok(ProvisionOutcome::Existing);
             }
-            return Ok(ProvisionOutcome::Existing);
         }
         Ok(false) => {}
         Err(error) => return Err(joined_device_unusable(paths, error)),

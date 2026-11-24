@@ -16,6 +16,10 @@ use super::first_workspace::FirstWorkspace;
 use super::ticket::Tickets;
 use super::ticket_tests::{ask_device, endpoint, root_in, serve};
 use super::unclaimed::{TICKET_CREDENTIAL, claimed, take_handed_ticket};
+use crate::device::services::tests::isolated_root;
+
+const HANDED_TICKET_TEST: &str =
+    "device::unclaimed_tests::a_handed_ticket_is_spent_once_and_files_the_persons_certificate";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
@@ -23,6 +27,9 @@ use super::unclaimed::{TICKET_CREDENTIAL, claimed, take_handed_ticket};
     reason = "one machine handed a ticket, then a second person, read top to bottom"
 )]
 async fn a_handed_ticket_is_spent_once_and_files_the_persons_certificate() {
+    let Some(root) = isolated_root(HANDED_TICKET_TEST) else {
+        return;
+    };
     let workspace = tilo_desktop_model::WorkspaceId::new();
     let (issuer, state, issuer_key, issuer_cert, _paths) =
         super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;
@@ -44,23 +51,24 @@ async fn a_handed_ticket_is_spent_once_and_files_the_persons_certificate() {
         .await
         .expect("the person's device issues a ticket");
 
-    // A new machine: its device key, and nothing else.
-    let machine = tempfile::tempdir().unwrap();
-    let keys = tilo_device_identity::IdentityPaths::under(machine.path().join("identity"));
+    // A new machine: its device key, and nothing else. The isolated child starts with a person
+    // of its own, which this test's machine is not.
+    let _ = std::fs::remove_dir_all(tilo_device_identity::persist::collaboration_identity_root());
+    if let Ok(dir) = tilo_identity::store::account_identity_dir_from_env() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    let keys = tilo_api::calls::device_keys();
     let key = SigningKey::from_bytes(&[0x5a; 32]);
     tilo_device_identity::persist::adopt_device_key(&keys, &key.to_bytes()).unwrap();
-    let place = Place::at(machine.path().join("device"), keys.clone());
-    let credentials = machine.path().join("credentials");
-    std::fs::create_dir(&credentials).unwrap();
+    let place = Place::here(keys.clone()).unwrap();
+    let credentials = root.join("credentials");
+    std::fs::create_dir_all(&credentials).unwrap();
     std::fs::write(
         credentials.join(TICKET_CREDENTIAL),
         format!("{}\n", printed["ticket"].as_str().unwrap()),
     )
     .unwrap();
-    assert!(
-        !claimed(&place, &key),
-        "no person's certificate names the key yet"
-    );
+    assert!(!claimed(&place, &key), "no identity names the key yet");
     let machine_endpoint = endpoint(&key).await;
     let machine_service = tilo_peer_state::actions::ActionService::new(
         key.clone(),

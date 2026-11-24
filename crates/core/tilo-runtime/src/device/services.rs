@@ -89,8 +89,9 @@ const OWN: &str = "own";
 const WAYLAND_SOCKET_ENV: &str = "WAYLAND_SOCKET";
 
 /// What a daemon says on a computer that holds no Tilo identity and has no login.
-pub const SET_UP_FIRST: &str = "This computer has no Tilo identity yet: set up Tilo first, with \
-     `tilo login` and the code from your Tilo tab (Set up with your agent).";
+pub const SET_UP_FIRST: &str = "This computer has no Tilo identity yet: set it up with \
+     `tilo login --new-identity`, or with `tilo login` and the code from your Tilo tab (Set up \
+     with your agent).";
 
 /// This computer's daemon, as the device. Drop applications first.
 pub struct Daemon {
@@ -186,15 +187,20 @@ impl Identity {
     /// The device this computer's identity is.
     ///
     /// # Errors
-    /// Nothing certifies this computer's device key ([`SET_UP_FIRST`]).
+    /// This computer has no identity its person's services can start as ([`SET_UP_FIRST`]).
     fn here() -> io::Result<Self> {
-        let place = tilo_device_identity::login::Place::here(tilo_api::calls::device_keys())
-            .map_err(io::Error::other)?;
-        // This daemon lists its own device with the person's once it holds their record, so it
-        // starts from its certificate before any host lists it.
-        let (key, cert) = tilo_identity::trusted_device::unlisted("").map_err(|error| {
-            io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
-        })?;
+        let keys = tilo_api::calls::device_keys();
+        let place =
+            tilo_device_identity::login::Place::here(keys.clone()).map_err(io::Error::other)?;
+        // The one check the daemon's device-only state asks too: the account's identity names a
+        // person this device holds a certificate for. This daemon lists its own device with the
+        // person's once it holds their record, so it starts from its certificate before any host
+        // lists it.
+        let (key, cert) =
+            tilo_identity::trusted_device::serving_in(&device_identity_dir(&keys)?, &keys)
+                .map_err(|error| {
+                    io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
+                })?;
         Ok(Self { key, cert, place })
     }
 
@@ -260,10 +266,12 @@ pub(crate) fn person_founded(person: [u8; 32], uid: u32) {
 /// Found the person of the account `uid` on this computer, the one way a person is made
 /// ([`tilo_identity::provisioning::create_person`]): their root is kept for that account alone,
 /// founds their own workspace, and certifies this device's key in `keys` with its authority. An
-/// account that holds its person already makes nobody new: its root certifies the device again.
+/// account that holds its person already makes nobody new: its root certifies the device again,
+/// and one whose identity a login or founding stopped partway left is completed from the
+/// certificate this device already holds, or refused naming what to do.
 ///
 /// # Errors
-/// The identity cannot be made or kept.
+/// The identity cannot be made or kept, or this computer holds an identity nothing can start as.
 pub fn found_account_person(
     keys: &tilo_device_identity::IdentityPaths,
     name: &str,
@@ -278,13 +286,78 @@ fn found_a_person_in(
     name: &str,
 ) -> io::Result<[u8; 32]> {
     let storage = tilo_identity::provisioning::IdentityStorage::Files;
-    if let Some(record) = tilo_identity::store::resolve_active_identity(dir) {
+    let active = tilo_identity::store::resolve_active_identity(dir);
+    let metadata = match &active {
+        Some(record) => Some(
+            tilo_identity::store::load_metadata_from_path(record)
+                .map_err(|error| io::Error::other(error.to_string()))?,
+        ),
+        None => None,
+    };
+    if let (Some(record), Some(metadata)) = (&active, &metadata)
+        && metadata.single_device
+    {
+        // A root kept here signs for this device again. One that cannot be opened is what a
+        // founding stopped halfway through its record leaves, and starts nothing.
+        if tilo_identity::store::load_from_path(record.clone()).is_err() {
+            return Err(incomplete(dir, keys, "its key cannot be opened"));
+        }
         tilo_identity::provisioning::ensure_collaboration_identity(dir, keys, storage)?;
-        let metadata = tilo_identity::store::load_metadata_from_path(&record)
-            .map_err(|error| io::Error::other(error.to_string()))?;
         return Ok(metadata.group_public_key);
     }
+    // No root is kept here: the person this device already holds a certificate for is the one
+    // this account is, so a login or founding interrupted before its identity record was written
+    // is completed rather than a second person made over it.
+    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(keys)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let held = tilo_device_identity::login::served_cert(keys)
+        .filter(|cert| cert.device_public_key == device.verifying_key().to_bytes())
+        // A certificate that admits devices is the root's own: it is the device's, not a joined
+        // account's to take up here.
+        .filter(|cert| !cert.capabilities.can_admit_devices)
+        .filter(|cert| {
+            metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.group_public_key == cert.user_public_key)
+        });
+    if let Some(cert) = held {
+        tilo_identity::provisioning::adopt_login_certificate(
+            dir,
+            keys,
+            &cert,
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        return Ok(cert.user_public_key);
+    }
+    if metadata.is_some() {
+        return Err(incomplete(
+            dir,
+            keys,
+            "this device holds no certificate for the person it names",
+        ));
+    }
     tilo_identity::provisioning::create_person(dir, keys, name.trim(), "", storage)
+}
+
+/// What founding refuses on a computer whose identity says a person but holds nothing it can
+/// start as them with: the two ways out, by name.
+fn incomplete(
+    dir: &std::path::Path,
+    keys: &tilo_device_identity::IdentityPaths,
+    why: &str,
+) -> io::Error {
+    let device = keys
+        .device_privkey
+        .parent()
+        .unwrap_or_else(|| keys.device_privkey.as_path())
+        .display();
+    io::Error::other(format!(
+        "This computer's Tilo identity is incomplete ({why}). Log in with a ticket from one of \
+         the person's devices (`tilo login <ticket>`), or remove this computer's Tilo identity \
+         ({}, {device}) and set up a new one (`tilo login --new-identity`).",
+        dir.display()
+    ))
 }
 
 /// Where the person the account `uid` made here is kept: a directory of its own under this
@@ -318,6 +391,42 @@ pub(crate) fn devices_trust() -> &'static Arc<tilo_identity::sources::DevicesTru
 /// This computer keeps no identity store.
 pub fn this_accounts_root_dir() -> io::Result<std::path::PathBuf> {
     account_identity_dir(this_account_uid())
+}
+
+/// The identity store of the account this device acts as its person: the account's own store
+/// when its identity names the person this device's certificate does, else, for a daemon that
+/// serves every account, the account whose store names that person, else this account's, whose
+/// answer then says what it lacks.
+///
+/// # Errors
+/// This computer keeps no identity store.
+pub(crate) fn device_identity_dir(
+    keys: &tilo_device_identity::IdentityPaths,
+) -> io::Result<std::path::PathBuf> {
+    let own = this_accounts_root_dir()?;
+    let Some(person) =
+        tilo_device_identity::login::served_cert(keys).map(|cert| cert.user_public_key)
+    else {
+        return Ok(own);
+    };
+    if store_names(&own, person) {
+        return Ok(own);
+    }
+    let accounts = tilo_identity::store::identity_dir_from_env()?.join("accounts");
+    for entry in std::fs::read_dir(&accounts).into_iter().flatten().flatten() {
+        let dir = entry.path();
+        if store_names(&dir, person) {
+            return Ok(dir);
+        }
+    }
+    Ok(own)
+}
+
+/// Whether the identity store at `dir` names `person` as the account's own.
+fn store_names(dir: &Path, person: [u8; 32]) -> bool {
+    tilo_identity::store::resolve_active_identity(dir)
+        .and_then(|record| tilo_identity::store::load_metadata_from_path(&record).ok())
+        .is_some_and(|metadata| metadata.group_public_key == person)
 }
 
 /// The uid of the account this process runs as.

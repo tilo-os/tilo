@@ -80,7 +80,9 @@ impl ThisDevice {
         })
     }
 
-    /// Whether a person's certificate names this device's key.
+    /// Whether this computer's identity is one its person's services can start as: a person's
+    /// certificate names this device's key and the account's identity store names that person
+    /// ([`claimed`]).
     pub(crate) fn claimed(&self) -> bool {
         claimed(&self.place, &self.key)
     }
@@ -116,9 +118,15 @@ impl ThisDevice {
         self.entered.lock_recover().take()
     }
 
-    /// The device's key and lock, for the person's services to start under.
-    pub(crate) fn into_lock(self) -> ([u8; 32], advisory_lock::FileLock) {
-        (self.key.verifying_key().to_bytes(), self.lock)
+    /// This computer's device key, its lock kept here for as long as this device is, for the
+    /// person's services to start under.
+    pub(crate) fn device_key(&self) -> [u8; 32] {
+        self.key.verifying_key().to_bytes()
+    }
+
+    /// This device's lock, kept for as long as this device is: one daemon serves one device.
+    pub(crate) const fn device_lock(&self) -> &advisory_lock::FileLock {
+        &self.lock
     }
 }
 
@@ -150,9 +158,9 @@ impl ThisDevice {
         }
     }
 
-    /// Return once a person's certificate names this device's key, so the daemon opens the
-    /// person's workspaces on it: `true` then, and `false` when the daemon was told to stop first.
-    pub(crate) fn until_claimed(&self, stop: &super::serve::Stop) -> bool {
+    /// Return once this computer's identity is one its person's services can start as
+    /// ([`claimed`]): `true` then, and `false` when the daemon was told to stop first.
+    pub(crate) fn until_ready(&self, stop: &super::serve::Stop) -> bool {
         while !self.claimed() {
             if stop.wait(LOOKING) {
                 return false;
@@ -162,17 +170,23 @@ impl ThisDevice {
     }
 }
 
-/// Whether a person's certificate names this computer's device key `key`
-/// ([`tilo_device_identity::login::claimed`]).
+/// Whether this computer's identity is one its person's services can start as: the account's
+/// identity store names a person this device holds a certificate for, naming its key
+/// ([`tilo_identity::trusted_device::serving_in`]). This is the one answer the daemon asks before
+/// it starts the person's services and the services ask when they start, so a certificate no
+/// identity names and an identity no certificate backs both leave the daemon serving its device
+/// alone.
 #[must_use]
 pub(crate) fn claimed(place: &Place, key: &SigningKey) -> bool {
-    tilo_device_identity::login::claimed(place, &key.verifying_key().to_bytes())
+    let serving = crate::device::services::device_identity_dir(place.keys())
+        .and_then(|dir| tilo_identity::trusted_device::serving_in(&dir, place.keys()));
+    serving.is_ok_and(|(device, _)| device.verifying_key() == key.verifying_key())
 }
 
 /// Spend the ticket in `credentials`' [`TICKET_CREDENTIAL`] to make this computer, whose device
 /// key is `key`, one of the person's devices, its certificate kept in `place`: `None` when no
-/// ticket was handed, or when a person's certificate already names this key, where the ticket is
-/// left unspent.
+/// ticket was handed, or when this computer's identity is already one its person's services can
+/// start as, where the ticket is left unspent.
 pub(crate) async fn take_handed_ticket(
     place: &Place,
     key: &SigningKey,
@@ -303,8 +317,8 @@ impl DeviceOnly {
         let reason = if self.claimed() {
             "this device's person's services are still starting: ask again in a moment"
         } else {
-            "this device has no person yet: log it in with a ticket from one of your devices \
-             (`tilo login <ticket>`) first"
+            "this device has no person yet: set it up with `tilo login --new-identity`, or log \
+             it in with a ticket from one of your devices (`tilo login <ticket>`) first"
         };
         ActionCallError::Refused {
             reason: reason.into(),

@@ -11,6 +11,7 @@
 use std::io;
 
 use ed25519_dalek::SigningKey;
+use tilo_device_identity::IdentityPaths;
 use tilo_user_identity::DeviceCert;
 
 /// This machine's device key and its certificate for the identity this device presents in
@@ -45,14 +46,60 @@ pub(crate) fn of_profile(
     checked(profile, true)
 }
 
+/// This computer's identity as its person's services start it, with this device's key and
+/// certificates kept in `paths`: the person the identity store at `identity_dir` names, and the
+/// certificate this device holds for them that names its key.
+///
+/// One answer for the daemon that decides whether to serve its person's services and for the
+/// services that start from that decision: a certificate on disk that no identity names, or one
+/// for a person this device cannot act as, starts nothing.
+///
+/// # Errors
+/// The account keeps no identity, the identity names a person this device has no certificate for,
+/// or the certificate is another device's, does not verify, or is revoked.
+pub fn serving_in(
+    identity_dir: &std::path::Path,
+    paths: &IdentityPaths,
+) -> io::Result<(SigningKey, DeviceCert)> {
+    // The device's own certificate names the person this computer presents; without one, the
+    // identity the account selected stands.
+    let certificate = tilo_device_identity::persist::read_device_cert(&paths.device_cert).ok();
+    let store = crate::store::IdentityRegistryStore::at(identity_dir);
+    let registry = store.load_reconciled_cached()?;
+    let profile = registry
+        .for_workspace("", certificate.as_ref())
+        .ok_or_else(|| io::Error::other("this device has no identity to sign in with"))?;
+    checked_in(&profile, paths, false)
+}
+
+/// [`serving_in`] for the identity store of the account this process runs as.
+///
+/// # Errors
+/// As [`serving_in`], and when this host keeps no Tilo profile.
+pub fn serving(paths: &IdentityPaths) -> io::Result<(SigningKey, DeviceCert)> {
+    serving_in(&crate::store::account_identity_dir_from_env()?, paths)
+}
+
 /// The device key and certificate for `profile`, refused when revoked, and when not `listed`
 /// where the person's devices record must already hold it.
 fn checked(
     profile: &crate::store::IdentityProfile,
     listed: bool,
 ) -> io::Result<(SigningKey, DeviceCert)> {
-    let paths = crate::provisioning::collaboration_identity_paths();
-    let device = tilo_device_identity::persist::load_device_key(&paths)
+    checked_in(
+        profile,
+        &crate::provisioning::collaboration_identity_paths(),
+        listed,
+    )
+}
+
+/// [`checked`] with this device's key and certificates kept in `paths`.
+fn checked_in(
+    profile: &crate::store::IdentityProfile,
+    paths: &IdentityPaths,
+    listed: bool,
+) -> io::Result<(SigningKey, DeviceCert)> {
+    let device = tilo_device_identity::persist::load_device_key(paths)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let device_key = device.verifying_key().to_bytes();
     let cert_path = paths.device_cert_for_user(&profile.user_public_key);
