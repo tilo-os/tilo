@@ -27,6 +27,8 @@ the app it is pointed at, so every generated registry is compared here too.
   check_catalogue_coverage.py            fail on every drifted or repeated key
   check_catalogue_coverage.py --list     print the drift, `unit locale key`, and pass
   check_catalogue_coverage.py --staged   fail on the drift this commit's catalogues add
+  check_catalogue_coverage.py --range BASE..HEAD
+                                         fail on the drift this range's catalogues add
 """
 
 from __future__ import annotations
@@ -177,15 +179,20 @@ def stale_registries(root: Path) -> list[tuple[str, Path, str, str]]:
     return found
 
 
-def head_texts(root: Path, relatives: list[Path]) -> dict[Path, str]:
-    """The text each of `relatives` holds in HEAD, the tree before this commit.
+def tree_texts(root: Path, revision: str, relatives: list[Path]) -> dict[Path, str]:
+    """The text each of `relatives` holds in `revision`.
 
     One `git cat-file` for the lot, as `judged` reads a commit's own blobs, so
-    a commit of many catalogues costs one process."""
+    a commit of many catalogues costs one process. A path `revision` does not
+    hold (a catalogue the other side of a change adds) is left out, and its
+    reader sees an empty catalogue."""
     wanted = [relative for relative in relatives if "\n" not in relative.as_posix()]
     if not wanted:
         return {}
-    query = b"".join(b"HEAD:" + os.fsencode(relative.as_posix()) + b"\n" for relative in wanted)
+    query = b"".join(
+        os.fsencode(revision) + b":" + os.fsencode(relative.as_posix()) + b"\n"
+        for relative in wanted
+    )
     output = git(root, "cat-file", "--batch", input=query)
     texts: dict[Path, str] = {}
     offset = 0
@@ -204,40 +211,30 @@ def head_texts(root: Path, relatives: list[Path]) -> dict[Path, str]:
     return texts
 
 
-def staged_drift(root: Path) -> list[str]:
-    """The drift a commit introduces in the catalogues it stages, in path order.
-
-    Only the units whose `locales/*.ftl` files the commit stages are judged,
-    and each is judged as the commit leaves it: its index blob where it is
-    staged, HEAD where it is not. What the commit leaves alone was already
-    judged by CI. Two shapes are drift here: a key the commit adds to a source
-    catalogue with no line in a translation, and a key it adds to a translation
-    with no source original. A key a staged catalogue defines twice is not a
-    word to translate but a broken file, so it fails here as it does in the
-    whole tree.
-    """
-    staged = judged(root, staged=True)
-    touched = [
-        relative
-        for relative in staged.files(Path("."), suffixes=(".ftl",))
-        if relative.parent.name == "locales"
-    ]
-    if not touched:
+def tree_catalogues(root: Path, revision: str, units: list[Path]) -> list[Path]:
+    """Every catalogue `revision` holds in `units`, relative to the root."""
+    if not units:
         return []
-    units = sorted({relative.parents[1] for relative in touched})
-    catalogues = sorted({
-        catalogue.relative_to(root)
-        for unit in units
-        for catalogue in (root / unit / "locales").glob("*.ftl")
-    })
-    after: dict[Path, str] = {
-        catalogue: staged.read(catalogue)
-        for catalogue in catalogues
-        if staged.is_staged(catalogue)
-    }
-    after.update(head_texts(root, [c for c in catalogues if c not in after]))
-    before = head_texts(root, catalogues)
+    listing = git(root, "ls-tree", "-r", "--name-only", "-z", revision, "--",
+                  *[unit.as_posix() for unit in units]).split(b"\0")
+    return sorted(
+        relative
+        for relative in (Path(os.fsdecode(name)) for name in listing if name)
+        if relative.suffix == ".ftl" and relative.parent.name == "locales"
+    )
 
+
+def drift_in(touched: list[Path], catalogues: list[Path],
+             after: dict[Path, str], before: dict[Path, str]) -> list[str]:
+    """The drift `touched` introduces, judged in what `after` and `before` hold.
+
+    `after` is the tree the change leaves and `before` the one it finds; only
+    the units of `touched` are compared. Two shapes are drift: a key `after`
+    defines in a source catalogue that `before` did not and a translation lacks,
+    and a key `after` adds to a translation with no source original. A key
+    `after` defines twice is not a word to translate but a broken file, so it
+    fails here as it does in the whole tree.
+    """
     problems: list[str] = []
     for relative in touched:
         first: dict[str, int] = {}
@@ -250,7 +247,7 @@ def staged_drift(root: Path) -> list[str]:
             else:
                 first[message.key] = message.line
 
-    for unit in units:
+    for unit in sorted({relative.parents[1] for relative in touched}):
         files = [catalogue for catalogue in catalogues if catalogue.parents[1] == unit]
         now = {catalogue.stem: keys_in(after.get(catalogue, "")) for catalogue in files}
         was = {catalogue.stem: keys_in(before.get(catalogue, "")) for catalogue in files}
@@ -277,25 +274,96 @@ def staged_drift(root: Path) -> list[str]:
     return problems
 
 
+def staged_drift(root: Path) -> list[str]:
+    """The drift a commit introduces in the catalogues it stages, in path order.
+
+    Only the units whose `locales/*.ftl` files the commit stages are judged,
+    and each is judged as the commit leaves it: its index blob where it is
+    staged, HEAD where it is not. What the commit leaves alone was already
+    judged by CI.
+    """
+    staged = judged(root, staged=True)
+    touched = [
+        relative
+        for relative in staged.files(Path("."), suffixes=(".ftl",))
+        if relative.parent.name == "locales"
+    ]
+    if not touched:
+        return []
+    units = sorted({relative.parents[1] for relative in touched})
+    catalogues = sorted({
+        catalogue.relative_to(root)
+        for unit in units
+        for catalogue in (root / unit / "locales").glob("*.ftl")
+    })
+    after: dict[Path, str] = {
+        catalogue: staged.read(catalogue)
+        for catalogue in catalogues
+        if staged.is_staged(catalogue)
+    }
+    after.update(tree_texts(root, "HEAD", [c for c in catalogues if c not in after]))
+    before = tree_texts(root, "HEAD", catalogues)
+    return drift_in(touched, catalogues, after, before)
+
+
+def range_drift(root: Path, base: str, head: str) -> list[str]:
+    """The drift a range introduces in the catalogues it changes, in path order.
+
+    A cherry-pick or a rebase writes commits no hook sees its `--staged` run
+    through, so a push judges the range as one change: only the units whose
+    `locales/*.ftl` files differ between `base` and `head` are judged, each as
+    `head` leaves it against `base`. What the range leaves alone was judged by
+    CI, and a key a commit of the range added and a later one fixed is not
+    drift.
+    """
+    changed = git(root, "diff", "--name-only", "-z", "--diff-filter=ACMRT",
+                  f"{base}..{head}", "--").split(b"\0")
+    touched = [
+        relative
+        for relative in (Path(os.fsdecode(name)) for name in changed if name)
+        if relative.suffix == ".ftl" and relative.parent.name == "locales"
+    ]
+    if not touched:
+        return []
+    units = sorted({relative.parents[1] for relative in touched})
+    catalogues = sorted(
+        set(tree_catalogues(root, head, units)) | set(tree_catalogues(root, base, units))
+    )
+    after = tree_texts(root, head, catalogues)
+    before = tree_texts(root, base, catalogues)
+    return drift_in(sorted(touched), catalogues, after, before)
+
+
 def named(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def report_change(problems: list[str], subject: str) -> int:
+    """Print the drift a change adds and refuse it; `subject` names the change."""
+    for problem in problems:
+        print(problem)
+    if problems:
+        print(f"{len(problems)} keys {subject} adds are untranslated or unnamed; a "
+              "catalogue is translated whole or it reads in two languages at once",
+              file=sys.stderr)
+        return 1
+    print(f"catalogue coverage: {subject} adds no key a translation lacks", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str]) -> int:
-    if argv[1:] not in ([], ["--list"], [STAGED_FLAG]):
+    arguments = argv[1:]
+    if arguments[:1] == ["--range"] and len(arguments) == 2:
+        base, _, head = arguments[1].partition("..")
+        if not base or not head:
+            print(__doc__.split("\n\n")[-1].strip(), file=sys.stderr)
+            return 2
+        return report_change(range_drift(ROOT, base, head), "this range")
+    if arguments not in ([], ["--list"], [STAGED_FLAG]):
         print(__doc__.split("\n\n")[-1].strip(), file=sys.stderr)
         return 2
-    if argv[1:] == [STAGED_FLAG]:
-        problems = staged_drift(ROOT)
-        for problem in problems:
-            print(problem)
-        if problems:
-            print(f"{len(problems)} keys this commit adds are untranslated or unnamed; a "
-                  "catalogue is translated whole or it reads in two languages at once",
-                  file=sys.stderr)
-            return 1
-        print("catalogue coverage: this commit adds no key a translation lacks", file=sys.stderr)
-        return 0
+    if arguments == [STAGED_FLAG]:
+        return report_change(staged_drift(ROOT), "this commit")
     missing = untranslated(ROOT)
     extra = unnamed(ROOT)
     twice = duplicated(ROOT)

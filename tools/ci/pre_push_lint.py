@@ -52,6 +52,13 @@ the tree checked out here: a lint that spoke for another commit would say
 nothing about this one. A push whose changed packages the check cannot name is
 refused too, rather than passed unread.
 
+The catalogues a push changes are judged over its whole range before any lint,
+by `tools/policy/check_catalogue_coverage.py --range`: the commit hook judges
+each commit's own catalogues as it is made, and a cherry-pick or a rebase writes
+commits it never runs for. A key the range adds to a source catalogue with no
+line in a translation, a key it adds to a translation with no source original,
+or a catalogue it leaves holding one key twice refuses the push.
+
 There is no switch to skip the lint: `git push --no-verify` is Git's own
 escape, and CONTRIBUTING.md asks contributors never to use it.
 
@@ -641,6 +648,42 @@ def catalogue_checks(push: Push) -> list[str]:
     return []
 
 
+# The check that judges the fluent catalogues a change leaves behind.
+CATALOGUE_COVERAGE = TOOLS / "policy/check_catalogue_coverage.py"
+
+
+def catalogue_range(root: Path, push: Push) -> int:
+    """Judge the catalogues the push changes over its whole range, and refuse drift.
+
+    The commit hook judges each commit's own catalogues as it is made, through
+    the check's `--staged` mode. A cherry-pick or a rebase writes commits the
+    hook never runs for, and the translation one of them left behind landed with
+    no check in its way. The push judges the range as one change, before any
+    lint: a key it adds to a source catalogue with no line in a translation, a
+    key it adds to a translation with no source original, and a catalogue it
+    leaves holding one key twice. The check reads the range's blobs, not the
+    files on disk, so its answer is about what is sent.
+    """
+    for base, head in push.comparisons:
+        result = subprocess.run(
+            [sys.executable, str(CATALOGUE_COVERAGE), "--range", f"{base}..{head}"],
+            cwd=root, capture_output=True, text=True, check=False)
+        if result.returncode == 0:
+            continue
+        for line in [*result.stdout.splitlines(), *result.stderr.splitlines()]:
+            say(line)
+        say("pre-push: refusing the push: a cherry-pick or a rebase writes commits the commit "
+            "hook never judges, so the push judges the catalogues its whole range changes")
+        return 1
+    return 0
+
+
+def catalogue_plan(push: Push) -> None:
+    """Say the catalogue judgement the push makes; a plan names it and runs nothing."""
+    for base, head in push.comparisons:
+        print(f"catalogue: --range {base[:12]}..{head[:12]}")
+
+
 def rustfmt_available() -> bool:
     """Whether the repository's format check can run here.
 
@@ -892,13 +935,19 @@ def main(argv: list[str]) -> int:
             "the remote refuses it whatever a lint says; nothing was linted. Rebase onto it "
             "and push again")
         return 1
-    files = rust_changes(push.files)
-    if not files:
-        say("pre-push: no Rust or Cargo file changed; nothing to lint")
-        return 0
     if push.unnamed:
         say("pre-push: refusing a push the check cannot name")
         return 1
+    # The catalogues are judged before any lint and before the early answer for a
+    # push that changes no Rust: a translation left behind is drift on its own.
+    if not options.plan and catalogue_range(root, push) != 0:
+        return 1
+    files = rust_changes(push.files)
+    if not files:
+        if options.plan:
+            catalogue_plan(push)
+        say("pre-push: no Rust or Cargo file changed; nothing to lint")
+        return 0
     if tip := unchecked_tree(root, push):
         say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads the files "
             "on disk: check it out and push again")
@@ -930,6 +979,7 @@ def main(argv: list[str]) -> int:
             named = t_checks(root, selection.native, set(members))[0]
             named += [name for name in catalogue_checks(push) if name not in named]
             print(f"t: {' '.join(named)}")
+        catalogue_plan(push)
         return 0
     checks = None
     if lints_through_t():

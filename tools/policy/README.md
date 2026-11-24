@@ -54,3 +54,8 @@ drifts against the translation of its unit the commit leaves alone, so it reads
 each unit the commit stages as the commit leaves it, and HEAD's text of that
 unit's other catalogues. No unit the commit does not stage is read.
 
+The same check takes `--range BASE..HEAD`, which the pre-push hook runs over
+every push to main: `.githooks/pre-push` judges the pushed range as one change,
+from the range's own blobs, because a cherry-pick or a rebase writes commits the
+commit hook never runs for. It reads no file on disk.
+

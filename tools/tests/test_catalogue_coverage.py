@@ -275,6 +275,93 @@ class StagedCatalogueCoverageTests(unittest.TestCase):
         self.assertEqual(coverage.staged_drift(self.root), [])
 
 
+class RangeCatalogueCoverageTests(unittest.TestCase):
+    """The drift a range's own catalogues add, judged at its head against its base.
+
+    A cherry-pick or a rebase writes commits the commit hook never judges, so the
+    push judges what the range as a whole left behind."""
+
+    def setUp(self):
+        import subprocess
+        self.subprocess = subprocess
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.git("init", "-q")
+        self.git("config", "user.name", "test")
+        self.git("config", "user.email", "test@example.invalid")
+        self.commit({"app/locales/en-US.ftl": SOURCE,
+                     "app/locales/de-DE.ftl": SOURCE})
+        self.base = self.head()
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def git(self, *arguments: str) -> None:
+        self.subprocess.run(
+            ["git", "-C", str(self.root), *arguments], check=True, capture_output=True
+        )
+
+    def head(self) -> str:
+        return self.subprocess.run(
+            ["git", "-C", str(self.root), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True).stdout.strip()
+
+    def commit(self, files: dict[str, str]) -> None:
+        for name, text in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "state")
+
+    def drift(self) -> list[str]:
+        return coverage.range_drift(self.root, self.base, self.head())
+
+    def test_a_source_key_the_range_adds_without_its_translation_is_refused(self):
+        self.commit({"app/locales/en-US.ftl": SOURCE + "\nc = Close\n"})
+        self.assertEqual(self.drift(), ["app/locales/en-US.ftl:6: c has no de-DE text"])
+
+    def test_a_source_key_the_range_adds_with_its_translation_passes(self):
+        self.commit({"app/locales/en-US.ftl": SOURCE + "\nc = Close\n",
+                     "app/locales/de-DE.ftl": SOURCE + "\nc = Schließen\n"})
+        self.assertEqual(self.drift(), [])
+
+    def test_a_translation_key_the_range_adds_with_no_original_is_refused(self):
+        self.commit({"app/locales/de-DE.ftl": SOURCE + "\nd = Nur auf Deutsch\n"})
+        self.assertEqual(self.drift(), ["app/locales/de-DE.ftl:6: d has no en-US text"])
+
+    def test_a_key_the_range_leaves_defined_twice_is_refused(self):
+        self.commit({"app/locales/en-US.ftl": SOURCE + "\nb = Settings again\n"})
+        problems = self.drift()
+        self.assertTrue(any("b is defined again" in problem for problem in problems), problems)
+
+    def test_the_range_is_judged_as_one_change(self):
+        # A commit that adds a word and a later one that translates it: the head the
+        # range sends is whole, so neither the hook's per-commit view nor the push's
+        # per-range one has anything to refuse.
+        self.commit({"app/locales/en-US.ftl": SOURCE + "\nc = Close\n"})
+        self.commit({"app/locales/de-DE.ftl": SOURCE + "\nc = Schließen\n"})
+        self.assertEqual(self.drift(), [])
+
+    def test_a_range_touching_no_catalogue_adds_no_drift(self):
+        self.commit({"app/src/main.rs": "fn main() {}\n"})
+        self.assertEqual(self.drift(), [])
+
+    def test_the_range_fails_with_the_key_and_the_reason(self):
+        self.commit({"app/locales/en-US.ftl": SOURCE + "\nc = Close\n"})
+        original = coverage.ROOT
+        coverage.ROOT = self.root
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with redirect_stdout(out), redirect_stderr(err):
+                code = coverage.main(["check", "--range", f"{self.base}..{self.head()}"])
+        finally:
+            coverage.ROOT = original
+        self.assertEqual(code, 1)
+        self.assertEqual(out.getvalue(), "app/locales/en-US.ftl:6: c has no de-DE text\n")
+        self.assertIn("1 keys this range adds are untranslated", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
 

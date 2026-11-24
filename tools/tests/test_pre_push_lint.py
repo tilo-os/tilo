@@ -25,6 +25,11 @@ HOOK_SOURCES = [
     "tools/ci/check-rustfmt-pin.sh",
     "rust-toolchain.toml",
     "tools/ci/comparison_range.py",
+    # The catalogue judgement the push makes over its range, and what it reads.
+    "tools/policy/check_catalogue_coverage.py",
+    "tools/policy/check_copy_language.py",
+    "tools/policy/judged.py",
+    "tools/policy/rust_source.py",
 ]
 WORKSPACE = """[workspace]
 members = ["native", "web", "fake-binding"]
@@ -348,6 +353,44 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("no Rust or Cargo file changed", result.stderr)
         self.assertFalse(self.log.exists(), "nothing should have been compiled")
+
+    def test_a_push_whose_range_adds_an_untranslated_key_is_refused(self):
+        # The commit hook judges each commit's catalogues as it is made, and a cherry-pick or a
+        # rebase writes commits it never sees: the push judges the range, before any lint.
+        self.write("app/locales/en-US.ftl", "a = Title\n")
+        self.write("app/locales/de-DE.ftl", "a = Titel\n")
+        self.base = self.commit("feat: an app's catalogue")
+        self.write("app/locales/en-US.ftl", "a = Title\n\nb = Settings\n")
+        self.commit("feat: a word without its German")
+        result = self.push()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("app/locales/en-US.ftl:3: b has no de-DE text", result.stderr)
+        self.assertFalse(self.log.exists(), "nothing should have been compiled")
+
+    def test_a_catalogue_push_with_whole_translations_lints_no_rust(self):
+        self.write("app/locales/en-US.ftl", "a = Title\n")
+        self.write("app/locales/de-DE.ftl", "a = Titel\n")
+        self.base = self.commit("feat: an app's catalogue")
+        self.write("app/locales/en-US.ftl", "a = Title\n\nb = Settings\n")
+        self.write("app/locales/de-DE.ftl", "a = Titel\n\nb = Einstellungen\n")
+        self.commit("feat: a word in both languages")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no Rust or Cargo file changed", result.stderr)
+
+    def test_a_key_a_later_commit_translates_is_not_drift(self):
+        # The push judges the range as one change: what an early commit left behind and a
+        # later one finished is whole at the head the range sends.
+        self.write("app/locales/en-US.ftl", "a = Title\n")
+        self.write("app/locales/de-DE.ftl", "a = Titel\n")
+        self.base = self.commit("feat: an app's catalogue")
+        self.write("app/locales/en-US.ftl", "a = Title\n\nb = Settings\n")
+        self.commit("feat: a word without its German yet")
+        self.write("app/locales/de-DE.ftl", "a = Titel\n\nb = Einstellungen\n")
+        self.commit("feat: its German")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no Rust or Cargo file changed", result.stderr)
 
     def add_dependent(self, name, source):
         """A crate that builds on the host one, with its own source."""
@@ -760,7 +803,10 @@ class PrePushLintTests(unittest.TestCase):
             input=f"refs/heads/main {self.head()} refs/heads/main {self.base}\n",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["native: fixture-web"])
+        self.assertEqual(result.stdout.splitlines(), [
+            "native: fixture-web",
+            f"catalogue: --range {self.base[:12]}..{self.head()[:12]}",
+        ])
 
     def test_a_plan_names_the_dependants_too(self):
         # A dependant is part of what the push lints though no commit of it changed, and a plan
@@ -780,6 +826,7 @@ class PrePushLintTests(unittest.TestCase):
             "native: fixture-native user",
             "dependants: user",
             "t: clippy/fixture-native clippy/user",
+            f"catalogue: --range {self.base[:12]}..{self.head()[:12]}",
         ])
 
 
