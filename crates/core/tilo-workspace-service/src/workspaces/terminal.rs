@@ -362,6 +362,7 @@ impl TerminalService {
         record: &str,
         action: &str,
         arguments: Map<String, Value>,
+        confirmation: Option<tilo_actions::remote::Confirmation>,
     ) -> Result<ActionOutput, ActionCallError> {
         let asked = RecordAction {
             app: TERMINAL_APP,
@@ -371,7 +372,7 @@ impl TerminalService {
             arguments,
         };
         self.copies
-            .apply_app_action(workspace, caller, asked)
+            .apply_app_action(workspace, caller, asked, confirmation)
             .await
             .map_err(|error| ActionCallError::Refused {
                 reason: error.to_string(),
@@ -428,7 +429,10 @@ impl TerminalService {
                 action: RECORD_COMMAND,
                 arguments: finished,
             };
-            if let Err(error) = copies.apply_app_action(&workspace, &caller, asked).await {
+            if let Err(error) = copies
+                .apply_app_action(&workspace, &caller, asked, None)
+                .await
+            {
                 tracing::warn!(%workspace, %record, %error, "a Terminal command was not recorded");
             }
         });
@@ -678,11 +682,21 @@ impl ActionProvider for TerminalService {
                     _ => Map::new(),
                 };
                 let action = request.target.address.action.clone();
+                // The person's approve of the call this one answers, where it is a resend:
+                // the app's own call carries it, so the step it takes keeps their yes.
+                let confirmation = request.confirmation.clone();
                 let caller = caller.clone();
                 let (completer, answer) = pending();
                 self.runtime.spawn(async move {
                     let answered = match service
-                        .declared(&caller, &workspace, &record, &action, arguments)
+                        .declared(
+                            &caller,
+                            &workspace,
+                            &record,
+                            &action,
+                            arguments,
+                            confirmation,
+                        )
                         .await
                     {
                         Ok(output) => {

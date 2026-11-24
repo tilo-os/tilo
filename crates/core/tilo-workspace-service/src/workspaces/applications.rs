@@ -160,6 +160,7 @@ impl Workspaces {
         workspace: &str,
         caller: &tilo_actions::remote::Caller,
         asked: RecordAction<'_>,
+        confirmation: Option<tilo_actions::remote::Confirmation>,
     ) -> Result<tilo_actions::ActionOutput, CollaborationError> {
         use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus};
 
@@ -182,7 +183,7 @@ impl Workspaces {
             ),
             argument: InvokeArgument::Json(arguments),
             context: None,
-            confirmation: None,
+            confirmation,
             revision: None,
             on_behalf_of: None,
             wait_ms: None,
@@ -217,9 +218,7 @@ impl Workspaces {
         match status {
             ReceiptStatus::Completed { output } => Ok(output),
             ReceiptStatus::Accepted => Err(CollaborationError::new("the app did not answer")),
-            ReceiptStatus::Rejected { error } => {
-                Err(CollaborationError::new(error.to_string()))
-            }
+            ReceiptStatus::Rejected { error } => Err(CollaborationError::new(error.to_string())),
             ReceiptStatus::Failed { error } => Err(CollaborationError::new(error.message)),
             ReceiptStatus::Cancelled { message } => Err(CollaborationError::new(
                 message.unwrap_or_else(|| "the app cancelled the call".into()),
