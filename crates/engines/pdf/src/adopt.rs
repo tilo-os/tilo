@@ -2,7 +2,7 @@
 
 use tilo_pdf::AnnotationKind;
 
-use crate::{Error, Existing, ExistingMark, Field, Rect};
+use crate::{Existing, ExistingMark, Field, Rect};
 
 /// The most marks one file's markup is taken over with.
 pub const MAX_IMPORTED_ANNOTATIONS: usize = 5_000;
@@ -82,16 +82,16 @@ fn mark(page: usize, info: &tilo_pdf::AnnotationInfo) -> ExistingMark {
     }
 }
 
-/// The markup and filled form the document carries.
-pub(crate) fn existing(document: &tilo_pdf::Document) -> Result<Existing, Error> {
+/// The markup and filled form the document carries. A page whose annotations cannot be read
+/// carries none rather than failing the whole document.
+pub(crate) fn existing(document: &tilo_pdf::Document) -> Existing {
     let mut marks = Vec::new();
     for page in 0..document.page_count() {
         if marks.len() >= MAX_IMPORTED_ANNOTATIONS {
             break;
         }
-        let annotations = match document.annotations(page) {
-            Ok(annotations) => annotations,
-            Err(_) => continue,
+        let Ok(annotations) = document.annotations(page) else {
+            continue;
         };
         for info in annotations {
             if marks.len() >= MAX_IMPORTED_ANNOTATIONS {
@@ -105,5 +105,5 @@ pub(crate) fn existing(document: &tilo_pdf::Document) -> Result<Existing, Error>
         .into_iter()
         .filter(|field: &Field| !field.name.is_empty())
         .collect();
-    Ok(Existing { marks, fields })
+    Existing { marks, fields }
 }

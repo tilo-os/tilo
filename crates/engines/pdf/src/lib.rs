@@ -26,6 +26,17 @@
 //! resources of its own; [`save`] then keeps an unchanged one as the file's own object and
 //! replaces a changed one, so no mark is ever shown twice.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::let_and_return,
+    clippy::too_many_lines,
+    reason = "page geometry, file offsets and calendar maths on checked values; the app's own note says why"
+)]
+
 use serde::{Deserialize, Serialize};
 use tilo_pdf::{Destination, OutlineEntry};
 
@@ -420,9 +431,14 @@ impl Document {
     ///
     /// # Errors
     ///
-    /// Why a page's annotations cannot be read.
+    /// Nothing: it answers a `Result` so a reader handles it as it handles the other reads. A
+    /// page whose annotations cannot be read carries none.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "a reader handles every read of the bytes through one Result"
+    )]
     pub fn markup(&self) -> Result<Existing, Error> {
-        adopt::existing(&self.inner)
+        Ok(adopt::existing(&self.inner))
     }
 
     /// One page drawn as a PNG picture `width` pixels wide (its height follows the page's
@@ -512,13 +528,16 @@ pub(crate) fn fields_of(document: &tilo_pdf::Document) -> Result<Vec<Field>, Err
         .collect())
 }
 
+/// What a file is, before it is imported: its kind and the display size of each page of it.
+pub type Imported = (&'static str, Vec<(f32, f32)>);
+
 /// What a file is, before it is imported: `pdf` or `image`, and the display size of each page
 /// of it.
 ///
 /// # Errors
 ///
 /// Why the file is not one a document takes pages from.
-pub fn import(bytes: &[u8]) -> Result<(&'static str, Vec<(f32, f32)>), Error> {
+pub fn import(bytes: &[u8]) -> Result<Imported, Error> {
     if bytes.len() > MAX_IMPORT_BYTES {
         return Err(Error::TooLarge);
     }
