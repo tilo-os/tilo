@@ -41,14 +41,21 @@ let
   fontAssetCache = runCommand "tilo-font-artifacts" { } (lib.concatMapStrings (font: ''
     install -Dm644 ${fetchurl { inherit (font) url sha256; }} "$out/${font.sha256}/${font.file}"
   '') fontArtifacts.assets);
-  # Two build scripts in this package prepare fixtures from the package store the same way
-  # (tools/test-assets.py): the doc codecs' sample documents and the PDF engine's. A Nix build
-  # has no trust root to fetch them with, so they arrive as fixed-output fetches, laid out as the
-  # seed those scripts read first.
+  # The build scripts in this package prepare fixtures from the package store (tools/test-assets.py):
+  # the doc codecs' sample documents, the PDF engine's, and each shipped app's. A Nix build has no
+  # trust root to fetch them with, so they arrive as fixed-output fetches, laid out as the seed
+  # those scripts read first. The manifests are the ones t's `test-assets` check fills a cache
+  # with, which is the list of every manifest a build script names.
   fixtureSeed = runCommand "tilo-fixtures" { } (lib.concatMapStrings (manifest:
     lib.concatMapStrings (asset: ''
       install -Dm644 ${fetchurl { inherit (asset) url sha256; }} "$out/${asset.sha256}/${asset.file}"
     '') (builtins.fromJSON (builtins.readFile manifest)).assets) [
+      ../../apps/ebook/assets/artifacts.json
+      ../../apps/pdf-viewer/tests/fixtures/artifacts.json
+      ../../apps/settings/shots/artifacts.json
+      ../../apps/store/fixtures/artwork/artifacts.json
+      ../../apps/video-editor/sample-media/artifacts.json
+      ../../apps/video-player/tests/fixtures/artifacts.json
       ../../crates/doc/fixtures/artifacts.json
       ../../crates/platform/tilo-pdf/tests/fixtures/artifacts.json
     ]);
