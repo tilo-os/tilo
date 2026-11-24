@@ -436,7 +436,7 @@ pub struct Authority<'g> {
     pub people: usize,
     /// The app the change is made through.
     pub app: Option<&'g AppId>,
-    /// The resource kinds the app declares: what it may reach in its own node.
+    /// The resource kinds the app declares: in its own node, its records and these kinds alone.
     /// `None` where the host deciding does not hold the app's manifest.
     pub app_kinds: Option<&'g [String]>,
 }
@@ -513,9 +513,10 @@ impl<'g> Authority<'g> {
         }
         if let (Some(app), Some(kinds)) = (self.app, self.app_kinds)
             && node.id_at(Level::App) == Some(app.as_str())
-            && !kinds
-                .iter()
-                .any(|kind| node.id_at(Level::Kind) == Some(kind.as_str()))
+            && match node.id_at(Level::Kind) {
+                Some(of) => !kinds.iter().any(|declared| declared == of),
+                None => node.id_at(Level::Resource).is_none(),
+            }
         {
             answer = Answer::Deny;
         }

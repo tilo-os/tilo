@@ -626,23 +626,32 @@ fn dispatch_reads(
     (reads, broker)
 }
 
-/// An app reads as the one actor the dispatch decides its calls as: bounded by the kinds it
-/// declares in its own resources, and as the person it acts for elsewhere.
+/// An app reads as the one actor the dispatch decides its calls as: its own records as its own,
+/// a kind in its own node only where it declares it, and as the person it acts for elsewhere.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_app_reads_no_kind_outside_what_it_declares() {
+async fn an_app_reads_its_own_records_and_no_kind_it_did_not_declare() {
     let h = host().await;
     let (reads, _broker) = dispatch_reads(&h);
-    let notes = Caller::local_app(NOTES)
-        .acting_for(h.person.clone())
-        .in_workspace(h.kitchen.clone());
-    // The record is of no kind Notes declares: Notes may not read it, though its person may.
-    let read = read_with(std::sync::Arc::clone(&reads), &notes, &h.kitchen, "").await;
-    assert!(not_read(&read), "{read:?}");
-    // Another app reads Notes' record as its person, which declares nothing there.
-    let messages = Caller::local_app("so.tilo.messages")
-        .acting_for(h.person.clone())
-        .in_workspace(h.kitchen.clone());
-    let read = read_with(reads, &messages, &h.kitchen, "").await;
-    assert!(document(&read), "{read:?}");
+    let app = |app: &str| {
+        Caller::local_app(app)
+            .acting_for(h.person.clone())
+            .in_workspace(h.kitchen.clone())
+    };
+    // Notes reads its own record, an ordinary one; another app reads it as its person.
+    for caller in [app(NOTES), app("so.tilo.messages")] {
+        let read = read_with(std::sync::Arc::clone(&reads), &caller, &h.kitchen, "").await;
+        assert!(document(&read), "{read:?}");
+    }
+    // Mail's mailbox is kept apart under its kind, which this Mail does not declare.
+    let (mail, address) = (
+        app("so.tilo.mail"),
+        ResourceAddress {
+            workspace: h.kitchen.clone(),
+            app: "so.tilo.mail".to_owned(),
+            record: String::new(),
+        },
+    );
+    let read = tokio::task::spawn_blocking(move || reads.read(&mail, &address)).await;
+    assert!(not_read(&read.expect("the read ran")));
     h.server.shutdown().await;
 }

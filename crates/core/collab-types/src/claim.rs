@@ -58,18 +58,6 @@ impl Invoker {
         Self { acting, text: None }
     }
 
-    /// The tree.
-    #[must_use]
-    pub const fn acting(&self) -> &tilo_action_policy::Acting {
-        &self.acting
-    }
-
-    /// The tree, owned.
-    #[must_use]
-    pub fn into_acting(self) -> tilo_action_policy::Acting {
-        self.acting
-    }
-
     /// The text the claim carries: as read, or this device's writing of the tree.
     ///
     /// # Errors
