@@ -24,7 +24,9 @@ struct Device {
 impl Device {
     /// `bytes` held at `hash`, as content the engine's answers name.
     fn holding(&self, hash: &str, bytes: &[u8]) {
-        self.content.borrow_mut().insert(hash.to_owned(), bytes.to_vec());
+        self.content
+            .borrow_mut()
+            .insert(hash.to_owned(), bytes.to_vec());
     }
 }
 
@@ -136,7 +138,11 @@ struct Engine {
 
 impl Engine {
     fn ops(&self) -> Vec<String> {
-        self.asked.borrow().iter().map(|(op, _)| op.clone()).collect()
+        self.asked
+            .borrow()
+            .iter()
+            .map(|(op, _)| op.clone())
+            .collect()
     }
 }
 
@@ -153,7 +159,13 @@ impl EngineHost for Engine {
         }
     }
 
-    fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+    fn start(
+        &self,
+        _app: &str,
+        op: &str,
+        input: &str,
+        _handlers: &tilolang_runtime::host_work::JobHandlers,
+    ) -> Result<String, String> {
         self.asked
             .borrow_mut()
             .push((op.to_owned(), input.to_owned()));
@@ -163,19 +175,24 @@ impl EngineHost for Engine {
         }
     }
 
-    fn status(&self, job: &str) -> Result<String, String> {
-        if !job.starts_with("print-") && !job.starts_with("scan-") {
-            return Err(format!("no job `{job}`"));
-        }
-        let mut polls = self.polls.borrow_mut();
-        *polls += 1;
-        if *polls == 1 {
-            Ok(r#"{"state":"running","url":"","error":""}"#.to_owned())
-        } else if job.starts_with("scan-") {
-            Ok(r#"{"state":"done","url":"tilo-blob://page1","error":""}"#.to_owned())
-        } else {
-            Ok(r#"{"state":"done","url":"","error":""}"#.to_owned())
-        }
+    fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+        let said = || -> Result<String, String> {
+            if !job.starts_with("print-") && !job.starts_with("scan-") {
+                return Err(format!("no job `{job}`"));
+            }
+            let mut polls = self.polls.borrow_mut();
+            *polls += 1;
+            if *polls == 1 {
+                Ok(r#"{"state":"running","url":"","error":""}"#.to_owned())
+            } else if job.starts_with("scan-") {
+                Ok(r#"{"state":"done","url":"tilo-blob://page1","error":""}"#.to_owned())
+            } else {
+                Ok(r#"{"state":"done","url":"","error":""}"#.to_owned())
+            }
+        };
+        Ok(said()
+            .ok()
+            .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
     }
 
     fn cancel(&self, job: &str) -> bool {
@@ -200,7 +217,9 @@ impl Installed {
         let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
             .expect("the platform's packages read");
         for meta in &metas {
-            host.runtime().load_foreign(meta.clone()).expect("the device is loaded");
+            host.runtime()
+                .load_foreign(meta.clone())
+                .expect("the device is loaded");
         }
         let compiled = tilolang::compile_package(SOURCE, &IdsLock::new(), &metas)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
@@ -228,11 +247,18 @@ impl Installed {
         device.holding("page1", b"\x89PNG\r\n\x1a\n% the scanned page\n");
         device.holding("pdf1", b"%PDF-1.4\n% the scanned document\n");
         host.runtime().set_blobs(device);
-        host.runtime().set_reading(&printers(), PRINTERS).expect("the printers read");
-        host.runtime().set_reading(&scanners(), SCANNERS).expect("the scanners read");
+        host.runtime()
+            .set_reading(&printers(), PRINTERS)
+            .expect("the printers read");
+        host.runtime()
+            .set_reading(&scanners(), SCANNERS)
+            .expect("the scanners read");
         let engine = Engine::default();
         host.runtime().set_engine(engine.clone());
-        let root = host.runtime().create_root("PrintCentre").expect("the app's root");
+        let root = host
+            .runtime()
+            .create_root("PrintCentre")
+            .expect("the app's root");
         Self {
             host,
             root,
@@ -312,7 +338,11 @@ fn the_overview_shows_the_printers_their_supplies_and_what_prints() {
     let app = Installed::new();
     let window = app.window();
     for wanted in ["studio", "office", "Report", "Black cartridge", "Default"] {
-        assert!(contains(&window, wanted), "{wanted} shows: {:?}", shown(&window));
+        assert!(
+            contains(&window, wanted),
+            "{wanted} shows: {:?}",
+            shown(&window)
+        );
     }
 }
 
@@ -334,8 +364,17 @@ fn diagnostics_names_how_each_printer_stands_and_its_scanners() {
     let app = Installed::new();
     let mut window = app.window();
     pick(&mut window, "place", Value::text("diagnostics"));
-    for wanted in ["Accepting jobs", "Reachable", "Paused by a person", "Epson Perfection"] {
-        assert!(contains(&window, wanted), "{wanted} shows: {:?}", shown(&window));
+    for wanted in [
+        "Accepting jobs",
+        "Reachable",
+        "Paused by a person",
+        "Epson Perfection",
+    ] {
+        assert!(
+            contains(&window, wanted),
+            "{wanted} shows: {:?}",
+            shown(&window)
+        );
     }
 }
 
@@ -350,15 +389,17 @@ fn found_printers_are_offered_to_add() {
         .tree()
         .of_kind("ui.Button")
         .into_iter()
-        .find(|button| matches!(button.props.get("label"), Some(Value::Text(text)) if text == "Add"))
+        .find(
+            |button| matches!(button.props.get("label"), Some(Value::Text(text)) if text == "Add"),
+        )
         .map(|button| button.key.clone())
         .expect("the found printer's Add button");
     window.press(&add).expect("the button adds the printer");
     let asked = app.sent.asked("add");
     assert!(
-        asked
-            .iter()
-            .any(|value| matches!(value, Value::Text(text) if text == "ipp://studio.local/printer")),
+        asked.iter().any(
+            |value| matches!(value, Value::Text(text) if text == "ipp://studio.local/printer")
+        ),
         "the printer it found is the one it adds: {asked:?}"
     );
 }
@@ -395,7 +436,11 @@ fn choosing_a_document_on_a_printer_asks_the_engine_for_its_options() {
     assert!(asked.iter().any(|(op, _)| op == "options"), "{asked:?}");
     let mut window = app.window();
     pick(&mut window, "place", Value::text("print"));
-    assert!(contains(&window, "A4"), "the printer's paper: {:?}", shown(&window));
+    assert!(
+        contains(&window, "A4"),
+        "the printer's paper: {:?}",
+        shown(&window)
+    );
 }
 
 #[test]

@@ -169,10 +169,6 @@ struct FnState {
     /// Whether the expression is the action `file.choose` runs, whose file fills the parameter the
     /// action leaves out.
     choosing: bool,
-    /// Whether the expression is the `done:` action of `engine.start`: it is applied, not run, and
-    /// runs when the job ends, with the job's last word filling the `Text` parameter it leaves out
-    /// last.
-    job_done: bool,
     /// The resource the call of an action at the span is made from (`ask(a).made_from(m)` in an
     /// action): the call it names runs as a change of its own, made from it.
     made_from: Option<(Span, Ex)>,

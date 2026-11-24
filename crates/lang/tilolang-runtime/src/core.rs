@@ -23,20 +23,7 @@ use Imp::{
     Abort, ActCall, ActCallInput, ActCallVolume, ActChoose, ActChooseFolder, ActMadeFrom, ActMany,
     ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen, ActUndo, Actions, ActorApp, ActorEq,
     ActorId, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength,
-    CallFn, CallInputs, CallMembers, CanvasCombine, CanvasCompare, CanvasDiff, CanvasDiffPicture,
-    CanvasExport, CanvasFind, CanvasGrade, CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen,
-    CanvasRemoveAlong, CanvasSave, CanvasSelect, CanvasSvg, CanvasSvgImport, CanvasWand,
-    ChangeView, ClipboardCopyImage, ClipboardCopySecret, ClipboardCopyText, ClipboardPasteImage,
-    ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs,
-    CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives,
-    CollRemove, CollValues, CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart,
-    DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DeviceRefLit, DurationText,
-    Earlier, EditField, EngineCall, EngineCancel, EngineCheck, EnginePicture, EngineRun,
-    EngineStart, EngineStartDone, EngineState, EngineStatus, EngineStream, EntryParts, EnumGetF,
-    EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventPress,
-    EventValue, FieldChanged, FileAt, FileBook, FileBookCover, FileBookInfo, FileCompress,
-    FileCopy, FileCrop, FileData, FileEncode, FileExtract, FileFiles, FileImageInfo, FileList,
-    FileMarkdown, FileMkdir, FileMove, FileOfBytes, FileOfDocument, FileOfText, FileOpen,
+    CallFn, CallInputs, CallMembers, CanvasCombine, CanvasCompare, CanvasDiff, CanvasDiffPicture, CanvasExport, CanvasFind, CanvasGrade, CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen, CanvasRemoveAlong, CanvasSave, CanvasSelect, CanvasSvg, CanvasSvgImport, CanvasWand, ChangeView, ClipboardCopyImage, ClipboardCopySecret, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollValues, CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DeviceRefLit, DurationText, Earlier, EditField, EngineCall, EngineCancel, EngineCheck, EngineJob, EnginePicture, EngineStart, EngineState, EngineStream, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventPress, EventValue, FieldChanged, FileAt, FileBook, FileBookCover, FileBookInfo, FileCompress, FileCopy, FileCrop, FileData, FileEncode, FileExtract, FileFiles, FileImageInfo, FileList, FileMarkdown, FileMkdir, FileMove, FileOfBytes, FileOfDocument, FileOfText, FileOpen,
     FileOpenPath, FilePart, FileReadPath, FileRemove, FileRename, FileResize, FileRestore,
     FileSize, FileStat, FileText, FileThumbnail, FileTrash, FileTrashEntries, FileTurn, FileWatch,
     FileWrite, FileZip, FilterLit, Filters, Find, FirstUnseen, FloatAbs, FloatAcos, FloatAsin,
@@ -213,10 +200,10 @@ pub struct Core {
     /// The newest frame of each stream the device's engines ran (`engine.stream`): what the app's
     /// window paints by the stream's address.
     pub live_frames: std::sync::Arc<crate::host_work::LiveFrames>,
-    /// The jobs started with a `done:` action, by job: who started each, and the action that runs
-    /// as them when it ends ([`crate::Runtime::finish_jobs`]).
-    pub job_done:
-        RefCell<std::collections::HashMap<String, (crate::ids::Actor, crate::value::ActionRef)>>,
+    /// The jobs a view read (`engine.job`) that the host has not been asked to follow yet
+    /// ([`crate::Runtime::take_wanted_jobs`]), and those it has.
+    pub jobs_wanted: RefCell<std::collections::BTreeSet<String>>,
+    pub jobs_followed: RefCell<std::collections::BTreeSet<String>>,
     /// What names actors; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -453,7 +440,8 @@ impl Core {
             engine_work: RefCell::new(None),
             vault: RefCell::new(None),
             live_frames: std::sync::Arc::new(crate::host_work::LiveFrames::default()),
-            job_done: RefCell::new(std::collections::HashMap::new()),
+            jobs_wanted: RefCell::new(std::collections::BTreeSet::new()),
+            jobs_followed: RefCell::new(std::collections::BTreeSet::new()),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
@@ -727,10 +715,8 @@ impl Core {
             | ClipboardPasteImage => self.clipboard_import(imp, a),
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
             FontFamilies => self.font_import(imp, a),
-            EngineCall | EngineStart | EngineStartDone | EngineRun | EngineStream | EngineState
-            | EnginePicture | EngineStatus | EngineCancel | EngineCheck => {
-                self.engine_import(imp, a)
-            }
+            EngineCall | EngineStart | EngineStream | EngineState | EnginePicture | EngineJob
+            | EngineCancel | EngineCheck => self.engine_import(imp, a),
             VaultCode => self.vault_import(a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
             | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | UiBindStateAt

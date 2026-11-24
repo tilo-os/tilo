@@ -583,6 +583,64 @@ fn ref_from_json(json: &Json) -> Option<ResourceRef> {
     ResourceRef::parse_id(id, ty)
 }
 
+/// Where a job handler holds the job's place among its action's arguments, until the job fills
+/// it: an object no encoded value is.
+const JOB_SLOT: &str = "$job";
+
+/// A job's `done:` or `progress:` as the device that holds the job keeps it: the action and its
+/// arguments, encoded as [`to_json`] encodes an action reference, the job's place among them
+/// marked. It is data the starting action computed, never a closure, so it runs after that
+/// action answered, on whichever device holds the job.
+///
+/// # Errors
+///
+/// An argument cannot be stored: the handler can only be handed values and resources.
+pub fn job_handler_to_json(handler: &ActionRef) -> Result<Json, String> {
+    let mut slots = Vec::new();
+    let mut held = handler.clone();
+    for (at, arg) in held.args.iter_mut().enumerate() {
+        if matches!(arg, Value::Event) {
+            slots.push(at);
+            *arg = Value::Unit;
+        }
+    }
+    let mut json = to_json(&Value::Action(held))
+        .map_err(|why| format!("what a job runs when it moves is handed {why}"))?;
+    if let Some(Json::Array(args)) = json.get_mut("args") {
+        for at in slots {
+            if let Some(arg) = args.get_mut(at) {
+                *arg = serde_json::json!({ JOB_SLOT: null });
+            }
+        }
+    }
+    Ok(json)
+}
+
+/// The call a job handler ([`job_handler_to_json`]) makes now that its job moved: its action,
+/// handed `job` in the place the handler marked.
+///
+/// # Errors
+///
+/// `handler` is not one [`job_handler_to_json`] wrote.
+pub fn job_handler_call(handler: &Json, job: &Value) -> Result<ActionRef, String> {
+    let mut handler = handler.clone();
+    let job = to_json(job)?;
+    if let Some(Json::Array(args)) = handler.get_mut("args") {
+        for arg in args.iter_mut() {
+            if arg.get(JOB_SLOT).is_some() {
+                *arg = job.clone();
+            }
+        }
+    }
+    match from_json(&handler)? {
+        Value::Action(call) => Ok(call),
+        other => Err(format!(
+            "a job's handler is an action, not a {}",
+            other.kind_name()
+        )),
+    }
+}
+
 /// Encode a value as JSON, for registers, journals and change messages.
 pub fn to_json(v: &Value) -> Result<Json, String> {
     Ok(match v {

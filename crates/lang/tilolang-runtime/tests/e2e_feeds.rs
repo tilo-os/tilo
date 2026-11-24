@@ -96,7 +96,13 @@ mod cases {
             }
         }
 
-        fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            app: &str,
+            op: &str,
+            input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             assert_eq!(app, "so.tilo.feeds");
             assert_eq!(op, "refresh");
             self.asked
@@ -113,18 +119,23 @@ mod cases {
             Ok("job-1".to_owned())
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            assert_eq!(job, "job-1");
-            let feeds = self.feeds.borrow().len();
-            let ready = self.ready.borrow().clone();
-            let done = feeds.saturating_sub(ready.len());
-            Ok(json!({
-                "state": if ready.is_empty() { "done" } else { "running" },
-                "done": done,
-                "total": feeds,
-                "ready": ready,
-            })
-            .to_string())
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said = || -> Result<String, String> {
+                assert_eq!(job, "job-1");
+                let feeds = self.feeds.borrow().len();
+                let ready = self.ready.borrow().clone();
+                let done = feeds.saturating_sub(ready.len());
+                Ok(json!({
+                    "state": if ready.is_empty() { "done" } else { "running" },
+                    "done": done,
+                    "total": feeds,
+                    "ready": ready,
+                })
+                .to_string())
+            };
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {

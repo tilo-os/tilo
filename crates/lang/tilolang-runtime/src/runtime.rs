@@ -1375,7 +1375,7 @@ impl Runtime {
     }
 
     /// The device's engine work ([`crate::host_work`]): what an app's `engine.call`,
-    /// `engine.start`, `engine.status` and `engine.cancel` ask it. Until a host is set, every
+    /// `engine.start`, `engine.job` and `engine.cancel` ask it. Until a host is set, every
     /// ask answers with a refusal naming that the device does no such work.
     pub fn set_engine(&self, host: impl crate::host_work::EngineHost + 'static) {
         *self.core.engine_work.borrow_mut() = Some(Box::new(host));
@@ -1387,28 +1387,42 @@ impl Runtime {
         *self.core.vault.borrow_mut() = Some(Box::new(host));
     }
 
-    /// Run the `done:` action of every job that ended since this was last called, oldest first:
-    /// each as the one who started its job, with the job's last word as its last argument. A job
-    /// started without `done:` ends with nothing to run. The host calls this when an engine wakes
-    /// it, whether or not a window shows the app, so held work finishes when its job does.
-    ///
-    /// The answer is each action run, by job, with how its invocation went.
-    pub fn finish_jobs(&self) -> Vec<(String, Result<InvokeOutcome, RuntimeError>)> {
-        let mut ran = Vec::new();
-        for job in self.core.live_frames.take_ended() {
-            let Some((starter, mut done)) = self.core.job_done.borrow_mut().remove(&job) else {
-                continue;
-            };
-            let said = self
-                .core
-                .live_frames
-                .state(&job)
-                .map(|state| state.text)
-                .unwrap_or_default();
-            done.args.push(Value::text(said));
-            ran.push((job, self.core.invoke_direct(&starter, &done)));
+    /// The job `path` as the device that holds it records it now (its record's JSON, as
+    /// `devices/<device>/jobs/<job>` reads): what a view's `engine.job(path)` shows, which runs
+    /// again when it moves.
+    pub fn set_job(&self, path: &str, record: &serde_json::Value) {
+        let key = crate::host_work::job_key(path);
+        let value = Value::some(crate::host_work::job_value(record));
+        let mut states = self.core.view_states.borrow_mut();
+        if states.get(&key) != Some(&value) {
+            states.set(key, value);
         }
-        ran
+    }
+
+    /// The jobs views read (`engine.job`) since the last take, which the host follows from now
+    /// on, handing each move to [`Self::set_job`] until the job ends.
+    pub fn take_wanted_jobs(&self) -> Vec<String> {
+        let wanted = std::mem::take(&mut *self.core.jobs_wanted.borrow_mut());
+        self.core
+            .jobs_followed
+            .borrow_mut()
+            .extend(wanted.iter().cloned());
+        wanted.into_iter().collect()
+    }
+
+    /// What a job's `done:` or `progress:` runs, now that it moved: the action `handler` names
+    /// (as [`crate::host_work::JobHandlers`] carries it), handed the job as `record` says it
+    /// stands. The host invokes it as a call of the person who started the job.
+    ///
+    /// # Errors
+    ///
+    /// The handler or the record is not one a start wrote.
+    pub fn job_call(
+        &self,
+        handler: &serde_json::Value,
+        record: &serde_json::Value,
+    ) -> Result<crate::value::ActionRef, String> {
+        crate::value::job_handler_call(handler, &crate::host_work::job_value(record))
     }
 
     /// The newest frame of the stream `slot` a device's engine ran (`engine.stream`): what a

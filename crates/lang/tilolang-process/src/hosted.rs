@@ -573,6 +573,41 @@ struct HostPlatform {
     vaults: Rc<RefCell<BTreeMap<String, VaultWatch>>>,
     /// The checks the project's host runs for this instance's served invocations.
     checks: Rc<crate::approved_checks::Checks>,
+    /// What each job an engine pushes its record for said last, by job: Photos' import reports
+    /// its moves this way rather than being asked.
+    pushed: Arc<PushedJobs>,
+}
+
+/// The last word of each job whose engine pushes it, as `engine.job` reads it.
+#[derive(Default)]
+struct PushedJobs(std::sync::Mutex<BTreeMap<String, String>>);
+
+impl PushedJobs {
+    fn said(&self, job: &str) -> Option<String> {
+        self.0.lock().ok()?.get(job).cloned()
+    }
+}
+
+/// A pushing engine's job as the instance keeps it: each word kept, and the window woken to
+/// read it again.
+struct PushedJob {
+    jobs: Arc<PushedJobs>,
+    wake: Waker,
+}
+
+impl tilolang_tilo::runtime::host_work::Push for PushedJob {
+    fn frame(&self, _frame: tilolang_tilo::runtime::host_work::Frame) {}
+
+    fn state(&self, slot: &str, state: &str) {
+        if let Ok(mut jobs) = self.jobs.0.lock() {
+            jobs.insert(slot.to_owned(), state.to_owned());
+        }
+        (self.wake)();
+    }
+
+    fn ended(&self, slot: &str, state: &str) {
+        self.state(slot, state);
+    }
 }
 
 /// One vault item this window follows: its reading, and the code last read from it.
@@ -690,6 +725,36 @@ impl tilolang_tilo::runtime::host_work::Push for StreamFrames {
     fn ended(&self, slot: &str, state: &str) {
         self.push.ended(slot, state);
         (self.wake)();
+    }
+}
+
+impl HostPlatform {
+    /// What the engine running `job` says of it now.
+    #[cfg(feature = "app-launch")]
+    fn engine_said(&self, job: &str) -> Result<String, String> {
+        if let Some(status) = self.checks.status(job) {
+            return Ok(status);
+        }
+        if let Some(said) = self.pushed.said(job) {
+            return Ok(said);
+        }
+        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            crate::backups_engine::register();
+            crate::feed_engine::register();
+            if let Ok(status) = tilo_network_client::status(job)
+                .or_else(|_| crate::video_engine::status(self, job))
+                .or_else(|_| crate::print_centre_engine::status(self, job))
+                .or_else(|_| crate::camera_engine::status(self, job))
+            {
+                return Ok(status);
+            }
+        }
+        crate::chip_design_engine::register();
+        crate::git_engine::status(job).or_else(|unknown| {
+            crate::containers_engine::status(job)
+                .or_else(|_| tilolang_tilo::engine::progress(job).map_err(|_| unknown))
+        })
     }
 }
 
@@ -844,7 +909,32 @@ impl Platform for HostPlatform {
     }
 
     #[cfg(feature = "app-launch")]
-    fn engine_start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+    fn engine_start(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        handlers: &tilolang_tilo::runtime::host_work::JobHandlers,
+    ) -> Result<String, String> {
+        let _ = handlers;
+        if app == crate::photos_engine::APP {
+            let record = Arc::new(PushedJob {
+                jobs: Arc::clone(&self.pushed),
+                wake: self.waker(),
+            });
+            // A job is named by its path alone, which the engine answers inside its JSON.
+            let said = crate::photos_engine::start(
+                self.store().clone(),
+                self.previews(),
+                op,
+                input,
+                record,
+            )?;
+            return Ok(serde_json::from_str::<serde_json::Value>(&said)
+                .ok()
+                .and_then(|json| json.get("job")?.as_str().map(str::to_owned))
+                .unwrap_or(said));
+        }
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
             if app == API_TESTER_APP {
@@ -870,52 +960,6 @@ impl Platform for HostPlatform {
             return crate::git_engine::start(app, op, input);
         }
         tilolang_tilo::engine::begin(app, op, input)
-    }
-
-    /// A job whose record it pushes as it moves and when it ends: Photos' own reads the pictures
-    /// a person chose; any other app's engine starts as [`Self::engine_start`] does, or pushes its
-    /// record when it is one registered for its app.
-    #[cfg(feature = "app-launch")]
-    fn engine_start_held(
-        &self,
-        app: &str,
-        op: &str,
-        input: &str,
-        push: Arc<dyn tilolang_tilo::runtime::host_work::Push>,
-    ) -> Result<String, String> {
-        let record = Arc::new(StreamFrames {
-            push,
-            wake: self.waker(),
-        });
-        if app == crate::photos_engine::APP {
-            return crate::photos_engine::start(
-                self.store().clone(),
-                self.previews(),
-                op,
-                input,
-                record,
-            );
-        }
-        // The engines this host answers itself start their jobs as they always have.
-        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
-        {
-            let routed = [
-                crate::video_engine::APP,
-                crate::print_centre_engine::APP,
-                crate::camera_engine::APP,
-                API_TESTER_APP,
-            ];
-            if routed.contains(&app) {
-                return self.engine_start(app, op, input);
-            }
-            crate::backups_engine::register();
-            crate::feed_engine::register();
-        }
-        if app == crate::containers_engine::APP || app == crate::git_engine::APP {
-            return self.engine_start(app, op, input);
-        }
-        crate::chip_design_engine::register();
-        tilolang_tilo::engine::begin_held(app, op, input, record)
     }
 
     #[cfg(feature = "app-launch")]
@@ -952,11 +996,14 @@ impl Platform for HostPlatform {
     }
 
     #[cfg(not(feature = "app-launch"))]
-    fn engine_status(&self, job: &str) -> Result<String, String> {
-        match self.checks.status(job) {
+    fn engine_job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+        let said = match self.checks.status(job) {
             Some(status) => Ok(status),
             None => tilolang_tilo::engine::progress(job),
-        }
+        };
+        Ok(said
+            .ok()
+            .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
     }
 
     #[cfg(not(feature = "app-launch"))]
@@ -965,27 +1012,11 @@ impl Platform for HostPlatform {
     }
 
     #[cfg(feature = "app-launch")]
-    fn engine_status(&self, job: &str) -> Result<String, String> {
-        if let Some(status) = self.checks.status(job) {
-            return Ok(status);
-        }
-        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
-        {
-            crate::backups_engine::register();
-            crate::feed_engine::register();
-            if let Ok(status) = tilo_network_client::status(job)
-                .or_else(|_| crate::video_engine::status(self, job))
-                .or_else(|_| crate::print_centre_engine::status(self, job))
-                .or_else(|_| crate::camera_engine::status(self, job))
-            {
-                return Ok(status);
-            }
-        }
-        crate::chip_design_engine::register();
-        crate::git_engine::status(job).or_else(|unknown| {
-            crate::containers_engine::status(job)
-                .or_else(|_| tilolang_tilo::engine::progress(job).map_err(|_| unknown))
-        })
+    fn engine_job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+        Ok(self
+            .engine_said(job)
+            .ok()
+            .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
     }
 
     #[cfg(feature = "app-launch")]
@@ -1740,6 +1771,7 @@ fn open_instance(
         Arc::clone(wake),
     ));
     let platform = HostPlatform {
+        pushed: Arc::default(),
         bundle: Arc::clone(bundle),
         installed: spec.installed.clone(),
         shows: spec.shows,

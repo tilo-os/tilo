@@ -162,11 +162,6 @@ type ImportRecord {
     issues: List<Unread>
 }
 
-/// The job a start answered.
-type JobStarted {
-    job: Text
-}
-
 /// One person's face scan on this library: whether they let the device look for faces in the
 /// photos, whether a scan runs or is paused, and the photos it has read, so it goes on with the
 /// next ones. Faces are personal data: this is its person's alone.
@@ -303,27 +298,22 @@ action start_import(lib: Library, ask: Text, found: Int) {
     lib.import_done = 0
     lib.import_issues = []
     lib.import_stopped = false
-    match engine.start("import", ask, done: imported(lib)) {
+    match engine.start("import", ask, done: j -> imported(lib, j)) {
         .err(why) => {
             lib.import_job = ""
             lib.import_issues = ["The import could not start: {why}"]
         }
-        .ok(said) => match json.decode<JobStarted>(said) {
-            .err(why) => {
-                lib.import_issues = ["The import could not start: {why}"]
-            }
-            .ok(started) => {
-                lib.import_job = started.job
-            }
-        },
+        .ok(job) => {
+            lib.import_job = job
+        }
     }
 }
 
 /// An import's end: each picture it read becomes a photo, or brings what it says to the photo the
 /// same picture already made, and what it could not read is kept to try again. What the person set
 /// on a photo (its time, its place) is theirs, so reading it again never overwrites it.
-action imported(lib: Library, outcome: Text) (did: "added photos") {
-    match json.decode<ImportRecord>(outcome) {
+action imported(lib: Library, j: host.Job) (did: "added photos") {
+    match json.decode<ImportRecord>(j.detail) {
         .err(why) => {
             lib.import_issues = [why]
             lib.import_job = ""
@@ -361,7 +351,7 @@ action imported(lib: Library, outcome: Text) (did: "added photos") {
             lib.import_issues = [lib.import_issues, record.issues.map(i -> "{i.name}: {i.why}")]
                 .flat_map(x -> x)
             lib.import_stopped = record.state == "stopped"
-            if record.job == lib.import_job {
+            if j.id == lib.import_job {
                 lib.import_job = ""
             }
         }
@@ -1338,8 +1328,11 @@ view library(lib: Library) {
 /// The import under way, as its job's record says it now: how many pictures it has read of how
 /// many, what it could not, and a way to stop it.
 view import_progress(lib: Library) {
-    let said = engine.state(lib.import_job)
-    let record = json.decode<ImportRecord>(said)
+    let record = if let j = engine.job(lib.import_job) {
+        json.decode<ImportRecord>(j.detail)
+    } else {
+        .err("not started")
+    }
     row(gap: .related, align: .center) {
         match record {
             .ok(now) => {

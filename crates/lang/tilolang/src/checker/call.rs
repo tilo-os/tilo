@@ -460,8 +460,6 @@ impl Checker<'_> {
         sig: &str,
         at_press: bool,
     ) -> Vec<Option<Ex>> {
-        // Taken before the arguments are: a call inside one is run as it is written.
-        let job_done = std::mem::take(&mut self.st.job_done);
         let mut slots: Vec<Option<Ex>> = vec![None; params.len()];
         let mut pos = 0usize;
         let mut named = false;
@@ -536,12 +534,8 @@ impl Checker<'_> {
                     .is_some_and(|p| p.ty == Ty::File || p.ty == Ty::List(Box::new(Ty::File)))
                 && slots.get(at..).is_some_and(trailing_none)
         };
-        // The `done:` of `engine.start` leaves out its last parameter: the job's last word.
-        let filled_by_the_job = |at: usize| {
-            job_done && at + 1 == params.len() && params.get(at).is_some_and(|p| p.ty == Ty::Text)
-        };
         let asked = |at: usize| {
-            (at_press || filled_by_a_chooser(at) || filled_by_the_job(at))
+            (at_press || filled_by_a_chooser(at))
                 && slots
                     .get(at..)
                     .is_some_and(|rest| rest.iter().all(Option::is_none))
@@ -551,7 +545,6 @@ impl Checker<'_> {
                             || p.ty.asked_by_form()
                             || p.ty == Ty::File
                             || p.ty == Ty::List(Box::new(Ty::File))
-                            || job_done
                     })
                 })
         };
@@ -773,39 +766,8 @@ impl Checker<'_> {
         let sig = c.signature(&self.env.app);
         // An action a view applies runs when its event fires: the view state it takes is read then.
         let at_press = c.kind == CKind::Action && self.st.ctx == Ctx::View;
-        // The `done:` of `engine.start` is applied here and run when the job ends: its own
-        // arguments are ordinary expressions, computed now.
-        let job_done = c.kind == CKind::Action && std::mem::take(&mut self.st.job_done);
-        self.st.job_done = job_done;
         let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig, at_press);
-        if job_done {
-            return self.job_done_value(c, bound, span);
-        }
         self.call_bound(c, bound, span)
-    }
-
-    /// The `done:` action of `engine.start`, applied: it leaves out its last parameter, a `Text`,
-    /// which the job's last word fills when it ends, and every parameter before it is given.
-    fn job_done_value(&mut self, c: &Callable, mut bound: Vec<Option<Ex>>, span: Span) -> Ex {
-        let last = c.params.len().checked_sub(1);
-        let takes_word = last
-            .and_then(|at| c.params.get(at))
-            .is_some_and(|p| p.ty == Ty::Text);
-        let left_out = last.is_some_and(|at| bound.get(at).is_some_and(Option::is_none));
-        if !takes_word || !left_out {
-            self.err(
-                "E022",
-                span,
-                format!(
-                    "`{}` is what the job runs when it ends: its last parameter is a `Text` the                      call leaves out, which the job's last word fills (`action {}(…, outcome:                      Text)`, and `done: {}(…)`)",
-                    c.name, c.name, c.name
-                ),
-            );
-            return Ex::error();
-        }
-        bound.pop();
-        let bound = Self::applied_args(c, bound);
-        self.action_value(c, bound)
     }
 
     /// The action `c` called on `on`, the resource it is offered on, with `args` after it:
@@ -3131,14 +3093,16 @@ impl Checker<'_> {
         Ex::host(imp, arguments, held)
     }
 
-    /// `engine.call(op, input)`, `engine.start(op, input)`, `engine.run(op, input)`,
-    /// `engine.stream(op, input)`, `engine.state(job)`, `engine.picture(op, input)`,
-    /// `engine.status(job)` and `engine.cancel(job)`: the device's own work — a decode, a render,
-    /// a raster — asked by a name the host answers for this app. A call answers now; a start
-    /// answers a job id, and the job's progress is asked for by that id; a run starts the work
-    /// and answers the job's own state once it ends, so a caller that waits for the answer does
-    /// not hold a job to ask about. Both carry JSON, which the app reads into its own
-    /// records with `json.decode<T>`. A stream is a job whose newest frame the device keeps,
+    /// `engine.call(op, input)`, `engine.start(op, input, done: …, progress: …)`,
+    /// `engine.job(path)`, `engine.stream(op, input)`, `engine.state(job)`,
+    /// `engine.picture(op, input)` and `engine.cancel(job)`: the device's own work — a decode, a
+    /// render, a raster — asked by a name the host answers for this app. A call answers now, as
+    /// JSON the app reads into its own records with `json.decode<T>`. A start answers the path of
+    /// a job the device records (`devices/<device>/jobs/<job>`) and runs on without the app: the
+    /// device that holds it runs the action `done:` names when it ends, and `progress:`'s as it
+    /// moves, each handed the job as a `host.Job`, as calls of the person who started it, whether
+    /// or not a window is open. `engine.job(path)` reads that record; a view reads it too, and
+    /// runs again as the job moves. A stream is a job whose newest frame the device keeps,
     /// shown by the address `"tilo-live://" + job` and moved on without the app asking; what it
     /// says of itself — connecting, running, or why it ended — is `engine.state`, a reading a
     /// view shows and runs again for when the stream says something new. A picture is the same
@@ -3151,19 +3115,18 @@ impl Checker<'_> {
     fn builtin_engine(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let result = || Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text));
         let asks_input = match name.name.as_str() {
-            "call" | "start" | "run" | "stream" | "picture" => true,
-            "state" | "status" | "cancel" | "check" => false,
+            "call" | "start" | "stream" | "picture" => true,
+            "state" | "job" | "cancel" | "check" => false,
             other => {
                 self.err(
                     "E022",
                     name.span,
                     format!(
-                        "`engine` has `call`, `start`, `run`, `stream`, `state`, `picture`, `check`, \
-                         `status` and `cancel`, not `{other}`: `engine.call(op, input)`, \
-                         `engine.start(op, input)`, `engine.run(op, input)`, \
-                         `engine.stream(op, input)`, `engine.state(job)`, \
-                         `engine.picture(op, input)`, `engine.check(check_id)`, \
-                         `engine.status(job)` and \
+                        "`engine` has `call`, `start`, `job`, `stream`, `state`, `picture`, `check` \
+                         and `cancel`, not `{other}`: `engine.call(op, input)`, \
+                         `engine.start(op, input, done: j -> finished(r, j))`, \
+                         `engine.job(path)`, `engine.stream(op, input)`, `engine.state(job)`, \
+                         `engine.picture(op, input)`, `engine.check(check_id)` and \
                          `engine.cancel(job)`"
                     ),
                 );
@@ -3174,7 +3137,8 @@ impl Checker<'_> {
             }
         };
         let what = format!("`engine.{}`", name.name);
-        if self.st.ctx == Ctx::View && name.name != "state" {
+        let read_by_views = matches!(name.name.as_str(), "state" | "job");
+        if self.st.ctx == Ctx::View && !read_by_views {
             self.err(
                 "E067",
                 span,
@@ -3188,28 +3152,37 @@ impl Checker<'_> {
         let mut held: Option<Ex> = None;
         let mut input: Option<Ex> = None;
         let mut done: Option<Ex> = None;
+        let mut progress: Option<Ex> = None;
         for a in args {
             if let Some(named) = &a.name {
-                if named.name == "done" && name.name == "start" && done.is_none() {
-                    // What runs when the job ends, as the one who started it: an action of the
-                    // app's own, applied now, whose last `Text` the job's last word fills.
-                    self.st.job_done = true;
-                    done = Some(self.expr_as(&a.value, &Ty::Action));
-                    self.st.job_done = false;
-                    continue;
+                let slot = match (name.name.as_str(), named.name.as_str()) {
+                    ("start", "done") => Some(&mut done),
+                    ("start", "progress") => Some(&mut progress),
+                    _ => None,
+                };
+                match slot {
+                    Some(slot) if slot.is_none() => {
+                        let handler = self.job_handler(&named.name, &a.value);
+                        *slot = Some(handler);
+                    }
+                    _ => {
+                        self.err(
+                            "E022",
+                            named.span,
+                            if name.name == "start" {
+                                format!(
+                                    "{what} takes the op and its input by position, then once \
+                                     each `done:` and `progress:`, not `{}:`",
+                                    named.name
+                                )
+                            } else {
+                                format!("{what} takes what it reads by position")
+                            },
+                        );
+                        let _ = self.expr(&a.value, None);
+                    }
                 }
-                self.err(
-                    "E022",
-                    named.span,
-                    if name.name == "start" {
-                        format!(
-                            "{what} takes the op and its input by position, and `done:`, the \
-                             action that runs when the job ends"
-                        )
-                    } else {
-                        format!("{what} takes what it reads by position")
-                    },
-                );
+                continue;
             }
             if asks_input && held.is_none() {
                 held = Some(self.expr_as(&a.value, &Ty::Text));
@@ -3226,7 +3199,7 @@ impl Checker<'_> {
                             "{what} takes the op and its input, and nothing else: \
                              `engine.{}(\"{}\u{2026}\", input)",
                             name.name,
-                            if name.name == "start" || name.name == "run" || name.name == "stream" {
+                            if name.name == "start" || name.name == "stream" {
                                 "paint"
                             } else {
                                 "decode"
@@ -3277,6 +3250,7 @@ impl Checker<'_> {
             return Ex::error();
         }
         let app = Ex::str(&self.env.app);
+        let no_handler = || Ex::host(Imp::NoneV, vec![], Ty::Option(Box::new(Ty::Action)));
         match name.name.as_str() {
             "call" => {
                 let input = input.unwrap_or_else(Ex::error);
@@ -3284,16 +3258,13 @@ impl Checker<'_> {
             }
             "start" => {
                 let input = input.unwrap_or_else(Ex::error);
-                match done {
-                    Some(done) => {
-                        Ex::host(Imp::EngineStartDone, vec![app, held, input, done], result())
-                    }
-                    None => Ex::host(Imp::EngineStart, vec![app, held, input], result()),
-                }
-            }
-            "run" => {
-                let input = input.unwrap_or_else(Ex::error);
-                Ex::host(Imp::EngineRun, vec![app, held, input], result())
+                let done = done.unwrap_or_else(no_handler);
+                let progress = progress.unwrap_or_else(no_handler);
+                Ex::host(
+                    Imp::EngineStart,
+                    vec![app, held, input, done, progress],
+                    result(),
+                )
             }
             "stream" => {
                 let input = input.unwrap_or_else(Ex::error);
@@ -3308,14 +3279,69 @@ impl Checker<'_> {
                 )
             }
             "state" => Ex::host(Imp::EngineState, vec![held], Ty::Text),
+            "job" => Ex::host(
+                Imp::EngineJob,
+                vec![held],
+                Ty::Option(Box::new(super::platform::host_ty("Job"))),
+            ),
             "check" => {
                 // What the check observed is the host's, which a replay cannot compute again.
                 self.reads(crate::effects::Effect::Check, span, &what);
                 Ex::host(Imp::EngineCheck, vec![app, held], result())
             }
-            "status" => Ex::host(Imp::EngineStatus, vec![held], result()),
             _ => Ex::host(Imp::EngineCancel, vec![held], Ty::Bool),
         }
+    }
+
+    /// `done: j -> finished(c, j)`: what a job runs when it ends (`done:`) or moves
+    /// (`progress:`). It runs later, as its own call, on the device that holds the job, after
+    /// the action that started it has answered and whether or not a window is open; so it is
+    /// data, never a closure: one of this app's actions, handed the job as it is, its other
+    /// arguments resources and values the starting action has now.
+    fn job_handler(&mut self, word: &str, e: &ast::Expr) -> Ex {
+        let shape = format!(
+            "`{word}:` names one of this app's actions and hands it the job as it is: \
+             `{word}: j -> finished(c, j)`; it runs later, as its own call, so what else it is \
+             handed is resources and values, never a computation over the job"
+        );
+        let ExprKind::Lambda { params, body } = &e.kind else {
+            self.err("E063", e.span, shape);
+            let _ = self.expr(e, None);
+            return Ex::error();
+        };
+        let [job] = params.as_slice() else {
+            self.err("E063", e.span, shape);
+            return Ex::error();
+        };
+        let names_action = matches!(
+            &body.kind,
+            ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(f)
+                    if self.env.callables.iter().any(|c| c.name == *f && c.kind == CKind::Action))
+        );
+        if !names_action || !super::component::passed_as_is(body, &job.name) {
+            self.err("E063", body.span, shape);
+            return Ex::error();
+        }
+        let ty = super::platform::host_ty("Job");
+        self.st.scopes.push(std::collections::HashMap::new());
+        self.push_sink();
+        let local = self.declare(&job.name, ty.clone());
+        self.emit(Stmt::Set(local, Ex::host(Imp::EventValue, Vec::new(), ty)));
+        // The call is applied, not run: an action reference, as a view's control holds one.
+        let ctx = std::mem::replace(&mut self.st.ctx, Ctx::Block);
+        let act = self.expr_as(body, &Ty::Action);
+        self.st.ctx = ctx;
+        let stmts = self.pop_sink();
+        self.st.scopes.pop();
+        Ex::host(
+            Imp::SomeH,
+            vec![Ex::new(
+                crate::ir::Ek::Seq(stmts, Box::new(act)),
+                Ty::Action,
+            )],
+            Ty::Option(Box::new(Ty::Action)),
+        )
     }
 
     /// `clipboard.copy(text)`, `clipboard.copy_image(file)`, `clipboard.paste()` and

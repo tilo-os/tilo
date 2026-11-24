@@ -1,6 +1,7 @@
-//! `engine.call`, `engine.start`, `engine.status` and `engine.cancel` end to end: an app's action
-//! asks the device for work by name, reads the answer as JSON, and a long job says how far it has
-//! got and can be stopped. A device that answers no engine work refuses, rather than pretending.
+//! `engine.call`, `engine.start`, `engine.job` and `engine.cancel` end to end: an app's action
+//! asks the device for work by name and reads the answer as JSON; a long job is the device's
+//! record, which runs the actions its start named as it moves and ends, and which an action or a
+//! view reads. A device that answers no engine work refuses, rather than pretending.
 
 #[cfg(test)]
 mod cases {
@@ -8,13 +9,16 @@ mod cases {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.engined "Engine"
 
 type Page {
     words: Text
+    job: Text = ""
+    painted: Text = ""
+    steps: Int = 0
 }
 
 /// What the device answered, kept where a test reads it.
@@ -29,19 +33,16 @@ action decode(p: Page) {
     }
 }
 
-/// A job: started, asked about, then stopped.
+/// A job: the device runs it, and runs `painted` when it ends and `moved` as it goes.
 action paint(p: Page) {
-    match engine.start("page.paint", "second") {
+    match engine.start(
+        "page.paint",
+        "second",
+        done: j -> painted(p, j),
+        progress: j -> moved(p, j),
+    ) {
         .ok(job) => {
-            match engine.status(job) {
-                .ok(said) => {
-                    p.words = said
-                }
-                .err(why) => {
-                    p.words = why
-                }
-            }
-            engine.cancel(job)
+            p.job = job
         }
         .err(why) => {
             p.words = why
@@ -49,23 +50,40 @@ action paint(p: Page) {
     }
 }
 
-/// One request waited for: the device's answer is read here, and nothing keeps a job to ask.
-action awaited(p: Page) {
-    match engine.run("page.slow", "slow") {
-        .ok(said) => {
-            p.words = said
-        }
-        .err(why) => {
-            p.words = why
-        }
+/// The job ended: what it made, or why it made nothing.
+action painted(p: Page, j: host.Job) {
+    if j.state == .done {
+        p.painted = j.detail
+    } else {
+        p.painted = j.error
     }
 }
 
-/// What `engine.run` answers is its action's own answer: the caller reads it, not the window.
-action answered(p: Page) -> Text {
-    match engine.run("page.slow", "slow") {
-        .ok(said) => said,
-        .err(why) => why,
+/// The job moved on.
+action moved(p: Page, j: host.Job) {
+    p.steps = j.done
+}
+
+/// Where the job stands now, as an action reads it once.
+action looked(p: Page) {
+    if let j = engine.job(p.job) {
+        p.words = "{j.op}: {j.done} of {j.total}"
+    } else {
+        p.words = "no such job"
+    }
+}
+
+/// Stop the job.
+action stop(p: Page) {
+    engine.cancel(p.job)
+}
+
+/// How far the job has got, as a window shows it while it runs.
+view bar(p: Page) {
+    if let j = engine.job(p.job) {
+        text("{j.done} of {j.total}")
+    } else {
+        text("not started")
     }
 }
 
@@ -106,9 +124,25 @@ action refused(p: Page) {
 }
 "#;
 
+    const JOB: &str = "devices/ab/jobs/paint-1";
+
     /// What the device was asked, and how it answers.
     #[derive(Clone, Default)]
-    struct Device_(Rc<RefCell<Vec<(String, String, String)>>>);
+    struct Device_(
+        Rc<RefCell<Vec<(String, String, String)>>>,
+        Rc<RefCell<Vec<JobHandlers>>>,
+        Rc<RefCell<Vec<String>>>,
+    );
+
+    /// The job's record as the device that holds it says it stands.
+    fn record(state: &str, detail: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "id": JOB,
+            "op": "page.paint",
+            "state": state,
+            "detail": detail,
+        })
+    }
 
     impl EngineHost for Device_ {
         fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
@@ -130,19 +164,30 @@ action refused(p: Page) {
             Ok(format!(r#"{{"op":"{op}","input":"{input}"}}"#))
         }
 
-        fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            app: &str,
+            op: &str,
+            input: &str,
+            handlers: &JobHandlers,
+        ) -> Result<String, String> {
             self.0
                 .borrow_mut()
                 .push((app.to_owned(), op.to_owned(), input.to_owned()));
-            Ok("job-1".to_owned())
+            self.1.borrow_mut().push(handlers.clone());
+            Ok(JOB.to_owned())
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            Ok(format!(r#"{{"state":"done","job":"{job}"}}"#))
+        fn job(&self, path: &str) -> Result<Option<serde_json::Value>, String> {
+            Ok(
+                (path == JOB)
+                    .then(|| record("running", serde_json::json!({"done": 2, "total": 5}))),
+            )
         }
 
         fn cancel(&self, job: &str) -> bool {
-            job == "job-1"
+            self.2.borrow_mut().push(job.to_owned());
+            job == JOB
         }
     }
 
@@ -180,10 +225,26 @@ action refused(p: Page) {
         }
 
         fn words(&self) -> String {
-            match self.rt.read(&self.page, "words").unwrap() {
+            self.text("words")
+        }
+
+        fn text(&self, field: &str) -> String {
+            match self.rt.read(&self.page, field).unwrap() {
                 Value::Text(text) => text,
-                other => panic!("the page's words read {other:?}"),
+                other => panic!("the page's {field} reads {other:?}"),
             }
+        }
+
+        /// The device runs what the job's start named, now that it moved to `record`: the
+        /// handler it kept, filled with the job, invoked as the person who started it.
+        fn moves(
+            &self,
+            handler: impl Fn(&JobHandlers) -> Option<serde_json::Value>,
+            record: &serde_json::Value,
+        ) {
+            let kept = handler(&self.device.1.borrow()[0]).expect("the start named this handler");
+            let call = self.rt.job_call(&kept, record).unwrap();
+            self.rt.invoke_action(&me(), call).unwrap();
         }
     }
 
@@ -204,7 +265,7 @@ action refused(p: Page) {
     }
 
     #[test]
-    fn a_job_is_started_asked_about_and_stopped() {
+    fn a_job_runs_the_actions_its_start_named_as_it_moves_and_ends() {
         let bench = Bench::new(true);
         bench.call("paint");
         assert_eq!(
@@ -215,88 +276,103 @@ action refused(p: Page) {
                 "second".to_owned()
             )]
         );
-        assert_eq!(bench.words(), r#"{"state":"done","job":"job-1"}"#);
-    }
+        assert_eq!(bench.text("job"), JOB, "the start answers the job's path");
+        let kept = bench.device.1.borrow()[0].clone();
+        assert!(
+            kept.done.is_some() && kept.progress.is_some(),
+            "the device keeps both handlers with the job: {kept:?}"
+        );
 
-    /// A device whose job runs for a while: `status` says `running` the first `running` times,
-    /// then `done` with what it made.
-    #[derive(Clone, Default)]
-    struct Slow {
-        running: Rc<RefCell<usize>>,
-        asked: Rc<RefCell<Vec<String>>>,
-    }
+        bench.moves(
+            |h| h.progress.clone(),
+            &record("running", serde_json::json!({"done": 3, "total": 5})),
+        );
+        assert_eq!(
+            bench.rt.read(&bench.page, "steps").unwrap(),
+            Value::Int(3),
+            "`progress:` is handed the job as it moved"
+        );
+        assert_eq!(bench.text("painted"), "", "nothing ended yet");
 
-    impl EngineHost for Slow {
-        fn call(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
-            Err(format!("`{op}` is no call of this device"))
-        }
+        bench.moves(
+            |h| h.done.clone(),
+            &record("done", serde_json::json!({"url": "tilo-blob://painted"})),
+        );
+        assert_eq!(
+            bench.text("painted"),
+            r#"{"url":"tilo-blob://painted"}"#,
+            "`done:` is handed the job and reads what it made"
+        );
 
-        fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
-            self.asked.borrow_mut().push(format!("start {op} {input}"));
-            Ok("job-slow".to_owned())
-        }
-
-        fn status(&self, job: &str) -> Result<String, String> {
-            let mut asked = self.asked.borrow_mut();
-            asked.push(format!("status {job}"));
-            let mut running = self.running.borrow_mut();
-            if *running > 0 {
-                *running -= 1;
-                return Ok(r#"{"state":"running","done":1,"total":8}"#.to_owned());
-            }
-            Ok(r#"{"state":"done","answer":"201"}"#.to_owned())
-        }
-
-        fn cancel(&self, _job: &str) -> bool {
-            false
-        }
+        bench.moves(
+            |h| h.done.clone(),
+            &record(
+                "failed",
+                serde_json::json!({"error": "the printer is out of paper"}),
+            ),
+        );
+        assert_eq!(
+            bench.text("painted"),
+            "the printer is out of paper",
+            "a job that failed says why in its error"
+        );
     }
 
     #[test]
-    fn a_run_waits_for_the_device_and_answers_its_caller() {
-        let bench = Bench::new(false);
-        let slow = Slow::default();
-        *slow.running.borrow_mut() = 2;
-        bench.rt.set_engine(slow.clone());
-        let id = bench.app.action("answered");
-        let outcome = bench
+    fn an_action_reads_where_a_job_stands_and_stops_it() {
+        let bench = Bench::new(true);
+        bench.call("paint");
+        bench.call("looked");
+        assert_eq!(bench.words(), "page.paint: 2 of 5");
+        bench.call("stop");
+        assert_eq!(bench.device.2.borrow().as_slice(), [JOB.to_owned()]);
+    }
+
+    #[test]
+    fn a_window_follows_a_job_without_asking_on_a_clock() {
+        let bench = Bench::new(true);
+        bench.call("paint");
+        let mut window = bench
             .rt
-            .invoke_action(&me(), (id.as_str(), vec![Value::resource(&bench.page)]))
+            .open_view(
+                &me(),
+                &bench.app.view("bar"),
+                vec![Value::resource(&bench.page)],
+            )
             .unwrap();
-        let InvokeOutcome::Done(answer) = outcome else {
-            panic!("the run ends with its answer, not {outcome:?}");
+        let shown = |window: &tilolang_runtime::ViewInstance| -> Vec<String> {
+            of_kind(window.tree(), "ui.Text")
+                .into_iter()
+                .filter_map(|node| match &node.props["value"] {
+                    Value::Text(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
         };
         assert_eq!(
-            answer,
-            Value::text(r#"{"state":"done","answer":"201"}"#),
-            "the caller reads the job's own state once it ends"
+            shown(&window),
+            ["not started"],
+            "nothing is read before the host follows it"
         );
         assert_eq!(
-            slow.asked.borrow().as_slice(),
-            [
-                "start page.slow slow",
-                "status job-slow",
-                "status job-slow",
-                "status job-slow",
-            ],
-            "the device starts the work once and is asked how it does until it ends"
+            bench.rt.take_wanted_jobs(),
+            [JOB.to_owned()],
+            "the window's read asks the host to follow the job"
         );
-        assert_eq!(
-            bench.rt.read(&bench.page, "words").unwrap(),
-            Value::text(""),
-            "the answer went to the caller, not into the window"
-        );
-    }
 
-    #[test]
-    fn a_run_keeps_its_answer_in_the_window_when_its_action_does() {
-        let bench = Bench::new(false);
-        let slow = Slow::default();
-        bench.rt.set_engine(slow.clone());
-        bench.call("awaited");
-        assert_eq!(
-            bench.words(),
-            r#"{"state":"done","answer":"201"}"#
+        bench.rt.set_job(
+            JOB,
+            &record("running", serde_json::json!({"done": 4, "total": 5})),
+        );
+        assert!(
+            window.woken(),
+            "the job's move wakes the window that shows it"
+        );
+        window.poll_patches().unwrap();
+        assert_eq!(shown(&window), ["4 of 5"]);
+        assert!(
+            bench.rt.take_wanted_jobs().is_empty(),
+            "a job the host follows is asked for once"
         );
     }
 

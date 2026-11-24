@@ -452,16 +452,15 @@ imports! {
     (ClipboardPasteText, "clipboard_paste_text", "", "i"),
     (ClipboardPasteImage, "clipboard_paste_image", "", "i"),
 
-    // The device's own work, asked by name: an answer now, a job with its status and cancel, or
-    // a picture the device keeps and the app shows by its address.
+    // The device's own work, asked by name: an answer now, a job with the actions it runs as it
+    // moves, its record and its cancel, or a picture the device keeps and the app shows by its
+    // address.
     (EngineCall, "engine_call", "iii", "i"),
-    (EngineStart, "engine_start", "iii", "i"),
-    (EngineRun, "engine_run", "iii", "i"),
-    (EngineStartDone, "engine_start_done", "iiii", "i"),
+    (EngineStart, "engine_start", "iiiii", "i"),
+    (EngineJob, "engine_job", "i", "i"),
     (EngineStream, "engine_stream", "iii", "i"),
     (EngineState, "engine_state", "i", "i"),
     (EnginePicture, "engine_picture", "iii", "i"),
-    (EngineStatus, "engine_status", "i", "i"),
     (EngineCancel, "engine_cancel", "i", "i"),
     // The code of this moment a vault item's seed makes, read where the seed is.
     (VaultCode, "vault_code", "i", "i"),

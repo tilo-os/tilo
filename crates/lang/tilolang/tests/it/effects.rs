@@ -594,3 +594,40 @@ tilo_test_env::scenario! {
         assert_eq!(codes(view), ["E121"], "a view is drawn again from what it is shown");
     }
 }
+
+tilo_test_env::scenario! {
+    /// `engine.start(op, input, done: j -> act(r, j))`: what a job runs when it ends runs later, as
+    /// its own call on the device that holds the job, so it is one of the app's actions handed the
+    /// job as it is, never a computation the starting action would have to be there for.
+    fn what_a_job_runs_when_it_moves_is_an_action_handed_the_job;
+
+    phase an_action_handed_the_job_is_accepted;
+    {
+        let src = "type P {\n    n: Int\n    job: Text\n}\naction fin(p: P, j: host.Job) {\n    p.n = j.done\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: j -> fin(p, j), progress: j -> fin(p, j)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
+        assert_eq!(codes(src), Vec::<String>::new());
+    }
+
+    phase a_computation_over_the_job_is_refused;
+    {
+        let src = "type P {\n    n: Int\n    job: Text\n}\naction keep(p: P, n: Int) {\n    p.n = n\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: j -> keep(p, j.done)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
+        assert_eq!(codes(src), ["E063"]);
+    }
+
+    phase a_handler_that_is_no_action_or_no_function_of_the_job_is_refused;
+    {
+        let not_a_lambda = "type P {\n    n: Int\n    job: Text\n}\naction fin(p: P) {\n    p.n = 1\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: fin(p)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
+        assert_eq!(codes(not_a_lambda), ["E063"]);
+        let a_function = "type P {\n    n: Int\n    job: Text\n}\nfn f(p: P, j: host.Job) -> Int {\n    return j.done\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: j -> f(p, j)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
+        assert_eq!(codes(a_function), ["E063"]);
+    }
+
+    phase a_jobs_progress_is_read_not_asked;
+    {
+        let status = "type P {\n    job: Text\n}\naction go(p: P) {\n    match engine.status(p.job) {\n        .ok(said) => {\n            p.job = said\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
+        assert_eq!(codes(status), ["E022"], "a job is read, never polled");
+        let read = "type P {\n    job: Text\n}\nview v(p: P) {\n    if let j = engine.job(p.job) {\n        text(\"{j.done} of {j.total}\")\n    }\n}\n";
+        assert_eq!(codes(read), Vec::<String>::new(), "a view reads a job, and follows it");
+        let named = "type P {\n    job: Text\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", finished: p) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
+        assert_eq!(codes(named), ["E022"]);
+    }
+}

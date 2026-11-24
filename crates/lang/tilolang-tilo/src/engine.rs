@@ -177,6 +177,27 @@ pub fn progress(job: &str) -> Result<String, String> {
     Err(format!("no job `{job}` runs on this device"))
 }
 
+/// The job `job` as a record (`{id, op, state, detail}`), from what its engine says of it now;
+/// `None` for a job no engine knows.
+///
+/// # Errors
+///
+/// None today: an engine that knows the job answers its state.
+pub fn record(job: &str) -> Result<Option<serde_json::Value>, String> {
+    Ok(progress(job).ok().and_then(|said| record_of(job, &said)))
+}
+
+/// The record of `job` whose engine says `said` of it.
+#[must_use]
+pub fn record_of(job: &str, said: &str) -> Option<serde_json::Value> {
+    let detail: serde_json::Value = serde_json::from_str(said).ok()?;
+    Some(serde_json::json!({
+        "id": job,
+        "state": detail.get("state").cloned().unwrap_or_default(),
+        "detail": detail,
+    }))
+}
+
 /// Stop the job `job`: false when no engine runs it or it had finished.
 pub fn stop(job: &str) -> bool {
     let providers: Vec<Arc<dyn Provider + Send + Sync>> = held().values().cloned().collect();

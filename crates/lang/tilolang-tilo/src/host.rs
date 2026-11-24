@@ -1782,19 +1782,6 @@ impl Host {
         crate::triggers::run_due(self, &self.inner.triggers, now)
     }
 
-    /// Run the `done:` action of each job of this host's apps that ended, as the one who started
-    /// it ([`Runtime::finish_jobs`]). Returns how many ran.
-    pub fn finish_jobs(&self) -> usize {
-        let mut ran = 0usize;
-        for (job, outcome) in self.inner.runtime.finish_jobs() {
-            match outcome {
-                Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
-                other => tracing::warn!(job, ?other, "a job's `done:` action did not run"),
-            }
-        }
-        ran
-    }
-
     /// The next instant strictly after `now` at which a trigger has something to run: what the
     /// host waits for, so nothing polls for it. `None` when no trigger will come due again.
     #[must_use]

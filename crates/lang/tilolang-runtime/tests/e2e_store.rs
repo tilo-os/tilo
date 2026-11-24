@@ -236,7 +236,13 @@ action open_app(app_name: Text) {
             }
         }
 
-        fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             self.asked
                 .borrow_mut()
                 .push(("start".to_owned(), op.to_owned(), input.to_owned()));
@@ -248,18 +254,26 @@ action open_app(app_name: Text) {
             }
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            if job != "job-1" {
-                return Err(format!("no job `{job}`"));
-            }
-            if *self.done.borrow() {
-                Ok(r#"{"state":"done","done":1,"total":1,"error":"","status":"Done."}"#.to_owned())
-            } else {
-                Ok(
-                    r#"{"state":"running","done":0,"total":1,"error":"","status":"Working."}"#
-                        .to_owned(),
-                )
-            }
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said = || -> Result<String, String> {
+                if job != "job-1" {
+                    return Err(format!("no job `{job}`"));
+                }
+                if *self.done.borrow() {
+                    Ok(
+                        r#"{"state":"done","done":1,"total":1,"error":"","status":"Done."}"#
+                            .to_owned(),
+                    )
+                } else {
+                    Ok(
+                        r#"{"state":"running","done":0,"total":1,"error":"","status":"Working."}"#
+                            .to_owned(),
+                    )
+                }
+            };
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {

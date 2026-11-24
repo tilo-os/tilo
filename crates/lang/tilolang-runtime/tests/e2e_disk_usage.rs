@@ -42,7 +42,13 @@ mod cases {
             }
         }
 
-        fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
@@ -53,12 +59,17 @@ mod cases {
             }
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            let answer = self.state.borrow().clone();
-            if job != "scan-1" || answer.is_empty() {
-                return Err(format!("no job `{job}` runs on this device"));
-            }
-            Ok(answer)
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said = || -> Result<String, String> {
+                let answer = self.state.borrow().clone();
+                if job != "scan-1" || answer.is_empty() {
+                    return Err(format!("no job `{job}` runs on this device"));
+                }
+                Ok(answer)
+            };
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {

@@ -104,7 +104,13 @@ view window(s: Screen) {
             Err(format!("`{op}` is no op this device answers now"))
         }
 
-        fn start(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            _input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             Err(format!("`{op}` is no job this device runs"))
         }
 
@@ -122,12 +128,17 @@ view window(s: Screen) {
             Ok("screen-1".to_owned())
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            if job == "screen-1" {
-                Ok(r#"{"state":"running"}"#.to_owned())
-            } else {
-                Err(format!("no job `{job}` runs on this device"))
-            }
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said = || -> Result<String, String> {
+                if job == "screen-1" {
+                    Ok(r#"{"state":"running"}"#.to_owned())
+                } else {
+                    Err(format!("no job `{job}` runs on this device"))
+                }
+            };
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {
@@ -144,12 +155,22 @@ view window(s: Screen) {
             Err(format!("`{op}` is no op this device answers now"))
         }
 
-        fn start(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            _input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             Err(format!("`{op}` is no job this device runs"))
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            Err(format!("no job `{job}` runs on this device"))
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said =
+                || -> Result<String, String> { Err(format!("no job `{job}` runs on this device")) };
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, _job: &str) -> bool {

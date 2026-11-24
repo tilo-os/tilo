@@ -362,12 +362,21 @@ action poll(l: Lib) -> Text {
             Ok(n.to_string())
         }
 
-        fn start(&self, _app: &str, _op: &str, _input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            _op: &str,
+            _input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             self.call("", "", "")
         }
 
-        fn status(&self, _job: &str) -> Result<String, String> {
-            self.call("", "", "")
+        fn job(&self, _job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said = || -> Result<String, String> { self.call("", "", "") };
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(_job, &said)))
         }
 
         fn cancel(&self, _job: &str) -> bool {

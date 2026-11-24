@@ -83,16 +83,27 @@ mod cases {
             self.engine.call(op, input)
         }
 
-        fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             use tilolang_tilo::engine::Provider as _;
             let _window = self.scope.enter();
             self.engine.start(op, input)
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            use tilolang_tilo::engine::Provider as _;
-            let _window = self.scope.enter();
-            self.engine.status(job)
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said = || -> Result<String, String> {
+                use tilolang_tilo::engine::Provider as _;
+                let _window = self.scope.enter();
+                self.engine.status(job)
+            };
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {

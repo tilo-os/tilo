@@ -9,13 +9,12 @@ mod cases {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
-    use std::sync::Arc;
 
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-    use tilolang_runtime::host_work::{EngineHost, Push};
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{EnumValue, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/photos/app.tl");
@@ -141,12 +140,13 @@ mod cases {
     }
 
     /// The device's engine for Photos: the jobs it was asked to start, by their input, the jobs it
-    /// was asked to stop, and the record each job pushes, which the test moves as the device would.
+    /// was asked to stop, and what each start named to run as its job moves, which the test runs
+    /// as the device would.
     #[derive(Clone, Default)]
     struct Engine {
         started: Rc<RefCell<Vec<(String, String)>>>,
         cancelled: Rc<RefCell<Vec<String>>>,
-        push: Rc<RefCell<Option<Arc<dyn Push>>>>,
+        handlers: Rc<RefCell<HashMap<String, JobHandlers>>>,
     }
 
     impl Engine {
@@ -169,24 +169,12 @@ mod cases {
             (job, files)
         }
 
-        /// The job says how far it has got.
-        fn says(&self, job: &str, record: &serde_json::Value) {
-            let push = self
-                .push
-                .borrow()
-                .clone()
-                .expect("the job was handed its record");
-            push.state(job, &record.to_string());
-        }
-
-        /// The job ends, saying what it read last.
-        fn ends(&self, job: &str, record: &serde_json::Value) {
-            let push = self
-                .push
-                .borrow()
-                .clone()
-                .expect("the job was handed its record");
-            push.ended(job, &record.to_string());
+        /// The job's record as the device keeps it, with what the engine said of it (`detail`).
+        fn record(job: &str, state: &str, detail: &serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "id": job, "app": "so.tilo.photos", "op": "import", "state": state,
+                "detail": detail,
+            })
         }
     }
 
@@ -195,30 +183,32 @@ mod cases {
             Err(format!("`{op}` is no op this device answers now"))
         }
 
-        fn start(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
-            Err(format!("`{op}` is started with its record"))
-        }
-
-        fn start_held(
+        fn start(
             &self,
             app: &str,
             op: &str,
             input: &str,
-            push: Arc<dyn Push>,
+            handlers: &JobHandlers,
         ) -> Result<String, String> {
             assert_eq!(app, "so.tilo.photos");
             assert_eq!(op, "import");
-            let job = format!("photos-{}", self.started.borrow().len() + 1);
+            let job = format!(
+                "devices/ab/jobs/photos-{}",
+                self.started.borrow().len() + 1
+            );
             self.started
                 .borrow_mut()
                 .push((job.clone(), input.to_owned()));
-            *self.push.borrow_mut() = Some(push);
-            Ok(serde_json::json!({ "job": job }).to_string())
+            self.handlers
+                .borrow_mut()
+                .insert(job.clone(), handlers.clone());
+            Ok(job)
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
             Err(format!(
-                "the window reads job `{job}` from its record, never by asking"
+                "the window reads job `{job}` from its record as the device hands it on, never \
+                 by asking"
             ))
         }
 
@@ -249,6 +239,25 @@ mod cases {
     }
 
     impl Gallery {
+        /// The job says how far it has got: the device hands its record on to the window.
+        fn says(&self, job: &str, detail: &serde_json::Value) {
+            self.rt
+                .set_job(job, &Engine::record(job, "running", detail));
+        }
+
+        /// The job ends as `state`, saying `detail` last: the device hands the record on and
+        /// runs what its start named for its end, as the person who started it.
+        fn ends(&self, job: &str, state: &str, detail: &serde_json::Value) -> InvokeOutcome {
+            let record = Engine::record(job, state, detail);
+            self.rt.set_job(job, &record);
+            let done = self.engine.handlers.borrow()[job]
+                .done
+                .clone()
+                .expect("the import's start names what runs at its end");
+            let call = self.rt.job_call(&done, &record).unwrap();
+            self.rt.invoke_action(&me(), call).unwrap()
+        }
+
         fn new() -> Self {
             let rt = Runtime::new(
                 tilolang_runtime::AmStore::new(),
@@ -550,7 +559,7 @@ mod cases {
             assert_eq!(g.number("import_found"), 3);
             assert!(g.photos().is_empty(), "nothing arrives before the job reads it");
             // The window reads how far the job has got from its record, as the device pushes it.
-            g.engine.says(
+            g.says(
                 &job,
                 &serde_json::json!({
                     "job": job, "state": "running", "found": 2, "done": 1,
@@ -567,8 +576,9 @@ mod cases {
             // The job ends: its `done:` runs as the person who started it, and what it read joins
             // the library; what it could not read is kept to try again.
             let (harbour, quay) = (&files[0].1, &files[1].1);
-            g.engine.ends(
+            let finished = g.ends(
                 &job,
+                "done",
                 &serde_json::json!({
                     "job": job, "state": "done", "found": 2, "done": 2,
                     "photos": [{
@@ -582,13 +592,10 @@ mod cases {
                     }],
                 }),
             );
-            let finished = g.rt.finish_jobs();
-            assert_eq!(finished.len(), 1, "the job's `done:` ran");
             assert!(
-                matches!(&finished[0], (ran, Ok(InvokeOutcome::Done(_))) if *ran == job),
-                "{finished:?}"
+                matches!(finished, InvokeOutcome::Done(_)),
+                "the job's `done:` ran: {finished:?}"
             );
-            assert!(g.rt.finish_jobs().is_empty(), "a job's `done:` runs once");
             let photos = g.photos();
             assert_eq!(photos.len(), 1, "the picture the device read became a photo");
             assert_eq!(
@@ -623,14 +630,15 @@ mod cases {
             // Stopping it asks the device to stop, and the job ends saying so.
             g.call("stop_import", vec![Value::resource(&g.lib)]);
             assert_eq!(g.engine.cancelled.borrow().as_slice(), [again.clone()]);
-            g.engine.ends(
+            let stopped = g.ends(
                 &again,
+                "cancelled",
                 &serde_json::json!({
                     "job": again, "state": "stopped", "found": 1, "done": 0,
                     "photos": [], "issues": [],
                 }),
             );
-            assert_eq!(g.rt.finish_jobs().len(), 1);
+            assert!(matches!(stopped, InvokeOutcome::Done(_)), "{stopped:?}");
             let page = g.open("library", vec![Value::resource(&g.lib)]);
             let banner = of_kind(page.tree(), "ui.Banner").into_iter().next().unwrap();
             assert_eq!(

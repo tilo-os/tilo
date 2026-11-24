@@ -66,7 +66,13 @@ mod cases {
             }
         }
 
-        fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             self.calls
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
@@ -76,24 +82,29 @@ mod cases {
             }
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            let state = self.state.borrow().clone();
-            if !job.starts_with("job-") {
-                return Err(format!("no job `{job}` runs on this device"));
-            }
-            let (answer, error) = match state.as_str() {
-                "done" => (self.answer.borrow().clone(), String::new()),
-                "failed" => (String::new(), "the drive went away".to_owned()),
-                "cancelled" => (String::new(), "The work was stopped.".to_owned()),
-                _ => (String::new(), String::new()),
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said = || -> Result<String, String> {
+                let state = self.state.borrow().clone();
+                if !job.starts_with("job-") {
+                    return Err(format!("no job `{job}` runs on this device"));
+                }
+                let (answer, error) = match state.as_str() {
+                    "done" => (self.answer.borrow().clone(), String::new()),
+                    "failed" => (String::new(), "the drive went away".to_owned()),
+                    "cancelled" => (String::new(), "The work was stopped.".to_owned()),
+                    _ => (String::new(), String::new()),
+                };
+                Ok(serde_json::json!({
+                    "state": state,
+                    "progress": "1430 of 9218 files, 42.0 GB",
+                    "answer": answer,
+                    "error": error,
+                })
+                .to_string())
             };
-            Ok(serde_json::json!({
-                "state": state,
-                "progress": "1430 of 9218 files, 42.0 GB",
-                "answer": answer,
-                "error": error,
-            })
-            .to_string())
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {

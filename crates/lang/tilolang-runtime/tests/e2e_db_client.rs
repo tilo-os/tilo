@@ -30,13 +30,22 @@ mod cases {
             self.0.call(op, input)
         }
 
-        fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            app: &str,
+            op: &str,
+            input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             assert_eq!(app, "so.tilo.db-client");
             self.0.start(op, input)
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            self.0.status(job)
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said = || -> Result<String, String> { self.0.status(job) };
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {

@@ -659,29 +659,20 @@ pub trait Platform {
         crate::engine::answer(app, op, input)
     }
 
-    /// The device's own work for `app`, started as a job.
+    /// The device's own work for `app`, started as a job that runs `handlers` as it moves.
     ///
     /// # Errors
     ///
     /// The engine's refusal.
-    fn engine_start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        crate::engine::begin(app, op, input)
-    }
-
-    /// [`Self::engine_start`], with `push` for what the job says of itself as it moves and when
-    /// it ends.
-    ///
-    /// # Errors
-    ///
-    /// The engine's refusal.
-    fn engine_start_held(
+    fn engine_start(
         &self,
         app: &str,
         op: &str,
         input: &str,
-        push: std::sync::Arc<dyn tilolang_runtime::host_work::Push>,
+        handlers: &tilolang_runtime::host_work::JobHandlers,
     ) -> Result<String, String> {
-        crate::engine::begin_held(app, op, input, push)
+        let _ = handlers;
+        crate::engine::begin(app, op, input)
     }
 
     /// The device's own work for `app`, started as a stream whose frames reach `push`.
@@ -699,13 +690,14 @@ pub trait Platform {
         crate::engine::stream(app, op, input, push)
     }
 
-    /// How far the job `job` has got, as JSON.
+    /// The job `path` as the device that holds it records it, as its record's JSON; `None` for a
+    /// job no device records.
     ///
     /// # Errors
     ///
-    /// No engine of this session runs that job.
-    fn engine_status(&self, job: &str) -> Result<String, String> {
-        crate::engine::progress(job)
+    /// The read was refused.
+    fn engine_job(&self, path: &str) -> Result<Option<serde_json::Value>, String> {
+        crate::engine::record(path)
     }
 
     /// Stop the job `job`: false when no engine runs it or it had finished.
@@ -814,18 +806,14 @@ impl tilolang_runtime::host_work::EngineHost for PlatformEngine {
         self.0.engine_call(app, op, input)
     }
 
-    fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        self.0.engine_start(app, op, input)
-    }
-
-    fn start_held(
+    fn start(
         &self,
         app: &str,
         op: &str,
         input: &str,
-        push: std::sync::Arc<dyn tilolang_runtime::host_work::Push>,
+        handlers: &tilolang_runtime::host_work::JobHandlers,
     ) -> Result<String, String> {
-        self.0.engine_start_held(app, op, input, push)
+        self.0.engine_start(app, op, input, handlers)
     }
 
     fn stream(
@@ -838,8 +826,8 @@ impl tilolang_runtime::host_work::EngineHost for PlatformEngine {
         self.0.engine_stream(app, op, input, push)
     }
 
-    fn status(&self, job: &str) -> Result<String, String> {
-        self.0.engine_status(job)
+    fn job(&self, path: &str) -> Result<Option<serde_json::Value>, String> {
+        self.0.engine_job(path)
     }
 
     fn cancel(&self, job: &str) -> bool {

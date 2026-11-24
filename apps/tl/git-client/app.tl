@@ -411,7 +411,7 @@ type ResolveAsk {
     ours: Bool
 }
 
-/// How a check stands, as the device answers `engine.status`: once it is done, what the host
+/// How a check stands, as its job's record says (`engine.job`): once it is done, what the host
 /// observed of its commands.
 type CheckStatus {
     state: Text = ""
@@ -989,13 +989,8 @@ action poll_check(g: Repository) {
     if g.check.state != .running or g.check.job == "" {
         return
     }
-    match engine.status(g.check.job) {
-        .err(why) => {
-            g.check.job = ""
-            g.check.state = .refused
-            g.check.refusal = why
-        }
-        .ok(text) => match json.decode<CheckStatus>(text) {
+    if let j = engine.job(g.check.job) {
+        match json.decode<CheckStatus>(j.detail) {
             .err(why) => {
                 g.check.job = ""
                 g.check.state = .refused
@@ -1023,7 +1018,11 @@ action poll_check(g: Repository) {
                     g.check.state = .stopped
                 }
             }
-        },
+        }
+    } else {
+        g.check.job = ""
+        g.check.state = .refused
+        g.check.refusal = "This device no longer keeps the check"
     }
 }
 

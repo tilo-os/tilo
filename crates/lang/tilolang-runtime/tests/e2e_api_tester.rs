@@ -127,7 +127,13 @@ mod cases {
             }
         }
 
-        fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             if op != "send" {
                 return Err(format!("`{op}` is no op this device runs"));
             }
@@ -166,26 +172,31 @@ mod cases {
             Ok("job-1".to_owned())
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            if job != "job-1" {
-                return Err(format!("no job `{job}`"));
-            }
-            let state = self.state.borrow().clone();
-            let (answer, error) = match state.as_str() {
-                "done" => (self.answer.borrow().clone(), String::new()),
-                "failed" => (
-                    String::new(),
-                    "the server refused the connection".to_owned(),
-                ),
-                "cancelled" => (String::new(), "The request was cancelled.".to_owned()),
-                _ => (String::new(), String::new()),
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said = || -> Result<String, String> {
+                if job != "job-1" {
+                    return Err(format!("no job `{job}`"));
+                }
+                let state = self.state.borrow().clone();
+                let (answer, error) = match state.as_str() {
+                    "done" => (self.answer.borrow().clone(), String::new()),
+                    "failed" => (
+                        String::new(),
+                        "the server refused the connection".to_owned(),
+                    ),
+                    "cancelled" => (String::new(), "The request was cancelled.".to_owned()),
+                    _ => (String::new(), String::new()),
+                };
+                Ok(serde_json::json!({
+                    "state": state,
+                    "answer": answer,
+                    "error": error,
+                })
+                .to_string())
             };
-            Ok(serde_json::json!({
-                "state": state,
-                "answer": answer,
-                "error": error,
-            })
-            .to_string())
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {

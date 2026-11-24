@@ -56,30 +56,91 @@ pub struct HostEnum {
     pub variants: &'static [(&'static str, &'static str, &'static str)],
 }
 
-pub const HOST_ENUMS: &[HostEnum] = &[HostEnum {
-    name: "LinkHow",
-    id: LINK_HOW_TYPE,
-    doc: "How a resource is linked to another, as `linked(r)` answers: made from it, naming it in a field, or mentioning it in its rich text.",
-    variants: &[
-        (
-            "created_from",
-            "Made from it",
-            "An action made it from the resource it links to.",
-        ),
-        (
-            "field",
-            "Named in a field",
-            "A reference field of it points at the resource it links to.",
-        ),
-        (
-            "mention",
-            "Mentioned in its text",
-            "Its rich text names the resource it links to.",
-        ),
-    ],
-}];
+pub const HOST_ENUMS: &[HostEnum] = &[
+    HostEnum {
+        name: "LinkHow",
+        id: LINK_HOW_TYPE,
+        doc: "How a resource is linked to another, as `linked(r)` answers: made from it, naming it in a field, or mentioning it in its rich text.",
+        variants: &[
+            (
+                "created_from",
+                "Made from it",
+                "An action made it from the resource it links to.",
+            ),
+            (
+                "field",
+                "Named in a field",
+                "A reference field of it points at the resource it links to.",
+            ),
+            (
+                "mention",
+                "Mentioned in its text",
+                "Its rich text names the resource it links to.",
+            ),
+        ],
+    },
+    HostEnum {
+        name: "JobState",
+        id: JOB_STATE_TYPE,
+        doc: "Where a job of the device's engine stands, as `host.Job.state` says: waiting its turn, running, or ended one of three ways.",
+        variants: &[
+            ("queued", "Waiting", "It waits for the device to run it."),
+            ("running", "Running", "The device is doing it."),
+            (
+                "done",
+                "Done",
+                "It finished, and its answer is in its detail.",
+            ),
+            (
+                "failed",
+                "Failed",
+                "It ended without finishing; its error says why.",
+            ),
+            (
+                "cancelled",
+                "Cancelled",
+                "Someone stopped it before it finished.",
+            ),
+        ],
+    },
+];
+
+/// The ids of the host's `JobState` enum and `Job` value type: what `engine.job(path)` reads and
+/// what a job's `done:` and `progress:` actions are handed.
+pub const JOB_STATE_TYPE: &str = "host-job-state";
+pub const JOB_TYPE: &str = "host-job";
 
 pub const VALUE_TYPES: &[ValueType] = &[
+    ValueType {
+        name: "Job",
+        id: JOB_TYPE,
+        doc: "A job of the device's engine, as the device that runs it records it: what `engine.job(path)` reads, and what the `done:` and `progress:` actions `engine.start` names are handed as it moves.",
+        fields: &[
+            (
+                "id",
+                "Text",
+                "The job's path, `devices/<device>/jobs/<job>`: what `engine.start` answered and `engine.job` and `engine.cancel` take.",
+            ),
+            ("op", "Text", "The op it runs, as the app asked for it."),
+            ("state", "enum JobState", "Where it stands."),
+            (
+                "done",
+                "Int",
+                "How much of it is done, in the op's own steps; 0 when it does not say.",
+            ),
+            (
+                "total",
+                "Int",
+                "How many steps the whole of it is; 0 when it does not say.",
+            ),
+            ("error", "Text", "Why it failed; empty unless it did."),
+            (
+                "detail",
+                "Text",
+                "What the op says of itself, as JSON: its answer once done (the file it made, the lines it read).",
+            ),
+        ],
+    },
     ValueType {
         name: "Action",
         id: "host-action",

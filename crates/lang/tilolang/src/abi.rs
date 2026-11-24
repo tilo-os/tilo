@@ -564,21 +564,18 @@ imports! {
     // document is built under.
     RowOpen = "row_open" ([] -> [I32]);
 
-    // The device's own work, asked by name: an answer now, a job that says how far it has got
-    // and can be stopped, a stream whose newest frame the device keeps and the app shows by its
-    // address, what a stream says of itself as a view reads it, or a picture the device keeps and
-    // the app shows by its address. The app asking is the first argument, which the compiler
-    // fills.
+    // The device's own work, asked by name: an answer now, a job the device records and runs
+    // the actions it names as it moves (`done:`, `progress:`, each an `Option<Action>` the job
+    // fills), a job's record as an action or a view reads it, a stream whose newest frame the
+    // device keeps and the app shows by its address, what a stream says of itself as a view
+    // reads it, or a picture the device keeps and the app shows by its address. The app asking
+    // is the first argument, which the compiler fills.
     EngineCall = "engine_call" ([H, H, H] -> [H]);
-    EngineStart = "engine_start" ([H, H, H] -> [H]);
-    EngineRun = "engine_run" ([H, H, H] -> [H]);
-    // A job started with the action that runs, as the one who started it, when the job ends:
-    // the action applied, its last `Text` left for the job's last word.
-    EngineStartDone = "engine_start_done" ([H, H, H, H] -> [H]);
+    EngineStart = "engine_start" ([H, H, H, H, H] -> [H]);
+    EngineJob = "engine_job" ([H] -> [H]);
     EngineStream = "engine_stream" ([H, H, H] -> [H]);
     EngineState = "engine_state" ([H] -> [H]);
     EnginePicture = "engine_picture" ([H, H, H] -> [H]);
-    EngineStatus = "engine_status" ([H] -> [H]);
     EngineCancel = "engine_cancel" ([H] -> [I32]);
     // A check the project's host approved, started by its id as a job `engine_status` and
     // `engine_cancel` follow; the app asking is the first argument.

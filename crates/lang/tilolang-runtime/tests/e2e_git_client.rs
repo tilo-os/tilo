@@ -409,7 +409,13 @@ mod cases {
             }
         }
 
-        fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
@@ -425,16 +431,16 @@ mod cases {
             }
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
             if job != CHECK_JOB {
-                return Err("no job".to_owned());
+                return Ok(None);
             }
             let mut host = self.host.borrow_mut();
             let status = host
                 .statuses
                 .pop_front()
-                .expect("the app asks how the check stands only while the host has an answer");
-            Ok(status.to_string())
+                .expect("the app reads how the check stands only while the host has an answer");
+            Ok(tilolang_tilo::engine::record_of(job, &status.to_string()))
         }
 
         fn cancel(&self, job: &str) -> bool {

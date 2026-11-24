@@ -3,17 +3,13 @@
 //! An app runs sandboxed, with no decoder, no renderer and no graphics stack of its own. Work
 //! that needs one is the device's: a video cut rendered, a page painted, a drawing rasterised.
 //! The app asks for it by name and the host answers — now (`engine.call`), for work that ends
-//! within a frame or two, as a job that says how far it has got and can be stopped
-//! (`engine.start`, `engine.status`, `engine.cancel`), or as a stream (`engine.stream`) whose
+//! within a frame or two, as a job the device records and runs on without the app, running the
+//! actions the start named as it moves and ends (`engine.start`, `engine.job`, `engine.cancel`),
+//! or as a stream (`engine.stream`) whose
 //! newest frame the device keeps and the app shows by its address while the stream runs. A
 //! stream also says of itself what a view reads (`engine.state`): whether it is connecting, what
 //! it is, or why it ended — pushed as it changes, so the window knows a connection dropped
 //! without asking.
-//!
-//! A job says how far it has got the same way, pushed as it moves, and says when it ends. A job
-//! started with `done:` (`engine.start(op, input, done: imported(lib))`) is held work: when it
-//! ends, the action runs as the one who started it, with the job's last word as its last
-//! argument ([`crate::Runtime::finish_jobs`]), whether or not a window shows the app then.
 //!
 //! What a name means is the device's, not the language's: the host registers the ops it answers
 //! for each app and refuses a name the app does not own. The answer is JSON, which the app reads
@@ -52,9 +48,7 @@ pub trait Push: Send + Sync {
         let _ = (slot, state);
     }
 
-    /// The job `slot` ended, saying `state` of itself last: what it made, or why it stopped. A
-    /// view reads it as it reads any state the job pushed, and the action started with the job
-    /// (`done:`) runs with it.
+    /// The job `slot` ended, saying `state` of itself last: what it made, or why it stopped.
     fn ended(&self, slot: &str, state: &str) {
         self.state(slot, state);
     }
@@ -81,8 +75,6 @@ pub struct LiveFrames {
     /// whichever stream said it.
     said: std::sync::atomic::AtomicU64,
     wake: std::sync::Mutex<Option<Wake>>,
-    /// The jobs that ended since the runtime last looked, oldest first: whose `done:` runs next.
-    ended: std::sync::Mutex<Vec<String>>,
 }
 
 /// A lock held even after a thread panicked while holding it: a frame lost one way must not
@@ -128,18 +120,6 @@ impl LiveFrames {
         }
     }
 
-    /// The job `slot` ended, saying `text` last: kept as what it says of itself, and queued for
-    /// the action it was started with.
-    pub fn put_ended(&self, slot: &str, text: &str) {
-        held(&self.ended).push(slot.to_owned());
-        self.put_state(slot, text);
-    }
-
-    /// The jobs that ended since this was last asked, oldest first.
-    pub fn take_ended(&self) -> Vec<String> {
-        std::mem::take(&mut *held(&self.ended))
-    }
-
     /// What the stream `slot` says of itself, and the generation it said it at.
     #[must_use]
     pub fn state(&self, slot: &str) -> Option<StreamState> {
@@ -178,19 +158,7 @@ impl Push for LiveFrames {
     }
 
     fn ended(&self, slot: &str, state: &str) {
-        self.put_ended(slot, state);
-    }
-}
-
-/// Whether the job state `state` says the job ended, as JSON `{"state": "done", ...}`: `Some(true)`
-/// once it did, `Some(false)` while it still runs, `None` when it names no state this contract
-/// knows.
-fn ended(state: &str) -> Option<bool> {
-    let parsed: serde_json::Value = serde_json::from_str(state).ok()?;
-    match parsed.get("state")?.as_str()? {
-        "queued" | "running" => Some(false),
-        "done" | "failed" | "cancelled" => Some(true),
-        _ => None,
+        self.put_state(slot, state);
     }
 }
 
@@ -205,32 +173,22 @@ pub trait EngineHost {
     /// cannot do the work.
     fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String>;
 
-    /// One request started as a job: the same arguments as [`Self::call`], answered with the
-    /// job's id, which [`Self::status`] and [`Self::cancel`] are asked about.
+    /// One request started as a job: the same arguments as [`Self::call`], and what the job
+    /// runs as it moves (`handlers`), answered with the job's path
+    /// (`devices/<device>/jobs/<job>`), which [`Self::job`] and [`Self::cancel`] take. The
+    /// device that holds the job runs the handlers as calls of the caller, children of the
+    /// call that started it, whether or not the app's window or process is still there.
     ///
     /// # Errors
     ///
     /// As [`Self::call`], for a request that cannot start.
-    fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String>;
-
-    /// [`Self::start`], with `push` for what the job says of itself as it moves
-    /// ([`Push::state`]) and when it ends ([`Push::ended`]): the job's record, which a view reads
-    /// with `engine.state(job)` and never by asking the engine. An engine that pushes nothing
-    /// starts the job as [`Self::start`] does.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::start`].
-    fn start_held(
+    fn start(
         &self,
         app: &str,
         op: &str,
         input: &str,
-        push: Arc<dyn Push>,
-    ) -> Result<String, String> {
-        let _ = push;
-        self.start(app, op, input)
-    }
+        handlers: &JobHandlers,
+    ) -> Result<String, String>;
 
     /// One stream started: a job that keeps running and hands `push` its newest frame as each one
     /// arrives, the app showing it by `tilo-live://<job>`. The device wakes the app's window after
@@ -251,21 +209,21 @@ pub trait EngineHost {
         Err("this device streams nothing to its apps".to_owned())
     }
 
-    /// How far a job has got, as JSON: its state (`queued`, `running`, `done`, `failed` or
-    /// `cancelled`), how much it has done of how much, what it made, or why it failed. A job the
-    /// host does not know is `failed` with the reason, never a panic.
+    /// The job `path` as the device that holds it records it now: its record's JSON
+    /// (`{id, app, workspace, invocation, by, op, state, detail}`), read once through the one
+    /// record read; `None` for a job no device records.
     ///
     /// # Errors
     ///
-    /// A refusal to answer at all, which the app reads as the job's failure.
-    fn status(&self, job: &str) -> Result<String, String>;
+    /// The read was refused: the caller may not read the job's app.
+    fn job(&self, path: &str) -> Result<Option<serde_json::Value>, String>;
 
     /// Stop a job. False when the host does not know it or it had already finished.
     fn cancel(&self, job: &str) -> bool;
 
     /// One check the project's host approved, started by its id as a job for the invocation the
-    /// app's action runs for: answered with the job's id, which [`Self::status`] and
-    /// [`Self::cancel`] are asked about. Its status says how far the host reports it has got,
+    /// app's action runs for: answered with the job's id, which [`Self::job`] and
+    /// [`Self::cancel`] are asked about. Its record says how far the host reports it has got,
     /// and once it ends, the receipt of what the host observed (`receipt`), why it did not run
     /// (`failed`), or that it was stopped (`cancelled`).
     ///
@@ -326,8 +284,69 @@ impl Core {
         ]);
         self.ret_h(Value::some(code))
     }
+}
 
-    /// `engine.call`, `engine.start`, `engine.check`, `engine.status` and `engine.cancel`.
+/// What a job runs as it moves, as `engine.start` names it: the action `done:` names, run once
+/// when the job ends however it ends, and `progress:`'s, run as it moves on. Each is the
+/// handler's JSON ([`crate::value::job_handler_to_json`]), which the device that holds the job
+/// keeps without reading and hands back to the app's runtime ([`crate::Runtime::job_call`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JobHandlers {
+    pub done: Option<serde_json::Value>,
+    pub progress: Option<serde_json::Value>,
+}
+
+/// The window the readings of jobs are kept under.
+const JOBS_WINDOW: &str = "$jobs";
+
+/// The slot holding the job `path` as views read it.
+pub(crate) fn job_key(path: &str) -> crate::view_state::StateKey {
+    crate::view_state::StateKey::runtime(JOBS_WINDOW, None, path)
+}
+
+/// A job's record as the app reads it: a `host.Job`, its fields in the order the host declares
+/// them. What the op says of itself stays the op's own JSON (`detail`), from which its progress
+/// and its error are read where it says them.
+#[must_use]
+pub fn job_value(record: &serde_json::Value) -> Value {
+    let text = |v: Option<&serde_json::Value>| {
+        Value::text(v.and_then(serde_json::Value::as_str).unwrap_or_default())
+    };
+    let detail = record.get("detail");
+    let int = |field: &str| {
+        Value::Int(
+            detail
+                .and_then(|d| d.get(field))
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+        )
+    };
+    let state = match record.get("state").and_then(serde_json::Value::as_str) {
+        Some(state @ ("queued" | "running" | "done" | "failed" | "cancelled")) => state,
+        _ => "failed",
+    };
+    let error = detail
+        .and_then(|d| d.get("error"))
+        .or_else(|| record.get("why"))
+        .or_else(|| record.get("error"));
+    Value::Tuple(vec![
+        text(record.get("id")),
+        text(record.get("op")),
+        Value::Enum(crate::value::EnumValue {
+            ty: tilolang::host::JOB_STATE_TYPE.to_owned(),
+            variant: state.to_owned(),
+            fields: std::collections::BTreeMap::new(),
+        }),
+        int("done"),
+        int("total"),
+        text(error),
+        Value::text(detail.map(ToString::to_string).unwrap_or_default()),
+    ])
+}
+
+impl Core {
+    /// `engine.call`, `engine.start`, `engine.job`, `engine.stream`, `engine.state`,
+    /// `engine.picture` and `engine.cancel`.
     pub(crate) fn engine_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::EngineCall => {
@@ -340,23 +359,18 @@ impl Core {
                 let app = self.text(a.h(0)?)?;
                 let op = self.text(a.h(1)?)?;
                 let input = self.text(a.h(2)?)?;
-                self.result(self.engine_begin(&app, &op, &input, None).map(Value::text))
-            }
-            Imp::EngineStartDone => {
-                let app = self.text(a.h(0)?)?;
-                let op = self.text(a.h(1)?)?;
-                let input = self.text(a.h(2)?)?;
-                let Value::Action(done) = self.val_whole(a.h(3)?)? else {
-                    return trap("a job's `done:` is an action");
+                let handlers = JobHandlers {
+                    done: self.job_handler(a.h(3)?)?,
+                    progress: self.job_handler(a.h(4)?)?,
                 };
-                let started = self.engine_begin(&app, &op, &input, Some(done));
-                self.result(started.map(Value::text))
+                self.result(
+                    self.engine_begin(&app, &op, &input, &handlers)
+                        .map(Value::text),
+                )
             }
-            Imp::EngineRun => {
-                let app = self.text(a.h(0)?)?;
-                let op = self.text(a.h(1)?)?;
-                let input = self.text(a.h(2)?)?;
-                self.result(self.engine_run(&app, &op, &input).map(Value::text))
+            Imp::EngineJob => {
+                let job = self.text(a.h(0)?)?;
+                self.ret_h(self.engine_job(&job))
             }
             Imp::EngineStream => {
                 let app = self.text(a.h(0)?)?;
@@ -373,10 +387,6 @@ impl Core {
                 let op = self.text(a.h(1)?)?;
                 let input = self.text(a.h(2)?)?;
                 self.result(self.engine_picture(&app, &op, &input))
-            }
-            Imp::EngineStatus => {
-                let job = self.text(a.h(0)?)?;
-                self.result(self.engine_status(&job).map(Value::text))
             }
             Imp::EngineCancel => {
                 let job = self.text(a.h(0)?)?;
@@ -412,36 +422,38 @@ impl Core {
         Ok(Value::file(file))
     }
 
-    /// One job the device's engine runs, pushing what it says of itself to the window's record of
-    /// it. With `done`, the job is held work: the action runs when the job ends, as the one who
-    /// started it now ([`crate::Runtime::finish_jobs`]). A run replayed from its journal starts
-    /// nothing again and holds nothing again.
+    /// What `done:` or `progress:` names, as the job keeps it: none, or the handler's JSON.
+    fn job_handler(&self, h: i32) -> HResult<Option<serde_json::Value>> {
+        match self.val(h)? {
+            Value::Opt(None) => Ok(None),
+            Value::Opt(Some(handler)) => match *handler {
+                Value::Action(handler) => crate::value::job_handler_to_json(&handler)
+                    .map(Some)
+                    .map_err(HostFail::Trap),
+                other => trap(&format!(
+                    "a job's handler is an action, not a {}",
+                    other.kind_name()
+                )),
+            },
+            other => trap(&format!(
+                "a job's handler is an optional action, not a {}",
+                other.kind_name()
+            )),
+        }
+    }
+
     fn engine_begin(
         &self,
         app: &str,
         op: &str,
         input: &str,
-        done: Option<crate::value::ActionRef>,
+        handlers: &JobHandlers,
     ) -> Result<String, String> {
-        let starter = match done {
-            Some(_) => Some(self.looking().map_err(|fail| match fail {
-                HostFail::Trap(why) => why,
-                HostFail::Suspend => "a job is started by someone".to_owned(),
-            })?),
-            None => None,
-        };
         let answer = self.device_work("start", op, input, || {
-            let push: Arc<dyn Push> = Arc::clone(&self.live_frames) as Arc<dyn Push>;
-            let started = match self.engine_work.borrow().as_ref() {
-                Some(host) => host.start_held(app, op, input, push),
-                None => Err(no_engine()),
-            };
-            if let (Ok(said), Some(done), Some(starter)) = (&started, done, starter) {
-                self.job_done
-                    .borrow_mut()
-                    .insert(job_of(said), (starter, done));
+            match self.engine_work.borrow().as_ref() {
+                Some(host) => answered(host.start(app, op, input, handlers)),
+                None => Value::Error(no_engine()),
             }
-            answered(started)
         })?;
         text_answer(answer)
     }
@@ -499,49 +511,39 @@ impl Core {
         seen
     }
 
-    /// `engine.run`: the device's work started and waited for, answering the job's own state as
-    /// `engine.status` writes it once the job ends: `done` with what it made, `failed` with why,
-    /// or `cancelled`. The whole wait is one ask of the device, so a run replayed answers from its
-    /// journal instead of starting the work a second time.
-    fn engine_run(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        /// How long a wait sleeps between asks of the job, so a quick job is not held back.
-        const POLL: std::time::Duration = std::time::Duration::from_millis(5);
-        let answer = self.device_work("run", op, input, || {
-            let borrowing = self.engine_work.borrow();
-            let Some(host) = borrowing.as_ref() else {
-                return Value::Error(no_engine());
-            };
-            let job = match host.start(app, op, input) {
-                Ok(job) => job,
-                Err(why) => return Value::Error(why),
-            };
-            loop {
-                let state = match host.status(&job) {
-                    Ok(state) => state,
-                    Err(why) => return Value::Error(why),
-                };
-                match ended(&state) {
-                    Some(true) => return Value::text(state),
-                    Some(false) => std::thread::sleep(POLL),
-                    None => {
-                        return Value::Error(format!(
-                            "the device answered how job `{job}` is doing without saying: {state}"
-                        ));
-                    }
-                }
+    /// The job `path` as its device records it (`engine.job`). A view reads the record the host
+    /// follows for it, and runs again as the job moves: the first read asks the host to follow
+    /// it ([`crate::Runtime::take_wanted_jobs`]). An action reads it once, as it stands now.
+    fn engine_job(&self, path: &str) -> Value {
+        let key = job_key(path);
+        if self.frames.borrow().view().is_some() {
+            if !self.jobs_followed.borrow().contains(path) {
+                self.jobs_wanted.borrow_mut().insert(path.to_owned());
             }
-        })?;
-        text_answer(answer)
-    }
-
-    fn engine_status(&self, job: &str) -> Result<String, String> {
-        let answer = self.device_work("status", job, "", || {
+            let (generation, seen) = {
+                let states = self.view_states.borrow();
+                (
+                    states.generation(&key),
+                    states.get(&key).cloned().unwrap_or_else(Value::none),
+                )
+            };
+            self.note_state_read(key, generation, &seen);
+            return seen;
+        }
+        let answer = self.device_work("job", path, "", || {
             match self.engine_work.borrow().as_ref() {
-                Some(host) => answered(host.status(job)),
+                Some(host) => match host.job(path) {
+                    Ok(Some(record)) => Value::some(job_value(&record)),
+                    Ok(None) => Value::none(),
+                    Err(why) => Value::Error(why),
+                },
                 None => Value::Error(no_engine()),
             }
-        })?;
-        text_answer(answer)
+        });
+        match answer {
+            Ok(Value::Error(_)) | Err(_) => Value::none(),
+            Ok(record) => record,
+        }
     }
 
     fn engine_stop(&self, job: &str) -> bool {

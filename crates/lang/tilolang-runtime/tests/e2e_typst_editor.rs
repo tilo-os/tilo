@@ -147,12 +147,21 @@ mod cases {
             }
         }
 
-        fn start(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            _input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             Err(format!("`{op}` is no op this device runs"))
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            Err(format!("no job `{job}`"))
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said = || -> Result<String, String> { Err(format!("no job `{job}`")) };
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, _job: &str) -> bool {

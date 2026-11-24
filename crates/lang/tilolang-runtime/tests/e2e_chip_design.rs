@@ -67,12 +67,23 @@ mod cases {
             tilo_chip_design_engine::call(op, input)
         }
 
-        fn start(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            _input: &str,
+            _handlers: &tilolang_runtime::host_work::JobHandlers,
+        ) -> Result<String, String> {
             Err(format!("`{op}` is no work this device starts"))
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            Err(format!("no work `{job}` runs on this device"))
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            let said = || -> Result<String, String> {
+                Err(format!("no work `{job}` runs on this device"))
+            };
+            Ok(said()
+                .ok()
+                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, _job: &str) -> bool {
