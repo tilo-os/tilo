@@ -175,6 +175,7 @@ impl DesktopHandle {
     /// and none is held for a bar nobody draws. Whether the desktop changed.
     pub fn follow_bars(&self) -> bool {
         let mut shared = self.shared.borrow_mut();
+        let tabs: std::collections::BTreeSet<u64> = shared.tree.tabs().map(|tab| tab.id).collect();
         let bars = &mut shared.bars;
         let declared = std::mem::take(&mut bars.declared);
         let offered = std::mem::take(&mut bars.offered);
@@ -185,7 +186,6 @@ impl DesktopHandle {
         let edits = std::mem::take(&mut bars.edits);
         let searches = std::mem::take(&mut bars.searches);
         let renames = std::mem::take(&mut bars.renames);
-        let tabs: std::collections::BTreeSet<u64> = shared.tree.tabs().map(|tab| tab.id).collect();
         let before = bars.open.clone();
         bars.open.retain(|tab, _| tabs.contains(tab));
         for tab in edits {
