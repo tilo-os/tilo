@@ -127,8 +127,11 @@ impl DesktopPass {
         self.handle.follow_bars();
         self.home_windows();
         self.publish();
-        // Where the windows stand follows from the tree as this pass left it, for every host.
+        // Where the windows stand follows from the tree as this pass left it, for every host,
+        // and what the strip in front presents beside it: its pan, which the navigation snapshot
+        // and the `pan` verb read.
         let moved = super::shown::lay_out(&mut self.handle.shared.borrow_mut());
+        super::shown::present_pan(&mut self.handle.shared.borrow_mut());
         let shared = self.handle.shared.borrow();
         moved || shared.revision != before || shared.search_revision != search_revision
     }

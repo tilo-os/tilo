@@ -42,8 +42,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 use tilo_actions::MemberId;
-use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_desktop_model::Layout;
+use tilo_compositor::{GestureEvent, InputEvent, OutputConfig};
 use tilo_service::{Service as _, Started};
 use tilo_session::{Options, Session};
 use tilolang_service::ResourceService;
@@ -297,6 +296,32 @@ fn measure(
     }
 }
 
+/// Three fingers carrying the strip in front, nine pixels of travel a frame, outward and back:
+/// the person's own pan, which the session hands to the shell's view, as a touchpad reports it.
+fn three_finger_pan(session: &mut Session, frames: usize) -> Phase {
+    session
+        .compositor()
+        .input(InputEvent::Gesture(GestureEvent::SwipeBegin { fingers: 3 }))
+        .expect("the fingers land");
+    let phase = measure(session, frames, |session, frame| {
+        let dx = if frame < frames / 2 { 9.0 } else { -9.0 };
+        session
+            .compositor()
+            .input(InputEvent::Gesture(GestureEvent::SwipeUpdate {
+                dx,
+                dy: 0.0,
+            }))
+            .expect("the fingers move");
+    });
+    session
+        .compositor()
+        .input(InputEvent::Gesture(GestureEvent::SwipeEnd {
+            cancelled: false,
+        }))
+        .expect("the fingers lift");
+    phase
+}
+
 /// Step the session's loop until `done` holds, or the wait runs out.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut(&mut Session) -> bool) -> bool {
     let deadline = Instant::now().checked_add(Duration::from_secs(30));
@@ -382,26 +407,11 @@ fn notebook(titles: &[&str]) -> (ResourceService, Vec<String>) {
     (service, made)
 }
 
-/// The window the shell shows `resource` in, through the layout's published `place`: the place's
-/// key.
-fn place(session: &mut Session, resource: &str) -> u64 {
-    let (workspace, row, strip, key) = {
-        let tree = session.handle().read(Clone::clone);
-        let workspace = tree.active_workspace().expect("a workspace is in front");
-        (
-            workspace.id().to_string(),
-            workspace.strips.first().expect("a strip").id.0,
-            // The strip the person is shown: each note joins it as a place of its own, so every
-            // note stands in the strip a pan carries.
-            shown_strip(&tree).expect("a shown strip"),
-            session.handle().mint_id(),
-        )
-    };
+/// Show `resource` as a window of its own on the shell, as a person placing what they found
+/// does: the layout mints the window and its tab on the surface in front, so every note is a
+/// window of the shown strip rather than a tab of the one before it.
+fn place(session: &mut Session, resource: &str) {
     let arguments: Map<String, Value> = json!({
-        "workspace": workspace,
-        "row": row,
-        "strip": strip,
-        "place": key,
         "resource": resource,
         "x": 80,
         "y": 60,
@@ -414,17 +424,6 @@ fn place(session: &mut Session, resource: &str) -> u64 {
     session
         .invoke("shell:layout", "place", &arguments)
         .expect("the place is on the shell");
-    key
-}
-
-/// The strip the workspace in front shows.
-fn shown_strip(tree: &Layout) -> Option<u64> {
-    let workspace = tree.active_workspace()?;
-    tree.active_strip
-        .get(&workspace.id())
-        .copied()
-        .or_else(|| workspace.strips.first().map(|strip| strip.id))
-        .map(|strip| strip.0)
 }
 
 /// The window places the workspace in front holds.
@@ -709,10 +708,16 @@ fn first_frame(session: &mut Session) -> (u64, Value) {
     (
         u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX),
         json!({
+            // The whole first frame: the session's pass before it (the workspace it settles and
+            // the readings it publishes) and what the shell then lays out and draws. The phases
+            // beside it say where the time went.
             "first_frame_us": frame_cost_us(first),
-            "first_frame_layout_us": u64::from(first.layout_us) + u64::from(first.surfaces_us),
-            "first_frame_draw_us": u64::from(first.scene_us) + u64::from(first.submit_us),
             "first_frame_pump_us": first.pump_us,
+            "first_frame_layout_us": u64::from(first.layout_us) + u64::from(first.surfaces_us),
+            "first_frame_surfaces_us": first.surfaces_us,
+            "first_frame_draw_us": u64::from(first.scene_us) + u64::from(first.submit_us),
+            "first_frame_scene_us": first.scene_us,
+            "first_frame_submit_us": first.submit_us,
         }),
     )
 }
@@ -793,21 +798,7 @@ fn run_arriving(marks: &Marks, json_path: Option<String>, device: &str) {
         );
     });
 
-    let strip = session.handle().read(shown_strip).expect("a strip");
-    let pan = measure(&mut session, 120, |session, frame| {
-        // Nine pixels of finger travel a frame, the pace of a brisk pan, back and forth across
-        // the strip.
-        let travel = finger_travel(frame, 120, 9.0, 600.0);
-        session
-            .invoke(
-                "desktop:chrome",
-                "pan",
-                json!({ "strip": strip.to_string(), "offset": travel })
-                    .as_object()
-                    .expect("an object"),
-            )
-            .expect("the strip pans");
-    });
+    let pan = three_finger_pan(&mut session, 120);
 
     settle(&mut session);
     let (idle_offered, idle_working, idle_us) = idle(&mut session);
@@ -815,9 +806,10 @@ fn run_arriving(marks: &Marks, json_path: Option<String>, device: &str) {
     println!("device {device}, profile arriving");
     println!("build            {:>8.2} ms", build_us as f64 / 1000.0);
     println!(
-        "first frame      {:>8.2} ms   layout {}, draw {}",
+        "first frame      {:>8.2} ms   pump {} µs, surfaces {} µs, draw {} µs",
         first["first_frame_us"].as_u64().unwrap_or_default() as f64 / 1000.0,
-        first["first_frame_layout_us"],
+        first["first_frame_pump_us"],
+        first["first_frame_surfaces_us"],
         first["first_frame_draw_us"],
     );
     println!("steady (120 frames, the shell redrawing its bar)");
@@ -886,19 +878,7 @@ fn run_apps(marks: &Marks, json_path: Option<String>, device: &str, tabs: usize)
         );
     });
 
-    let strip = session.handle().read(shown_strip).expect("a strip");
-    let pan = measure(&mut session, 120, |session, frame| {
-        let travel = finger_travel(frame, 120, 9.0, 900.0);
-        session
-            .invoke(
-                "desktop:chrome",
-                "pan",
-                json!({ "strip": strip.to_string(), "offset": travel })
-                    .as_object()
-                    .expect("an object"),
-            )
-            .expect("the strip pans");
-    });
+    let pan = three_finger_pan(&mut session, 120);
 
     focus_note(&mut session, TITLES[0]);
     let typed = "the wheels turn while the office sleeps and the lights stay on";
@@ -929,9 +909,10 @@ fn run_apps(marks: &Marks, json_path: Option<String>, device: &str, tabs: usize)
     println!("device {device}, profile apps");
     println!("build            {:>8.2} ms", build_us as f64 / 1000.0);
     println!(
-        "first frame      {:>8.2} ms   layout {}, draw {}",
+        "first frame      {:>8.2} ms   pump {} µs, surfaces {} µs, draw {} µs",
         first["first_frame_us"].as_u64().unwrap_or_default() as f64 / 1000.0,
-        first["first_frame_layout_us"],
+        first["first_frame_pump_us"],
+        first["first_frame_surfaces_us"],
         first["first_frame_draw_us"],
     );
     println!("steady (120 frames, the shell redrawing its bar)");
@@ -1093,9 +1074,10 @@ fn run_activities(marks: &Marks, json_path: Option<String>, device: &str) {
     println!("device {device}, profile activities");
     println!("build            {:>8.2} ms", build_us as f64 / 1000.0);
     println!(
-        "first frame      {:>8.2} ms   layout {}, draw {}",
+        "first frame      {:>8.2} ms   pump {} µs, surfaces {} µs, draw {} µs",
         first["first_frame_us"].as_u64().unwrap_or_default() as f64 / 1000.0,
-        first["first_frame_layout_us"],
+        first["first_frame_pump_us"],
+        first["first_frame_surfaces_us"],
         first["first_frame_draw_us"],
     );
     println!("steady (120 frames, the cards standing still)");
@@ -1190,14 +1172,6 @@ fn union(
     let x1 = a.2.max(b.2.saturating_add(travel.0)).min(screen.0 - 1);
     let y1 = a.3.max(b.3.saturating_add(travel.1)).min(screen.1 - 1);
     (x0, y0, x1, y1)
-}
-
-/// A finger's travel across `extent`, `step` pixels a frame, back and forth: the pace of a pan.
-fn finger_travel(frame: usize, _frames: usize, step: f64, extent: f64) -> f64 {
-    let leg = (extent / step).max(1.0);
-    let period = leg * 2.0;
-    let at = (frame as f64 * step) % period;
-    if at <= leg { at } else { period - at }
 }
 
 // -------------------------------------------------------------------------------------------------
