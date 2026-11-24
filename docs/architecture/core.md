@@ -198,9 +198,10 @@ Underneath, both are actors acting for a person, like a person acting for
 themselves, and one call can run through several of them: an automation a
 person set up, run by an agent. Every actor in that chain must allow the
 call (`tilo_action_policy::Acting`, `admit_invocation`).
-The person an agent acts for is in its key's certificate, signed by that person
-when the agent is created and revoked when it is removed. Every replica reads it
-from the write's signature chain, so it decides the same way without opening the
+The person an agent acts for is the root its key's certificate chains to, read
+from each call's signature chain; an agent is the pair of its id and that person,
+in grants, reader sets, answers and history alike. Only that person's answers and
+stops count for it, so every replica decides the same way without opening the
 agent's record, which holds everything else about the agent.
 
 An agent or an automation acts with a subset of its person's permissions,
