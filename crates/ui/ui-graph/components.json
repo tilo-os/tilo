@@ -3107,7 +3107,7 @@
       "events": [
         {
           "name": "press",
-          "doc": "A byte was pressed: carries its offset and the column pressed, `[\"31\", \"hex\"]`.",
+          "doc": "A byte was pressed: carries its offset, the column pressed, and `\"shift\"` when Shift held, `[\"31\", \"hex\", \"shift\"]`.",
           "value": {
             "list": "text"
           }
