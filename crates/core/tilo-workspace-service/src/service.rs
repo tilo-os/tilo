@@ -404,15 +404,6 @@ impl ServiceSessions {
                     tilo_workspace_agent::OWNER,
                     include_bytes!("../workspace-surface.toml"),
                 );
-                // A built-in tilolang app's record is written with no package installed, so its
-                // types and verbs are named here as an installed app's surface names them.
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(tilolang) = &cfg.tilolang {
-                    let surfaces = Arc::clone(&cfg.surfaces);
-                    for (app, bytes) in tilolang.records.surfaces() {
-                        crate::workspaces::keep_surface(&surfaces, &app, &bytes);
-                    }
-                }
                 Arc::clone(&cfg.surfaces)
             },
             apps,

@@ -2105,8 +2105,15 @@ impl Workspaces {
     /// the records of the tilolang apps built into the build, offer the styles the device's
     /// installed packages declare, and write rich text through it. Called once, as the service
     /// is configured.
+    ///
+    /// A built-in tilolang app's record is written with no package installed, so its types and
+    /// verbs are named here, as an installed app's surface names them: the store judges its
+    /// writes by them from the moment the runtime is mounted.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn provide_tilolang(&self, tilolang: crate::tl_records::Tilolang) {
+        for (app, bytes) in tilolang.records.surfaces() {
+            keep_surface(&self.inner.host.surfaces, &app, &bytes);
+        }
         let _ = self.inner.tilolang.set(tilolang);
     }
 
