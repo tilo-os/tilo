@@ -1488,7 +1488,7 @@ fn default_to(q: Quantity) -> Text {
 fn default_from_at(q: Quantity) -> Int {
     if q == .length {
         2
-    } else if q == .mass { 1 } else if q == .volume { 0 } else if q == .time { 1 } else { 0 }
+    } else if q == .mass { 2 } else if q == .volume { 0 } else if q == .time { 1 } else { 0 }
 }
 
 fn default_to_at(q: Quantity) -> Int {

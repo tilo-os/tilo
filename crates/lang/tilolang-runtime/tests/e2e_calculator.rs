@@ -23,6 +23,9 @@ mod cases {
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             authority.trust(&app.load(&rt));
+            // A press of the window's copy button reaches the person's selection, which the
+            // policy allows for the app it is written in.
+            authority.grant_outside(&app.action("copy_text"));
             let root = rt.create_root("Calculator").unwrap();
             Self { rt, app, root }
         }
@@ -97,11 +100,26 @@ mod cases {
             ))
         }
 
-        /// Stage the app's state `state` at `text`, as a run does before it opens a window.
-        fn stage(&self, state: &str, text: &str) {
-            self.rt
-                .stage_view_state(&self.app.meta().app, state, text)
-                .unwrap_or_else(|e| panic!("--state {state}={text}: {e}"));
+        /// The app's mode, as a person picks it from the window's modes.
+        fn choose_mode(&self, mode: i64) {
+            let mut view = self.window();
+            let tabs = of_kind(view.tree(), "ui.ViewTabs")[0].key.clone();
+            view.fire_with(&tabs, "change", Some(&Value::Int(mode)))
+                .unwrap();
+            view.poll_patches().unwrap();
+        }
+
+        /// The quantity a person picks from the conversion window's segments.
+        fn press_segment(&self, label: &str) {
+            let mut view = self.window();
+            let segment = of_kind(view.tree(), "ui.Segment")
+                .into_iter()
+                .find(|s| s.props.get("label").and_then(Value::as_text) == Some(label))
+                .unwrap_or_else(|| panic!("no `{label}` segment:\n{}", dump(view.tree())))
+                .key
+                .clone();
+            view.fire(&segment, "press").unwrap();
+            view.poll_patches().unwrap();
         }
 
         /// The calculator's window, every row of its lists built.
@@ -356,7 +374,11 @@ mod cases {
         phase conversion_turns_one_unit_into_another;
         {
             let c = Calc::new();
-            c.stage("calculator.mode", "1");
+            // A person chooses Convert from the window's modes.
+            let mut view = c.window();
+            let tabs = of_kind(view.tree(), "ui.ViewTabs")[0].key.clone();
+            view.fire_with(&tabs, "change", Some(&Value::Int(1))).unwrap();
+            view.poll_patches().unwrap();
             let view = c.window();
             // Each quantity starts at a pair of its own: a metre to feet, and then mass's own.
             assert!(
@@ -365,14 +387,15 @@ mod cases {
                 dump(view.tree())
             );
             assert_eq!(of_kind(view.tree(), "ui.Dropdown").len(), 2, "from and to");
-            c.stage("calculator.quantity", "Quantity.mass");
+            // And chooses the quantity from the window's own segments.
+            c.press_segment("Mass");
             let mass = c.window();
             assert!(
                 texts(mass.tree()).iter().any(|t| t.as_str() == "1 kg = 2.2046226218 lb"),
                 "mass converts kilograms to pounds:\n{}",
                 dump(mass.tree())
             );
-            c.stage("calculator.quantity", "Quantity.temperature");
+            c.press_segment("Temperature");
             let warm = c.window();
             assert!(
                 texts(warm.tree()).iter().any(|t| t.as_str() == "1 °C = 33.8 °F"),
@@ -387,7 +410,7 @@ mod cases {
             let curve = c.add_curve("sin(x)");
             assert_eq!(c.rt.read(&curve, "expr").unwrap(), Value::text("sin(x)"));
             assert_eq!(c.rt.read(&curve, "visible").unwrap(), Value::Bool(true));
-            c.stage("calculator.mode", "2");
+            c.choose_mode(2);
             let view = c.window();
             let drawings = drawn(view.tree());
             assert_eq!(drawings.len(), 1, "one plot");
@@ -405,7 +428,7 @@ mod cases {
         phase surfaces_are_added_and_deleted_and_the_graph_opens_with_a_starter;
         {
             let c = Calc::new();
-            c.stage("calculator.mode", "3");
+            c.choose_mode(3);
             let starter = c.window();
             assert_eq!(drawn(starter.tree()).len(), 1, "the starter surface is drawn");
             let surface = c.add_surface("sin(x)*cos(y)");
