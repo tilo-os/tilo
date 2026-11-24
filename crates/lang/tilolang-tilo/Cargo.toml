@@ -53,10 +53,10 @@ collab-types = { version = "0.1.0", path = "../../core/collab-types" }
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 wire-frame = { version = "0.1.0", path = "../../platform/wire-frame" }
-# The native records an app keeps for its whole workspace, whose surfaces a package keeping
-# them publishes beside its own.
+# The workspace's emoji, a native record an app keeps for its whole workspace, whose surface a
+# package keeping it publishes beside its own (the moderation record's surface is the file beside
+# its model, which this host reads without linking that app's crate).
 tilo-workspace-emoji = { version = "0.1.0", path = "../../sdk/tilo-workspace-emoji" }
-moderation-model = { version = "0.1.0", path = "../../../apps/moderation-model" }
 
 [dev-dependencies]
 # The system's mention notices, read from a workspace holding tilolang rich text.

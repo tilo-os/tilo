@@ -971,3 +971,36 @@ fn a_surface_names_the_app_in_the_readers_words() {
     assert_eq!(package(&SourceWords), "Counter");
     assert_eq!(package(&German), "Zähler");
 }
+
+/// A record an app keeps for its whole workspace (`collab_types::WORKSPACE_DOCUMENTS`) is
+/// published beside the package's own types, so a change to it is decided by its app's surface:
+/// a native record's surface is read from the file beside its model, not from a model crate this
+/// host links.
+#[test]
+fn a_package_keeping_a_workspace_record_publishes_its_surface() {
+    const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
+    const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
+    let kinds = |meta: &Meta| -> Vec<String> {
+        let bytes = surface_toml(&[meta], &SourceWords).unwrap();
+        toml::from_str::<toml::Value>(std::str::from_utf8(&bytes).unwrap()).unwrap()["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|resource| resource["kind"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (_, packages) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let chat = kinds(&packages[0].meta);
+    assert!(chat.iter().any(|kind| kind == "tilo.moderation"), "{chat:?}");
+    assert!(
+        chat.iter().any(|kind| kind == "tilo.workspace.emoji"),
+        "{chat:?}"
+    );
+    let counter = kinds(&counter());
+    assert!(
+        !counter
+            .iter()
+            .any(|kind| kind == "tilo.moderation" || kind == "tilo.workspace.emoji"),
+        "another app publishes none of Chat's records: {counter:?}"
+    );
+}

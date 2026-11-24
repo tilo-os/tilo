@@ -718,16 +718,37 @@ pub fn personal_surface() -> Surface {
     }
 }
 
+/// The surface of the workspace's moderation record (`tilo.moderation`), which Chat keeps and
+/// the workspace's moderators change: the file beside the record's own model, written from that
+/// model by its crate's test, so a package keeping the record publishes what its changes are
+/// decided against without this host linking an app's model crate.
+const MODERATION_SURFACE: &str = include_str!("../../../../apps/moderation-model/surface.json");
+
+/// A committed surface file's resources (`{"resources": […]}`).
+#[derive(serde::Deserialize)]
+struct CommittedSurfaces {
+    resources: Vec<Surface>,
+}
+
 /// The native records `app` keeps for its whole workspace ([`collab_types::WORKSPACE_DOCUMENTS`]),
 /// as their surfaces: a change to one is decided by its app's surface, so the package of an app
 /// that keeps one publishes it beside its own types.
 fn kept_for_workspace(app: &str) -> Vec<Surface> {
     use tilo_resource::Resource as _;
+    let committed: Vec<Surface> = tilo_failure::ignored!(
+        "the moderation surface beside its model is what that model publishes: the crate's own \
+         test holds the file to it, so a file that does not read names no record in a build that \
+         was already broken",
+        serde_json::from_str::<CommittedSurfaces>(MODERATION_SURFACE)
+            .map(|file| file.resources)
+            .unwrap_or_default()
+    );
     [
-        tilo_workspace_emoji::WorkspaceEmoji::surface(),
-        moderation_model::Moderation::surface(),
+        vec![tilo_workspace_emoji::WorkspaceEmoji::surface()],
+        committed,
     ]
     .into_iter()
+    .flatten()
     .filter(|surface| {
         collab_types::workspace_document_of_kind(&surface.kind).is_some_and(|kept| kept.app == app)
     })

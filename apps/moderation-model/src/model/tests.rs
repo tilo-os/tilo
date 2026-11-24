@@ -257,3 +257,25 @@ fn a_moderator_can_reconsider_a_report_after_the_bot_looked_at_it() {
     );
     assert_eq!(state.decisions.len(), 2);
 }
+
+/// The surface this crate ships for the tilolang host to publish as Chat's record: the type and
+/// the verbs, written from the model itself, so a field or a verb that changes here changes
+/// there. `UPDATE_SNAPSHOTS=1` writes it.
+#[test]
+fn the_moderation_surface_file_is_what_this_crate_publishes() {
+    let surface = tilo_resource::surface::surface_of::<Moderation>();
+    let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": [surface] }))
+        .expect("a surface writes as JSON");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("surface.json");
+    let committed = std::fs::read_to_string(&path).ok();
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
+        std::fs::write(&path, &text).expect("the surface file is written");
+        return;
+    }
+    assert_eq!(
+        committed.as_deref(),
+        Some(text.as_str()),
+        "apps/moderation-model/surface.json is not what this crate publishes; \
+         regenerate it with UPDATE_SNAPSHOTS=1"
+    );
+}
