@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use runtime_portal::process_link::{Descriptor, FromProcess, Packet as _, STORAGE_ENV, ToProcess};
+use runtime_portal::process_link::{Descriptor, FromProcess, Packet as _, ToProcess};
 use tilolang_process::TilolangProcess;
 use tilolang_process::stop::Stop;
 use tilolang_process::wait::{Wake, wait};
@@ -90,17 +90,14 @@ impl Exit {
     }
 }
 
-/// Keep this host's own compiled modules in the storage the session granted it: what a later start
-/// of this host starts compiled.
-fn keep_compiled() {
-    let storage = std::env::var_os(STORAGE_ENV)
-        .filter(|dir| !dir.is_empty())
-        .map(std::path::PathBuf::from);
-    if let Some(storage) = &storage
-        && let Err(error) =
-            tilolang_tilo::runtime::engine::keep_compiled_in(storage.join(".compiled"))
+/// This host's modules run on the machine code the device's daemon compiled for them, read from
+/// the store the launcher granted read-only; a module it did not compile runs on the
+/// interpreter. Nothing is compiled here.
+fn read_compiled() {
+    if let Some(dir) =
+        std::env::var_os(runtime_portal::process_link::COMPILED_ENV).filter(|dir| !dir.is_empty())
     {
-        tracing::warn!(%error, "compiled tilolang modules are not kept");
+        tilolang_tilo::runtime::engine::compiled_from(std::path::PathBuf::from(dir));
     }
 }
 
@@ -140,7 +137,7 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
         Ok(wake) => wake,
         Err(error) => return (Exit::failed(format!("no wake: {error}")), Some(api)),
     };
-    keep_compiled();
+    read_compiled();
     // The engines this host answers its apps by name: the database engine a package's
     // `engine.call` and jobs reach (`db_engine`).
     #[cfg(feature = "app-launch")]

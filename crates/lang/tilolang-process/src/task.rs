@@ -756,6 +756,7 @@ fn apps(fd: &Descriptor, len: u64) -> Result<Apps, String> {
             App::Module(module) => {
                 // The package names the app it is: a module without its metadata names none.
                 let named = PackageMeta::from_wasm(&module.wasm).map(|meta| meta.app);
+                crate::adopt_compiled(&module);
                 match Bundle::from_parts(module.wasm, module.ids, &module.imports) {
                     Ok(bundle) => apps.bundles.push(bundle),
                     Err(error) => match named {

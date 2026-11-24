@@ -161,14 +161,13 @@ fn in_process(
             None
         }
     };
-    // Its own compiled modules kept beside its document, as the app process a session starts for
-    // an app's instances keeps its own: a later start of this app adopts the compiled module in
-    // its first frame instead of compiling it there again.
-    if let Some(storage) = &storage
-        && let Err(error) =
-            tilolang_tilo::runtime::engine::keep_compiled_in(storage.join(".compiled"))
+    // The machine code the device's daemon compiled for this app's modules, read from the store
+    // the launcher granted read-only; a module it did not compile runs on the interpreter. No
+    // module is compiled in this process.
+    if let Some(dir) =
+        std::env::var_os(runtime_portal::process_link::COMPILED_ENV).filter(|dir| !dir.is_empty())
     {
-        tracing::warn!(%error, "compiled tilolang modules are not kept");
+        tilolang_tilo::runtime::engine::compiled_from(std::path::PathBuf::from(dir));
     }
     let route = crate::route_of(&bundle.meta, workspace_id, me);
     let spec = crate::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, me);

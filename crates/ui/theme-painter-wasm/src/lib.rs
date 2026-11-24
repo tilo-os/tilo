@@ -23,6 +23,9 @@ use tilo_wasm_host::wasmi as host;
 use tilo_wasm_host::{Failure, ImportPolicy, Limits};
 use wasmi::{Instance, Linker, Memory, Store, StoreLimits, TypedFunc};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod compiled;
+
 /// Fuel one call may burn: well past what any part takes to draw (a dithered panel is a few hundred
 /// thousand), short enough that a looping painter is stopped within a frame.
 pub const FUEL_PER_CALL: u64 = 40_000_000;
@@ -93,9 +96,27 @@ impl Guest {
     }
 }
 
+/// A painter set's guest: the interpreter, or the machine code the device's daemon compiled for
+/// the same module, which runs from the set's first call.
+enum Exec {
+    Interpreted(Guest),
+    #[cfg(not(target_arch = "wasm32"))]
+    Compiled(compiled::Guest),
+}
+
+impl Exec {
+    fn exchange(&mut self, request: &[u8]) -> Result<Vec<u8>, Failure> {
+        match self {
+            Self::Interpreted(guest) => guest.exchange(request),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Compiled(guest) => guest.exchange(request),
+        }
+    }
+}
+
 /// A painter set running in wasm.
 pub struct WasmPainter {
-    guest: Mutex<Guest>,
+    guest: Mutex<Exec>,
     params: Vec<ParamSpec>,
     broken: AtomicBool,
 }
@@ -129,6 +150,33 @@ impl WasmPainter {
 /// imports nothing, a set exporting what the SDK's painter does, one whose
 /// start-up failed, or one whose parameters are not the SDK's list.
 pub fn load(bytes: &[u8]) -> Result<WasmPainter, Refusal> {
+    load_with(bytes, None)
+}
+
+/// Load the painter module `bytes`, running the machine code the device's daemon compiled for
+/// it when `compiled` is given: the set starts on that code instead of being translated here.
+///
+/// The artifact must be the one made for these bytes; one that is not, or that this build cannot
+/// deserialize, is not used and the set runs on the interpreter. A theme module a person or an
+/// agent changed is a new module, so its artifact is the daemon's new one and the change shows
+/// without restarting anything.
+///
+/// # Errors
+///
+/// As [`load`].
+pub fn load_with(bytes: &[u8], compiled: Option<&[u8]>) -> Result<WasmPainter, Refusal> {
+    #[cfg(target_arch = "wasm32")]
+    let _ = compiled;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(entry) = compiled {
+        match compiled::Guest::new(bytes, entry) {
+            Ok(guest) => return painter(Exec::Compiled(guest)),
+            Err(why) => tracing::warn!(
+                %why,
+                "a compiled painter set was not used: the set runs on the interpreter"
+            ),
+        }
+    }
     let engine = host::engine(host::Translation::Lazy);
     let module = host::compile(&engine, bytes, ImportPolicy::None).map_err(refusal)?;
     let mut store = host::store(&engine, host::store_limits(&LIMITS), &LIMITS).map_err(refusal)?;
@@ -144,12 +192,17 @@ pub fn load(bytes: &[u8]) -> Result<WasmPainter, Refusal> {
     let call = instance
         .get_typed_func::<u32, u64>(&store, CALL)
         .map_err(|_| refusal(Failure::NoExport(format!("{CALL}(i32) -> i64"))))?;
-    let mut guest = Guest {
+    painter(Exec::Interpreted(Guest {
         store,
         memory,
         buffer,
         call,
-    };
+    }))
+}
+
+/// The set `guest` runs, with the parameters it declares: refused when they are not the SDK's
+/// list.
+fn painter(mut guest: Exec) -> Result<WasmPainter, Refusal> {
     let params = guest
         .exchange(&wire::params_request())
         .ok()

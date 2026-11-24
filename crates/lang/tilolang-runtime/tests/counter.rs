@@ -172,15 +172,21 @@ mod cases {
         }
     }
 
-    /// On the tiered engine a view opened while its module may still run on wasmi carries on
-    /// on Cranelift, between presses, with the same tree and patches.
+    /// A view opened over a module the device's daemon compiled carries the same tree and
+    /// patches as one over the interpreted module, between presses.
     #[test]
     fn a_view_carries_on_the_same_once_its_module_runs_compiled() {
+        let wasm = counter_wasm();
+        crate::common::adopt_compiled(&wasm);
         let w = World::new();
         if w.rt.engine().kind() != tilolang_runtime::EngineKind::Tiered {
             return;
         }
         let c = w.counter();
+        assert_eq!(
+            w.rt.engine().tier(&w.counter),
+            Some(tilolang_runtime::EngineKind::Cranelift)
+        );
         let mut v =
             w.rt.open_view(&w.me, "vc", vec![Value::resource(&c)])
                 .unwrap();
@@ -196,7 +202,6 @@ mod cases {
             );
         };
         press(&mut v, 1);
-        w.rt.engine().settle_compile(&w.counter);
         press(&mut v, 2);
         assert_eq!(
             w.rt.engine().tier(&w.counter),

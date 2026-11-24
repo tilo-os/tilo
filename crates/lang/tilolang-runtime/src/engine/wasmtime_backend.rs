@@ -24,7 +24,22 @@ pub(super) struct Wasmtime {
 }
 
 impl Wasmtime {
-    pub(super) fn new(kind: EngineKind) -> Result<Self, String> {
+    /// The tiered engine's compiled tier: wasmtime's runtime, deserializing the modules the
+    /// device daemon compiled. No compiler is linked, so none can run here.
+    pub(super) fn runtime() -> Result<Self, String> {
+        let engine = shared::runtime_engine()
+            .map_err(|error| format!("cannot make the wasmtime engine: {error}"))?;
+        Ok(Self { engine })
+    }
+
+    /// An engine that compiles itself, for comparing engines and benchmarks in a build with
+    /// the `compile` feature.
+    ///
+    /// # Errors
+    ///
+    /// This build has no compiler, or the engine cannot be made on this machine.
+    #[cfg(feature = "compile")]
+    pub(super) fn compiling(kind: EngineKind) -> Result<Self, String> {
         let strategy = match kind {
             EngineKind::Winch => shared::Strategy::Winch,
             EngineKind::Tiered | EngineKind::Wasmi | EngineKind::Cranelift => {
@@ -36,17 +51,26 @@ impl Wasmtime {
         Ok(Self { engine })
     }
 
-    pub(super) fn engine(&self) -> &wasmtime::Engine {
-        &self.engine
+    /// This build links no compiler: `cranelift` and `winch` engines are for a `compile`
+    /// build only.
+    ///
+    /// # Errors
+    ///
+    /// Always, in a shipped build.
+    #[cfg(not(feature = "compile"))]
+    pub(super) fn compiling(kind: EngineKind) -> Result<Self, String> {
+        Err(format!(
+            "this build has no {} engine (build with the `compile` feature)",
+            kind.name()
+        ))
     }
 
-    /// A module [`Module::serialize`] wrote, by this engine or one of the same version,
-    /// configuration and CPU features; wasmtime refuses any other.
+    /// The wasmtime engine a module is deserialized on.
     pub(super) fn deserialize(&self, serialized: &[u8]) -> Result<Module, String> {
         // SAFETY: wasmtime runs what the bytes hold as machine code, so they must be what
-        // `Module::serialize` wrote. The tiering's disk cache hands over only an entry whose
-        // digest matches, from the directory this process keeps its own compiled modules in;
-        // wasmtime checks the version, configuration and CPU features it was written for.
+        // `Module::serialize` wrote. The entry is checked to be the one the device daemon made
+        // for these module bytes and is read from the daemon's sealed channel; wasmtime checks
+        // the version, configuration and target it was written for.
         unsafe { Module::deserialize(&self.engine, serialized) }.map_err(|e| e.to_string())
     }
 }
@@ -207,7 +231,19 @@ impl Backend for Wasmtime {
     type Instance = Pooled;
 
     fn compile(&self, bytes: &[u8]) -> Result<Module, Failure> {
-        shared::compile(&self.engine, bytes, ImportPolicy::Any)
+        #[cfg(feature = "compile")]
+        {
+            shared::compile(&self.engine, bytes, ImportPolicy::Any)
+        }
+        // A shipped runtime links wasmtime's runtime alone: it deserializes what the device's
+        // daemon compiled and never compiles anything itself.
+        #[cfg(not(feature = "compile"))]
+        {
+            let _ = bytes;
+            Err(Failure::Link(
+                "this build has no compiler: the device's daemon compiles modules".to_owned(),
+            ))
+        }
     }
 
     fn exports(module: &Module) -> Vec<String> {

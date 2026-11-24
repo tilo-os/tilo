@@ -1389,8 +1389,29 @@ fn module_bundle(fd: &Descriptor, len: u64) -> Result<Bundle, AdmitError> {
         .get(0, len)
         .ok_or_else(|| AdmitError::Module("the module is shorter than it says".to_owned()))?;
     let module = Module::decode(bytes).map_err(|error| module_error(&error))?;
+    adopt_compiled(&module);
     Bundle::from_parts(module.wasm, module.ids, &module.imports)
         .map_err(|error| module_error(&error))
+}
+
+/// Take the machine code the device daemon compiled for each part, before the module is
+/// loaded: from then on the part runs compiled. An entry that is not the one made for its
+/// part, or that this build cannot deserialize, is refused and the part runs on the
+/// interpreter; nothing is compiled here.
+fn adopt_compiled(module: &Module) {
+    let parts = std::iter::once(&module.wasm).chain(module.imports.iter());
+    for (part, entry) in parts.zip(&module.compiled) {
+        // A part the daemon could not compile has no entry: it runs on the interpreter.
+        if entry.is_empty() {
+            continue;
+        }
+        if let Err(why) = tilolang_tilo::runtime::engine::adopt_precompiled(part, entry) {
+            tracing::warn!(
+                %why,
+                "a compiled module the daemon made was not used: the module runs on the interpreter"
+            );
+        }
+    }
 }
 
 /// Whether a running instance's window let go of its patch connection.

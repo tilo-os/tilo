@@ -19680,6 +19680,7 @@ dependencies = [
  "tilo-ui",
  "tilo-unlock-protocol",
  "tilo-user-identity",
+ "tilo-wasm-aot",
  "tilo-wire-frame",
  "tilo-workspace-keys",
  "tilo-workspace-service",
@@ -20990,10 +20991,14 @@ dependencies = [
 name = "tilo-theme-painter-wasm"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
  "tilo-lock",
  "tilo-theme-sdk",
+ "tilo-wasm-aot",
  "tilo-wasm-host",
+ "tracing",
  "wasmi",
+ "wasmtime",
  "wat",
  "workspace-hack",
 ]
@@ -21235,6 +21240,7 @@ dependencies = [
  "tilo-ui-paint",
  "tilo-vello",
  "tilo-vello-encoding",
+ "tilo-wasm-aot",
  "tilo-webview",
  "tilo-wgpu",
  "tilo-winit",
@@ -21579,6 +21585,17 @@ dependencies = [
  "tilo-image-codec",
  "tilo-paths",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-wasm-aot"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "tempfile",
+ "wasmtime",
+ "wat",
  "workspace-hack",
 ]
 
@@ -22381,6 +22398,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui-graph",
  "tilo-wake",
+ "tilo-wasm-aot",
  "tilo-wasm-host",
  "tilolang",
  "tilolang-grayjay",

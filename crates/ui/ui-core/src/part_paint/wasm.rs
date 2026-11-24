@@ -23,11 +23,27 @@ use super::PainterSet;
 /// ([`super::register_painter_set`]).
 #[cfg(not(feature = "lazy-painter"))]
 pub fn painter_set(name: &str, bytes: &[u8]) -> Result<PainterSet, Refusal> {
-    Ok(PainterSet::new(name, Arc::new(load(bytes)?)))
+    painter_set_with(name, bytes, None)
+}
+
+/// The set `name` drawn by the painter module `bytes`, running the machine code the device's
+/// daemon compiled for that module when `compiled` is given: a theme changed in conversation
+/// starts on the new module's compiled code, without a restart. A set the daemon has not
+/// compiled, and every browser, runs on the interpreter.
+#[cfg(not(feature = "lazy-painter"))]
+pub fn painter_set_with(
+    name: &str,
+    bytes: &[u8],
+    compiled: Option<&[u8]>,
+) -> Result<PainterSet, Refusal> {
+    Ok(PainterSet::new(
+        name,
+        Arc::new(tilo_theme_painter_wasm::load_with(bytes, compiled)?),
+    ))
 }
 
 #[cfg(feature = "lazy-painter")]
-pub use lazy::painter_set;
+pub use lazy::{painter_set, painter_set_with};
 
 #[cfg(feature = "lazy-painter")]
 mod lazy {
@@ -64,6 +80,18 @@ mod lazy {
     /// The set `name` drawn by the painter module `bytes`, ready to register
     /// ([`super::register_painter_set`]).
     pub fn painter_set(name: &str, bytes: &[u8]) -> Result<PainterSet, Refusal> {
+        painter_set_with(name, bytes, None)
+    }
+
+    /// The set `name` drawn by `bytes`, with the compiled entry the device's daemon made for it.
+    /// The engine library takes a module's bytes; a compiled entry is used by a build that links
+    /// the set itself, and the set here runs on the engine's interpreter either way.
+    pub fn painter_set_with(
+        name: &str,
+        bytes: &[u8],
+        compiled: Option<&[u8]>,
+    ) -> Result<PainterSet, Refusal> {
+        let _ = compiled;
         let entry = entry().ok_or_else(|| {
             Refusal::Unavailable(format!("{PAINTER_ENGINE_LIBRARY} did not open"))
         })?;

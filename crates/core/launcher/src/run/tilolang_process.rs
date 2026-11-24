@@ -105,6 +105,8 @@ pub fn bwrap_argv(
         storage.display().to_string(),
         STORAGE_MOUNT.to_owned(),
     ]);
+    // The machine code the device's daemon compiled for the modules this host runs, read-only.
+    crate::sandbox::push_compiled_modules(&mut argv);
     // Landlock inside the namespace, through the launcher's own binary: read and execute the runtime,
     // write the storage, no TCP; every descriptor but the socket closed.
     argv.extend([

@@ -62,6 +62,11 @@ pub const VISITOR_WINDOW_FLAG: &str = "--visitor";
 /// Where a tilolang process keeps the storage of its workspace and author.
 pub const STORAGE_ENV: &str = "TILO_TILOLANG_PROCESS_STORAGE";
 
+/// Where a process reads the machine code the device's daemon compiled for its modules, mounted
+/// read-only by the launcher. Unset where the device has compiled none, and modules then run on
+/// the interpreter.
+pub const COMPILED_ENV: &str = "TILO_COMPILED_MODULES";
+
 /// Set on a launch whose window shows an instance a tilolang process runs.
 pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
 
@@ -529,7 +534,7 @@ pub fn decode_apps(bytes: &[u8]) -> io::Result<Vec<App>> {
 
 /// What one instance runs: the package's compiled module, its ids lock and the compiled modules of
 /// the packages it uses, as the package's payload holds them (`app.wasm`, `app.ids`,
-/// `imports/*.wasm`).
+/// `imports/*.wasm`), and the machine code the device daemon compiled for each of them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Module {
     #[serde(with = "serde_bytes")]
@@ -537,6 +542,12 @@ pub struct Module {
     pub ids: String,
     #[serde(with = "byte_lists")]
     pub imports: Vec<Vec<u8>>,
+    /// One sealed entry per part, in the order `wasm` then `imports`: what the device daemon
+    /// compiled for this device, which the process deserializes instead of compiling anything
+    /// itself. Empty when the daemon compiled none (a module it could not compile, a process
+    /// started without a daemon), and the process then runs the module on the interpreter.
+    #[serde(default, with = "byte_lists")]
+    pub compiled: Vec<Vec<u8>>,
 }
 
 impl Module {
@@ -565,7 +576,12 @@ impl Module {
             .iter()
             .map(std::fs::read)
             .collect::<io::Result<Vec<_>>>()?;
-        Ok(Self { wasm, ids, imports })
+        Ok(Self {
+            wasm,
+            ids,
+            imports,
+            compiled: Vec::new(),
+        })
     }
 
     /// The module as the bytes its memfd holds.
@@ -1104,6 +1120,7 @@ mod tests {
                     wasm: vec![0, 97, 115, 109, 1],
                     ids: "Note = 1\n".into(),
                     imports: vec![vec![1, 2]],
+                    ..Module::default()
                 }),
                 App::Surface {
                     app: "so.tilo.chat".into(),

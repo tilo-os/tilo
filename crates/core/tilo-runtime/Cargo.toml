@@ -206,6 +206,10 @@ launcher-windows = { path = "../launcher-windows" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+# The one compiler in the device: each tilolang module is compiled here, ahead of the process
+# that runs it, and cached by module, wasmtime version, configuration and target. The processes
+# it hands modules to link wasmtime's runtime alone.
+tilo-wasm-aot = { path = "../tilo-wasm-aot", features = ["compile"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 app-fleet = { package = "tilo-app-fleet", path = "../../desktop/app-fleet", features = ["surfaces"] }

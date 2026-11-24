@@ -108,14 +108,11 @@ fn main() -> std::process::ExitCode {
             }
         }
     }
-    // The desktop's tilolang surfaces start compiled once Cranelift compiled them in an earlier
-    // session.
-    if let Some(cache) = tilo_paths::xdg::cache_home()
-        && let Err(error) = tilolang_tilo::runtime::engine::keep_compiled_in(
-            cache.join("tilo").join("tilolang-compiled"),
-        )
-    {
-        eprintln!("tilo-session: compiled tilolang modules are not kept: {error}");
+    // The desktop's tilolang surfaces run on the machine code the device's daemon compiled for
+    // them, read from its cache; a module it did not compile runs on the interpreter. The
+    // session compiles nothing.
+    if let Some(data) = tilo_paths::data_dir() {
+        tilolang_tilo::runtime::engine::compiled_from(data.join("tilolang-compiled"));
     }
     if let Some(done) = first_boot(ours, host_desktop) {
         return done;

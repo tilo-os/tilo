@@ -71,7 +71,20 @@ fn named_sets(document: &serde_json::Value) -> Vec<String> {
 /// loaded before the failure stay registered.
 pub fn load(
     document: &str,
+    module: impl FnMut(&str) -> Result<Option<Vec<u8>>, BundleError>,
+) -> Result<Theme, BundleError> {
+    load_with(document, module, |_| None)
+}
+
+/// The theme of the bundle whose document is `document`, taking each painter module it names
+/// from `module` (by set name) and the machine code the device's daemon compiled for that module
+/// from `compiled`: a set the daemon compiled starts on that code, and one it did not on the
+/// interpreter. A changed module is a new module, so a theme changed in conversation starts on
+/// its new compiled entry without a restart.
+pub fn load_with(
+    document: &str,
     mut module: impl FnMut(&str) -> Result<Option<Vec<u8>>, BundleError>,
+    mut compiled: impl FnMut(&str) -> Option<Vec<u8>>,
 ) -> Result<Theme, BundleError> {
     let value: serde_json::Value =
         serde_json::from_str(document).map_err(|e| BundleError::Document(e.to_string()))?;
@@ -80,9 +93,12 @@ pub fn load(
             return Err(BundleError::SetName(name));
         }
         let bytes = module(&name)?.ok_or_else(|| BundleError::Missing(name.clone()))?;
-        let set = wasm::painter_set(&name, &bytes).map_err(|refusal| BundleError::Painter {
-            set: name.clone(),
-            refusal,
+        let entry = compiled(&name);
+        let set = wasm::painter_set_with(&name, &bytes, entry.as_deref()).map_err(|refusal| {
+            BundleError::Painter {
+                set: name.clone(),
+                refusal,
+            }
         })?;
         part_paint::register_painter_set(set);
     }

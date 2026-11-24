@@ -403,6 +403,8 @@ members = [
     "crates/os/daemon",
     # The wasm host layer every wasm host in the tree runs its guests on.
     "crates/core/tilo-wasm-host",
+    # Ahead-of-time compiled wasmtime modules: the daemon compiles, the runtimes deserialize.
+    "crates/core/tilo-wasm-aot",
     "crates/vm/environment",
     "crates/core/egress",
     "crates/vm/ush",
