@@ -435,32 +435,43 @@ async fn a_device_that_is_not_the_sender_is_refused() {
         "nothing reached the dispatcher"
     );
 
-    // A request naming a third device, one this device has no link to, is not this one's to
-    // answer. (The stranger above dialled it, so its link would pass the request on.)
+    // A request naming a third device is not this one's to answer, and is refused at once: one
+    // it has no link to, and the stranger above, whose link proves only its key and which the
+    // workspace never certified.
     let unreached = device(&stranger_root, 11);
-    let elsewhere = SignedDeviceAction::sign(
-        &DeviceAction {
-            workspace: WORKSPACE.into(),
-            request_id: uuid::Uuid::from_u128(2),
-            source: b.1.device_public_key,
-            target: unreached.1.device_public_key,
-            message: catalogue(),
-            placement: None,
-        },
-        now_ns(),
-        &b.0,
-    )
-    .unwrap();
-    let answer = send(&b_endpoint, engine.addr(), &elsewhere)
-        .await
-        .expect("a refused request is answered");
-    let RemoteActionMessage::CatalogueResponse {
-        result: Err(error), ..
-    } = answer
-    else {
-        panic!("the request naming another device is refused, got {answer:?}");
-    };
-    assert_eq!(refusal(&error), "the request names another device");
+    for (n, third) in [unreached.1.device_public_key, c.1.device_public_key]
+        .into_iter()
+        .enumerate()
+    {
+        let elsewhere = SignedDeviceAction::sign(
+            &DeviceAction {
+                workspace: WORKSPACE.into(),
+                request_id: uuid::Uuid::from_u128(2 + n as u128),
+                source: b.1.device_public_key,
+                target: third,
+                message: catalogue(),
+                placement: None,
+            },
+            now_ns(),
+            &b.0,
+        )
+        .unwrap();
+        let asked = std::time::Instant::now();
+        let answer = send(&b_endpoint, engine.addr(), &elsewhere)
+            .await
+            .expect("a refused request is answered");
+        let RemoteActionMessage::CatalogueResponse {
+            result: Err(error), ..
+        } = answer
+        else {
+            panic!("the request naming another device is refused, got {answer:?}");
+        };
+        assert_eq!(refusal(&error), "the request names another device");
+        assert!(
+            asked.elapsed() < Duration::from_secs(2),
+            "refused at once, not after waiting on the device"
+        );
+    }
 
     engine.close().await;
     b_endpoint.close().await;

@@ -337,6 +337,10 @@ struct Inner {
     /// links they hold open to it, which it opens a bi-stream on as it dials a
     /// native device ([`ActionService::reach_device_at`]).
     held: Mutex<HashMap<[u8; 32], Arc<dyn Transport>>>,
+    /// The devices among those whose link is the connection they dialled this one on, which
+    /// proves the key at its other end and nothing more: a request is passed on over one only
+    /// to a device of the workspace it names.
+    dialled_in: Mutex<std::collections::HashSet<[u8; 32]>>,
     /// The invocation ids each workspace's requests admitted within their
     /// freshness window, checked before anything is dispatched.
     invocations: Mutex<HashMap<String, InvocationReplay>>,
@@ -408,6 +412,7 @@ impl ActionService {
             callers: Mutex::default(),
             endpoints: Mutex::default(),
             held: Mutex::default(),
+            dialled_in: Mutex::default(),
             invocations: Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         }))
@@ -443,6 +448,7 @@ impl ActionService {
             callers: Mutex::default(),
             endpoints: Mutex::default(),
             held: Mutex::default(),
+            dialled_in: Mutex::default(),
             invocations: Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         }))
@@ -453,6 +459,7 @@ impl ActionService {
     /// passed on there ([`Self::pass_on`]), and this device opens a bi-stream
     /// on it as it would dial a native device ([`Self::remote_held`]).
     pub fn reach_device_at(&self, device: [u8; 32], transport: Arc<dyn Transport>) {
+        self.0.dialled_in.lock_recover().remove(&device);
         self.0.held.lock_recover().insert(device, transport);
     }
 
@@ -466,6 +473,7 @@ impl ActionService {
             .is_some_and(|kept| Arc::ptr_eq(kept, transport))
         {
             held.remove(&device);
+            self.0.dialled_in.lock_recover().remove(&device);
         }
     }
 
@@ -945,7 +953,7 @@ impl ActionService {
             .read_workspace_for(
                 Some((source, placement.as_ref())),
                 &action.workspace,
-                |peer| -> Result<(_, _, _, _), ActionCallError> {
+                |peer| -> Result<(_, _, _, _, _), ActionCallError> {
                     let revocations = revocations_of(peer);
                     let mut acting = source;
                     if let RemoteActionMessage::Invoke(request) = &action.message
@@ -968,6 +976,10 @@ impl ActionService {
                             acting = certificate.device_public_key;
                         }
                     }
+                    let target_certified = peer
+                        .certificates()
+                        .iter()
+                        .any(|certificate| certificate.device_public_key == action.target);
                     let authority = peer.permissions(acting, now);
                     let certificate = peer
                         .certificates()
@@ -975,14 +987,14 @@ impl ActionService {
                         .find(|certificate| certificate.device_public_key == acting);
                     let opened = certificate.is_none()
                         && visitor_may(peer, &action.workspace, acting, &action.message);
-                    Ok((acting, authority, certificate, opened))
+                    Ok((acting, authority, certificate, opened, target_certified))
                 },
             )
             .await
             .ok_or_else(|| ActionCallError::Refused {
                 reason: "this device does not hold that workspace".into(),
             })??;
-        let (acting, authority, certificate, opened) = decided;
+        let (acting, authority, certificate, opened, target_certified) = decided;
         // A call its device makes for someone else carries their signature: one that names
         // another caller and carries none runs as nobody, and never as the device that sent it.
         let own_call = |caller: Caller| -> Result<Caller, ActionCallError> {
@@ -1009,6 +1021,14 @@ impl ActionService {
         // A request addressed to another device this one reaches: pass it on there, which decides
         // and answers it, and hand its answer back to the caller.
         if action.target != self.device() {
+            // A key that dialled this device proves only itself: a request is passed on to it
+            // only where the workspace certifies it, and refused at once otherwise, never left
+            // to wait on a key that serves no actions.
+            if !target_certified && self.0.dialled_in.lock_recover().contains(&action.target) {
+                return Err(ActionCallError::Refused {
+                    reason: "the request names another device".into(),
+                });
+            }
             let passed = self
                 .pass_on(signed)
                 .await
@@ -1448,6 +1468,7 @@ impl ActionService {
         let transport: Arc<dyn Transport> = Arc::new(connection.clone());
         let device = self.device_of(*connection.remote_id().as_bytes());
         self.reach_device_at(device, Arc::clone(&transport));
+        self.0.dialled_in.lock_recover().insert(device);
         // One connection is one run: its requests share an execution, which ends with the
         // connection.
         let execution = ExecutionLease::mint();
