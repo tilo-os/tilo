@@ -244,58 +244,6 @@ async fn check_default_access_rules(workspaces: &Workspaces, workspace: &str, ow
     }
 }
 
-/// A page's rename reaches the workspace's one name: the owner's device and a
-/// moderator's may, a member at an Editor's role may not, and every list of
-/// the workspace names it as the answer does.
-#[tokio::test]
-async fn a_page_renames_the_workspace_where_every_list_of_it_reads_the_name() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let rename = |name: &str| WorkspacesRequest::Rename {
-        workspace: workspace.clone(),
-        name: name.to_owned(),
-    };
-    let refused = workspaces.page_workspaces(&ada, rename("Hacked")).await;
-    assert!(
-        matches!(refused, WorkspacesReply::Refused(_)),
-        "a member at an Editor's role renamed the workspace: {refused:?}"
-    );
-    assert_eq!(workspaces.summary(&workspace).await.unwrap().name, "Team");
-
-    set_role(workspaces, &workspace, &owner, &ada, Role::Moderator).await;
-    let WorkspacesReply::Workspace(named) =
-        workspaces.page_workspaces(&ada, rename("Community")).await
-    else {
-        panic!("a moderator renames the workspace");
-    };
-    assert_eq!(named.name, "Community");
-
-    let WorkspacesReply::Workspace(named) =
-        workspaces.page_workspaces(&owner, rename("Tilo")).await
-    else {
-        panic!("the owner renames the workspace");
-    };
-    assert_eq!(named.name, "Tilo");
-    assert_eq!(workspaces.summary(&workspace).await.unwrap().name, "Tilo");
-    let WorkspacesReply::Workspaces(listed) = workspaces
-        .page_workspaces(&owner, WorkspacesRequest::List)
-        .await
-    else {
-        panic!("the owner lists their workspaces");
-    };
-    assert!(
-        listed
-            .iter()
-            .any(|held| held.workspace == workspace && held.name == "Tilo"),
-        "{listed:?}"
-    );
-    server.shutdown().await;
-}
-
 /// A page deletes a workspace of its own with nobody else in it: it goes from the server and
 /// every list of it, and one with people in it, or another person's, is not theirs to delete.
 #[tokio::test]

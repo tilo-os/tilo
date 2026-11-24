@@ -413,6 +413,7 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         .iter()
         .chain(&[NAME])
         .chain(&[
+            governance::RENAME,
             governance::UNBAN,
             governance::REMOVE_MEMBER,
             governance::BAN,
@@ -447,8 +448,8 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         )
     );
 
-    // A Moderator is offered removing, banning and unbanning members, as its
-    // role's grants say, but no invitations. Roles, restrictions and the workspace's settings are written
+    // A Moderator is offered renaming the workspace and removing, banning and unbanning
+    // members, as its role's grants say, but no invitations. Roles, restrictions and the workspace's settings are written
     // by a member's own device, not asked of the host.
     workspaces
         .set_member_role(
@@ -468,6 +469,7 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         offered_in_catalogue([
             governance::REMOVE_MEMBER,
             governance::BAN,
+            governance::RENAME,
             NAME,
             governance::UNBAN,
             TRUSTED_ATTESTORS,
@@ -484,6 +486,64 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         offered(&host, WorkspaceId::from_u128(41), &caller(&owner))
             .await
             .is_empty()
+    );
+    server.shutdown().await;
+}
+
+/// Renaming a workspace is asked of its actions like any other: a member at an Editor's role is
+/// refused and the name stays, a moderator and the owner rename it, and every list of the
+/// workspace reads the name the last one gave.
+#[tokio::test]
+async fn the_workspaces_owners_and_moderators_rename_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let rename = |name: &str| request(&workspace, governance::RENAME, json!({ "name": name }));
+
+    let refused = invoke(&host, workspace_id, &caller(&ada), rename("Hacked")).await;
+    assert_eq!(
+        refused,
+        Err(ActionCallError::UnknownAction),
+        "an Editor renames nothing"
+    );
+    assert_eq!(workspaces.summary(&workspace).await.unwrap().name, "Team");
+
+    workspaces
+        .set_member_role(
+            &workspace,
+            &owner,
+            SetMemberRoleRequest {
+                request_id: [32; 32],
+                user_public_key: ada.user_public_key,
+                role: Role::Moderator,
+            },
+        )
+        .await
+        .unwrap();
+    let named = invoke(&host, workspace_id, &caller(&ada), rename("Community")).await;
+    assert_eq!(
+        named.unwrap()["name"],
+        "Community",
+        "a moderator renames it"
+    );
+
+    let named = invoke(&host, workspace_id, &caller(&owner), rename(" Tilo ")).await;
+    assert_eq!(named.unwrap()["name"], "Tilo", "and so does its owner");
+    assert_eq!(workspaces.summary(&workspace).await.unwrap().name, "Tilo");
+    let WorkspacesReply::Workspaces(listed) = workspaces
+        .page_workspaces(&owner, WorkspacesRequest::List)
+        .await
+    else {
+        panic!("the owner lists their workspaces");
+    };
+    assert!(
+        listed
+            .iter()
+            .any(|held| held.workspace == workspace && held.name == "Tilo"),
+        "{listed:?}"
     );
     server.shutdown().await;
 }

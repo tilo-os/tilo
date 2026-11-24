@@ -446,9 +446,6 @@ impl Workspaces {
             | Asked::MailInvite { workspace, .. } => {
                 (Some(workspace), WorkspaceOp::Govern(governance::ADD_MEMBER))
             }
-            Asked::Rename { workspace, .. } => {
-                (Some(workspace), WorkspaceOp::Govern(governance::RENAME))
-            }
             _ => return Ok(()),
         };
         self.check_now(device, workspace.map(String::as_str), op)

@@ -246,7 +246,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 47] = [
+const VERBS: [Verb; 48] = [
     Verb {
         id: WORKSPACE_INVITE,
         label: "Invite",
@@ -367,6 +367,13 @@ const VERBS: [Verb; 47] = [
         check: "",
         kind: ActionKind::Read,
         params: Vec::new,
+    },
+    Verb {
+        id: governance::RENAME,
+        label: "Rename the workspace",
+        check: governance::RENAME,
+        kind: roles::GOVERNANCE_KIND,
+        params: rename_params,
     },
     Verb {
         id: NAME,
@@ -708,6 +715,15 @@ fn name_params() -> Vec<ActionParam> {
         "name",
         ParamType::Text,
         "How the workspace shows you from now on, in its member list and on the invitations you make.",
+    )]
+}
+
+fn rename_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "name",
+        ParamType::Text,
+        "The workspace's one name, which everyone in it and every list of it reads: 1 to 80 \
+         characters.",
     )]
 }
 
@@ -2173,7 +2189,11 @@ impl Workspaces {
         published: &str,
     ) -> Result<Value, ActionCallError> {
         let address = &request.target.address;
-        if let Some(verb) = server::verb(&address.action) {
+        // What a person asks of their servers is asked on the workspace listing them alone; the same
+        // action elsewhere is that workspace's own (`rename` names the workspace).
+        if let Some(verb) = server::verb(&address.action)
+            && server::where_servers_are_asked(workspace_id, caller)
+        {
             return self
                 .server_operation_invoke(workspace_id, caller, certificate, verb, request)
                 .await;
@@ -3419,7 +3439,7 @@ impl Workspaces {
         }))
     }
 
-    /// Removing, banning and unbanning members.
+    /// Naming the workspace, and removing, banning and unbanning members.
     async fn governance_members(
         &self,
         action: &str,
@@ -3440,6 +3460,13 @@ impl Workspaces {
                 .map_err(|error| ActionCallError::refused(error.to_string()))
         };
         match action {
+            governance::RENAME => {
+                let renamed = self
+                    .rename(workspace, args.required_text("name")?)
+                    .await
+                    .map_err(ActionCallError::refused)?;
+                Ok(json!({ "workspace": renamed.workspace, "name": renamed.name }))
+            }
             governance::UNBAN => {
                 let person = member(args.required_key("person")?);
                 generation(self.unban_member(workspace, device, person).await)

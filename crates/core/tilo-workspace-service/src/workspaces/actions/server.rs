@@ -171,6 +171,17 @@ const fn asking(
     }
 }
 
+/// Whether `caller` asks in `workspace_id` as the workspace of their person that lists their
+/// servers, where what they ask of those servers is published.
+pub(super) fn where_servers_are_asked(
+    workspace_id: tilo_server_protocol::WorkspaceId,
+    caller: &tilo_actions::remote::Caller,
+) -> bool {
+    caller.user_public_key().is_some_and(|person| {
+        workspace_id.to_string() == tilo_server_protocol::servers::person_workspace_id(person)
+    })
+}
+
 /// The action `action` is, when it asks a server an operation.
 pub(super) fn verb(action: &str) -> Option<&'static ServerVerb> {
     SERVER_VERBS.iter().find(|verb| verb.verb.id == action)

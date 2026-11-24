@@ -17,7 +17,6 @@
 // is that worker, as the server host's own is.
 tilo_automerge_isolate::test_worker!();
 
-
 #[path = "support/mod.rs"]
 mod support;
 
@@ -98,8 +97,6 @@ mod place_workspace;
 mod plain_http;
 #[path = "recovery.rs"]
 mod recovery;
-#[path = "rename.rs"]
-mod rename;
 #[path = "resume.rs"]
 mod resume;
 #[path = "revoked_device_history.rs"]

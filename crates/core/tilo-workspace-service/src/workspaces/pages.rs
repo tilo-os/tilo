@@ -315,9 +315,6 @@ impl Workspaces {
             WorkspacesRequest::Name { workspace, name } => {
                 self.name_self(&workspace, device, &name, now).await?
             }
-            WorkspacesRequest::Rename { workspace, name } => {
-                self.page_rename(device, &workspace, &name).await?
-            }
             request @ (WorkspacesRequest::Servers { .. }
             | WorkspacesRequest::AddServer { .. }
             | WorkspacesRequest::RemoveServer { .. }) => self.page_servers(device, request).await?,
@@ -449,34 +446,6 @@ impl Workspaces {
             }
             _ => return Err(CollaborationError::new("not a share")),
         }))
-    }
-
-    /// A page's rename of `workspace` to `name`, as its device's person: the
-    /// workspace's owner or a moderator, as the shell's own menu offers it. The
-    /// workspace's own governance is where the name lives, so the host writes
-    /// it there (its records follow) and answers with the workspace as it is
-    /// after.
-    async fn page_rename(
-        &self,
-        device: &DeviceCert,
-        workspace: &str,
-        name: &str,
-    ) -> Result<WorkspacesReply, CollaborationError> {
-        {
-            let state = self.workspace(workspace).await?;
-            let mut governed = state.lock().await;
-            let now = tilo_clock::unix_now_ns();
-            self.authorize(
-                device,
-                Some(&governed),
-                WorkspaceOp::Govern(governance::RENAME),
-                now,
-            )?;
-            self.rename_governed(&mut governed, name)
-                .map_err(CollaborationError::new)?;
-            self.settle(&mut governed).await?;
-        }
-        self.page_workspace(workspace, device).await
     }
 
     /// Name `device`'s person `name`, asked in `workspace`: the name they go

@@ -382,14 +382,6 @@ pub enum WorkspacesRequest {
         workspace: String,
         name: String,
     },
-    /// Rename `workspace` to `name` (1–80 characters) as the calling device's
-    /// person, for everyone in it and every list that names it: the
-    /// workspace's owner, or a moderator. Answered with the workspace, as it
-    /// is after the rename.
-    Rename {
-        workspace: String,
-        name: String,
-    },
     /// The servers keeping `workspace`, which its owners alone choose:
     /// answered with [`WorkspacesReply::Servers`], the one asked first.
     Servers {

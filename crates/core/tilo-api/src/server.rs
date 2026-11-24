@@ -481,10 +481,10 @@ impl Server {
         Ok(())
     }
 
-    /// Name the workspace `workspace` `name` as `connection`: the one name its
-    /// governance keeps, which every device and list of it reads. The server
-    /// decides who may, as it decides for the person's own page: the
-    /// workspace's owners and moderators.
+    /// Name the workspace `workspace` `name` as `connection`: the one name the
+    /// workspace keeps, which every device and list of it reads. The key asks
+    /// it in the workspace, and the workspace decides who may: its owners and
+    /// moderators.
     ///
     /// # Errors
     /// Not a workspace the grant reaches, or the workspace refused (its
@@ -500,15 +500,27 @@ impl Server {
         {
             return Err(Administration::Refused(ServerError::NotFound.to_string()));
         }
-        let name = name.trim();
+        let entered = self
+            .enter(connection, workspace)
+            .await
+            .map_err(|error| Administration::Refused(error.to_string()))?;
+        let mut arguments = Map::new();
+        arguments.insert("name".into(), json!(name.trim()));
         connection
-            .administer(
-                tilo_server_protocol::workspaces::WorkspacesRequest::Rename {
-                    workspace: workspace.to_owned(),
-                    name: name.to_owned(),
-                },
+            .device
+            .ask_host(
+                entered,
+                tilo_actions::remote::RemoteActionTarget::workspace_governance(
+                    workspace,
+                    tilo_actions::policy::roles::governance::RENAME,
+                ),
+                arguments,
             )
-            .await?;
+            .await
+            .map_err(|refusal| match ServerError::from(refusal) {
+                ServerError::Unavailable(why) => Administration::Unanswered(why),
+                refused => Administration::Refused(refused.to_string()),
+            })?;
         // The workspace as the person's list says it now, with its server
         // and their role.
         self.workspace(connection, workspace)
@@ -601,34 +613,7 @@ pub enum Administration {
     Unanswered(String),
 }
 
-/// How long the server's workspace administration has to answer: an agent's
-/// request may wait for its person's answer, which they have two minutes for.
-const ADMINISTERING: Duration = Duration::from_secs(150);
-
 impl Connection {
-    /// Ask the server's workspace administration `request` over this session,
-    /// as the person's own page asks it: the server decides it by the
-    /// workspace's governance and the role of the person this key is.
-    async fn administer(
-        &self,
-        request: tilo_server_protocol::workspaces::WorkspacesRequest,
-    ) -> Result<tilo_server_protocol::workspaces::WorkspacesReply, Administration> {
-        use tilo_server_protocol::workspaces::WorkspacesReply;
-        use tilo_session_client::Outbox as _;
-        let receipt =
-            self.device.session().ask_workspaces(request).map_err(|_| {
-                Administration::Unanswered("the session with the server closed".into())
-            })?;
-        match tokio::time::timeout(ADMINISTERING, receipt).await {
-            Ok(Ok(Ok(WorkspacesReply::Refused(why)))) => Err(Administration::Refused(why)),
-            Ok(Ok(Ok(reply))) => Ok(reply),
-            Ok(Ok(Err(why))) => Err(Administration::Unanswered(why)),
-            Ok(Err(_)) | Err(_) => Err(Administration::Unanswered(
-                "the server did not answer".into(),
-            )),
-        }
-    }
-
     /// Have `told` called the next time the server this session is with
     /// does for its key what it does only for a person it lets in: lists a
     /// workspace of theirs, makes one for them, or lets the key into one. A
