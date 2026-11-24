@@ -230,57 +230,25 @@ pub const RECORD_PAGE_BYTES: usize = 2 << 20;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Bytes(pub Vec<u8>);
 
-const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+/// Standard base64, written padded and read with or without its padding.
+const BASE64: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
+    &base64::alphabet::STANDARD,
+    base64::engine::GeneralPurposeConfig::new()
+        .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
+);
 
 impl Serialize for Bytes {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut text = String::with_capacity(self.0.len().div_ceil(3) * 4);
-        for chunk in self.0.chunks(3) {
-            let word = chunk.iter().enumerate().fold(0u32, |word, (at, byte)| {
-                word | u32::from(*byte) << (16 - 8 * at)
-            });
-            for at in 0..4 {
-                if at <= chunk.len() {
-                    let index = (word >> (18 - 6 * at)) & 0x3f;
-                    text.push(char::from(
-                        BASE64[usize::try_from(index).unwrap_or_default()],
-                    ));
-                } else {
-                    text.push('=');
-                }
-            }
-        }
-        serializer.serialize_str(&text)
+        serializer.serialize_str(&base64::Engine::encode(&BASE64, &self.0))
     }
 }
 
 impl<'de> Deserialize<'de> for Bytes {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;
-        let text = text.trim_end_matches('=').as_bytes();
-        let value = |byte: u8| {
-            BASE64
-                .iter()
-                .position(|known| *known == byte)
-                .and_then(|at| u32::try_from(at).ok())
-                .ok_or_else(|| serde::de::Error::custom("bytes are not base64"))
-        };
-        let mut bytes = Vec::with_capacity(text.len() * 3 / 4);
-        for chunk in text.chunks(4) {
-            if chunk.len() == 1 {
-                return Err(serde::de::Error::custom(
-                    "base64 ends partway through a byte",
-                ));
-            }
-            let mut word = 0u32;
-            for (at, byte) in chunk.iter().enumerate() {
-                word |= value(*byte)? << (18 - 6 * at);
-            }
-            for at in 0..chunk.len() - 1 {
-                bytes.push(((word >> (16 - 8 * at)) & 0xff).to_le_bytes()[0]);
-            }
-        }
-        Ok(Self(bytes))
+        base64::Engine::decode(&BASE64, text)
+            .map(Self)
+            .map_err(|error| serde::de::Error::custom(format!("bytes are not base64: {error}")))
     }
 }
 

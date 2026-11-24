@@ -22,6 +22,8 @@ serde.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 # The action a change names, in the change's message.
 serde_json.workspace = true
+# Bytes in a command or reply travel as base64 text.
+base64.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
