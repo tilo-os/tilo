@@ -1179,7 +1179,6 @@ d-ozpkxud5 = Themes pane
     .w-duplicate = Duplizieren
     .w-export = Exportieren
     .w-start-over-from-where-it-came = Von vorn beginnen, woher es kam
-    .w-import = Importieren
     .w-distinguish-similar-letters = Ähnliche Buchstaben unterscheiden
     .w-set-i-l-1-0-and = I, l, 1, 0 und O im Text dieses Themes auseinanderhalten; leer folgt seiner Schriftart
     .w-status-colours = Statusfarben
@@ -1223,8 +1222,3 @@ d-zlta5t4w = Users pane
     .w-create-the-account = Das Konto anlegen
     .w-this-computer-s-account-service-is = Der Kontodienst dieses Rechners läuft nicht; Konten lassen sich hier nicht ändern.
 
-d-7q2etwl5 = Ein Design importieren …
-    .doc = Übernimmt ein mit Exportieren gesichertes Design, aus diesem oder einem anderen Arbeitsbereich: jede Rolle, jeden abgestimmten Wert und jeden Glas-Shader, sobald es zugelassen ist und jede Mindestkontrastgrenze einhält.
-    .did = hat ein Design importiert
-
-d-7q2etwl5-file = Datei
