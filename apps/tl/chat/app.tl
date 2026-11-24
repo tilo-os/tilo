@@ -134,8 +134,8 @@ type Thread {
 /// (`ui.NavItem(person: ...)`).
 type Direct (readers: people) {
     name: Text
-    /// Who is in it, each once.
-    people: List<Actor>
+    /// Who is in it.
+    people: Set<Actor>
     /// The one person an earlier version kept it with, before it said who is in it: what its
     /// migration reads (`carry_direct_people`).
     person: Actor
@@ -351,10 +351,10 @@ migration action carry_direct_people(all: Conversations) {
             v: VoiceChannel => {}
             d: Direct => {
                 if d.people.is_empty() {
-                    d.people = [d.person]
+                    d.people.add(d.person)
                     if let opener = created(d)?.who {
                         if opener.kind() == .person {
-                            d.people = people_of(opener, d.person)
+                            d.people.add(opener)
                         }
                     }
                 }
@@ -419,8 +419,10 @@ migration action carry_native_chat(all: Conversations) {
         let to = channel_of(m)
         if to.starts_with("direct:") and directs.get(to) == .none {
             let people = m.members.get("channel") ?? []
-            let d = all.channels.insert(Direct(name: members_of(to), people: people), id: to)
-            d.people = people
+            let d = all.channels.insert(Direct(name: members_of(to)), id: to)
+            for p in people {
+                d.people.add(p)
+            }
             directs.put(to, d)
         }
     }
@@ -690,11 +692,13 @@ action message_person(all: Conversations, who: Actor) -> Direct (
     }
     // Named by its people, so two devices opening it apart, offline, open the same one.
     let key = people.map(p -> p.id()).sort_by(x -> x).join(",")
-    let d = all.channels.insert(Direct(name: who.name(), people: people), key: "direct:{key}")
+    let d = all.channels.insert(Direct(name: who.name()), key: "direct:{key}")
     // Its fields written, so the resource holds the conversation from its first press: an item
     // stored by its id alone is found only once it says something.
     d.name = who.name()
-    d.people = people
+    for p in people {
+        d.people.add(p)
+    }
     d
 }
 
@@ -897,8 +901,8 @@ action relay_reaction(m: Message, emoji: Text, persona: Text, by: Text, given: B
 destructive action delete_channel(from: Conversations | Category, ch: TextChannel | VoiceChannel) (
     icon: .trash,
     label: "Delete channel",
-    moderates: true,
 ) {
+    require moderates(invoker) "Only the workspace's moderators delete a channel"
     match from {
         all: Conversations => all.channels.remove(ch),
         c: Category => c.channels.remove(ch),
@@ -909,8 +913,8 @@ destructive action delete_channel(from: Conversations | Category, ch: TextChanne
 destructive action delete_category(all: Conversations, c: Category) (
     icon: .trash,
     label: "Delete category",
-    moderates: true,
 ) {
+    require moderates(invoker) "Only the workspace's moderators delete a category"
     require c.channels.is_empty() "Move or delete its channels first"
     all.channels.remove(c)
 }
@@ -1022,10 +1026,18 @@ action report(to: TextChannel | Thread | Direct, m: Message, reason: Text = "") 
     }
 }
 
-/// Settles a report: what a moderator, or the moderation agent, decided about it.
-action decide(r: Report, decision: Text) (icon: .shield, label: "Decide", moderates: true) {
+/// Settles a report: what a moderator decided about it.
+action decide(r: Report, decision: Text) (icon: .shield, label: "Decide") {
+    require moderates(invoker) "Only the workspace's moderators settle a report"
     require decision.trim() != "" "Say what was decided"
     r.decision = decision.trim()
+}
+
+/// Whether `who` acts on what other people wrote here, as the workspace's moderators and its
+/// owner do: the roles the workspace gave them, never something Chat keeps.
+fn moderates(who: Actor) -> Bool {
+    let role = who.role() ?? ""
+    role == "moderator" or role == "owner"
 }
 
 /// Starts a thread from a message of a channel or a direct conversation, named after what the

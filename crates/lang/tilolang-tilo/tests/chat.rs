@@ -1764,3 +1764,62 @@ fn a_message_sent_in_a_channel_names_a_verb_the_channels_surface_publishes() {
         last.action
     );
 }
+
+/// A report is settled by the workspace's moderators alone: a member who may write in the channel
+/// files one, and their own `decide` of it is refused with the reason, while a moderator's
+/// stands. Who moderates is the role the workspace gave them, not anything Chat keeps.
+#[test]
+fn a_report_is_settled_by_a_moderator_and_refused_to_anyone_else() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
+            tilolang_runtime::members::Member::person("mo", tilo_actions::policy::Role::Moderator),
+        ],
+        None,
+    );
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let message = call(
+        &ada,
+        "send",
+        vec![design.clone(), rich("Buy cheap followers here")],
+    );
+    ada.commit();
+
+    let meta = ada.host.package(APP).unwrap().meta;
+    let as_person = |who: &str, action: &str, args: Vec<Value>| {
+        ada.host.runtime().invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(who)),
+            (crate::fixtures::action_id(&meta, action).as_str(), args),
+        )
+    };
+    let report = match as_person("ben", "report", vec![design, message, Value::text("spam")]) {
+        Ok(InvokeOutcome::Done(report)) => report,
+        other => panic!("Ben files the report: {other:?}"),
+    };
+    ada.commit();
+
+    let refused = as_person(
+        "ben",
+        "decide",
+        vec![report.clone(), Value::text("removed")],
+    );
+    assert!(
+        !matches!(refused, Ok(InvokeOutcome::Done(_))),
+        "an editor's settling of a report is refused: {refused:?}"
+    );
+    assert!(
+        format!("{refused:?}").contains("Only the workspace's moderators settle a report"),
+        "with the reason: {refused:?}"
+    );
+
+    let settled = as_person("mo", "decide", vec![report, Value::text("removed")]);
+    assert!(
+        matches!(settled, Ok(InvokeOutcome::Done(_))),
+        "a moderator settles it: {settled:?}"
+    );
+}
