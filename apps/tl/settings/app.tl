@@ -549,6 +549,34 @@ view notifications_pane() {
                 role: .caption,
                 secondary: true,
             )
+            setting("On these days", "Every day, weekdays, or the weekend") {
+                ui.ToggleGroup(selected: quiet_days_index(focus.weekdays), label: "Days") {
+                    ui.Segment("Every day") {
+                        on press: settings.set_quiet_hours(
+                            settings.notifications,
+                            start_minute: focus.start_minute,
+                            end_minute: focus.end_minute,
+                            weekdays: 0,
+                        )
+                    }
+                    ui.Segment("Weekdays") {
+                        on press: settings.set_quiet_hours(
+                            settings.notifications,
+                            start_minute: focus.start_minute,
+                            end_minute: focus.end_minute,
+                            weekdays: 31,
+                        )
+                    }
+                    ui.Segment("Weekend") {
+                        on press: settings.set_quiet_hours(
+                            settings.notifications,
+                            start_minute: focus.start_minute,
+                            end_minute: focus.end_minute,
+                            weekdays: 96,
+                        )
+                    }
+                }
+            }
             setting(
                 "Priority apps still come through",
                 "An app or a person marked as priority reaches you anyway",
@@ -577,6 +605,11 @@ fn quiet_days(days: Int) -> Text {
     } else if days == 31 {
         "on weekdays"
     } else if days == 96 { "at the weekend" } else { "on some days" }
+}
+
+/// Which of the days pickers the quiet hours' bitmask stands for.
+fn quiet_days_index(days: Int) -> Int {
+    if days == 31 { 1 } else if days == 96 { 2 } else { 0 }
 }
 
 /// This device's screens: the brightness of each, whether the picture turns with it, and the
@@ -800,8 +833,10 @@ view sound_pane() {
 /// How this device uses its battery: the power mode it runs in, what it charges to and when it
 /// goes to sleep.
 view power_pane() {
+    state week: Bool = false
     let power = device.power
     let battery = device.battery
+    let history = device.battery_history
     let prefs = settings.power
     ui.Section("Battery") {
         if battery.present {
@@ -812,6 +847,45 @@ view power_pane() {
                 } else { battery_words(battery.state) },
                 icon: .battery,
             )
+        }
+    }
+    if battery.present {
+        ui.Section("Its charge over time") {
+            ui.ToggleGroup(selected: if week { 1 } else { 0 }, label: "Over") {
+                ui.Segment("Today") {
+                    on press: set(week, false)
+                }
+                ui.Segment("This week") {
+                    on press: set(week, true)
+                }
+            }
+            ui.Drawing(
+                history_shapes(history.points, week),
+                meaning: .chart,
+                label: history_label(history.points, week),
+                height: .some(170.0),
+            )
+            ui.Text(
+                "A mark along the bottom is a stretch on the charger. Readings land every quarter hour.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+    }
+    if let limit = battery.charge_limit {
+        ui.Section("Charging") {
+            setting(
+                "Charge to",
+                "Stop charging at this per cent, which keeps the pack's life; choose the top for a trip",
+            ) {
+                ui.MenuButton("Charge to {limit.current}%", icon: .battery) {
+                    for choice in limit.choices {
+                        ui.MenuItem("{choice}%", checked: choice == limit.current) {
+                            on choose: device.set_charge_limit(device.battery, percent: choice)
+                        }
+                    }
+                }
+            }
         }
     }
     ui.Section("Power mode") {
@@ -962,6 +1036,93 @@ fn battery_words(state: Text) -> Text {
     } else if state == "pending-charge" {
         "About to charge"
     } else if state == "pending-discharge" { "About to drain" } else { "Plugged in" }
+}
+
+/// The last minute a reading was taken at, or zero without readings.
+fn newest_minute(points: List<device.HistoryPoint>) -> Int {
+    if let last = points.last() { last.unix_minute } else { 0 }
+}
+
+/// Where `minute` stands in the window from `from` to `from + span`, as a fraction of the chart's
+/// width.
+fn span_fraction(minute: Int, span: Int) -> Float {
+    (minute.to_float() / span.to_float()).clamp(0.0, 1.0)
+}
+
+/// The battery's charge over the last day or week as a line, the area under it washed out
+/// downward, and each stretch on the charger marked along the bottom.
+fn history_shapes(points: List<device.HistoryPoint>, week: Bool) -> List<ui.Shape> {
+    let span = if week { 10080 } else { 1440 }
+    let end = newest_minute(points)
+    let from = end - span
+    let shown = points.filter(p -> p.unix_minute >= from and p.unix_minute <= end)
+    if shown.len() < 2 {
+        return [
+            ui.Shape.text(
+                x: 0.5,
+                y: 0.5,
+                text: "Not enough readings yet",
+                role: .caption,
+                ink: .muted,
+                anchor: .middle,
+            ),
+        ]
+    }
+    let coords = shown.flat_map(
+        p -> [
+            span_fraction(p.unix_minute - from, span),
+            0.88 - 0.76 * p.capacity.to_float() / 100.0,
+        ],
+    )
+    let line = ui.Shape.path(
+        points: coords,
+        smooth: false,
+        fill: .some(.accent),
+        stroke: .some(.accent),
+        wash: true,
+    )
+    let grid = [0.12, 0.31, 0.5, 0.69, 0.88]
+        .map(
+            y -> ui.Shape.line(x1: 0.0, y1: y, x2: 1.0, y2: y, stroke: .track, weight: .hairline),
+        )
+    let charged = shown
+        .filter(p -> p.on_ac)
+        .map(
+            p -> ui.Shape.rect(
+                x: span_fraction(p.unix_minute - from, span) - 0.004,
+                y: 0.92,
+                w: 0.008,
+                h: 0.04,
+                round: 0.5,
+                fill: .some(.success),
+            ),
+        )
+    let labels = [
+        ui.Shape.text(
+            x: 0.0,
+            y: 0.04,
+            text: if week { "A week ago" } else { "A day ago" },
+            role: .caption,
+            ink: .muted,
+            anchor: .start,
+        ),
+        ui.Shape.text(x: 1.0, y: 0.04, text: "Now", role: .caption, ink: .muted, anchor: .end),
+        ui.Shape.text(x: 0.0, y: 0.97, text: "100%", role: .caption, ink: .muted, anchor: .start),
+    ]
+    [grid, [line], charged, labels].flat_map(s -> s)
+}
+
+/// What the chart shows, as assistive technology hears it.
+fn history_label(points: List<device.HistoryPoint>, week: Bool) -> Text {
+    let end = newest_minute(points)
+    let span = if week { 10080 } else { 1440 }
+    let shown = points.filter(p -> p.unix_minute >= end - span)
+    let over = if week { "week" } else { "day" }
+    if let last = shown.last() {
+        "The battery's charge over the last {over}: {last.capacity}% at the last reading"
+    } else {
+        "The battery's charge over the last {over}"
+    }
 }
 
 /// The segment the mode picker shows for the person's mode.
