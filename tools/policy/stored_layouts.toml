@@ -146,7 +146,7 @@ types = [
 [[layout]]
 format = "owner workspace document"
 version = 9
-digest = "dc9eb3f508b074a4"
+digest = "3f518ecef9f496af"
 what = """the journal appended beside each workspace's entry in a device's owner state: one postcard entry per publication, each a delta of what the entry before left (version 9 is version 8's layout, whose write binding and target moved to the publication module under new names, with no stored byte changed)"""
 types = [
   "crates/core/tilo-peer-state/src/owner/journal.rs:Entry",
