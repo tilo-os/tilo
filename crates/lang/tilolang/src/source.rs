@@ -184,18 +184,21 @@ pub fn dependency_order(root: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>,
     dependency_order_with(root, search, &[])
 }
 
-/// Where `root`'s imports are looked for: `search`, or `root`'s siblings when it is empty.
+/// Where `root`'s imports are looked for: `search`, or `root`'s siblings when it is empty. A root
+/// named by itself (`.`, the package's own directory, or `notes` beside it) has an empty parent;
+/// its siblings are then the ones of its absolute path.
 #[must_use]
 pub fn search_of(root: &Path, search: &[PathBuf]) -> Vec<PathBuf> {
-    if search.is_empty() {
-        vec![
-            root.parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf(),
-        ]
-    } else {
-        search.to_vec()
+    if !search.is_empty() {
+        return search.to_vec();
     }
+    let parent = match root.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => std::path::absolute(root)
+            .ok()
+            .and_then(|root| root.parent().map(Path::to_path_buf)),
+        parent => parent.map(Path::to_path_buf),
+    };
+    vec![parent.unwrap_or_else(|| PathBuf::from("."))]
 }
 
 /// [`dependency_order`], where an import of one of the apps `provided` is no package directory but
