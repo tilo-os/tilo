@@ -527,7 +527,7 @@ mod headless_console_launch_tests {
                 splice_game_ntsync(&mut game, true).unwrap();
                 assert!(
                     game.windows(3)
-                        .any(|window| { window == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
+                        .any(|window| { window == ["--dev-bind-try", "/dev/ntsync", "/dev/ntsync"] })
                 );
                 assert_eq!(game.last().map(String::as_str), Some("/app/game"));
 
@@ -1570,12 +1570,13 @@ fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), LaunchError> {
     )
 }
 
-/// Expose the upstream NT synchronization device only to GUI packages marked as games.
+/// Expose the upstream NT synchronization device only to GUI packages marked as games, where the
+/// kernel has one: a kernel without it still starts the game, which then synchronizes without it.
 fn splice_game_ntsync(argv: &mut Vec<String>, latency_sensitive: bool) -> Result<(), LaunchError> {
     if latency_sensitive {
         let entry = pop_entry(argv)?;
         argv.extend([
-            "--dev-bind".to_string(),
+            "--dev-bind-try".to_string(),
             "/dev/ntsync".to_string(),
             "/dev/ntsync".to_string(),
             entry,
