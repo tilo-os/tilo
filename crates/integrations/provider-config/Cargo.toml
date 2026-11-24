@@ -2,17 +2,20 @@
 name = "agent-provider-config"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "Portable, secret-safe model-provider configuration for Tilo agents."
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "agent_provider_config"
 path = "src/lib.rs"
 
 [dependencies]
-wire-frame = { path = "../../platform/wire-frame" }
-settings-store = { path = "../../system/settings-store" }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame" }
+settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 serde.workspace = true
 serde_json.workspace = true
 zeroize = { workspace = true, features = ["derive"] }

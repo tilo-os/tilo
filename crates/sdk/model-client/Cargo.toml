@@ -2,8 +2,9 @@
 name = "tilo-model-client"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "Authenticated, host-scoped model capabilities for Tilo applications."

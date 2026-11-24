@@ -2,11 +2,14 @@
 name = "tilo-theme-painter-wasm"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 # The toolkit links it into every app that is not the thin runtime, so it is MIT with the
 # SDK (LICENSING.md).
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "The interpreter (wasmi) a theme's painter set loaded from wasm runs on: fuel-bounded, memory-capped, no imports."
+repository.workspace = true
+homepage.workspace = true
 
 # The code the runtime leaves out. The toolkit names it in every build but
 # the thin one; there the painter engine (crates/engines/loadable/theme-painter)
