@@ -165,7 +165,7 @@ mod cases {
     fn texts(tree: &tilolang_runtime::UiNode) -> Vec<String> {
         of_kind(tree, "ui.Text")
             .iter()
-            .filter_map(|node| match node.props.get("text") {
+            .filter_map(|node| match node.props.get("value") {
                 Some(Value::Text(text)) => Some(text.clone()),
                 _ => None,
             })
@@ -190,7 +190,7 @@ mod cases {
         {
             let c = Camera::new();
             c.device.answers_cameras(
-                r#"[{"id":"cam-1","label":"Built-in"},{"id":"cam-2","label":"Studio"}]"#,
+                r#"[{"device":"cam-1","label":"Built-in"},{"device":"cam-2","label":"Studio"}]"#,
                 true,
             );
             c.call("list_cameras", vec![Value::resource(&c.root)]);
@@ -303,7 +303,7 @@ mod cases {
             let shutter = c.app.meta().action_named("shutter").expect("the shutter");
             assert_eq!(
                 shutter.key.as_deref(),
-                Some("Space"),
+                Some("space"),
                 "Space presses the shutter"
             );
             // The scanner and the document scanner are places the window goes into, opened with
@@ -315,7 +315,7 @@ mod cases {
                     .meta()
                     .actions
                     .iter()
-                    .all(|action| action.key.as_deref() != Some("Escape")),
+                    .all(|action| action.key.as_deref() != Some("escape")),
                 "no action of the app takes Escape from the window's way back"
             );
         }

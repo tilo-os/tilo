@@ -173,7 +173,8 @@ type CodesAnswer {
 }
 
 type CameraDevice {
-    id: Text
+    /// The engine's name for the camera, as it asks for it.
+    device: Text
     label: Text
 }
 
@@ -340,7 +341,7 @@ fn mecard_name(raw: Text) -> Text {
 }
 
 fn without_scheme(raw: Text, scheme: Text) -> Text {
-    if raw.lower().starts_with(scheme) { raw.slice(scheme.len(), raw.len()) } else { raw }
+    if raw.lower().starts_with(scheme.lower()) { raw.slice(scheme.len(), raw.len()) } else { raw }
 }
 
 /// The address an email code writes, and the subject it writes for the message.
@@ -1275,7 +1276,7 @@ fn shutter_words(p: CapturePreferences, counting: Bool, recording: Bool) -> Text
 }
 
 fn device_words(p: CapturePreferences) -> Text {
-    if let camera = p.cameras.find(d -> d.id == p.device) {
+    if let camera = p.cameras.find(d -> d.device == p.device) {
         camera.label
     } else if p.device == "" { "this computer's default camera" } else { p.device }
 }
@@ -1636,11 +1637,11 @@ view settings_page(c: Camera) {
                 for camera in p.cameras {
                     ui.ListRow(
                         camera.label,
-                        secondary: camera.id,
-                        selected: p.device == camera.id,
+                        secondary: camera.device,
+                        selected: p.device == camera.device,
                         icon: .camera,
                     ) {
-                        on activate: use_camera(c, camera.id)
+                        on activate: use_camera(c, camera.device)
                     }
                 }
                 if p.cameras.is_empty() {

@@ -329,7 +329,7 @@ fn file_json(name: &str, media: &str, bytes: usize, hash: &str) -> String {
 fn cameras() -> String {
     let devices = tilo_capture::devices(tilo_capture::DeviceKind::Camera)
         .into_iter()
-        .map(|device| serde_json::json!({ "id": device.id, "label": device.label }))
+        .map(|device| serde_json::json!({ "device": device.id, "label": device.label }))
         .collect::<Vec<_>>();
     let prompt = tilo_capture::availability(tilo_capture::Feature::Camera)
         == tilo_capture::Availability::Prompt;
