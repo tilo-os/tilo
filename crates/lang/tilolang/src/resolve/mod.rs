@@ -26,6 +26,9 @@ pub struct Template {
     /// The package whose names its body sees: `None` for the module's own, `std` for the library's.
     pub ns: Option<String>,
     pub decl: ast::ViewDecl,
+    /// The id the view is declared by in the package's ids lock. A template another package
+    /// declared keeps none: its ids are its own package's.
+    pub id: Option<String>,
 }
 
 /// The source of templates another package declared, placed past [`crate::diag::TEMPLATE_SPACE`]:
@@ -272,6 +275,7 @@ impl Env {
             .extend(crate::stdlib::templates().iter().map(|decl| Template {
                 ns: Some(crate::stdlib::APP.to_string()),
                 decl: decl.clone(),
+                id: None,
             }));
     }
 
@@ -476,6 +480,7 @@ impl Env {
                     self.templates.push(Template {
                         ns: Some(meta.app.clone()),
                         decl: view,
+                        id: None,
                     });
                 }
             }
@@ -1888,7 +1893,7 @@ impl Resolver<'_> {
             if let Item::View(v) = item
                 && crate::checker::is_template(v)
             {
-                self.template(v);
+                self.template(v, lock);
                 continue;
             }
             // An action's key in the ids lock: its name on the resource type it takes first, or its
@@ -2090,7 +2095,7 @@ impl Resolver<'_> {
 
     /// A view of the module expanded where it is called: its name taken, its body checked at each
     /// call, its `state` declarations made the view's own state.
-    fn template(&mut self, v: &ast::ViewDecl) {
+    fn template(&mut self, v: &ast::ViewDecl, lock: &IdsLock) {
         if self.env.own_callable(&v.name.name).is_some()
             || self.env.template(None, &v.name.name).is_some()
         {
@@ -2104,9 +2109,12 @@ impl Resolver<'_> {
             );
             return;
         }
+        // Its anchors are the ids lock's like a view's: a caller that expands it shows them.
+        self.anchors(v, lock);
         self.env.templates.push(Template {
             ns: None,
             decl: v.clone(),
+            id: Some(id_of(lock, &v.name.name)),
         });
     }
 

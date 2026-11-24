@@ -882,12 +882,11 @@ impl App {
     }
 
     /// Where `view` puts the control written `as name`: its own anchor, or one a view it calls
-    /// declares, as the nodes of the views it calls stand in its frame.
+    /// declares, including the views it expands (`templates`), as their nodes stand in its frame.
     pub fn anchor(&self, view: &str, name: &str) -> String {
         let meta = self.meta();
-        let start = meta
-            .views
-            .iter()
+        let views = || meta.views.iter().chain(meta.template_views.iter());
+        let start = views()
             .find(|v| v.name == view)
             .unwrap_or_else(|| panic!("no view {view}"));
         let mut seen = std::collections::HashSet::new();
@@ -902,7 +901,7 @@ impl App {
                 return a.id.clone();
             }
             for id in &v.calls {
-                if let Some(called) = meta.views.iter().find(|c| c.id == *id) {
+                if let Some(called) = views().find(|c| c.id == *id) {
                     look.push(called);
                 }
             }

@@ -194,4 +194,78 @@ view controls(r: T) {
         ));
         assert_eq!(rt.read(&root, "label").unwrap(), Value::text("pressed"));
     }
+
+    /// A view expanded where it is called (a template, here one taking the window's state) is a
+    /// view of the app: its metadata names the anchors its body declares and the views it calls,
+    /// and the view that shows it names the template, so a test presses what a part draws.
+    #[test]
+    fn a_template_expanded_in_a_part_is_reached_through_the_view_that_shows_it() {
+        let source = r#"app so.tilo.t "T"
+
+type T {
+    label: Text
+}
+
+root T
+
+default view t for T
+
+action press(t: T) {
+    t.label = "pressed"
+}
+
+view t(r: T) {
+    state open: Bool = true
+    ui.NavShell(content_kind: .canvas, title: "T") {
+        content: {
+            stack(fill) {
+                tools(r, open)
+            }
+        }
+    }
+}
+
+view tools(r: T, open: State<Bool>) {
+    ui.Button("Press", toggled: open) {
+        on press: press(r)
+    } as press
+}
+"#;
+        let app = App::compile(source, &[]);
+        let meta = app.meta();
+        let t = meta.views.iter().find(|v| v.name == "t").expect("view t");
+        let tools = meta
+            .template_views
+            .iter()
+            .find(|v| v.name == "tools")
+            .expect("the template's metadata");
+        assert_eq!(
+            t.calls,
+            vec![tools.id.clone()],
+            "the view names the template it expands, not a key of its call site"
+        );
+        assert_eq!(
+            tools
+                .anchors
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            ["press"],
+            "the template's metadata carries the anchors its body declares"
+        );
+
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).expect("a runtime");
+        app.load(&rt);
+        let root = rt.create_root("T").expect("a root");
+        let view = rt
+            .open_view(&me(), &app.view("t"), vec![Value::resource(&root)])
+            .expect("the view opens");
+        let press = app.anchor("t", "press");
+        assert!(view.tree().find(&press).is_some(), "{}", dump(view.tree()));
+        assert!(matches!(
+            view.press(&press).expect("the button runs"),
+            InvokeOutcome::Done(_)
+        ));
+        assert_eq!(rt.read(&root, "label").unwrap(), Value::text("pressed"));
+    }
 }

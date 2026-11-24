@@ -455,8 +455,17 @@ impl Checker<'_> {
         {
             self.protected.insert(self.st.view_id.clone());
         }
-        let itself = (t.ns.clone(), view.name.name.clone());
-        if self.st.expanding.contains(&itself) {
+        let itself = super::Expanding {
+            ns: t.ns.clone(),
+            name: view.name.name.clone(),
+            id: t.id.clone(),
+        };
+        if self
+            .st
+            .expanding
+            .iter()
+            .any(|e| e.ns == itself.ns && e.name == itself.name)
+        {
             self.err(
                 "E061",
                 span,
@@ -745,6 +754,12 @@ impl Checker<'_> {
             ui: self.st.ui,
         };
         let saved = self.enter(&scope, HashMap::new());
+        // What expands the template calls what it calls: the view it stands in, or the template
+        // around it.
+        if let Some(id) = &t.id {
+            let caller = self.owner_id();
+            self.view_edges.push((caller, id.clone()));
+        }
         self.st.expanding.push(itself);
         // The defaults of the values left out, read in the template's scope.
         for (i, p) in view.params.iter().enumerate() {

@@ -151,9 +151,8 @@ struct FnState {
     types: HashMap<String, Ty>,
     /// What node keys start with after the view's id: the templates being expanded, by call.
     prefix: String,
-    /// The templates being expanded, outermost first, each by the package whose names its body sees
-    /// and its name.
-    expanding: Vec<(Option<String>, String)>,
+    /// The templates being expanded, outermost first.
+    expanding: Vec<Expanding>,
     /// The resource the view shows, when its first parameter is one: what the system's parts of its
     /// controls are about (a rich input's `@` drawer).
     target: Option<(LocalId, Ty)>,
@@ -180,8 +179,8 @@ struct FnState {
     /// handler's binding takes ([`Checker::handler_block`]).
     last_action: Option<Ty>,
     /// The locals holding a record value — one built with its fields, read from text, or taken from
-    /// a list of them — rather than a resource the store keeps. An action's record parameter is a
-    /// resource, so passing one of these there is refused.
+    /// a list of them — rather than a resource the store keeps: a write to one edits the value,
+    /// never the store.
     values: std::collections::HashSet<LocalId>,
     /// The locals holding a `List` whose items are such record values: what `first` and a loop read
     /// out of it is a value too.
@@ -284,6 +283,15 @@ pub(crate) struct StateRef {
     pub id: String,
     pub ty: Ty,
     pub local: LocalId,
+}
+
+/// A template being expanded: the package whose names its body sees, its name, and the id its
+/// package declares it by (none for another package's template).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Expanding {
+    pub ns: Option<String>,
+    pub name: String,
+    pub id: Option<String>,
 }
 
 pub(crate) struct Checker<'a> {
