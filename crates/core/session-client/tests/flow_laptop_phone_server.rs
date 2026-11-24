@@ -178,7 +178,7 @@ async fn rig() -> Rig {
 /// leaves this machine's loopback for a tilo.sh or relay name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_signs_in_and_controls_all_workspaces_without_tilosh() {
-    let f = rig().await;
+    let f = Box::pin(rig()).await;
     let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
 
     // Both workspaces of the person are listed, and the laptop's own device is theirs.
@@ -232,7 +232,7 @@ async fn flow_signs_in_and_controls_all_workspaces_without_tilosh() {
 /// takes this step).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn nothing_reaches_tilo_sh_or_a_public_relay() {
-    let f = rig().await;
+    let f = Box::pin(rig()).await;
     // The endpoint every device of the person's binds with, as the runtime binds it by
     // default.
     let relays = tilo_endpoint_reachability::relays();
@@ -298,7 +298,7 @@ async fn nothing_reaches_tilo_sh_or_a_public_relay() {
 /// There is no published action or setting that turns the server's web UI off yet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_server_serves_its_web_ui_by_default_and_a_setting_turns_it_off() {
-    let f = rig().await;
+    let f = Box::pin(rig()).await;
     let origin = f.host.web.plain_origin.clone().unwrap();
     let addr = flow::address_of(&origin);
 
@@ -339,8 +339,8 @@ async fn flow_server_serves_its_web_ui_by_default_and_a_setting_turns_it_off() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_phone_joins_like_any_other_device() {
     // The phone's daemon reads its places from the process's environment: set before it starts.
-    let home = phone::Home::new();
-    let f = rig().await;
+    let _home = phone::Home::new();
+    let f = Box::pin(rig()).await;
     let entry = tilo_device_identity::login::Entry {
         workspace: f.work.clone(),
         workspace_name: Some("Work".into()),
@@ -351,7 +351,7 @@ async fn flow_phone_joins_like_any_other_device() {
     };
     let runtime = tokio::runtime::Handle::current();
     let laptop = block_in_place(|| phone::Issuing::start(&runtime, &f.root, entry));
-    let mut device = block_in_place(|| tilo_phone::core::Device::start(&home.profile()))
+    let mut device = block_in_place(|| tilo_phone::core::Device::start(&phone::profile()))
         .expect("the phone's daemon starts");
     let before = block_in_place(|| phone::shown(&device));
     assert!(
@@ -441,7 +441,7 @@ async fn flow_phone_joins_like_any_other_device() {
 /// cluster, not the workspace host.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_laptop_picks_the_canvas_shell_and_it_is_their_layout() {
-    let f = rig().await;
+    let f = Box::pin(rig()).await;
     let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
     let placed = flow::ask(
         &laptop,
@@ -473,7 +473,7 @@ async fn flow_laptop_picks_the_canvas_shell_and_it_is_their_layout() {
 /// No action starts such a turn and no data path backs a view yet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_chat_turn_writes_a_view_backed_by_a_dataset() {
-    let f = rig().await;
+    let f = Box::pin(rig()).await;
     let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
     let answered = flow::ask(
         &laptop,
@@ -519,7 +519,7 @@ async fn flow_chat_turn_writes_a_view_backed_by_a_dataset() {
 /// An alarm the person sets on the laptop through their agent rings on the phone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_alarm_set_on_laptop_through_the_agent_rings_on_the_phone() {
-    let f = rig().await;
+    let f = Box::pin(rig()).await;
     let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
     let rung = flow::ask(
         &laptop,
@@ -630,7 +630,7 @@ async fn flow_newcomer_joins_on_the_web_and_opens_an_app_as_a_page() {
 /// A device whose grant is limited to files is not offered yet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_brothers_device_syncs_only_files() {
-    let f = rig().await;
+    let f = Box::pin(rig()).await;
     let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
     // Their brother is a person of their own, with his own identity and phone.
     let (brother, _) = UserIdentity::generate("Bram", 1);
@@ -665,7 +665,7 @@ async fn flow_brothers_device_syncs_only_files() {
 /// alone (the owner of the identity lane takes the rest).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_every_device_manages_every_other() {
-    let f = rig().await;
+    let f = Box::pin(rig()).await;
     let phone = f.client(&f.phone_session, &f.phone, "android-phone");
     let laptop_key = flow::key_of(&f.laptop.cert);
 

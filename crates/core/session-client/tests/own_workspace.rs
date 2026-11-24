@@ -208,8 +208,8 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // and the workspace the site just made him, which is his own. Taking one in lists it in the
     // record of his own workspace only when it is his: the one the site made for him, written
     // by the device that governs that record.
-    take_in(&bob_workspaces, &workspaces, &lounge.workspace).await;
-    take_in(&bob_workspaces, &workspaces, &own.workspace).await;
+    take_in(bob_workspaces, workspaces, &lounge.workspace).await;
+    take_in(bob_workspaces, workspaces, &own.workspace).await;
     let names = listed_names(bob_workspaces).await;
     assert!(
         names.contains(&own.name),
@@ -316,7 +316,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     assert_eq!(first.0.name, "Twice");
     // His computer takes it in, and the second ask made no second workspace: one entry in the
     // list has that name.
-    take_in(&bob_workspaces, &workspaces, &first.0.workspace).await;
+    take_in(bob_workspaces, workspaces, &first.0.workspace).await;
     let twice = listed_names(bob_workspaces)
         .await
         .iter()

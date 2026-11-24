@@ -46,6 +46,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The phone's places, set as its launch sets them and put back after the test.
+tilo-test-env = { path = "../../tools/test-env" }
 # The person's laptop that prints the phone's ticket, and the server it enters.
 tilo-api = { path = "../../crates/core/tilo-api", features = ["test-support"] }
 tilo-workspace-service = { path = "../../crates/core/tilo-workspace-service" }

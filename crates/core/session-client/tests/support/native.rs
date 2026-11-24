@@ -103,13 +103,13 @@ pub async fn connect(
     link.prove_member(&device.cert, &device.key, &host_cert)
         .await
         .expect("the host admits the device");
-    let dialed = sync
+    let admitted = sync
         .dial_over(Arc::new(link), host)
         .await
         .expect("the workspace admits the device");
     let reader = sync.reader();
     let running = sync.clone();
-    let running = tokio::spawn(async move { dialed.run(&running).await });
+    let running = tokio::spawn(async move { admitted.run(&running).await });
     DeviceLink {
         sync,
         reader,

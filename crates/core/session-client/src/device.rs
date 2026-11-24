@@ -577,9 +577,7 @@ impl Device {
         labels: &WorkspaceLabels,
         workspace: Option<&str>,
     ) -> Result<tilo_server_protocol::workspaces::PersonWorkspaces, DeviceRefusal> {
-        use tilo_server_protocol::workspaces::{
-            IDENTITY_LIST, MEMBERSHIP_APP, OWNER_ROLE, PersonWorkspaces, member_record,
-        };
+        use tilo_server_protocol::workspaces::{IDENTITY_LIST, PersonWorkspaces, member_record};
         let person = self.cert.user_public_key;
         let own = tilo_server_protocol::servers::person_workspace_id(&person);
         let actions = self.actions(WorkspaceId::from(collab_types::person_workspace(&person)));
@@ -645,43 +643,63 @@ impl Device {
         list.with_hosts(&names, Some(&self.server_cert.device_public_key));
         let member = member_record(&person);
         for index in 0..list.workspaces.len() {
-            let named = list.workspaces[index].workspace.clone();
-            let Some(workspace_id) = WorkspaceId::parse(&named) else {
-                continue;
-            };
-            let actions = self.actions(workspace_id);
-            let record = |app: &str, record: &str| tilo_actions::remote::ResourceReadRequest {
-                workspace: named.clone(),
-                app: app.to_owned(),
-                record: record.to_owned(),
-                joined: false,
-                after: None,
-                wait_ms: None,
-                answer: tilo_actions::remote::ReadAnswer::Reading,
-            };
-            if let Some(reading) =
-                Self::read_fields(&actions, record(MEMBERSHIP_APP, &member)).await
-            {
-                list.with_membership(&named, &reading);
-            }
-            if list.workspaces[index].role.as_deref() == Some(OWNER_ROLE)
-                && let Some(reading) = Self::read_fields(
-                    &actions,
-                    record(
-                        tilo_server_protocol::workspaces::OWNERSHIP.0,
-                        tilo_server_protocol::workspaces::OWNERSHIP.1,
-                    ),
-                )
-                .await
-            {
-                list.with_ownership(&named, &reading);
-            }
+            self.join_membership(&mut list, index, &member).await;
         }
         list.workspaces.retain(|entry| {
             tilo_server_protocol::workspaces::labelled(&entry.labels, labels)
                 && workspace.is_none_or(|only| entry.workspace == only)
         });
         Ok(list)
+    }
+
+    /// Join `list`'s entry at `index` with the workspace's membership of `member`, and with its
+    /// ownership record where they own it: the role it shows and when it was made.
+    async fn join_membership(
+        &self,
+        list: &mut tilo_server_protocol::workspaces::PersonWorkspaces,
+        index: usize,
+        member: &str,
+    ) {
+        use tilo_server_protocol::workspaces::{MEMBERSHIP_APP, OWNER_ROLE};
+        let Some(address) = list
+            .workspaces
+            .get(index)
+            .map(|entry| entry.workspace.clone())
+        else {
+            return;
+        };
+        let Some(workspace_id) = WorkspaceId::parse(&address) else {
+            return;
+        };
+        let actions = self.actions(workspace_id);
+        let record = |app: &str, record: &str| tilo_actions::remote::ResourceReadRequest {
+            workspace: address.clone(),
+            app: app.to_owned(),
+            record: record.to_owned(),
+            joined: false,
+            after: None,
+            wait_ms: None,
+            answer: tilo_actions::remote::ReadAnswer::Reading,
+        };
+        if let Some(reading) = Self::read_fields(&actions, record(MEMBERSHIP_APP, member)).await {
+            list.with_membership(&address, &reading);
+        }
+        let owns = list
+            .workspaces
+            .get(index)
+            .is_some_and(|entry| entry.role.as_deref() == Some(OWNER_ROLE));
+        if owns
+            && let Some(reading) = Self::read_fields(
+                &actions,
+                record(
+                    tilo_server_protocol::workspaces::OWNERSHIP.0,
+                    tilo_server_protocol::workspaces::OWNERSHIP.1,
+                ),
+            )
+            .await
+        {
+            list.with_ownership(&address, &reading);
+        }
     }
 
     /// The fields a read of a record answered (`{"records": [{..., "value"}]}`): `None` where the

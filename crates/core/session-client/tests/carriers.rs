@@ -215,7 +215,7 @@ impl Ada {
         argument: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let serde_json::Value::Object(argument) = argument else {
-            unreachable!("an argument is an object")
+            panic!("an argument is an object")
         };
         link.ask(
             Arc::new(key.clone()),
@@ -452,7 +452,7 @@ async fn log_in_with(
         "device_public_key": hex::encode(key.verifying_key().to_bytes()),
         "agent": "Safari on iPhone",
     }) else {
-        unreachable!("an argument is an object")
+        panic!("an argument is an object")
     };
     let answer = tab
         .ask(

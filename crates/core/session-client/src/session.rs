@@ -395,11 +395,10 @@ fn session_task(
         dialing: BTreeSet::new(),
         sent: BTreeSet::new(),
         actions: None,
-        fetch_grant_asked: false,
+        latched: Latched::default(),
         lent,
         barriers: Vec::new(),
         awaiting_surface: BTreeMap::new(),
-        surfaces_arrived: false,
         replays: BTreeSet::new(),
         held_barriers: Vec::new(),
         unheard_refusals: BTreeMap::new(),
@@ -508,6 +507,17 @@ struct WorkspaceLink {
     transport: Option<Arc<dyn Transport>>,
 }
 
+/// What this session latches when it happens and clears as it acts on it: a fact it acts on once,
+/// not a state it holds.
+#[derive(Default)]
+struct Latched {
+    /// Whether this session asked its host for its fetch proxy token: asked once, in a workspace
+    /// it is in, and the answer kept for [`Link::fetch_proxy_session`].
+    fetch_grant: bool,
+    /// Whether an app surface arrived since the session last asked for what waited for one.
+    surface_arrived: bool,
+}
+
 struct Task {
     /// This session's own command queue, for answers it waits on in the
     /// background; weak, so the session still ends with its last handle.
@@ -595,9 +605,8 @@ struct Task {
     sent: BTreeSet<(WorkspaceId, [u8; 32])>,
     /// The link this session asks its host's action service on, once it is up.
     actions: Option<tilo_server_client::link::Link>,
-    /// Whether this session asked its host for its fetch proxy token: asked once, in a workspace
-    /// it is in, and the answer kept for [`Link::fetch_proxy_session`].
-    fetch_grant_asked: bool,
+    /// The one-off facts this session latches and clears as it acts on them.
+    latched: Latched,
     /// The device service's member copies, for a session lent them: it dials no link of its own.
     lent: Option<LentParts>,
     /// Each waits for the writes that were in this device's ownership when it was called, and
@@ -605,8 +614,6 @@ struct Task {
     barriers: Vec<Owed>,
     /// Writes the owner holds for an app surface this page does not have, by that surface.
     awaiting_surface: BTreeMap<[u8; 32], (WorkspaceId, DocumentRoute)>,
-    /// Whether an app surface arrived since the session last asked for what waited for one.
-    surfaces_arrived: bool,
     /// Records whose writes the replica asked to hear again, replayed by the host.
     replays: BTreeSet<DocumentRoute>,
     /// This device's replicas, as the page's and agents' readers read them.
@@ -875,7 +882,7 @@ impl Task {
     /// ([`crate::Link::fetch_proxy_session`]). The workspace's roster is what decides the ask, so
     /// a page in no workspace here has none, and a host that serves no proxy mints none.
     fn request_fetch_grant(&mut self) {
-        if self.fetch_grant_asked {
+        if self.latched.fetch_grant {
             return;
         }
         let Some(link) = self.actions.clone() else {
@@ -884,7 +891,7 @@ impl Task {
         let Some(&workspace_id) = self.links.keys().next() else {
             return;
         };
-        self.fetch_grant_asked = true;
+        self.latched.fetch_grant = true;
         let signer = Arc::clone(&self.signer);
         let cert = self.config.cert.clone();
         let host = self.config.server_cert.device_public_key;
@@ -2060,7 +2067,7 @@ impl Task {
     async fn settle_owed(&mut self) -> bool {
         self.settle_live_sessions();
         self.ask_surfaces();
-        if std::mem::take(&mut self.surfaces_arrived) || !self.replays.is_empty() {
+        if std::mem::take(&mut self.latched.surface_arrived) || !self.replays.is_empty() {
             self.replay_surfaced();
         }
         // What the host brought into a sealed record's history is this device's to fold, as its
@@ -2739,7 +2746,7 @@ impl Task {
         let device = self.config.cert.device_public_key;
         let now = tilo_clock::unix_now_ms();
         if let Some(arrived) = self.surface_wants.piece(&device, &frame, now) {
-            self.surfaces_arrived |= crate::surfaces::keep(&arrived.hash, arrived.bytes);
+            self.latched.surface_arrived |= crate::surfaces::keep(&arrived.hash, arrived.bytes);
             return;
         }
         self.reports.emit(&crate::Event::DocumentContent {
@@ -4156,120 +4163,11 @@ impl TicketLink {
 
     /// Close the kept link.
     pub async fn close(&self) {
-        if let Some(link) = self.link.lock().await.take() {
+        let held = self.link.lock().await.take();
+        if let Some(link) = held {
             link.close("");
         }
         self.dialer.close().await;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A visitor's page joins a workspace of another person's host without asking that host to
-    /// place it, which the host refuses to anyone but its own person.
-    #[test]
-    fn only_the_hosts_person_asks_it_to_place_a_workspace() {
-        let cert = |user: u8, device: u8| DeviceCert {
-            user_public_key: [user; 32],
-            device_public_key: [device; 32],
-            device_label: String::new(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        let host = cert(1, 2);
-        assert!(places_workspaces(&cert(1, 3), &host));
-        assert!(!places_workspaces(&cert(4, 5), &host));
-    }
-
-    fn status(workspaces: &[(WorkspaceId, bool)]) -> PeerStatus {
-        PeerStatus {
-            phase: TransportPhase::Connected,
-            authenticated: true,
-            workspaces: workspaces.iter().copied().collect(),
-            ..PeerStatus::connecting([0; 32])
-        }
-    }
-
-    #[test]
-    fn workspaces_not_admitted_within_the_timeout_are_overdue_once_dialled() {
-        let since = 1_000;
-        let waiting = status(&[
-            (WorkspaceId::from_u128(1), true),
-            (WorkspaceId::from_u128(2), false),
-        ]);
-        assert_eq!(
-            admission_state(&waiting, None, since + ADMISSION_TIMEOUT_MS),
-            Admission::Waiting
-        );
-        assert_eq!(
-            admission_state(&waiting, Some(since), since + ADMISSION_TIMEOUT_MS - 1),
-            Admission::Waiting
-        );
-        assert_eq!(
-            admission_state(&waiting, Some(since), since + ADMISSION_TIMEOUT_MS),
-            Admission::Overdue
-        );
-        let admitted = status(&[
-            (WorkspaceId::from_u128(1), true),
-            (WorkspaceId::from_u128(2), true),
-        ]);
-        assert_eq!(
-            admission_state(&admitted, Some(since), since + ADMISSION_TIMEOUT_MS),
-            Admission::Admitted
-        );
-        assert_eq!(
-            admission_state(&status(&[]), Some(since), u64::MAX),
-            Admission::Admitted
-        );
-    }
-
-    #[test]
-    fn a_changed_server_stops_the_page_and_a_proxys_page_never_counts() {
-        let code = |error| match refusal(&error) {
-            Refusal::Final(code, _) => code,
-            Refusal::Unexplained => "unexplained",
-            Refusal::Reachability => "reachability",
-        };
-        assert_eq!(code(LinkError::ServerChanged), "host-changed");
-        assert_eq!(
-            code(LinkError::Malformed("unexpected end of input".into())),
-            "reachability"
-        );
-        assert_eq!(
-            code(LinkError::Unavailable("status 502".into())),
-            "reachability"
-        );
-        assert_eq!(code(LinkError::Sign("locked".into())), "reachability");
-        assert_eq!(code(LinkError::Refused("io: closed".into())), "unexplained");
-    }
-
-    /// A page that lists nobody says why: each workspace's live session names what it
-    /// waits for.
-    #[test]
-    fn a_live_session_that_was_not_reached_is_named_in_the_channel_diagnostics() {
-        let mut live_sessions = live_session::LiveSessions::default();
-        live_sessions.later(WorkspaceId::from_u128(7), 12_000);
-        assert!(live_sessions.describe().contains("not joined"));
-        assert_eq!(live_sessions.missed(WorkspaceId::from_u128(7)), 1);
-        assert_eq!(
-            live_sessions.missed(WorkspaceId::from_u128(7)),
-            live_session::MISSES_BEFORE_NOTE
-        );
-        live_sessions.refused(WorkspaceId::from_u128(7), 60_000);
-        assert!(live_sessions.describe().contains("does not admit"));
-        let mut unasked = live_session::LiveSessions::default();
-        unasked.note_unasked(
-            WorkspaceId::from_u128(8),
-            "This page holds no channel keys for its workspace yet.",
-        );
-        assert!(unasked.describe().contains("not asked"));
-        unasked.began(WorkspaceId::from_u128(8), 1_000, 1, &BTreeSet::new());
-        assert!(!unasked.describe().contains("not asked"));
     }
 }
 
@@ -4574,5 +4472,116 @@ async fn ask_entry(
         ReceiptStatus::Accepted => Err(EntryFailure::unreachable(
             "the host did not answer the entry".into(),
         )),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A visitor's page joins a workspace of another person's host without asking that host to
+    /// place it, which the host refuses to anyone but its own person.
+    #[test]
+    fn only_the_hosts_person_asks_it_to_place_a_workspace() {
+        let cert = |user: u8, device: u8| DeviceCert {
+            user_public_key: [user; 32],
+            device_public_key: [device; 32],
+            device_label: String::new(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        let host = cert(1, 2);
+        assert!(places_workspaces(&cert(1, 3), &host));
+        assert!(!places_workspaces(&cert(4, 5), &host));
+    }
+
+    fn status(workspaces: &[(WorkspaceId, bool)]) -> PeerStatus {
+        PeerStatus {
+            phase: TransportPhase::Connected,
+            authenticated: true,
+            workspaces: workspaces.iter().copied().collect(),
+            ..PeerStatus::connecting([0; 32])
+        }
+    }
+
+    #[test]
+    fn workspaces_not_admitted_within_the_timeout_are_overdue_once_dialled() {
+        let since = 1_000;
+        let waiting = status(&[
+            (WorkspaceId::from_u128(1), true),
+            (WorkspaceId::from_u128(2), false),
+        ]);
+        assert_eq!(
+            admission_state(&waiting, None, since + ADMISSION_TIMEOUT_MS),
+            Admission::Waiting
+        );
+        assert_eq!(
+            admission_state(&waiting, Some(since), since + ADMISSION_TIMEOUT_MS - 1),
+            Admission::Waiting
+        );
+        assert_eq!(
+            admission_state(&waiting, Some(since), since + ADMISSION_TIMEOUT_MS),
+            Admission::Overdue
+        );
+        let admitted = status(&[
+            (WorkspaceId::from_u128(1), true),
+            (WorkspaceId::from_u128(2), true),
+        ]);
+        assert_eq!(
+            admission_state(&admitted, Some(since), since + ADMISSION_TIMEOUT_MS),
+            Admission::Admitted
+        );
+        assert_eq!(
+            admission_state(&status(&[]), Some(since), u64::MAX),
+            Admission::Admitted
+        );
+    }
+
+    #[test]
+    fn a_changed_server_stops_the_page_and_a_proxys_page_never_counts() {
+        let code = |error| match refusal(&error) {
+            Refusal::Final(code, _) => code,
+            Refusal::Unexplained => "unexplained",
+            Refusal::Reachability => "reachability",
+        };
+        assert_eq!(code(LinkError::ServerChanged), "host-changed");
+        assert_eq!(
+            code(LinkError::Malformed("unexpected end of input".into())),
+            "reachability"
+        );
+        assert_eq!(
+            code(LinkError::Unavailable("status 502".into())),
+            "reachability"
+        );
+        assert_eq!(code(LinkError::Sign("locked".into())), "reachability");
+        assert_eq!(code(LinkError::Refused("io: closed".into())), "unexplained");
+    }
+
+    /// A page that lists nobody says why: each workspace's live session names what it
+    /// waits for.
+    #[test]
+    fn a_live_session_that_was_not_reached_is_named_in_the_channel_diagnostics() {
+        let mut live_sessions = live_session::LiveSessions::default();
+        live_sessions.later(WorkspaceId::from_u128(7), 12_000);
+        assert!(live_sessions.describe().contains("not joined"));
+        assert_eq!(live_sessions.missed(WorkspaceId::from_u128(7)), 1);
+        assert_eq!(
+            live_sessions.missed(WorkspaceId::from_u128(7)),
+            live_session::MISSES_BEFORE_NOTE
+        );
+        live_sessions.refused(WorkspaceId::from_u128(7), 60_000);
+        assert!(live_sessions.describe().contains("does not admit"));
+        let mut unasked = live_session::LiveSessions::default();
+        unasked.note_unasked(
+            WorkspaceId::from_u128(8),
+            "This page holds no channel keys for its workspace yet.",
+        );
+        assert!(unasked.describe().contains("not asked"));
+        unasked.began(WorkspaceId::from_u128(8), 1_000, 1, &BTreeSet::new());
+        assert!(!unasked.describe().contains("not asked"));
     }
 }

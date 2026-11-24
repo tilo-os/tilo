@@ -19082,6 +19082,7 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-runtime",
  "tilo-server-protocol",
+ "tilo-test-env",
  "tilo-user-identity",
  "tilo-workspace-service",
  "tilolang-cli",

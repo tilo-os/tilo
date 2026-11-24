@@ -52,7 +52,7 @@ fn a_phone_signs_in_with_a_ticket_and_sees_its_workspace_and_its_apps() {
     let laptop = support::Issuing::start(server.runtime.handle(), &server.person, server.entry());
     let scratch = tempfile::tempdir().unwrap();
     install_notes(scratch.path());
-    let mut phone = tilo_phone::core::Device::start(&home.profile()).expect("the phone's daemon");
+    let mut phone = tilo_phone::core::Device::start(&support::profile()).expect("the phone's daemon");
     let before = support::shown(&phone);
     assert!(
         !before.signed_in,

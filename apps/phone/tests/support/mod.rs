@@ -24,6 +24,8 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 /// as the process's environment before the daemon starts, as the phone's launch sets them.
 pub struct Home {
     dir: tempfile::TempDir,
+    /// The variables the phone's places were set in, put back when the home goes.
+    env: tilo_test_env::ScopedEnv,
 }
 
 impl Home {
@@ -53,33 +55,30 @@ impl Home {
         for (_, path) in &set {
             std::fs::create_dir_all(path).unwrap();
         }
-        // SAFETY: set before this process starts any thread of its own that reads the
-        // environment: the phone's daemon, the server and the laptop start after this.
-        unsafe {
-            for (name, path) in set {
-                std::env::set_var(name, path);
-            }
-            // A phone keeps its identity's secrets in its own files: it has no keyring.
-            std::env::set_var("TILO_IDENTITY_FILE_SECRETS", "1");
-            for inherited in [
-                "TILO_RUNTIME_PROFILE",
-                "TILO_APPS_DATA_DIR",
-                "TILO_APPS_SYSTEM_DIR",
-                "TILO_AGENT_SOCKET",
-                "TILO_API_KEY",
-                "TILO_API_URL",
-                "CREDENTIALS_DIRECTORY",
-            ] {
-                std::env::remove_var(inherited);
-            }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        for (name, path) in set {
+            env.set(name, path);
         }
-        Self { dir }
+        // A phone keeps its identity's secrets in its own files: it has no keyring.
+        env.set("TILO_IDENTITY_FILE_SECRETS", "1");
+        for inherited in [
+            "TILO_RUNTIME_PROFILE",
+            "TILO_APPS_DATA_DIR",
+            "TILO_APPS_SYSTEM_DIR",
+            "TILO_AGENT_SOCKET",
+            "TILO_API_KEY",
+            "TILO_API_URL",
+            "CREDENTIALS_DIRECTORY",
+        ] {
+            env.remove(inherited);
+        }
+        Self { dir, env }
     }
+}
 
-    /// The daemon's profile, where the phone keeps it.
-    pub fn profile(&self) -> PathBuf {
-        tilo_phone::profile()
-    }
+/// The daemon's profile, where the phone keeps it.
+pub fn profile() -> PathBuf {
+    tilo_phone::profile()
 }
 
 /// A key made from `seed`, so each test's devices are the same devices on every run.

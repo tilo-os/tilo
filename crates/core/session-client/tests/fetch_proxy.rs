@@ -193,7 +193,7 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
         .invoke(
             &outsider.caller(),
             tilo_server_protocol::workspaces::fetch_grant_invoke(
-                &WORKSPACE,
+                WORKSPACE,
                 tilo_actions::InvocationId::new(),
             ),
         )
