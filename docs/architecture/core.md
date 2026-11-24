@@ -368,7 +368,10 @@ held connection, or engine work that needs the secret run as such a process. A
 process several apps share never receives a secret. The process's egress, fixed
 at its launch, is the network its package was granted, which may name every host
 under a domain when the person is shown that domain as such, and a new grant
-restarts it. Passwords an app keeps are vault items, never
+restarts it. A grant may include UDP to its hosts, which the egress proxy carries
+to their resolved addresses alone; the process never holds raw network. A live
+call, its keys and an app's call lane are the daemon's, so a device with no
+session carries a call, and the desktop is a client of it. Passwords an app keeps are vault items, never
 fields of its own records. An item says which app and purpose it serves, and the
 app finds it by those. Secrets the old keeper holds move into the vault once, on
 the person's own device, through the ordinary add as that person, and leave the
