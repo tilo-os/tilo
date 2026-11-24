@@ -938,8 +938,8 @@ action search(a: Atlas, query: Text) uses web, time (
                 known.longitude = place.longitude
                 known.found = true
             } else {
-                let added = a.places.insert(place)
-                added.found = true
+                place.found = true
+                a.places.insert(place)
             }
         }
     }
@@ -1196,14 +1196,14 @@ action directions(a: Atlas, from_words: Text, to_words: Text) uses web, time (
         a.routes.remove(old)
     }
     for route in tours.found {
-        let added = a.routes.insert(route)
-        added.mode = a.mode
-        added.from_name = from.name
-        added.to_name = to.name
-        added.from_latitude = from.latitude
-        added.from_longitude = from.longitude
-        added.to_latitude = to.latitude
-        added.to_longitude = to.longitude
+        route.mode = a.mode
+        route.from_name = from.name
+        route.to_name = to.name
+        route.from_latitude = from.latitude
+        route.from_longitude = from.longitude
+        route.to_latitude = to.latitude
+        route.to_longitude = to.longitude
+        a.routes.insert(route)
     }
     a.route_at = 0
     a.navigating = false
@@ -1256,9 +1256,9 @@ action accept_route(a: Atlas, routes: List<Route>, from_name: Text, to_name: Tex
         a.routes.remove(old)
     }
     for found in routes {
-        let added = a.routes.insert(found)
-        added.from_name = from_name
-        added.to_name = to_name
+        found.from_name = from_name
+        found.to_name = to_name
+        a.routes.insert(found)
     }
     a.route_at = 0
     a.navigating = false
@@ -1595,8 +1595,8 @@ action open_link(a: Atlas, link: Text) -> host.Resource uses web, time (
                                 known.found = true
                             }
                         } else {
-                            let added = a.places.insert(place)
-                            added.found = true
+                            place.found = true
+                            a.places.insert(place)
                         }
                     }
                 }
