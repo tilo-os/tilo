@@ -9,26 +9,32 @@ use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 use crate::model::{DESKTOP_APP, Hit, InvokeTarget, Source, Target};
 
-/// The session's references: [`BRING`] puts one in a workspace, and choosing one the person may
-/// not read asks [`UNAVAILABLE`] of it, which it refuses saying why.
+/// The session's references: [`BRING`] puts one in a workspace and [`REMOVE`] takes one out,
+/// and choosing one the person may not read asks [`UNAVAILABLE`] of it, which it refuses saying
+/// why.
 pub const REFERENCES_RESOURCE: &str = "desktop:references";
 pub const BRING: &str = "bring";
+pub const REMOVE: &str = "remove";
 pub const UNAVAILABLE: &str = "unavailable";
-/// What [`BRING`] is told of the record it brings: where it lives, its app, its id and its kind.
+/// What [`BRING`] is told of the record it brings: where it lives, its app and its id.
 pub const WORKSPACE_PARAM: &str = "workspace";
 pub const APP_PARAM: &str = "app";
 pub const RECORD_PARAM: &str = "record";
-pub const KIND_PARAM: &str = "kind";
+/// What [`REMOVE`] is told: the reference's id.
+pub const REFERENCE_PARAM: &str = "reference";
 
-/// What brings the record `record`, of kind `kind`, that the app `app` keeps in the workspace
-/// `from`, into the workspace `here`, without moving it.
+/// The modifier that chooses a row's second action: bringing a record here, or taking a
+/// reference out again.
+pub const BRING_MODIFIER: ui::search::ActivationModifier = ui::search::ActivationModifier::Alt;
+
+/// What brings the record `record` that the app `app` keeps in the workspace `from` into the
+/// workspace `here`, without moving it.
 #[must_use]
-pub fn bring(here: &str, from: &str, app: &str, record: &str, kind: &str) -> InvokeTarget {
+pub fn bring(here: &str, from: &str, app: &str, record: &str) -> InvokeTarget {
     InvokeTarget::action(DESKTOP_APP, here, REFERENCES_RESOURCE, BRING)
         .with_argument(WORKSPACE_PARAM, from)
         .with_argument(APP_PARAM, app)
         .with_argument(RECORD_PARAM, record)
-        .with_argument(KIND_PARAM, kind)
 }
 
 /// Rows the empty palette lists.
@@ -104,6 +110,12 @@ impl References {
                 ),
             ),
         };
+        let target = target.with_alternate(
+            BRING_MODIFIER,
+            t("search-reference-remove"),
+            InvokeTarget::action(DESKTOP_APP, &self.workspace, REFERENCES_RESOURCE, REMOVE)
+                .with_argument(REFERENCE_PARAM, reference.id.as_str()),
+        );
         let readable = reference.opens.is_some();
         Hit {
             row: None,

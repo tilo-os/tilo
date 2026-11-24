@@ -230,7 +230,6 @@ struct Kept {
     /// The reading of the host's apps the sources below were built from.
     reading: Option<Arc<dyn Reading>>,
     host_apps: Option<Held>,
-    content: Option<Held>,
     files: Option<Held>,
     /// Settings' pages, the store's catalogue and what the installed apps offer while closed, for
     /// the workspace they were built for.
@@ -462,7 +461,6 @@ impl SessionSearch {
                 .as_ref()
                 .and_then(|read| read.host_apps(&preferences)),
             reading,
-            content: content.clone().map(Held::from),
             files: indexed.as_ref().and_then(|index| index.files()),
             workspace: None,
         };
@@ -749,7 +747,13 @@ impl SessionSearch {
                 &downloaded.published,
             )));
         }
-        sources.extend(kept.content.clone());
+        // What apps hold, asked from the workspace in front: a record another keeps is also
+        // offered to bring here.
+        sources.extend(
+            self.content
+                .as_ref()
+                .map(|content| Held::from(Arc::new(content.here(workspace)))),
+        );
         sources.extend(self.device_source(workspace, self.device_rows.borrow().clone()));
         sources.extend(kept.files.clone());
         sources.extend(self.workspace_files.clone());
@@ -1478,14 +1482,17 @@ impl SessionSearch {
         }
     }
 
-    /// Carry out what a reference row asks in `workspace`: bring the record it names here, or
-    /// refuse to open one the person may not read where it lives, saying why.
+    /// Carry out what a reference row asks in `workspace`: bring the record it names here, take
+    /// a reference out again, or refuse to open one the person may not read where it lives,
+    /// saying why.
     fn on_reference(&self, workspace: &str, invoke: &InvokeTarget) -> Result<(), ApiError> {
-        if invoke.address.action.as_str() != reference_rows::BRING {
-            return Err(ApiError::Unavailable {
-                code: "reference_unavailable".into(),
-                reason: tilo_desktop_search::i18n::t("search-reference-unavailable-why"),
-            });
+        let unreadable = || ApiError::Unavailable {
+            code: "reference_unavailable".into(),
+            reason: tilo_desktop_search::i18n::t("search-reference-unavailable-why"),
+        };
+        let action = invoke.address.action.as_str();
+        if action != reference_rows::BRING && action != reference_rows::REMOVE {
+            return Err(unreadable());
         }
         #[cfg(target_os = "linux")]
         {
@@ -1500,32 +1507,30 @@ impl SessionSearch {
                     .arguments
                     .get(name)
                     .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
+                    .ok_or_else(|| ApiError::InvalidArguments(format!("{action} names its {name}")))
             };
-            let (Some(from), Some(app), Some(record), Some(kind)) = (
-                text(reference_rows::WORKSPACE_PARAM),
-                text(reference_rows::APP_PARAM),
-                text(reference_rows::RECORD_PARAM),
-                text(reference_rows::KIND_PARAM),
-            ) else {
-                return Err(ApiError::InvalidArguments(
-                    "bringing a record names its workspace, app, id and kind".into(),
-                ));
-            };
+            if action == reference_rows::REMOVE {
+                return references
+                    .remove(workspace, text(reference_rows::REFERENCE_PARAM)?)
+                    .map_err(ApiError::Failed);
+            }
+            let from = text(reference_rows::WORKSPACE_PARAM)?;
             if from == workspace {
                 return Err(ApiError::InvalidArguments(format!(
-                    "{record} already lives in {workspace}"
+                    "the record already lives in {workspace}"
                 )));
             }
-            let named = tilo_resource_store::reference::Named {
-                workspace: from,
-                app,
-                record,
-                kind,
-            };
             references
-                .bring_here(workspace, &named)
-                .map_err(ApiError::Failed)
+                .bring(
+                    workspace,
+                    from,
+                    text(reference_rows::APP_PARAM)?,
+                    text(reference_rows::RECORD_PARAM)?,
+                )
+                .map_err(|refused| match refused {
+                    crate::references::Bring::Unreadable => unreadable(),
+                    crate::references::Bring::Refused(why) => ApiError::Failed(why),
+                })
         }
         #[cfg(not(target_os = "linux"))]
         Err(ApiError::Unavailable {
@@ -2094,6 +2099,25 @@ mod tests {
         }
     }
 
+    /// The rows search finds for `needle` in the workspace `here` at `scope`: from the source
+    /// `source`, or from every source.
+    #[cfg(target_os = "linux")]
+    fn rows_found(
+        search: &SessionSearch,
+        here: &str,
+        scope: &Scope,
+        source: Option<&str>,
+        needle: &str,
+    ) -> Vec<tilo_desktop_search::Hit> {
+        search
+            .feed(here, scope)
+            .sources
+            .iter()
+            .filter(|asked| source.is_none_or(|source| asked.id() == source))
+            .flat_map(|asked| asked.query(needle))
+            .collect()
+    }
+
     /// The references search shows in the workspace `here`, and the rows it finds for `needle`
     /// among them.
     #[cfg(target_os = "linux")]
@@ -2102,23 +2126,50 @@ mod tests {
         here: &str,
         needle: &str,
     ) -> Vec<tilo_desktop_search::Hit> {
-        search
-            .feed(here, &Scope::Workspace)
-            .sources
-            .iter()
-            .find(|source| source.id() == "references")
-            .map(|source| source.query(needle))
-            .unwrap_or_default()
+        rows_found(search, here, &Scope::Workspace, Some("references"), needle)
     }
 
-    /// Search over the device `daemon` is, carrying out what it opens into `opened`.
+    /// Choose `row` in `here` with the modifier that picks its second action down, as the person
+    /// does: what the row says it does then, carried out.
+    #[cfg(target_os = "linux")]
+    fn choose_second(
+        search: &SessionSearch,
+        here: &str,
+        row: &tilo_desktop_search::Hit,
+        says: &str,
+    ) -> Result<(), ApiError> {
+        let Target::Invoke(invoke) = &row.target else {
+            panic!("the row runs an action: {row:?}");
+        };
+        assert!(
+            invoke.alternates.iter().any(|(alternate, _)| {
+                alternate.modifier == reference_rows::BRING_MODIFIER && alternate.label == says
+            }),
+            "the row offers {says:?}: {:?}",
+            invoke.alternates
+        );
+        let mut target = row.target.clone();
+        target.place_by(Some(reference_rows::BRING_MODIFIER));
+        search.perform(here, target, &mut |_| Ok(()))
+    }
+
+    /// Search over the device `daemon` is, with what its index of what apps hold says (`index`),
+    /// carrying out what it opens into `opened`.
     #[cfg(target_os = "linux")]
     fn search_over(
         daemon: &crate::daemon_fixture::TestDaemon,
+        index: Option<std::sync::Arc<tilo_workspace_service::search::AppContentIndex>>,
         opened: &Rc<std::cell::RefCell<Vec<(String, String)>>>,
     ) -> SessionSearch {
         SessionSearch::new(
             SearchOptions {
+                index: index.map(|index| {
+                    std::sync::Arc::new(tilo_workspace_service::search::IndexSearch::new(
+                        index,
+                        std::sync::Arc::new(|_, _| true),
+                    ))
+                        as std::sync::Arc<dyn tilo_actions::remote::ResourceSearch>
+                }),
                 references: Some(crate::references::References::over(
                     daemon.reads(),
                     daemon.shell(),
@@ -2134,43 +2185,65 @@ mod tests {
         )
     }
 
-    /// Bring `named` into `here` as choosing to bring it in search does.
-    #[cfg(target_os = "linux")]
-    fn bring(search: &SessionSearch, here: &str, named: &tilo_resource_store::reference::Named) {
-        let bring = reference_rows::bring(
-            here,
-            &named.workspace,
-            &named.app,
-            &named.record,
-            &named.kind,
-        );
-        search
-            .perform(here, Target::Invoke(Box::new(bring)), &mut |_| Ok(()))
-            .expect("the reference reaches the workspace");
-        tilo_test_env::wait_until("search reads the reference", || {
-            !reference_hits(search, here, "").is_empty()
-        });
-    }
-
     #[cfg(target_os = "linux")]
     tilo_test_env::scenario! {
         fn a_record_brought_here_opens_where_it_lives_for_who_may_read_it;
 
         phase a_rust_apps_record_brought_into_another_workspace_opens_there;
-        // A note of Kitchen brought into Studio is found in Studio by its name, and chosen there
-        // opens in Notes in Kitchen, where it lives: Kitchen decides who reads it.
+        // A note of Kitchen, found from Studio, is brought into Studio by the row's second action;
+        // the row itself still opens it where it lives. Studio then finds it by its name, and
+        // chosen there it opens in Notes in Kitchen: Kitchen decides who reads it.
         {
             const KITCHEN: &str = "6d1c1f36-0000-4000-8000-000000000031";
             const STUDIO: &str = "6d1c1f36-0000-4000-8000-000000000032";
             let daemon = crate::daemon_fixture::TestDaemon::writing(&[KITCHEN, STUDIO]);
             let note = crate::references::testing::groceries(&daemon, KITCHEN);
+            // The device's index holds what Notes reads of the note, as the store's indexer
+            // publishes it.
+            let index =
+                std::sync::Arc::new(tilo_workspace_service::search::AppContentIndex::in_memory());
+            let entry = ui::search::index_publication::IndexEntry {
+                key: note.record.clone(),
+                resource: note.record.clone(),
+                title: "Groceries".to_owned(),
+                ..ui::search::index_publication::IndexEntry::default()
+            };
+            for delta in ui::search::index_publication::Publisher::default().publish(
+                ui::search::index_publication::IndexState {
+                    generation: 1,
+                    secrets_unlocked: None,
+                },
+                vec![entry],
+            ) {
+                index
+                    .publish(
+                        KITCHEN,
+                        &note.app,
+                        &note.record,
+                        &delta.encode().expect("a delta encodes"),
+                    )
+                    .expect("the index takes the delta");
+            }
             let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
-            let search = search_over(&daemon, &opened);
+            let search = search_over(&daemon, Some(index), &opened);
             search.set_workspaces(vec![
                 (KITCHEN.to_owned(), "Kitchen".to_owned()),
                 (STUDIO.to_owned(), "Studio".to_owned()),
             ]);
-            bring(&search, STUDIO, &note);
+
+            let found = tilo_test_env::wait_for("Studio finds Kitchen's note", || {
+                rows_found(&search, STUDIO, &Scope::Everywhere, None, "groceries")
+                    .into_iter()
+                    .find(|row| {
+                        matches!(&row.target, Target::Invoke(invoke) if invoke.workspace == KITCHEN)
+                    })
+            });
+            assert_eq!(found.title, "Groceries");
+            choose_second(&search, STUDIO, &found, "Bring here").expect("brought into Studio");
+            assert!(opened.borrow().is_empty(), "bringing it opens nothing");
+            tilo_test_env::wait_until("search reads the reference", || {
+                !reference_hits(&search, STUDIO, "").is_empty()
+            });
 
             let hits = reference_hits(&search, STUDIO, "groceries");
             let hit = hits.first().expect("Studio finds the note by its name");
@@ -2198,20 +2271,43 @@ mod tests {
         phase a_member_who_may_not_read_the_record_finds_it_unavailable;
         // A member of Studio whose device holds nothing of Kitchen finds the reference another
         // member brought there unavailable, with nothing of the note's name, and choosing it opens
-        // nothing.
+        // nothing. They may still take it out of Studio, by the row's second action.
         {
+            use tilo_resource_store::reference;
             const KITCHEN: &str = "6d1c1f36-0000-4000-8000-000000000041";
             const STUDIO: &str = "6d1c1f36-0000-4000-8000-000000000042";
             let daemon = crate::daemon_fixture::TestDaemon::writing(&[STUDIO]);
             let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
-            let search = search_over(&daemon, &opened);
-            let note = tilo_resource_store::reference::Named {
+            let search = search_over(&daemon, None, &opened);
+            let note = reference::Named {
                 workspace: KITCHEN.to_owned(),
                 app: "so.tilo.notes".to_owned(),
                 record: "groceries".to_owned(),
                 kind: "notes.note".to_owned(),
             };
-            bring(&search, STUDIO, &note);
+            crate::references::testing::command(
+                &daemon,
+                STUDIO,
+                crate::references::REFERENCES_APP,
+                tilo_resource_store::wire::Command::Put {
+                    kind: reference::KIND.to_owned(),
+                    id: note.id(),
+                    resource: tilo_resource_store::Resource {
+                        readers: collab_types::EVERY_MEMBER.to_owned(),
+                        parent: None,
+                        order: None,
+                        fields: note.fields(),
+                    },
+                    stamp: crate::references::testing::stamp(reference::BRING),
+                },
+            )
+            .expect("another member's reference reaches Studio");
+            daemon
+                .changes()
+                .note(STUDIO, crate::references::REFERENCES_APP, &note.id(), false);
+            tilo_test_env::wait_until("search reads the reference", || {
+                !reference_hits(&search, STUDIO, "").is_empty()
+            });
 
             assert!(
                 reference_hits(&search, STUDIO, "groceries").is_empty(),
@@ -2232,6 +2328,11 @@ mod tests {
                 "{refused:?}"
             );
             assert!(opened.borrow().is_empty(), "nothing opens");
+
+            choose_second(&search, STUDIO, row, "Remove from here").expect("taken out of Studio");
+            tilo_test_env::wait_until("search reads the removal", || {
+                reference_hits(&search, STUDIO, "").is_empty()
+            });
         }
     }
 

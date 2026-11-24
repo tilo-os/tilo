@@ -66,6 +66,9 @@ pub struct IndexedContent {
     caller: Caller,
     /// What the search is narrowed to: one app, for a window's search.
     within: Within,
+    /// The workspace in front, where the search is asked from one: a record of another
+    /// workspace is offered to bring here.
+    here: Option<String>,
     /// An app's name as the person knows it.
     app_name: Arc<dyn Fn(&str) -> String + Send + Sync>,
     /// The person searching, by their id: a row of what they keep says "you" rather than their
@@ -91,6 +94,7 @@ impl IndexedContent {
             search,
             caller,
             within: Within::default(),
+            here: None,
             app_name: Arc::new(app_name),
             person: person.into(),
             wake,
@@ -112,11 +116,29 @@ impl IndexedContent {
                 place: within,
                 ..Within::default()
             },
+            here: self.here.clone(),
             app_name: Arc::clone(&self.app_name),
             person: self.person.clone(),
             wake: Arc::clone(&self.wake),
             asked: Arc::default(),
             listed: Arc::default(),
+        }
+    }
+
+    /// This source asked from the workspace `here`, sharing what it asked and was answered: a
+    /// row of a record another workspace keeps also brings it here.
+    #[must_use]
+    pub fn here(&self, here: &str) -> Self {
+        Self {
+            search: Arc::clone(&self.search),
+            caller: self.caller.clone(),
+            within: self.within.clone(),
+            here: Some(here.to_owned()),
+            app_name: Arc::clone(&self.app_name),
+            person: self.person.clone(),
+            wake: Arc::clone(&self.wake),
+            asked: Arc::clone(&self.asked),
+            listed: Arc::clone(&self.listed),
         }
     }
 
@@ -192,11 +214,37 @@ impl IndexedContent {
             facts: Vec::new(),
             score,
             icon: found.icon.as_deref().and_then(ui::icons::Icon::from_name),
-            target: Target::Invoke(Box::new(InvokeTarget {
-                arguments: found.arguments.clone(),
-                ..InvokeTarget::action(app, workspace, &found.resource, action)
-            })),
+            target: Target::Invoke(Box::new(self.bringing(
+                found,
+                InvokeTarget {
+                    arguments: found.arguments.clone(),
+                    ..InvokeTarget::action(app, &workspace, &found.resource, action)
+                },
+            ))),
         })
+    }
+
+    /// `opens`, the row of `found`, which also brings the record it is in here when another
+    /// workspace keeps it: choosing the row still opens it where it lives.
+    fn bringing(&self, found: &Found, opens: InvokeTarget) -> InvokeTarget {
+        let (Some(here), Some(from), Some((app, record))) = (
+            self.here.as_deref(),
+            found.workspace.as_deref(),
+            found
+                .provider
+                .as_deref()
+                .and_then(|provider| provider.strip_prefix("record:")?.split_once(':')),
+        ) else {
+            return opens;
+        };
+        if here == from || record.is_empty() {
+            return opens;
+        }
+        opens.with_alternate(
+            crate::providers::references::BRING_MODIFIER,
+            crate::i18n::t("search-bring-here"),
+            crate::providers::references::bring(here, from, app, record),
+        )
     }
 
     /// What the entry says under its name when its app left it unsaid: who is in a conversation,

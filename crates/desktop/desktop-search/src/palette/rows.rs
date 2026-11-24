@@ -149,6 +149,16 @@ pub(super) fn always_shown(kind: &ResourceKind) -> bool {
 /// line it asks for here — or none, when the desktop collects every required
 /// parameter in turn instead.
 fn invoke_entry(id: String, hit: &Hit, invoke: &crate::model::InvokeTarget) -> CommandEntry {
+    invoke
+        .alternates
+        .iter()
+        .fold(action_entry(id, hit, invoke), |entry, (alternate, _)| {
+            entry.alternate(alternate.modifier, alternate.label.clone())
+        })
+}
+
+/// [`invoke_entry`] before the alternates the row offers besides.
+fn action_entry(id: String, hit: &Hit, invoke: &crate::model::InvokeTarget) -> CommandEntry {
     let Some(descriptor) = &invoke.descriptor else {
         // An item a row opens opens in a window of its own beside, as an app does.
         return if invoke.address.action == crate::model::OPEN_ACTION {

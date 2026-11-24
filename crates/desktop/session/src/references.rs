@@ -26,6 +26,24 @@ type Store = dyn Fn(&str, &str, &Command) -> Result<Reply, String> + Send + Sync
 /// the store places every reference of a workspace together.
 pub(crate) const REFERENCES_APP: &str = tilo_desktop_model::ownership::DESKTOP_APP;
 
+/// Why a record was not brought here.
+#[derive(Debug)]
+pub enum Bring {
+    /// The person may not read it where it lives, or this device holds nothing of it.
+    Unreadable,
+    /// The workspace refused the reference, saying why.
+    Refused(String),
+}
+
+/// A stamp of one invocation of the verb `verb`.
+pub(crate) fn stamp(verb: &str) -> tilo_resource_store::Stamp {
+    tilo_resource_store::Stamp {
+        verb: verb.to_owned(),
+        invocation: uuid::Uuid::new_v4().to_string(),
+        ..tilo_resource_store::Stamp::default()
+    }
+}
+
 /// The references the workspaces on this device hold, each by the workspace holding it.
 pub struct References {
     changes: Changes,
@@ -58,34 +76,78 @@ impl References {
         }
     }
 
-    /// Bring `named` into the workspace `workspace`: a reference to it there, put through the
-    /// workspace's store under the verb that brings, as the device's person.
+    /// Bring the record `record` that the app `app` keeps in the workspace `from` into the
+    /// workspace `here`: a reference to it there, put through that workspace's store under the
+    /// verb that brings, as the device's person. The record is named by the kind its app keeps
+    /// it as, which only someone who may read it there learns.
     ///
     /// # Errors
-    /// The workspace refused the reference.
-    pub fn bring_here(&self, workspace: &str, named: &Named) -> Result<(), String> {
-        let id = named.id();
-        (self.store)(
-            workspace,
-            REFERENCES_APP,
-            &Command::Put {
+    /// [`Bring::Unreadable`] where the person may not read the record where it lives, else
+    /// [`Bring::Refused`] with why the workspace refused the reference.
+    pub fn bring(&self, here: &str, from: &str, app: &str, record: &str) -> Result<(), Bring> {
+        let kind = collab_types::app_surface::Surfaces::process()
+            .kinds_of(app)
+            .into_iter()
+            .find(|kind| {
+                matches!(
+                    (self.store)(
+                        from,
+                        app,
+                        &Command::Get {
+                            kind: kind.clone(),
+                            id: record.to_owned(),
+                        },
+                    ),
+                    Ok(Reply::Resource(Some(_)))
+                )
+            })
+            .ok_or(Bring::Unreadable)?;
+        let named = Named {
+            workspace: from.to_owned(),
+            app: app.to_owned(),
+            record: record.to_owned(),
+            kind,
+        };
+        self.write(
+            here,
+            &named.id(),
+            Command::Put {
                 kind: reference::KIND.to_owned(),
-                id: id.clone(),
+                id: named.id(),
                 resource: tilo_resource_store::Resource {
                     readers: collab_types::EVERY_MEMBER.to_owned(),
                     parent: None,
                     order: None,
                     fields: named.fields(),
                 },
-                stamp: tilo_resource_store::Stamp {
-                    verb: reference::BRING.to_owned(),
-                    invocation: uuid::Uuid::new_v4().to_string(),
-                    ..tilo_resource_store::Stamp::default()
-                },
+                stamp: stamp(reference::BRING),
             },
-        )?;
-        // The roles following the records hear of the write the workspace took.
-        self.changes.note(workspace, REFERENCES_APP, &id, false);
+        )
+        .map_err(Bring::Refused)
+    }
+
+    /// Take the reference `id` out of the workspace `here` again, under the verb that removes
+    /// one: the record it names stays as it is where it lives.
+    ///
+    /// # Errors
+    /// The workspace refused the removal.
+    pub fn remove(&self, here: &str, id: &str) -> Result<(), String> {
+        self.write(
+            here,
+            id,
+            Command::Remove {
+                kind: reference::KIND.to_owned(),
+                id: id.to_owned(),
+                stamp: stamp(reference::REMOVE),
+            },
+        )
+    }
+
+    /// Run `command` on the reference `id` of the workspace `here`, and tell the roles following
+    /// the records of the write the workspace took.
+    fn write(&self, here: &str, id: &str, command: Command) -> Result<(), String> {
+        (self.store)(here, REFERENCES_APP, &command)?;
+        self.changes.note(here, REFERENCES_APP, id, false);
         Ok(())
     }
 
@@ -207,16 +269,25 @@ pub(crate) mod testing {
 
     use crate::daemon_fixture::TestDaemon;
 
+    pub(crate) use super::stamp;
+
     pub(crate) const NOTES: &str = "so.tilo.notes";
 
-    /// A stamp of the verb `verb`, as one invocation.
-    pub(crate) fn stamp(verb: &str) -> tilo_resource_store::Stamp {
-        tilo_resource_store::Stamp {
-            verb: verb.to_owned(),
-            invocation: uuid::Uuid::new_v4().to_string(),
-            ..tilo_resource_store::Stamp::default()
-        }
-    }
+    /// What Notes' package declares: one kind of record, a note with a title.
+    const NOTES_TYPES: &[u8] = br#"format = 2
+
+[[resources]]
+kind = "notes.note"
+label = "Note"
+version = 1
+fields = [
+  { path = "title", type = "text" },
+]
+
+[[resources.verbs]]
+id = "add"
+kind = "undoable"
+"#;
 
     /// Run `command` on `app`'s records of `workspace` as the device's person, as a window of the
     /// app does.
@@ -238,25 +309,13 @@ pub(crate) mod testing {
     }
 
     /// A note of `workspace` called "Groceries", which Notes, installed on the device, keeps in
-    /// the workspace's store.
+    /// the workspace's store: the device's daemon and the session both know the types it
+    /// declares, as installing it names them to each.
     pub(crate) fn groceries(daemon: &TestDaemon, workspace: &str) -> Named {
-        daemon.workspaces().declare_package_surface(
-            NOTES,
-            br#"format = 2
-
-[[resources]]
-kind = "notes.note"
-label = "Note"
-version = 1
-fields = [
-  { path = "title", type = "text" },
-]
-
-[[resources.verbs]]
-id = "add"
-kind = "undoable"
-"#,
-        );
+        daemon
+            .workspaces()
+            .declare_package_surface(NOTES, NOTES_TYPES);
+        tilo_workspace_service::apps::register_package_surface(NOTES, NOTES_TYPES);
         command(
             daemon,
             workspace,
@@ -293,7 +352,7 @@ mod tests {
     use tilo_resource_store::wire::{Command, Reply};
 
     use super::testing::{NOTES, command, groceries, stamp};
-    use super::{REFERENCES_APP, References};
+    use super::{Bring, REFERENCES_APP, References};
     use crate::daemon_fixture::TestDaemon;
 
     const KITCHEN: &str = "6d1c1f36-0000-4000-8000-000000000001";
@@ -311,7 +370,16 @@ mod tests {
             (STUDIO.to_owned(), "Studio".to_owned()),
         ];
 
-        references.bring_here(STUDIO, &note).expect("brought here");
+        assert!(
+            matches!(
+                references.bring(STUDIO, KITCHEN, NOTES, "plans"),
+                Err(Bring::Unreadable)
+            ),
+            "a record no one may read there is not brought"
+        );
+        references
+            .bring(STUDIO, KITCHEN, NOTES, &note.record)
+            .expect("brought here");
         tilo_test_env::wait_until("the reference is read", || {
             !references.rows(STUDIO, &names).is_empty()
         });
@@ -352,21 +420,10 @@ mod tests {
         );
         assert!(unbrought.is_err(), "{unbrought:?}");
 
-        // Taken out again under the verb that removes one, as any writer of the workspace does.
-        command(
-            &daemon,
-            STUDIO,
-            REFERENCES_APP,
-            Command::Remove {
-                kind: reference::KIND.to_owned(),
-                id: note.id(),
-                stamp: stamp(reference::REMOVE),
-            },
-        )
-        .expect("the reference is taken out");
-        daemon
-            .changes()
-            .note(STUDIO, REFERENCES_APP, &note.id(), false);
+        // Taken out again under the verb that removes one.
+        references
+            .remove(STUDIO, &note.id())
+            .expect("the reference is taken out");
         tilo_test_env::wait_until("the removal is read", || {
             references.rows(STUDIO, &names).is_empty()
         });
