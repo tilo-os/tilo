@@ -713,9 +713,9 @@ pub fn build_bwrap_argv_for_entry(
 }
 
 /// The parts of its own procfs a script run by a runtime's interpreter reads. Measured on bun 1.4.5
-/// and CPython 3.13 running a hello-world and then this repository's script probe: bun opens its
+/// and `CPython` 3.13 running a hello-world and then this repository's script probe: bun opens its
 /// own `maps`, `statm`, `cgroup` and `fd/`, and aborts before running a script without `maps`;
-/// CPython reads none of it. Neither reads `cpuinfo`, `meminfo`, `status`, `stat`, `cmdline`,
+/// `CPython` reads none of it. Neither reads `cpuinfo`, `meminfo`, `status`, `stat`, `cmdline`,
 /// `auxv`, `exe` or `mountinfo`. The sandbox's procfs is a fresh one in its private PID namespace,
 /// so these are the app's own process alone.
 pub const PROC_SCRIPT_READ_PATHS: &[&str] = &[

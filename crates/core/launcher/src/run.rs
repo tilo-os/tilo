@@ -2617,11 +2617,11 @@ fn build_initial_argv(
     dbus_plan: Option<&DBusBindPlan>,
     capabilities: &CapabilityPlan,
 ) -> Result<BuiltArgv, LaunchError> {
-    let (argv, setenv, tail) =
+    let (command, setenv, entry_tail) =
         build_entry_argv(manifest, payload_root, opts, runtime_arg, binds, dbus_plan, capabilities)?;
     let mut args = script_args(manifest);
-    args.extend(tail);
-    Ok((argv, setenv, args))
+    args.extend(entry_tail);
+    Ok((command, setenv, args))
 }
 
 fn build_entry_argv(

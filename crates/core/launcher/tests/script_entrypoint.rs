@@ -219,71 +219,10 @@ fn probe(package: &str, script_name: &str, script: &str) -> String {
     let root = home.root().to_path_buf();
     let data = home.data().to_path_buf();
 
-    let package = runtime_package(package).expect("the package tree was handed to this run");
-    let version = package.provides.split_once('/').expect("provides").1;
-    install_bundle(&package.bundle, &data.join("tilo-runtime").join(version));
-    let identity = runtime_bundle::Identity::generate();
-    let signer = root.join("identity.json");
-    std::fs::write(&signer, identity.to_json_bytes()).expect("the identity is kept");
-    app_runtime(&data, &signer);
-    let trusted = root.join("trusted.txt");
-    std::fs::write(
-        &trusted,
-        format!("{}\n{}\n", identity.public_key_hex(), package.publisher),
-    )
-    .expect("trusted");
-    home.env()
-        .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trusted);
-
-    // The daemon's native endpoint, where the launcher looks for it.
-    let runtime_dir = root.join("run");
-    let services = runtime_dir.join("tilo/services");
-    std::fs::create_dir_all(&services).expect("the services directory");
-    home.env().set("XDG_RUNTIME_DIR", &runtime_dir);
-    let endpoint = UnixListener::bind(services.join("native.sock")).expect("the native endpoint");
-    let daemon = std::thread::spawn(move || {
-        let (stream, _) = endpoint.accept().expect("the launcher connects");
-        let peer = rustix::net::sockopt::socket_peercred(&stream).expect("the peer's credentials");
-        let mut line = String::new();
-        BufReader::new(&stream)
-            .read_line(&mut line)
-            .expect("the app sends a frame");
-        let mut stream = stream;
-        writeln!(stream, "{{\"peer\":{}}}", peer.pid.as_raw_nonzero()).expect("answered");
-        line
-    });
-
-    let payload = root.join("payload");
-    std::fs::create_dir_all(&payload).expect("the payload");
-    std::fs::write(payload.join(script_name), script).expect("the script");
-
-    let mut m = manifest(PACKAGE, &package.bin, "allowlist");
-    m.runtime = Some(format!("tilo-runtime/{APP_RUNTIME}"));
-    m.sandbox.net.hosts = vec![ALLOWED.to_owned()];
-    m.entrypoint.runtime = Some(package.provides.clone());
-    m.entrypoint.script = Some(script_name.to_owned());
-    m.required_runtimes = vec![package.provides.clone()];
-    m.sandbox.services.insert(
-        launcher::services::NATIVE_SERVICE.to_owned(),
-        ServiceReq::parse("", "required@40").expect("a requirement"),
-    );
-
-    // The workspace granted the host the manifest declares, and nothing else.
-    let grants = root.join("grants.json");
-    let granted = LaunchGrants {
-        author: false,
-        sandbox: vec![
-            CapOverride::grant(
-                Grantee::person("ada"),
-                Scope::NetHost(ALLOWED.to_owned()),
-                Access::Write,
-            )
-            .through(PACKAGE),
-        ]
-        .into_iter()
-        .collect(),
-    };
-    std::fs::write(&grants, serde_json::to_vec(&granted).expect("grants")).expect("grants kept");
+    let package = installed_runtime(&mut home, &root, &data, package);
+    let daemon = answer_daemon(&mut home, &root);
+    let payload = write_payload(&root, script_name, script);
+    let m = probe_manifest(&package, script_name);
 
     let port = server();
     std::fs::write(
@@ -295,7 +234,7 @@ fn probe(package: &str, script_name: &str, script: &str) -> String {
         bwrap_bin: Some(bwrap()),
         landlock_enforce: true,
         sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
-        capabilities_path: Some(grants),
+        capabilities_path: Some(workspace_grants(&root)),
         workspace_id: Some("workspace-a".to_owned()),
         ..isolated_options(&data)
     };
@@ -309,6 +248,109 @@ fn probe(package: &str, script_name: &str, script: &str) -> String {
         "the frame arrived: {sent}"
     );
 
+    assert_script_saw(&out, script_name);
+    out
+}
+
+/// Install `package`'s tree where the launcher looks for a runtime, signed by an identity this
+/// run's launcher trusts, and answer the package the app runs on.
+fn installed_runtime(
+    home: &mut tilo_test_env::TestHome,
+    root: &Path,
+    data: &Path,
+    package: &str,
+) -> RuntimePackage {
+    let package = runtime_package(package).expect("the package tree was handed to this run");
+    let version = package.provides.split_once('/').expect("provides").1;
+    install_bundle(&package.bundle, &data.join("tilo-runtime").join(version));
+    let identity = runtime_bundle::Identity::generate();
+    let signer = root.join("identity.json");
+    std::fs::write(&signer, identity.to_json_bytes()).expect("the identity is kept");
+    app_runtime(data, &signer);
+    let trusted = root.join("trusted.txt");
+    std::fs::write(
+        &trusted,
+        format!("{}\n{}\n", identity.public_key_hex(), package.publisher),
+    )
+    .expect("trusted");
+    home.env()
+        .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trusted);
+    package
+}
+
+/// Listen on the daemon's native endpoint where the launcher looks for it, and answer the one
+/// connection a launch makes on a thread: the peer it saw, after echoing it the frame it read.
+fn answer_daemon(
+    home: &mut tilo_test_env::TestHome,
+    root: &Path,
+) -> std::thread::JoinHandle<String> {
+    let runtime_dir = root.join("run");
+    let services = runtime_dir.join("tilo/services");
+    std::fs::create_dir_all(&services).expect("the services directory");
+    home.env().set("XDG_RUNTIME_DIR", &runtime_dir);
+    let endpoint = UnixListener::bind(services.join("native.sock")).expect("the native endpoint");
+    std::thread::spawn(move || {
+        let (stream, _) = endpoint.accept().expect("the launcher connects");
+        let peer = rustix::net::sockopt::socket_peercred(&stream).expect("the peer's credentials");
+        let mut line = String::new();
+        BufReader::new(&stream)
+            .read_line(&mut line)
+            .expect("the app sends a frame");
+        let mut stream = stream;
+        writeln!(stream, "{{\"peer\":{}}}", peer.pid.as_raw_nonzero()).expect("answered");
+        line
+    })
+}
+
+/// The probe's payload directory, holding `script` as `script_name`.
+fn write_payload(root: &Path, script_name: &str, script: &str) -> PathBuf {
+    let payload = root.join("payload");
+    std::fs::create_dir_all(&payload).expect("the payload");
+    std::fs::write(payload.join(script_name), script).expect("the script");
+    payload
+}
+
+/// The manifest a probe launches: [`PACKAGE`]'s entrypoint a script of `package`'s runtime runs,
+/// the daemon's native service required, and the one host its egress grant names.
+fn probe_manifest(package: &RuntimePackage, script_name: &str) -> launcher::manifest::ManifestView {
+    let mut m = manifest(PACKAGE, &package.bin, "allowlist");
+    m.runtime = Some(format!("tilo-runtime/{APP_RUNTIME}"));
+    m.sandbox.net.hosts = vec![ALLOWED.to_owned()];
+    m.entrypoint.runtime = Some(package.provides.clone());
+    m.entrypoint.script = Some(script_name.to_owned());
+    m.required_runtimes = vec![package.provides.clone()];
+    m.sandbox.services.insert(
+        launcher::services::NATIVE_SERVICE.to_owned(),
+        ServiceReq::parse("", "required@40").expect("a requirement"),
+    );
+    m
+}
+
+/// The workspace's grants, kept where the launch reads them: [`PACKAGE`] may reach the host
+/// [`ALLOWED`] names, and nothing else.
+fn workspace_grants(root: &Path) -> PathBuf {
+    let granted = LaunchGrants {
+        author: false,
+        sandbox: vec![
+            CapOverride::grant(
+                Grantee::person("ada"),
+                Scope::NetHost(ALLOWED.to_owned()),
+                Access::Write,
+            )
+            .through(PACKAGE),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let grants = root.join("grants.json");
+    std::fs::write(&grants, serde_json::to_vec(&granted).expect("grants")).expect("grants kept");
+    grants
+}
+
+/// What the script printed, as the sandbox and the launch must have given it: where it runs from,
+/// its module and workspace, the daemon's peer, its grant's host answered and any other refused,
+/// and the procfs a script runtime reads masked.
+fn assert_script_saw(out: &str, script_name: &str) {
     let said = |prefix: &str| -> Vec<String> {
         out.lines()
             .filter_map(|line| line.strip_prefix(prefix))
@@ -346,7 +388,6 @@ fn probe(package: &str, script_name: &str, script: &str) -> String {
         ],
         "the sandbox's procfs keeps its sockets and tunables from the runtime: {out}"
     );
-    out
 }
 
 /// A packaged Python script starts in the app sandbox on the Python runtime package's binary,
