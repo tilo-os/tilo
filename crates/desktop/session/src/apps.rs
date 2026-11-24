@@ -215,6 +215,10 @@ struct State {
     /// The files apps are handed, while the session serves them where a launcher binds each app's
     /// view of them: what a document a package opens reaches its sandbox through.
     documents: Option<tilo_documents::Documents>,
+    /// The device's content store, once the session lent it: a file the person opens is kept here
+    /// for a tilolang app, which reads its files by content and has no path of its own.
+    #[cfg(target_os = "linux")]
+    content: Option<std::sync::Arc<crate::record_content::RecordContent>>,
     /// The kept apps this run took back, until the restore claims their saved tabs
     /// ([`Apps::take_kept`]).
     #[cfg(target_os = "linux")]
@@ -415,6 +419,8 @@ impl Apps {
                 handed_over: false,
                 tools: None,
                 documents: None,
+                #[cfg(target_os = "linux")]
+                content: None,
                 #[cfg(target_os = "linux")]
                 kept: Vec::new(),
                 #[cfg(target_os = "linux")]
@@ -658,6 +664,16 @@ impl Apps {
     /// app's process is handed a connection to it made for that app in its workspace.
     pub(crate) fn lend_tools(&self, tools: crate::tools::Handle) {
         self.state.borrow_mut().tools = Some(tools);
+    }
+
+    /// The device's content store, which a file the person opens is kept in for a tilolang app:
+    /// its windows read their files by content, since a sandbox has no path of the person's.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn lend_record_content(
+        &self,
+        content: std::sync::Arc<crate::record_content::RecordContent>,
+    ) {
+        self.state.borrow_mut().content = Some(content);
     }
 
     /// The person's region formats or language changed: every tilolang process the device's
@@ -1966,17 +1982,28 @@ impl Apps {
         // names the instance the window draws.
         let links = self.state.borrow().links.clone();
         let hosted = launch.package().is_some() && self.runs_in_process(app);
+        let timed = tilo_startup_metrics::launch_requested(app);
+        let failed = |error: String| {
+            tilo_startup_metrics::launch_failed(timed);
+            ApiError::Failed(error)
+        };
+        // A file of the person's is content to a hosted app, which has no path of theirs to read.
+        #[cfg(target_os = "linux")]
+        let launch = if hosted {
+            self.hosted_launch(launch, &workspace.id)
+                .map_err(|error| failed(error.to_string()))?
+        } else {
+            std::borrow::Cow::Borrowed(launch)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let launch = std::borrow::Cow::Borrowed(launch);
+        let launch = launch.as_ref();
         if instance.is_none() {
             window_opens(launch, reveal, hosted).map_err(ApiError::Failed)?;
             if self.ask_shell(launch, workspace, new_window, reveal, None)? {
                 return Ok(true);
             }
         }
-        let timed = tilo_startup_metrics::launch_requested(app);
-        let failed = |error: String| {
-            tilo_startup_metrics::launch_failed(timed);
-            ApiError::Failed(error)
-        };
         let documents = self.state.borrow().documents.clone();
         let launch = handed(launch, workspace, documents.as_ref())
             .map_err(|error| failed(error.to_string()))?;
@@ -2071,6 +2098,50 @@ impl Apps {
             tracing::error!(%error, app = %planned.app, "a hosted window's instance runs nowhere");
         }
         started.map(|_| true)
+    }
+
+    /// `launch` as a hosted window takes it: a file of the person's becomes the content it is,
+    /// kept in the device's store under `app`'s scope in `workspace`, since the app's process is
+    /// a sandbox with no path of theirs to read. A launch naming no file, or a folder, is left as
+    /// it is.
+    #[cfg(target_os = "linux")]
+    fn hosted_launch<'a>(
+        &self,
+        launch: &'a Launch,
+        workspace: &str,
+    ) -> Result<std::borrow::Cow<'a, Launch>, tilo_app_launch::PlanError> {
+        let Launch::Package {
+            app,
+            open: Some(tilo_app_launch::Open::File(path)),
+        } = launch
+        else {
+            return Ok(std::borrow::Cow::Borrowed(launch));
+        };
+        if path.is_dir() {
+            return Ok(std::borrow::Cow::Borrowed(launch));
+        }
+        let refused = |reason: String| tilo_app_launch::PlanError::Grants {
+            app: app.clone(),
+            source: std::io::Error::other(reason),
+        };
+        let content = self
+            .state
+            .borrow()
+            .content
+            .clone()
+            .ok_or_else(|| refused("this device keeps no content for its apps".into()))?;
+        let hash = content
+            .keep_file_under(workspace, app, path)
+            .map_err(refused)?;
+        let name = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_owned);
+        Ok(std::borrow::Cow::Owned(Launch::Content {
+            app: app.clone(),
+            hash,
+            name,
+        }))
     }
 
     /// Tell the process `planned` starts what its window shows: the item the shell asked for, and

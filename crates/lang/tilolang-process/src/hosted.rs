@@ -2484,14 +2484,14 @@ impl Hosted {
         };
         // The action its package declares for this kind of file: the extension the name ends in,
         // which is the narrower claim, else the media type the name declares.
-        let declared = self
-            .bundle
-            .meta
-            .actions
-            .iter()
-            .filter(|action| !action.opens.is_empty())
-            .find(|action| declared_for_file(action, &file))
-            .cloned();
+        let media =
+            tilolang_tilo::runtime::blob::media_of(file.name.as_deref().unwrap_or_default());
+        let declared = tilolang_tilo::meta::action_opening(
+            &self.bundle.meta,
+            file.name.as_deref(),
+            &media,
+        )
+        .cloned();
         let Some(action) = declared else {
             // The app does not open this kind of file: its window shows its records, and says why
             // rather than opening a window that took nothing.
@@ -2506,17 +2506,11 @@ impl Hosted {
     /// the video, channel or playlist it names, as a press of a row shows one. An app that
     /// declares none says so rather than opening a window that took nothing.
     fn run_open_link(&mut self, link: &str) -> Result<(), String> {
-        let Some(target) = tilolang_tilo::meta::open_link_root(&self.bundle.meta) else {
+        let Some((target, action)) = tilolang_tilo::meta::open_link(&self.bundle.meta) else {
             return Err(format!("`{}` does not open links", self.spec.app));
         };
-        let action = self
-            .bundle
-            .meta
-            .actions
-            .iter()
-            .find(|action| !action.scenario && action.name == tilolang_tilo::meta::OPEN_LINK_ACTION)
-            .cloned()
-            .ok_or_else(|| format!("`{}` does not open links", self.spec.app))?;
+        let action = action.clone();
+        let target = target.clone();
         let host = self
             .instance
             .host()
@@ -2556,7 +2550,7 @@ impl Hosted {
         file: runtime_portal::process_link::OpenedFile,
         opening: &str,
     ) {
-        let Some(target) = self.bundle.meta.target_of(&action.params) else {
+        let Some(target) = tilolang_tilo::meta::opening_root(&self.bundle.meta, action) else {
             return;
         };
         let media =
@@ -4658,25 +4652,6 @@ impl InRun {
         store.set_run(Some(run));
         Self(store.clone())
     }
-}
-
-/// Whether `action` is the one a package declares for the file `file`: the extension its name ends
-/// in, which is the narrower claim, or the media type the name declares.
-fn declared_for_file(
-    action: &tilolang_tilo::tilolang::meta::ActionMeta,
-    file: &runtime_portal::process_link::OpenedFile,
-) -> bool {
-    let media = tilolang_tilo::runtime::blob::media_of(file.name.as_deref().unwrap_or_default());
-    action.opens.iter().any(|kind| {
-        if kind.contains('/') {
-            *kind == media
-        } else {
-            file.name.as_deref().is_some_and(|name| {
-                name.rsplit_once('.')
-                    .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case(kind))
-            })
-        }
-    })
 }
 
 impl Drop for InRun {

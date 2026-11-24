@@ -721,3 +721,50 @@ fn a_hosted_window_opens_a_file_by_its_content_and_name() {
     );
     assert_eq!(process_launch(&link, false), link);
 }
+
+/// A hosted app opened on a file of the person's is handed the file's content and name, never a
+/// path its sandbox does not have: the bytes are kept in the device's store under the app's
+/// scope, where the app's process reads them, and the launch names them by their address.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hosted_launch_hands_a_file_of_the_persons_as_content() {
+    let state = tempfile::tempdir().unwrap();
+    let socket = state.path().join("blobs.sock");
+    let _media = tilo_runtime::profile::MediaHost::start(&state.path().join("store"), &socket)
+        .expect("the device serves its content");
+    let content = crate::record_content::open(Some(socket));
+    let apps = apps();
+    apps.lend_record_content(std::sync::Arc::clone(&content));
+    let home = tempfile::tempdir().unwrap();
+    let plan = home.path().join("plan.md");
+    std::fs::write(&plan, b"# Plan\n").unwrap();
+    let launch = Launch::Package {
+        app: "so.tilo.notes".to_owned(),
+        open: Some(tilo_app_launch::Open::File(plan.clone())),
+    };
+
+    let handed = apps
+        .hosted_launch(&launch, WORKSPACE)
+        .expect("the file is kept for the app");
+    let Launch::Content { app, hash, name } = handed.as_ref() else {
+        panic!("a hosted launch opens the file as content: {handed:?}");
+    };
+    assert_eq!(app, "so.tilo.notes");
+    assert_eq!(hash, &tilo_content::hash_bytes(b"# Plan\n"));
+    assert_eq!(name.as_deref(), Some("plan.md"));
+    assert_eq!(
+        content.read(WORKSPACE, app, hash).as_deref(),
+        Some(&b"# Plan\n"[..]),
+        "the app's process reads the bytes the launch named"
+    );
+
+    // A folder is no file an app reads: it is left for the window to refuse.
+    let launch = Launch::Package {
+        app: "so.tilo.notes".to_owned(),
+        open: Some(tilo_app_launch::Open::File(home.path().to_path_buf())),
+    };
+    assert!(matches!(
+        apps.hosted_launch(&launch, WORKSPACE).unwrap().as_ref(),
+        Launch::Package { .. }
+    ));
+}

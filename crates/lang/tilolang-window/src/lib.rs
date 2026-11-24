@@ -12,6 +12,8 @@ use std::rc::Rc;
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
+use tilolang_tilo::runtime::ids::MemberId;
+use tilolang_tilo::runtime::{Actor, InvokeOutcome, Value};
 use ui::headless::FrameHarness;
 
 mod platform;
@@ -21,6 +23,14 @@ pub use platform::Packages;
 /// How often the window and its instance may answer each other before a frame is taken as it is:
 /// the rows a list shows, then the rows those rows show.
 pub const EXCHANGES: usize = 8;
+
+/// A file a window opens with, as a page hands one over: its name, the media type it declares,
+/// and bytes this host keeps as the content the app's action reads.
+pub struct OpenedFile<'a> {
+    pub name: &'a str,
+    pub media: &'a str,
+    pub bytes: &'a [u8],
+}
 
 /// How a window opens, beyond its app and its packages.
 pub struct Opening<'a> {
@@ -43,6 +53,11 @@ pub struct Opening<'a> {
     /// The view states it stands in before anyone picks, as the app's own code names them
     /// (`place=Task.today`).
     pub states: &'a [String],
+    /// The file the app is opened with, which its package's action for that kind reads as the
+    /// same `File` a chooser gives it. What the action made opens in the window.
+    pub open: Option<OpenedFile<'a>>,
+    /// The link the app is opened with, which its `open-link` opens as a shell hands one over.
+    pub link: Option<&'a str>,
 }
 
 impl Opening<'_> {
@@ -62,6 +77,8 @@ impl Opening<'_> {
             seed: 0,
             costs: false,
             states: &[],
+            open: None,
+            link: None,
         }
     }
 }
@@ -103,6 +120,8 @@ impl Window {
             seed,
             costs,
             states,
+            open,
+            link,
         } = opening;
         theme.reduce_motion = true;
         let (app_end, window_end) = pair();
@@ -172,6 +191,14 @@ impl Window {
                 scenario.unwrap_or_default()
             ));
         }
+        // What the page opened the app with, run as a shell launches the app on it: the app's
+        // own action for the file's kind, or its `open-link`, and what either made opens.
+        if let Some(opened) = open {
+            opened_file(&mut instance, app, packages, me.0, opened)?;
+        }
+        if let Some(link) = link {
+            opened_link(&mut instance, app, me.0, link)?;
+        }
         instance.update();
         let mut window = AppWindow::new(Box::new(window_end), Vec::new());
         window.receive();
@@ -208,6 +235,111 @@ impl Window {
             }
             self.harness.relayout();
         }
+    }
+}
+
+/// Run the action `app`'s package declares for `opened`'s kind, on the root it opens into, with
+/// the same `File` a chooser gives it: the page keeps the bytes in its own content store, and
+/// what the action made opens in the window. One path for a page and a device, which the native
+/// host runs from the launch it was started with.
+fn opened_file(
+    instance: &mut Instance,
+    app: &str,
+    packages: &Packages,
+    person: &str,
+    opened: OpenedFile<'_>,
+) -> Result<(), String> {
+    let file = packages.keep_content(opened.name, opened.media, opened.bytes)?;
+    let (action, root) = {
+        let host = instance
+            .host()
+            .ok_or_else(|| "the app has not started".to_owned())?;
+        let package = host
+            .package(app)
+            .ok_or_else(|| format!("`{app}` is not loaded"))?;
+        let action = tilolang_tilo::meta::action_opening(
+            &package.meta,
+            Some(opened.name),
+            opened.media,
+        )
+        .cloned()
+        .ok_or_else(|| format!("`{app}` does not open `{}`", opened.name))?;
+        let target = tilolang_tilo::meta::opening_root(&package.meta, &action)
+            .ok_or_else(|| format!("`{app}` opens files into no root"))?;
+        let root = host
+            .root_resource(app, &target.id)
+            .map_err(|error| error.to_string())?;
+        (action.id, root)
+    };
+    invoke_opened(instance, app, person, &action, &root, Opened::File(file))
+}
+
+/// Run `app`'s `open-link` with `link`: the video, page or package a link names opens, as a
+/// shell hands the link to the app.
+fn opened_link(
+    instance: &mut Instance,
+    app: &str,
+    person: &str,
+    link: &str,
+) -> Result<(), String> {
+    let (action, root) = {
+        let host = instance
+            .host()
+            .ok_or_else(|| "the app has not started".to_owned())?;
+        let package = host
+            .package(app)
+            .ok_or_else(|| format!("`{app}` is not loaded"))?;
+        let (target, action) = tilolang_tilo::meta::open_link(&package.meta)
+            .ok_or_else(|| format!("`{app}` does not open links"))?;
+        let root = host
+            .root_resource(app, &target.id)
+            .map_err(|error| error.to_string())?;
+        (action.id.clone(), root)
+    };
+    invoke_opened(instance, app, person, &action, &root, Opened::Link(link))
+}
+
+/// What an app is opened with.
+enum Opened<'a> {
+    File(tilolang_tilo::runtime::blob::FileValue),
+    Link(&'a str),
+}
+
+/// Invoke `action` on `root` with what the app is opened with, and open what it made in the
+/// window.
+fn invoke_opened(
+    instance: &mut Instance,
+    app: &str,
+    person: &str,
+    action: &str,
+    root: &tilolang_tilo::runtime::ResourceRef,
+    opened: Opened<'_>,
+) -> Result<(), String> {
+    let host = instance
+        .host()
+        .ok_or_else(|| "the app has not started".to_owned())?;
+    let actor = Actor::Member(MemberId::person(person));
+    let argument = match opened {
+        Opened::File(file) => Value::file(file),
+        Opened::Link(link) => Value::text(link),
+    };
+    match host
+        .runtime()
+        .invoke_action(&actor, (action, vec![Value::resource(root), argument]))
+    {
+        Ok(InvokeOutcome::Done(Value::Ref(made))) => {
+            let made = Rc::unwrap_or_clone(made.target);
+            instance.opens_what_it_made(tilolang_tilo::publish::resource_id(
+                app,
+                &made.id_string(),
+            ));
+            Ok(())
+        }
+        // An action that made no resource, and one that waits on another app or a person, which
+        // answers nobody here.
+        Ok(InvokeOutcome::Done(_) | InvokeOutcome::Asked(_)) => Ok(()),
+        Ok(other) => Err(format!("the app was not opened: {other:?}")),
+        Err(error) => Err(error.to_string()),
     }
 }
 

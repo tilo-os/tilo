@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use ui::composition::page::PageAction;
@@ -27,8 +28,11 @@ pub mod playground;
 pub mod window;
 
 use files::{Failure, Tree};
-use tilolang_window::Packages;
+use tilolang_window::{OpenedFile, Packages};
 use window::{AppPage, Staging};
+
+/// The most a page opens an app with: a file it holds whole in memory before any app reads it.
+const MAX_OPENED_BYTES: usize = 512 * 1024 * 1024;
 
 thread_local! {
     static PAGES: RefCell<BTreeMap<u32, AppPage>> = const { RefCell::new(BTreeMap::new()) };
@@ -146,7 +150,18 @@ pub fn compile_package(files_json: &str, root: &str) -> String {
     }
 }
 
-/// How [`open_app`] stages the window: `{scenario, root, width, height, dark}`, each optional.
+/// A file the page opened the app with: its name, the media type it declares, and its bytes as
+/// base64, since a page's answer is JSON text.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRequest {
+    name: String,
+    media: Option<String>,
+    bytes: String,
+}
+
+/// How [`open_app`] stages the window: `{scenario, root, width, height, dark, open, link}`, each
+/// optional.
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 struct Options {
@@ -161,6 +176,13 @@ struct Options {
     /// under. Absent on a page no workspace stands behind, and then the link is refused.
     #[serde(default, alias = "linkHome")]
     link_home: Option<tilolang_tilo::share::LinkHome>,
+    /// The file the app is opened with, as a shell opens one: its bytes are kept in the page's
+    /// content store and the app's action for its kind reads them.
+    #[serde(default, alias = "openFile")]
+    open: Option<OpenRequest>,
+    /// The link the app is opened with: its `open-link` shows what it names.
+    #[serde(default)]
+    link: Option<String>,
 }
 
 /// Compile the package in `root` of `files_json` and what it uses, run its app over a scenario
@@ -213,9 +235,43 @@ pub fn open_app(files_json: &str, root: &str, options_json: &str) -> String {
         };
         app = host;
     }
-    let scenario = match options.scenario {
-        None => app.scenarios.first().map(|s| s.name.clone()),
-        Some(named) => Some(named).filter(|name| !name.is_empty()),
+    if options.open.is_some() && options.link.is_some() {
+        return refused("an app opens a file or a link, never both");
+    }
+    let opened = match options.open {
+        None => None,
+        Some(request) => {
+            let refused_name = request.name.is_empty()
+                || request.name.len() > 255
+                || request
+                    .name
+                    .chars()
+                    .any(|c| matches!(c, '/' | '\\' | '\0'));
+            if refused_name {
+                return refused(format!("`{}` is no file name", request.name));
+            }
+            let bytes = match base64::engine::general_purpose::STANDARD.decode(request.bytes) {
+                Ok(bytes) => bytes,
+                Err(error) => return refused(format!("`{}`: {error}", request.name)),
+            };
+            if bytes.len() > MAX_OPENED_BYTES {
+                return refused(format!("`{}` is too large to open here", request.name));
+            }
+            let media = request.media.unwrap_or_else(|| {
+                tilolang_tilo::runtime::blob::media_of(&request.name).to_owned()
+            });
+            Some((request.name, media, bytes))
+        }
+    };
+    // An app opened with a file or a link starts empty, as a first launch does: the scenario is
+    // there for a page that shows what the app holds.
+    let scenario = if opened.is_some() || options.link.is_some() {
+        None
+    } else {
+        match options.scenario {
+            None => app.scenarios.first().map(|s| s.name.clone()),
+            Some(named) => Some(named).filter(|name| !name.is_empty()),
+        }
     };
     let compiled = Rc::new(built.iter().map(|b| b.compiled.clone()).collect::<Vec<_>>());
     let packages = Rc::new(Packages::new(compiled, published));
@@ -225,6 +281,12 @@ pub fn open_app(files_json: &str, root: &str, options_json: &str) -> String {
         viewport: (options.width.unwrap_or(1024), options.height.unwrap_or(720)),
         dark: options.dark,
         link_home: options.link_home,
+        open: opened.as_ref().map(|(name, media, bytes)| OpenedFile {
+            name: name.as_str(),
+            media: media.as_str(),
+            bytes: bytes.as_slice(),
+        }),
+        link: options.link.as_deref(),
     };
     let mut page = match AppPage::open(&app.app, &packages, staging) {
         Ok(page) => page,

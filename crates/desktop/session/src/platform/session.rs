@@ -1219,6 +1219,9 @@ impl Session {
         // service made for that app, which is how it opens a file in the app that opens its kind.
         if let Some(apps) = &options.launch {
             apps.lend_tools(tools.clone());
+            // A file the person opens is kept here for the tilolang app that reads it: its
+            // sandbox has no path of theirs, so it is handed the content and its name.
+            apps.lend_record_content(std::sync::Arc::clone(&record_content));
         }
         let app_wire = start_app_wire(
             &options,
