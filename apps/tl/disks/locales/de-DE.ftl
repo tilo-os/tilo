@@ -21,11 +21,6 @@ d-pezu5gyc-serial = Seriennummer
 
 d-pezu5gyc-name = Name
 
-d-cno6mkpj = Erste Partition öffnen
-    .doc = Hängt die erste Partition des Laufwerks ein, was ein Laufwerk ohne eigenes Dateisystem trägt.
-
-d-cno6mkpj-drive = Laufwerk
-
 d-hagdje6k = Gerät formatieren
     .doc = Löscht das in der Bestätigung genannte Gerät und schreibt das gewählte Dateisystem.
 
@@ -106,3 +101,8 @@ d-ta2u27ch = Gesundheitsbereich
     .w-last-self-test = Letzter Selbsttest
     .w-its-health-is-not-reported = Seine Gesundheit wird nicht gemeldet
     .w-this-drive-reports-no-health-of = Dieses Laufwerk meldet keine eigene Gesundheit.
+
+d-hoqau5lk = Erste Partition einhängen
+    .doc = Hängt die erste Partition des Laufwerks ein, die ein Laufwerk ohne eigenes Dateisystem trägt.
+
+d-hoqau5lk-drive = Laufwerk

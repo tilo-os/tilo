@@ -21,10 +21,10 @@ d-pezu5gyc-serial = Serial
 
 d-pezu5gyc-name = Name
 
-d-cno6mkpj = Mount first
+d-hoqau5lk = Mount first
     .doc = Mounts the drive's first partition, which is what a drive without a filesystem of its own holds.
 
-d-cno6mkpj-drive = Drive
+d-hoqau5lk-drive = Drive
 
 d-hagdje6k = Format device
     .doc = Erases the device the confirmation named, and writes the chosen filesystem.
