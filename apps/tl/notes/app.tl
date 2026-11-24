@@ -1733,7 +1733,7 @@ template view note_page(
             // words stood in, and the page is the note the press made under this one.
             on slash_page(parts): set(page_block, parts.at(0) ?? "").then(
                 set(page_place, nb.notes.count(x -> x.parent == n)),
-            ).then(new_child(n, parts.at(1) ?? "")).then(set(page_ask, page_ask + 1))
+            ).then(set(page_ask, page_ask + 1)).then(new_child(n, parts.at(1) ?? ""))
             on headings(words, levels): set(headings, words).then(set(heading_levels, levels))
         }
         std.linked(n, compact: true)
