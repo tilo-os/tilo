@@ -574,7 +574,7 @@ fn a_tasks_work_records_its_budget_its_sessions_and_what_stopped_it() {
         "stop",
         vec![
             one.clone(),
-            Value::text("its budget ran out"),
+            case(&ada, "StoppedWhy", "budget"),
             Value::text("two sessions"),
         ],
     );
