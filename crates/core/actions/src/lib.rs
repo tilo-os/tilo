@@ -207,6 +207,97 @@ macro_rules! readable_through_json_value {
     };
 }
 
+/// Serde for an enum written as one object whose `$tag` field names the
+/// variant, beside the variant's own fields: the form of
+/// `#[serde(tag = "...")]`, the same JSON field for field and in order.
+///
+/// The enum derives with `#[serde(remote = "Self")]` in place of `tag`, so
+/// the derive writes a variant as an object's only key, and this moves the
+/// name between the two places through one `serde_json::Value`, by code
+/// compiled once here. serde reads a `tag` enum by buffering the object in
+/// its private `Content` form and gives every struct inside two more readers
+/// for that, in every crate that reads the enum; read through a `Value`, each
+/// struct keeps the one reader a `Value` has. A unit variant reads from its
+/// name alone, any other fields beside it ignored, as with `tag`. `read`
+/// routes only reading, for an enum that derives only `Deserialize`.
+#[macro_export]
+macro_rules! tagged_through_json_value {
+    ($ty:ty, $tag:literal) => {
+        $crate::tagged_through_json_value!($ty, $tag, read);
+
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let named = Self::serialize(self, serde_json::value::Serializer)
+                    .map_err(serde::ser::Error::custom)?;
+                let tagged = $crate::tagged_json::tag_inside(named, $tag)
+                    .map_err(serde::ser::Error::custom)?;
+                serde::Serialize::serialize(&tagged, serializer)
+            }
+        }
+    };
+    ($ty:ty, $tag:literal, read) => {
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let object = <serde_json::Map<String, serde_json::Value> as serde::Deserialize>::deserialize(
+                    deserializer,
+                )?;
+                let (named, unit) = $crate::tagged_json::tag_outside(object, $tag)
+                    .map_err(serde::de::Error::custom)?;
+                Self::deserialize(named)
+                    .or_else(|error| Self::deserialize(unit).map_err(|_| error))
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+/// The two halves of [`tagged_through_json_value!`], compiled once.
+#[doc(hidden)]
+pub mod tagged_json {
+    use serde_json::{Map, Value};
+
+    /// `{"variant": {fields}}`, or a unit variant's `"variant"`, as
+    /// `{"<tag>": "variant", fields}`.
+    #[inline(never)]
+    pub fn tag_inside(named: Value, tag: &str) -> Result<Value, String> {
+        let (variant, fields) = match named {
+            Value::String(variant) => (variant, Map::new()),
+            Value::Object(named) if named.len() == 1 => match named.into_iter().next() {
+                Some((variant, Value::Object(fields))) => (variant, fields),
+                Some((variant, _)) => {
+                    return Err(format!(
+                        "the variant `{variant}` holds no fields, so it has no place for `{tag}`"
+                    ));
+                }
+                None => return Err("an empty object is not a variant".to_owned()),
+            },
+            other => return Err(format!("{other} is not a variant")),
+        };
+        let mut object = Map::with_capacity(fields.len().saturating_add(1));
+        object.insert(tag.to_owned(), Value::String(variant));
+        object.extend(fields);
+        Ok(Value::Object(object))
+    }
+
+    /// `{"<tag>": "variant", fields}` as `{"variant": {fields}}`, and as the
+    /// unit variant `"variant"` to read when that is what it names.
+    #[inline(never)]
+    pub fn tag_outside(
+        mut object: Map<String, Value>,
+        tag: &str,
+    ) -> Result<(Value, Value), String> {
+        let variant = match object.remove(tag) {
+            Some(Value::String(variant)) => variant,
+            Some(other) => return Err(format!("`{tag}` is {other}, not a variant name")),
+            None => return Err(format!("missing field `{tag}`")),
+        };
+        let unit = Value::String(variant.clone());
+        let mut named = Map::with_capacity(1);
+        named.insert(variant, Value::Object(object));
+        Ok((Value::Object(named), unit))
+    }
+}
+
 pub mod action;
 pub mod agent_disclosure;
 pub mod api;

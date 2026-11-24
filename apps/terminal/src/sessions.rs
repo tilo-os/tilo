@@ -528,11 +528,12 @@ pub(crate) fn parse_directory_reply(reply: &str) -> Result<Vec<EnvironmentSummar
         grants: Vec<(String, bool)>,
     }
     #[derive(serde::Deserialize)]
-    #[serde(tag = "result", rename_all = "kebab-case")]
+    #[serde(remote = "Self", rename_all = "kebab-case")]
     enum Reply {
         Environments { environments: Vec<Entry> },
         Denied { reason: String },
     }
+    ui::tilo_actions::tagged_through_json_value!(Reply, "result", read);
     match serde_json::from_str::<Reply>(reply.trim()).map_err(|e| e.to_string())? {
         Reply::Environments { environments } => Ok(environments
             .into_iter()

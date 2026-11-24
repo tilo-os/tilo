@@ -2119,6 +2119,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-advisory-lock",
  "tilo-app-id",
  "tilo-clock",

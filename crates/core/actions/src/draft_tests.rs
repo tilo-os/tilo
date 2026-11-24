@@ -514,3 +514,61 @@ fn arguments_digest_pins_canonical_bytes_for_shared_corpus() {
     let nested = args(serde_json::from_str(CANONICAL_JSON_CORPUS[0].1).unwrap());
     assert_eq!(arguments_digest(&nested), PINNED_NESTED_DIGEST);
 }
+
+#[test]
+fn a_value_names_its_kind_in_type_beside_its_fields() {
+    let list = DraftValue::List {
+        count: 2,
+        labels: vec!["a.pdf".into(), "b.md".into()],
+    };
+    assert_eq!(
+        serde_json::to_string(&list).unwrap(),
+        r#"{"type":"list","count":2,"labels":["a.pdf","b.md"]}"#,
+        "the kind comes first, then the fields in their order"
+    );
+    assert_eq!(
+        serde_json::to_string(&DraftValue::Withheld).unwrap(),
+        r#"{"type":"withheld"}"#
+    );
+
+    for (json, value) in [
+        (
+            json!({"labels": ["a.pdf", "b.md"], "type": "list", "count": 2}),
+            list,
+        ),
+        (json!({"type": "withheld"}), DraftValue::Withheld),
+        (
+            json!({"type": "withheld", "said": "later"}),
+            DraftValue::Withheld,
+        ),
+        (
+            json!({"type": "flag", "on": true}),
+            DraftValue::Flag { on: true },
+        ),
+    ] {
+        assert_eq!(
+            serde_json::from_value::<DraftValue>(json.clone()).unwrap(),
+            value,
+            "{json}"
+        );
+        let text = json.to_string();
+        assert_eq!(
+            serde_json::from_str::<DraftValue>(&text).unwrap(),
+            value,
+            "{text}"
+        );
+    }
+
+    for unreadable in [
+        json!({"on": true}),
+        json!({"type": 3, "on": true}),
+        json!({"type": "dial", "on": true}),
+        json!({"type": "flag"}),
+        json!(["flag", true]),
+    ] {
+        assert!(
+            serde_json::from_value::<DraftValue>(unreadable.clone()).is_err(),
+            "{unreadable}"
+        );
+    }
+}

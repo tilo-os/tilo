@@ -204,8 +204,10 @@ pub struct ManagedInstallation {
     pub detail: String,
 }
 
+/// On the wire, `result` names the variant beside its fields
+/// ([`tilo_actions::tagged_through_json_value!`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "result", rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum ProtocolResponse {
     Listed {
         applications: Vec<ManagedApplication>,
@@ -271,6 +273,8 @@ pub enum ProtocolResponse {
         error: ProtocolError,
     },
 }
+
+tilo_actions::tagged_through_json_value!(ProtocolResponse, "result");
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProtocolError {

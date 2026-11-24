@@ -2190,6 +2190,43 @@ mod tests {
             ));
         }
         {
+            // An answer names its variant in `result`, beside the variant's fields,
+            // in both directions.
+            let (mut writer, mut reader) = UnixStream::pair().unwrap();
+            let stopped = ProtocolResponse::Stopped {
+                entry_id: "windows-entry".to_string(),
+            };
+            write_frame(&mut writer, &stopped, FRAMING).unwrap();
+            let value: serde_json::Value = read_frame(&mut reader, FRAMING).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({"result": "stopped", "entry_id": "windows-entry"})
+            );
+
+            let refusal = serde_json::json!({
+                "error": {"code": "unsupported_version", "message": "too new"},
+                "result": "error",
+            });
+            write_frame(&mut writer, &refusal, FRAMING).unwrap();
+            assert!(matches!(
+                read_frame::<ProtocolResponse>(&mut reader, FRAMING),
+                Ok(ProtocolResponse::Error { error }) if error.code == "unsupported_version"
+            ));
+
+            for unreadable in [
+                serde_json::json!({"entry_id": "windows-entry"}),
+                serde_json::json!({"result": 3, "entry_id": "windows-entry"}),
+                serde_json::json!({"result": "exploded"}),
+                serde_json::json!({"result": "stopped"}),
+            ] {
+                write_frame(&mut writer, &unreadable, FRAMING).unwrap();
+                assert!(matches!(
+                    read_frame::<ProtocolResponse>(&mut reader, FRAMING),
+                    Err(SessionError::Json(_))
+                ));
+            }
+        }
+        {
             let (mut writer, mut reader) = UnixStream::pair().unwrap();
             let mut selected = NamedTempFile::new().unwrap();
             selected.write_all(b"portal-selected bytes").unwrap();

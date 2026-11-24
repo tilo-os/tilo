@@ -86,7 +86,7 @@ impl MessageRole {
 
 /// What one field holds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum DraftValue {
     Text {
         text: String,
@@ -109,6 +109,8 @@ pub enum DraftValue {
     /// A secret: shown as withheld, never copied into the draft.
     Withheld,
 }
+
+crate::tagged_through_json_value!(DraftValue, "type");
 
 impl DraftValue {
     /// The value in one line, as a person reads it (a list's labels joined,
