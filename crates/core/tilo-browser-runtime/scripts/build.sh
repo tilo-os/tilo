@@ -225,6 +225,13 @@ fi
 # the tools that made them.
 build_wasm() {
 local -a compile=(build --locked -p "$package" --lib --target wasm32-unknown-unknown --profile "$cargo_profile")
+# The splitter reads the module's symbol table, and CI strips `dev`'s, which `wasm-dev` inherits
+# (`CARGO_PROFILE_DEV_STRIP` in t.toml). The runtime keeps the strip each picks without it: none
+# for `dev`, whose debug information is line tables, debuginfo for `wasm-dev`, which has none.
+case $cargo_profile in
+  dev) compile+=(--config "profile.dev.package.$package.strip=\"none\"") ;;
+  wasm-dev) compile+=(--config "profile.wasm-dev.package.$package.strip=\"debuginfo\"") ;;
+esac
 local -a metadata=(metadata --format-version 1 --no-deps --offline)
 local began=$SECONDS
 "$cargo" "${compile[@]}"

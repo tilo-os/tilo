@@ -57,13 +57,22 @@ XDG_RUNTIME_DIR = "/tmp/tilo-xdg-runtime"
 # what the profiles in Cargo.toml ask for anyway.
 CARGO_PROFILE_DEV_DEBUG = "0"
 CARGO_PROFILE_TEST_DEBUG = "0"
-# Test executables without their symbol table: symbol names are about half of each one, and
-# stripping them makes a test binary 56-58% smaller (tilo-fs's lib tests 268 MB to 118 MB) to
-# link, store, move and load. What it costs: a backtrace no longer names its functions; a panic's
-# or an assert's message still says file:line. Cargo applies it to the `test` profile only, which
-# `cargo test` and nextest build every test executable with. The packages whose tests read the
-# symbol table keep it (`[profile.test.package.*] strip = false` in Cargo.toml).
-# To keep symbols in every test binary again, delete this line.
+# Executables without their symbol table: symbol names are about half of each one, and stripping
+# them makes a test binary 56-58% smaller (tilo-fs's lib tests 268 MB to 118 MB) to link, store,
+# move and load. What it costs: a backtrace no longer names its functions (a crash report or a
+# liveness report from a development build lists addresses); a panic's or an assert's message
+# still says file:line. Cargo applies them to the `test` profile, which `cargo test` and nextest
+# build every test executable with, and to `dev`, which every other development build uses: a
+# check's, a lint's, a program a check builds to run. Both strip alike because cargo hashes a
+# unit's whole profile, strip among it, into its `-C metadata`: the build scripts, proc macros and
+# host libraries every family compiles are then one unit each, compiled and cached once rather
+# than once per profile. Before every dev build stripped, a sixth of the compiler cache's misses
+# were these units compiled again for a family whose strip differed.
+# The packages whose symbol table something reads keep it: their tests' (`[profile.test.package.*]`
+# in Cargo.toml) and the browser runtime's module, which the splitter reads
+# (crates/core/tilo-browser-runtime/scripts/build.sh).
+# To keep symbols again, delete these lines.
+CARGO_PROFILE_DEV_STRIP = "symbols"
 CARGO_PROFILE_TEST_STRIP = "symbols"
 # Warnings are the lint checks' to refuse: clippy and the per-package lints pass `-D warnings`
 # themselves (their `trailing`), so a stray unused binding fails the lint and not every build and
@@ -270,17 +279,10 @@ run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tes
 # the test families: a run that asks for a few of its packages builds them beside workspace-unify,
 # so every shared library resolves with the features the family's whole build gives it, and an
 # ad-hoc `t cargo clippy -p` of a package resolves them the same way.
-# The lint and check families strip symbols like the test profile does (`CARGO_PROFILE_TEST_STRIP`
-# above): the build scripts, proc macros and host libraries they compile are then the same units
-# cargo compiles for the tests, under one `-C metadata`, so each is compiled and cached once rather
-# than once per profile. Cargo hashes a unit's whole profile, strip among it, into its metadata.
-# Nothing they build is run for its symbols: their libraries are metadata only, and their build
-# scripts and proc macros run the same stripped.
 [[cargo]]
 name = "clippy"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
-env = { CARGO_PROFILE_DEV_STRIP = "symbols" }
 args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 trailing = ["-D", "warnings"]
@@ -300,7 +302,6 @@ exclude = [
 name = "clippy-idle"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
-env = { CARGO_PROFILE_DEV_STRIP = "symbols" }
 args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 trailing = ["-D", "warnings"]
@@ -315,7 +316,6 @@ on = ["dispatch", "idle"]
 name = "clippy-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
-env = { CARGO_PROFILE_DEV_STRIP = "symbols" }
 requires = ["arch={arch}"]
 args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
@@ -380,7 +380,6 @@ packages = [
 name = "check"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "check"
-env = { CARGO_PROFILE_DEV_STRIP = "symbols" }
 args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 exclude = [
@@ -1560,7 +1559,6 @@ target = ["tapp_ingress", "workspace_invitation", "identity_wire", "sandbox_poli
 name = "weekly-warnings"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "tools/ci/check-warnings.sh"
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 on = ["dispatch"]
 
 [[check]]
@@ -2457,7 +2455,7 @@ name = "vm-cohort-x86_64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/vm-cohort.sh produce"
 needs = ["tilo-vm-binary-x86_64", "test-assets", "engine-dev-x86_64"]
-env = { CARGO_BUILD_JOBS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_RUNTIME_BUNDLE_DIR = "/target/engine-dev/x86_64/bundles", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_RUNTIME_BUNDLE_DIR = "/target/engine-dev/x86_64/bundles" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 outputs = ["/target/vm-cohort/**"]
@@ -2470,7 +2468,6 @@ name = "vm-cohort-verifier-x86_64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/vm-cohort.sh verify"
 needs = ["vm-cohort-x86_64"]
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/vm-cohort-verifier/**"]
 cache = false
@@ -3261,7 +3258,7 @@ needs = ["image-env-runtime-dev-tree-x86_64"]
 # The build's own default app set, and Calendar: a user story walks a person connecting their
 # calendar in it (stories/shell/calendar-invite.py), and a session installs only the apps its
 # build carries.
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
+env = { TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
 requires = ["arch=x86_64"]
 outputs = ["/target/nested-session/**"]
 timeout_secs = 5400
@@ -3306,7 +3303,7 @@ name = "app-screenshots"
 # Chromium engine Browser's pictures need, and the build scripts' pinned assets.
 egress = { to = ["code.tilo.so:443", "cef-builds.spotifycdn.com:443"], pinned = true }
 run = "bash tools/ci/ensure-browser-dependencies.sh\ncommand -v cmake >/dev/null || dnf install -y cmake\npython3 scripts/browser/build-host.py --jobs 8\nbash tools/screenshots/build.sh \"$CARGO_TARGET_DIR/app-screenshots-build\"\nrm -rf /target/app-screenshots\nTILO_CHROMIUM_HOST=\"$PWD/target/chromium/tilo-chromium-host\" \\\n  bash tools/test-env.sh python3 -I tools/screenshots/run.py --out /target/app-screenshots \\\n  --bin-dir \"$CARGO_TARGET_DIR/app-screenshots-build/bin\" --lib-dir \"$CARGO_TARGET_DIR/app-screenshots-build/lib\" \\\n  --apps \"${T_INPUT_APPS:-}\"\n"
-env = { TILO_TEST_NTFS_FIXTURES = "0", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_TEST_NTFS_FIXTURES = "0" }
 dispatch_inputs = { apps = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/app-screenshots/**"]
@@ -3340,7 +3337,6 @@ default = false
 name = "tilo-vm-binary-x86_64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo build --locked -p tilo-vm --bin tilo-vm -p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime\nrm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin\ncd \"$CARGO_TARGET_DIR/debug\" && cp tilo-vm tilo tilo-runtime /target/tilo-vm-bin/\n"
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/tilo-vm-bin/**"]
 default = false
@@ -3349,7 +3345,6 @@ default = false
 name = "tilo-vm-binary-aarch64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo build --locked -p tilo-vm --bin tilo-vm -p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime\nrm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin\ncd \"$CARGO_TARGET_DIR/debug\" && cp tilo-vm tilo tilo-runtime /target/tilo-vm-bin/\n"
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=arm64"]
 outputs = ["/target/tilo-vm-bin/**"]
 default = false
@@ -3358,7 +3353,6 @@ default = false
 name = "tilolang-runtime"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash dist/dev/tilolang-runtime-build.sh /target/tilolang-runtime"
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/tilolang-runtime/**"]
 timeout_secs = 5400
@@ -3368,7 +3362,6 @@ default = false
 name = "tilolang-runtime-arm64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash dist/dev/tilolang-runtime-build.sh /target/tilolang-runtime"
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=arm64"]
 outputs = ["/target/tilolang-runtime/**"]
 timeout_secs = 5400
@@ -3379,7 +3372,7 @@ name = "nested-session-arm64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
 needs = ["image-env-runtime-dev-tree-aarch64"]
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
+env = { TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
 requires = ["arch=arm64"]
 outputs = ["/target/nested-session/**"]
 timeout_secs = 5400
@@ -5228,7 +5221,7 @@ name = "server-installer-imager-x86_64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "rm -rf /target/server-installer-imager && mkdir -p /target/server-installer-imager\nbash os/dev/build-internal-cycle-imager.sh /target/publish/server-installer-bundle/x86_64 imager-v0.0.0 /target/server-installer-imager/imager"
 needs = ["server-installer-medium-x86_64"]
-env = { CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
 requires = ["arch=x86_64"]
 outputs = ["/target/server-installer-imager/imager"]
 timeout_secs = 5400
@@ -5256,7 +5249,7 @@ name = "server-installer-imager-dev-x86_64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "rm -rf /target/server-installer-imager-dev && mkdir -p /target/server-installer-imager-dev\nbash os/dev/build-internal-cycle-imager.sh /target/publish/server-installer-bundle-dev/x86_64 imager-v0.0.0 /target/server-installer-imager-dev/imager"
 needs = ["server-installer-medium-dev-x86_64"]
-env = { CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
 requires = ["arch=x86_64"]
 outputs = ["/target/server-installer-imager-dev/imager"]
 timeout_secs = 5400
@@ -5337,7 +5330,7 @@ name = "server-plan-retry-layers"
 egress = { to = ["code.tilo.so:443"] }
 run = "bash tools/ci/server-plan-retry.sh layers /target/server-plan-retry-layers"
 needs = ["tilo-vm-binary-x86_64"]
-env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", CARGO_BUILD_JOBS = "32", CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", CARGO_BUILD_JOBS = "32", CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
 requires = ["arch=x86_64"]
 outputs = ["/target/server-plan-retry-layers/**"]
 git = true
@@ -5539,7 +5532,7 @@ name = "medium/internal-cycle-x86_64"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "FEDORA_URL=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2 FEDORA_SHA256=28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f SCENARIO=all TILO_INTERNAL_CYCLE_RELEASE_TAG=imager-v0.0.0 TILO_INTERNAL_CYCLE_RUN_ID=t-${T_COMMIT:0:12} TILO_INTERNAL_CYCLE_STORAGE_ROOT=/var/tmp/tilo-installer-internal-cycle TILO_ACCEL=kvm TILO_MEM=8192 TILO_INTERNAL_CYCLE_MAX_INSTALL_SECONDS=3600 bash os/dev/ci-internal-install-cycle.sh /target/imager-medium/x86_64/disk.qcow2 /target/imager-internal-cycle"
 needs = ["medium/imager-x86_64", "tilo-vm-binary-x86_64"]
-env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/imager-internal-cycle/**"]
@@ -5876,7 +5869,7 @@ run = "env -u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER -u T_COMPILE_CACHE -u T_C
 needs = ["os-assets", "test-assets"]
 image = { check = "os-builder-{arch}", path = "/target/os/{arch}/builder/builder-base/oci" }
 requires = ["arch={arch}"]
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 outputs = ["/target/os/{arch}/recompiled-release/**"]
 timeout_secs = 10800
 default = false
@@ -6293,7 +6286,6 @@ egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west
 run = "bash os/image/compile.sh --chromium /target/os/x86_64/chromium"
 needs = ["os-assets-chromium-x86_64"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/chromium/**"]
 timeout_secs = 10800
@@ -6307,7 +6299,7 @@ egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-
 run = "bash os/image/compile.sh /target/os/x86_64/compiled"
 needs = ["test-assets"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_BOOT_GREETER = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_BOOT_GREETER = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/compiled/**"]
 timeout_secs = 10800
@@ -6321,7 +6313,7 @@ egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-
 run = "bash os/image/compile.sh /target/os/x86_64/compiled-release"
 needs = ["test-assets", "os-chromium-x86_64", "app-models"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_APP_MODELS = "/target/app-models", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_APP_MODELS = "/target/app-models", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/compiled-release/**"]
 timeout_secs = 10800
@@ -6335,7 +6327,7 @@ egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-
 run = "bash os/image/compile.sh --dev /target/os/x86_64/compiled-dev"
 needs = ["test-assets"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
-env = { TILO_DEV_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_DEV_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/compiled-dev/**"]
 timeout_secs = 10800
@@ -6350,7 +6342,7 @@ egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-
 run = "bash os/image/compile.sh --boot /target/os/x86_64/boot"
 needs = ["test-assets"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/boot/**"]
 timeout_secs = 5400
@@ -6628,7 +6620,6 @@ egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west
 run = "bash os/image/compile.sh --chromium /target/os/aarch64/chromium"
 needs = ["os-assets-chromium-aarch64"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/chromium/**"]
 timeout_secs = 10800
@@ -6642,7 +6633,7 @@ egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-
 run = "bash os/image/compile.sh /target/os/aarch64/compiled"
 needs = ["test-assets"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_BOOT_GREETER = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_BOOT_GREETER = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/compiled/**"]
 timeout_secs = 10800
@@ -6656,7 +6647,7 @@ egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-
 run = "bash os/image/compile.sh /target/os/aarch64/compiled-release"
 needs = ["test-assets", "os-chromium-aarch64", "app-models"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_APP_MODELS = "/target/app-models", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_APP_MODELS = "/target/app-models", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/compiled-release/**"]
 timeout_secs = 10800
@@ -6670,7 +6661,7 @@ egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-
 run = "bash os/image/compile.sh --dev /target/os/aarch64/compiled-dev"
 needs = ["test-assets"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
-env = { TILO_DEV_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_DEV_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/compiled-dev/**"]
 timeout_secs = 10800
@@ -6685,7 +6676,7 @@ egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-
 run = "bash os/image/compile.sh --boot /target/os/aarch64/boot"
 needs = ["test-assets"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/boot/**"]
 timeout_secs = 5400
@@ -7362,15 +7353,11 @@ git = true
 default = false
 
 # The check's own certificate mint, built for the node's architecture as a development build: the
-# site's TLS needs it, and it is no published artifact. A one-package selection resolves fewer
-# features than the whole workspace's build does, so the warnings-as-errors flags are off here (as
-# they are for the other checks that only build a program to run it): the lints themselves are
-# `clippy`'s, over every package at once.
+# site's TLS needs it, and it is no published artifact.
 [[check]]
 name = "lounge-check-tools"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo build --locked -p tilo-crypto --bin tilo-crypto\nrm -rf /target/publish/lounge/check-tools\nmkdir -p /target/publish/lounge/check-tools\ncp \"$CARGO_TARGET_DIR/debug/tilo-crypto\" /target/publish/lounge/check-tools/\n"
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge/check-tools/**"]
 default = false
@@ -7386,7 +7373,7 @@ default = false
 name = "lounge-check-cli"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "# The tilo command and the daemon it starts, packed together (tools/ci/publish/cli-release.sh).\ncargo build --locked --profile lounge-check -p tilo-cli -p tilo-runtime --bin tilo --bin tilo-runtime\nrm -rf /target/publish/lounge-check/cli\nmkdir -p /target/publish/lounge-check/cli\ncp \"$CARGO_TARGET_DIR/lounge-check/tilo\" \"$CARGO_TARGET_DIR/lounge-check/tilo-runtime\" /target/publish/lounge-check/cli/\n"
-env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge-check/cli/**"]
 default = false
@@ -7666,7 +7653,7 @@ name = "tilo-sh-binaries"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/publish/tilo-sh-binaries.sh /target/publish/tilo-sh /target/publish/lounge-check/binaries /target/publish/lounge/fonts"
 needs = ["lounge-check-binaries", "lounge-fonts"]
-env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/tilo-sh/**"]
 git = true
@@ -7681,7 +7668,7 @@ default = false
 name = "tilo-sh-programs"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/publish/tilo-sh-programs.sh /target/publish/tilo-sh-programs"
-env = { CARGO_BUILD_JOBS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "16" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/tilo-sh-programs/**"]
 default = false

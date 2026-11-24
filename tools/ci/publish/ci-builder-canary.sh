@@ -54,7 +54,7 @@ case $mode in
     [[ $prefix == builder-canary/"$(uname -m)"/* ]] || die "the cold canary's prefix is $prefix"
     # A compile's key holds every argument it is given, so a cfg naming the nonce gives every
     # unit of this build, its dependencies' included, keys of its own. Cargo joins these flags
-    # with the workspace's target rustflags; CI's -D warnings stays.
+    # with the workspace's target rustflags.
     triple=$(uname -m)-unknown-linux-gnu
     flags_var=CARGO_TARGET_$(tr 'a-z-' 'A-Z_' <<< "$triple")_RUSTFLAGS
     export "$flags_var=${!flags_var:-} --check-cfg=cfg(tilo_builder_canary,values(any())) --cfg=tilo_builder_canary=\"$prefix\""
