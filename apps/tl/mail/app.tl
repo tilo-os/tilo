@@ -2400,7 +2400,7 @@ view thread_list(shown: List<Thread>, more: Option<Action>, nothing: Text) {
             on end: next
             for x in shown {
                 ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
-                    thread_row(x)
+                    thread_item(x)
                 }
             }
         }
