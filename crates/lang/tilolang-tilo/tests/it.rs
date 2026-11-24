@@ -90,6 +90,7 @@ mod removed;
 mod resource_store;
 mod rich_text;
 mod scenarios;
+mod settings_displays;
 mod spaces;
 mod settings_panes;
 mod settings_permissions;

@@ -838,6 +838,40 @@ fn turn_index(transform: Text) -> Int {
     ["normal", "rotate-90", "rotate-180", "rotate-270"].index_of(transform) ?? 0
 }
 
+/// Why a display cannot show HDR, as a person reads it.
+fn hdr_unavailable_words(display: device.Display) -> Text {
+    if not display.sink_hdr {
+        "Not supported by this display"
+    } else if let reason = display.hdr_unavailable {
+        if reason == "driver-unsupported" {
+            "The graphics driver cannot send an HDR signal to this display"
+        } else if reason == "format-unsupported" {
+            "The graphics card could not show a 10-bit picture on this display"
+        } else {
+            "The graphics driver refused to turn on HDR, so this display stays in SDR"
+        }
+    } else { "Not supported by this display" }
+}
+
+/// Why a display cannot vary its refresh rate, as a person reads it.
+fn vrr_unavailable_words(display: device.Display) -> Text {
+    if not display.sink_vrr {
+        "Not supported by this display"
+    } else if display.vrr_unavailable == .some("driver-rejected") {
+        "The graphics driver refused to turn it on"
+    } else {
+        "The graphics driver does not offer it for this display"
+    }
+}
+
+/// Which of a display's colour profiles it shows, counted from zero: the first choice is the
+/// system default, so a profile is one past its place in the list.
+fn colour_profile_index(display: device.Display) -> Int {
+    if let current = display.colour_profile {
+        (display.colour_profiles.map(p -> p.key).index_of(current) ?? -1) + 1
+    } else { 0 }
+}
+
 /// What one screen says on the arrangement: its name, and the size it shows.
 fn screen_words(display: device.Display) -> Text {
     let primary = if display.primary { ", the primary screen" } else { "" }
@@ -939,6 +973,11 @@ action move_screen(screens: device.Displays, picked: Int, start: List<Float>, le
             device.arrange_displays(screens, display.connector, x, y)
         }
     }
+}
+
+/// Set how bright ordinary content looks in HDR, from the slider's value in cd/m².
+action set_sdr_brightness(displays: device.Displays, display: Text, nits: Float) {
+    device.set_display_sdr_brightness(displays, display, nits.round())
 }
 
 /// This device's screens: how they are arranged, what each one shows, and the warmth of the
@@ -1088,6 +1127,72 @@ view displays_pane() {
                             chosen.connector,
                             "rotate-270",
                         )
+                    }
+                }
+            }
+            if chosen.hdr {
+                setting(
+                    "HDR",
+                    "Brighter highlights and richer colour for HDR games, video and photos",
+                ) {
+                    ui.Toggle(shown: chosen.hdr_on, label: "HDR") {
+                        on check(on): device.set_display_hdr(device.displays, chosen.connector, on)
+                    }
+                }
+                setting(
+                    "SDR content brightness",
+                    "How bright everything that is not HDR looks while HDR is on",
+                ) {
+                    ui.Slider(
+                        value: chosen.sdr_brightness_nits.to_float(),
+                        label: "SDR content brightness",
+                        min: 80.0,
+                        max: 480.0,
+                        step: 1.0,
+                        shows_value: true,
+                    ) {
+                        on change(v): set_sdr_brightness(device.displays, chosen.connector, v)
+                    }
+                }
+            } else {
+                ui.ListRow("HDR", secondary: hdr_unavailable_words(chosen))
+            }
+            if chosen.vrr {
+                setting(
+                    "Variable refresh rate",
+                    "Turns on by itself for fullscreen games and video",
+                ) {
+                    ui.Toggle(shown: chosen.vrr_on, label: "Variable refresh rate") {
+                        on check(on): device.set_display_vrr(device.displays, chosen.connector, on)
+                    }
+                }
+            } else {
+                ui.ListRow("Variable refresh rate", secondary: vrr_unavailable_words(chosen))
+            }
+            if chosen.colour_profiles.is_empty() {
+                ui.ListRow("Colour profile", secondary: "System default")
+            } else {
+                setting("Colour profile", "The colours it shows, as the screen was measured") {
+                    ui.ToggleGroup(
+                        selected: .some(colour_profile_index(chosen)),
+                        caption: "Colour profile",
+                    ) {
+                        ui.Segment("System default") {
+                            on press: device.set_display_colour_profile(
+                                device.displays,
+                                chosen.connector,
+                                .none,
+                            )
+                        }
+                        for profile in chosen.colour_profiles {
+                            ui.Segment(profile.label) {
+                                on press: device.set_display_colour_profile(
+                                    device.displays,
+                                    chosen.connector,
+                                    .some(profile.key),
+                                )
+                            }
+                        }
                     }
                 }
             }

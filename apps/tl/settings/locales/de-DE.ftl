@@ -393,6 +393,15 @@ d-utmybuy7 = Displays pane
     .w-rotation = Drehung
     .w-which-way-its-picture-is-turned = Wie sein Bild gedreht ist
     .w-upright = Aufrecht
+    .w-hdr = HDR
+    .w-brighter-highlights-and-richer-colour-for = Lebendigere Spitzlichter und reichere Farben für HDR-Spiele, Videos und Fotos
+    .w-sdr-content-brightness = Helligkeit von SDR-Inhalten
+    .w-how-bright-everything-that-is-not = Wie hell alles aussieht, was nicht HDR ist, während HDR an ist
+    .w-variable-refresh-rate = Variable Bildwiederholrate
+    .w-turns-on-by-itself-for-fullscreen = Schaltet sich für Vollbildspiele und -videos von selbst ein
+    .w-colour-profile = Farbprofil
+    .w-system-default = Systemstandard
+    .w-the-colours-it-shows-as-the = Die Farben, die er zeigt, wie der Bildschirm vermessen wurde
     .w-make-it-the-primary-screen = Zum Hauptbildschirm machen
 
 d-o7rqadc5 = Sound pane
@@ -1405,6 +1414,15 @@ d-hthmopna-picked = Gewählt
 d-hthmopna-start = Start
 
 d-hthmopna-let_go = Losgelassen
+
+d-rmuoshhm = Helligkeit von SDR-Inhalten setzen
+    .doc = Wie hell gewöhnliche Inhalte in HDR aussehen, in cd/m²; 203 ist der Referenzweißwert, den HDR-Video erwartet.
+
+d-rmuoshhm-displays = Bildschirme
+
+d-rmuoshhm-display = Bildschirm
+
+d-rmuoshhm-nits = Helligkeit in cd/m²
 
 d-py66nxzx = Kontrast prüfen
     .doc = Listet jeden Mindestkontrast, den das Thema mit `role` beim Wert des Bedienelements verfehlen würde, damit sein Editor jede Paarung unter ihrem Mindestkontrast zeigt, während das Thema abgestimmt wird. Das Thema behält die Rollen, die es zulässt; ein Wert, der einen Mindestkontrast bräche, wird abgelehnt, und diese Prüfung sagt, welche Paarungen er bräche.

@@ -469,6 +469,8 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # The person's devices as a host holding their record lists them, which the tests' own identities
 # are checked against (`sources::test_trust`).
 tilo-identity = { path = "../../core/tilo-identity", features = ["test-support"] }
+# The displays' tests keep the person's settings in memory, with no session to write them of.
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["test-support"] }
 # What a session keeps for the next one, held in the test's process as the device's daemon keeps
 # it.
 tilo-session-client = { path = "../../core/session-client", features = ["test-support"] }

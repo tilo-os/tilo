@@ -8799,6 +8799,107 @@
           ]
         },
         {
+          "id": "set-display-hdr",
+          "label": "Turn high dynamic range on or off",
+          "description": "Turn high dynamic range on or off The change is tried for a moment and kept, or the previous mode comes back.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-display-sdr-brightness",
+          "label": "Set how bright ordinary content looks in HDR",
+          "description": "Set how bright ordinary content looks in HDR In cd/m²; 203 is the reference white HDR video expects.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "nits",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              },
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "set-display-vrr",
+          "label": "Turn a variable refresh rate on or off",
+          "description": "Turn a variable refresh rate on or off It engages on its own while a fullscreen window, like a game, is shown.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-display-colour-profile",
+          "label": "Choose a display's colour profile",
+          "description": "Choose a display's colour profile One of the profiles it offers, or none for the system default.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "profile",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
           "id": "identify-displays",
           "label": "Number the screens",
           "description": "Number the screens Each display says its number and name for a moment, so a person sees which is which.",
@@ -8912,6 +9013,20 @@
       ],
       "types": [
         {
+          "name": "ColourProfile",
+          "doc": "A colour profile a display offers: its stable key and the name a person reads.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        },
+        {
           "name": "Display",
           "doc": "One display the session shows.",
           "fields": [
@@ -8988,8 +9103,54 @@
               "type": "bool"
             },
             {
+              "name": "hdr_on",
+              "type": "bool"
+            },
+            {
+              "name": "sink_hdr",
+              "type": "bool"
+            },
+            {
+              "name": "hdr_unavailable",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "sdr_brightness_nits",
+              "type": "int"
+            },
+            {
               "name": "vrr",
               "type": "bool"
+            },
+            {
+              "name": "vrr_on",
+              "type": "bool"
+            },
+            {
+              "name": "sink_vrr",
+              "type": "bool"
+            },
+            {
+              "name": "vrr_unavailable",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "colour_profile",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "colour_profiles",
+              "type": {
+                "list": {
+                  "named": "ColourProfile"
+                }
+              }
             }
           ]
         },

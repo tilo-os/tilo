@@ -159,6 +159,48 @@ pub enum DisplaysAction {
         #[param("The display's connector")]
         display: String,
     },
+    /// Turn high dynamic range on or off
+    /// The change is tried for a moment and kept, or the previous mode comes back.
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "monitor")]
+    SetDisplayHdr {
+        #[param("The display's connector")]
+        display: String,
+        #[param("Whether HDR is on")]
+        on: bool,
+    },
+    /// Set how bright ordinary content looks in HDR
+    /// In cd/m²; 203 is the reference white HDR video expects.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "sun")]
+    SetDisplaySdrBrightness {
+        #[param("The display's connector")]
+        display: String,
+        #[param("SDR brightness in cd/m², from 80 to 480")]
+        nits: i64,
+    },
+    /// Turn a variable refresh rate on or off
+    /// It engages on its own while a fullscreen window, like a game, is shown.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "monitor")]
+    SetDisplayVrr {
+        #[param("The display's connector")]
+        display: String,
+        #[param("Whether it may vary its refresh rate")]
+        on: bool,
+    },
+    /// Choose a display's colour profile
+    /// One of the profiles it offers, or none for the system default.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "palette")]
+    SetDisplayColourProfile {
+        #[param("The display's connector")]
+        display: String,
+        /// One of the display's profiles, as [`Display::colour_profiles`] names it; left out, the
+        /// system default.
+        #[param("The profile's key")]
+        profile: Option<String>,
+    },
     /// Number the screens
     /// Each display says its number and name for a moment, so a person sees which is which.
     #[effect(kind = "outside")]
@@ -276,10 +318,51 @@ pub struct Display {
     pub mode: Option<Mode>,
     /// Every mode it offers, as its panel and the signal to it allow.
     pub modes: Vec<Mode>,
-    /// Whether it can show high dynamic range.
+    /// Whether it can show high dynamic range at all.
     pub hdr: bool,
+    /// Whether it is showing high dynamic range now.
+    #[serde(default)]
+    pub hdr_on: bool,
+    /// Whether its own panel asks for HDR, even when this machine cannot drive it.
+    #[serde(default)]
+    pub sink_hdr: bool,
+    /// Why HDR cannot be driven here, when it cannot: `driver-unsupported`,
+    /// `format-unsupported` or `driver-rejected`.
+    #[serde(default)]
+    pub hdr_unavailable: Option<String>,
+    /// How bright ordinary content is while HDR is on, in cd/m².
+    #[serde(default)]
+    pub sdr_brightness_nits: i64,
     /// Whether it can vary its refresh rate.
     pub vrr: bool,
+    /// Whether it may vary its refresh rate now.
+    #[serde(default)]
+    pub vrr_on: bool,
+    /// Whether its own panel asks for a variable refresh rate, even when this machine cannot
+    /// drive it.
+    #[serde(default)]
+    pub sink_vrr: bool,
+    /// Why a variable refresh rate cannot be driven here, when it cannot: `driver-unsupported`
+    /// or `driver-rejected`.
+    #[serde(default)]
+    pub vrr_unavailable: Option<String>,
+    /// The colour profile it shows, when the person chose one.
+    #[serde(default)]
+    pub colour_profile: Option<String>,
+    /// Every colour profile it offers.
+    #[serde(default)]
+    pub colour_profiles: Vec<ColourProfile>,
+}
+
+/// A colour profile a display offers: its stable key and the name a person reads.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct ColourProfile {
+    /// The profile's stable key, which [`DisplaysAction::SetDisplayColourProfile`] takes.
+    pub key: String,
+    /// What a person reads: the profile's name, such as `sRGB`.
+    pub label: String,
 }
 
 /// A size and rate a display can be driven at.
