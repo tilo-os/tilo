@@ -522,8 +522,11 @@ fn a_rows_files_dragged_inside_the_window_land_on_the_target_as_files() {
     let from = laid.source_centre();
     laid.drag((from.x, from.y), (from.x, 120.0));
     // A process whose host carries its drags (another test of this process may have said so)
-    // hands the files to the desktop instead: they come back where they were let go.
+    // hands the files to the desktop instead: they come back where they were let go, and the
+    // pointer travels with the desktop's drag, so the target under it is the one they are let
+    // go on.
     if drag_bus::offered().is_some() {
+        laid.send(&crate::synthetic_input::cursor_moved(from.x, 120.0));
         laid.send(&winit::event::WindowEvent::DroppedFile(
             "/home/ada/notes.md".into(),
         ));
