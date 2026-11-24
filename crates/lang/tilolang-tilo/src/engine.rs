@@ -9,10 +9,14 @@
 //!
 //! An op answers now ([`Provider::call`]) or runs as a job ([`Provider::start`]), which the app
 //! asks about by the id it was given ([`Provider::status`]) and can stop ([`Provider::cancel`]).
-//! Answers are JSON; the app reads them into its own records.
+//! A job whose work is a moving picture is a stream ([`Provider::stream`]): its frames reach the
+//! app's window as they arrive, and it is shown by `tilo-live://<job>`. Answers are JSON; the app
+//! reads them into its own records.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+
+use tilolang_runtime::host_work::Push;
 
 /// One app's engine, as the crate that owns it answers the session's asks.
 pub trait Provider {
@@ -29,6 +33,17 @@ pub trait Provider {
     ///
     /// As [`Self::call`], for a request that cannot start.
     fn start(&self, op: &str, input: &str) -> Result<String, String>;
+
+    /// One stream started: a job that hands `push` its newest frame as each arrives, the app
+    /// showing it by `tilo-live://<job>`. The engine wakes the app's window after each frame.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::call`], for a stream that cannot start, or an engine that runs none.
+    fn stream(&self, op: &str, input: &str, push: Arc<dyn Push>) -> Result<String, String> {
+        let _ = (op, input, push);
+        Err("this engine runs no streams".to_owned())
+    }
 
     /// How far a job has got, as JSON.
     ///
@@ -51,6 +66,10 @@ impl Provider for Unregistered {
 
     fn start(&self, op: &str, _input: &str) -> Result<String, String> {
         Err(format!("`{op}` is no op this device runs"))
+    }
+
+    fn stream(&self, op: &str, _input: &str, _push: Arc<dyn Push>) -> Result<String, String> {
+        Err(format!("`{op}` is no stream this device runs"))
     }
 
     fn status(&self, job: &str) -> Result<String, String> {
@@ -109,6 +128,15 @@ pub fn answer(app: &str, op: &str, input: &str) -> Result<String, String> {
 /// The engine's refusal, or that this device runs none for `app`.
 pub fn begin(app: &str, op: &str, input: &str) -> Result<String, String> {
     engine_of(app).start(op, input)
+}
+
+/// One stream started for `app`: its frames reach `push` as the device receives them.
+///
+/// # Errors
+///
+/// The engine's refusal, or that this device runs none for `app`.
+pub fn stream(app: &str, op: &str, input: &str, push: Arc<dyn Push>) -> Result<String, String> {
+    engine_of(app).stream(op, input, push)
 }
 
 /// How far the job `job` has got.
@@ -170,8 +198,14 @@ mod tests {
     #[test]
     fn an_app_s_ops_reach_its_own_engine() {
         register("so.tilo.cut", Arc::new(Cut));
-        assert_eq!(answer("so.tilo.cut", "cut.probe", "x"), Ok(r#"{"input":"x"}"#.to_owned()));
-        assert_eq!(begin("so.tilo.cut", "cut.render", "{}"), Ok("render-1".to_owned()));
+        assert_eq!(
+            answer("so.tilo.cut", "cut.probe", "x"),
+            Ok(r#"{"input":"x"}"#.to_owned())
+        );
+        assert_eq!(
+            begin("so.tilo.cut", "cut.render", "{}"),
+            Ok("render-1".to_owned())
+        );
         assert_eq!(progress("render-1"), Ok(r#"{"state":"done"}"#.to_owned()));
         assert!(stop("render-1"));
     }

@@ -76,6 +76,8 @@ mod e2e_scratchpad;
 mod e2e_speed_test;
 #[path = "e2e_std.rs"]
 mod e2e_std;
+#[path = "e2e_stream.rs"]
+mod e2e_stream;
 #[path = "e2e_todo.rs"]
 mod e2e_todo;
 #[path = "e2e_tool_context.rs"]

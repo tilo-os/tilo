@@ -413,6 +413,13 @@ impl Image {
     }
 
     fn ensure_cached(&mut self) {
+        // A live picture is the stream's newest frame: asked for on every draw, so a window woken
+        // after a frame arrived paints that frame rather than the one before it.
+        if matches!(&self.source, Source::Loading { picture, .. } if crate::live_pictures::is_live(&picture.src))
+        {
+            let _ = self.follow_picture();
+            return;
+        }
         if self.cached.is_some() {
             return;
         }

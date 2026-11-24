@@ -235,6 +235,7 @@ pub mod latin_chord;
 pub mod launch;
 pub mod lift;
 pub mod live_activity;
+pub mod live_pictures;
 pub mod local_identity;
 pub mod local_state;
 pub mod math;

@@ -617,6 +617,28 @@ impl passwords_engine::Device for EngineContent<'_> {
     }
 }
 
+/// What a stream running beside the host hands over as frames arrive: each is published where the
+/// window paints live pictures from, kept for the embedder that reads them, and the window is woken
+/// to draw it. Never polled.
+struct StreamFrames {
+    push: Arc<dyn tilolang_tilo::runtime::host_work::Push>,
+    wake: Waker,
+}
+
+impl tilolang_tilo::runtime::host_work::Push for StreamFrames {
+    fn frame(&self, frame: tilolang_tilo::runtime::host_work::Frame) {
+        ui::live_pictures::publish(
+            &frame.slot,
+            frame.generation,
+            frame.width,
+            frame.height,
+            Arc::clone(&frame.pixels),
+        );
+        self.push.frame(frame);
+        (self.wake)();
+    }
+}
+
 impl Platform for HostPlatform {
     /// The latest later build when there is one that loads, else the package the instance was
     /// started with.
@@ -747,6 +769,21 @@ impl Platform for HostPlatform {
     }
 
     #[cfg(feature = "app-launch")]
+    fn engine_stream(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        push: Arc<dyn tilolang_tilo::runtime::host_work::Push>,
+    ) -> Result<String, String> {
+        let frames = Arc::new(StreamFrames {
+            push,
+            wake: self.waker(),
+        });
+        tilolang_tilo::engine::stream(app, op, input, frames)
+    }
+
+    #[cfg(feature = "app-launch")]
     fn engine_status(&self, job: &str) -> Result<String, String> {
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -778,6 +815,9 @@ impl Platform for HostPlatform {
                 return true;
             }
         }
+        // A stream's last frame goes with its job: the window shows the session closed, not a
+        // frozen screen.
+        ui::live_pictures::forget(job);
         crate::git_engine::cancel(job)
             || crate::containers_engine::cancel(job)
             || tilolang_tilo::engine::stop(job)

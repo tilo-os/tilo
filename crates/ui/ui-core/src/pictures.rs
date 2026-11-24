@@ -78,6 +78,12 @@ impl Pictures {
         if picture.is_empty() {
             return None;
         }
+        // A stream's newest frame is held by the device's engine, not read from a store, and is
+        // asked for again on every draw: a window that draws late shows the newest frame. It is
+        // answered before the store, which would fetch an address it can never read.
+        if let Some(slot) = crate::live_pictures::slot_of(&picture.src) {
+            return crate::live_pictures::get(slot);
+        }
         if let Some(image) = self.store.get(&picture.src) {
             return Some(image);
         }
@@ -91,6 +97,10 @@ impl Pictures {
     /// decode.
     #[must_use]
     pub fn failed(&self, picture: &PictureSource) -> bool {
+        if crate::live_pictures::is_live(&picture.src) {
+            // A stream that has not sent its first frame yet is loading, never failed.
+            return false;
+        }
         !picture.is_empty() && self.store.failed(&picture.src)
     }
 }

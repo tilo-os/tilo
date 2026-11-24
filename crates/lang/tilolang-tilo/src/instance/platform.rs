@@ -641,6 +641,21 @@ pub trait Platform {
         crate::engine::begin(app, op, input)
     }
 
+    /// The device's own work for `app`, started as a stream whose frames reach `push`.
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal.
+    fn engine_stream(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        push: std::sync::Arc<dyn tilolang_runtime::host_work::Push>,
+    ) -> Result<String, String> {
+        crate::engine::stream(app, op, input, push)
+    }
+
     /// How far the job `job` has got, as JSON.
     ///
     /// # Errors
@@ -735,6 +750,16 @@ impl tilolang_runtime::host_work::EngineHost for PlatformEngine {
 
     fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
         self.0.engine_start(app, op, input)
+    }
+
+    fn stream(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        push: std::sync::Arc<dyn tilolang_runtime::host_work::Push>,
+    ) -> Result<String, String> {
+        self.0.engine_stream(app, op, input, push)
     }
 
     fn status(&self, job: &str) -> Result<String, String> {

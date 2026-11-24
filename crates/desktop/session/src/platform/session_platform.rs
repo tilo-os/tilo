@@ -57,6 +57,49 @@ impl<L: Loads> Platform for OnSession<L> {
     fn waker(&self) -> Waker {
         std::sync::Arc::clone(&self.waker)
     }
+
+    /// A stream an engine runs for a package the session hosts: each frame is published where the
+    /// window paints live pictures from, and the window is woken to draw it.
+    fn engine_stream(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        push: std::sync::Arc<dyn tilolang_tilo::runtime::host_work::Push>,
+    ) -> Result<String, String> {
+        let frames = std::sync::Arc::new(SessionStreamFrames {
+            push,
+            wake: std::sync::Arc::clone(&self.waker),
+        });
+        tilolang_tilo::engine::stream(app, op, input, frames)
+    }
+
+    fn engine_cancel(&self, job: &str) -> bool {
+        ui::live_pictures::forget(job);
+        tilolang_tilo::engine::stop(job)
+    }
+}
+
+/// What a stream running beside the session hands over as frames arrive: each is published where
+/// the window paints live pictures from, kept for an embedder that reads them, and the window is
+/// woken to draw it.
+struct SessionStreamFrames {
+    push: std::sync::Arc<dyn tilolang_tilo::runtime::host_work::Push>,
+    wake: Waker,
+}
+
+impl tilolang_tilo::runtime::host_work::Push for SessionStreamFrames {
+    fn frame(&self, frame: tilolang_tilo::runtime::host_work::Frame) {
+        ui::live_pictures::publish(
+            &frame.slot,
+            frame.generation,
+            frame.width,
+            frame.height,
+            std::sync::Arc::clone(&frame.pixels),
+        );
+        self.push.frame(frame);
+        (self.wake)();
+    }
 }
 
 #[cfg(test)]

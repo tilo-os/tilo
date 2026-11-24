@@ -426,6 +426,7 @@ imports! {
     // a picture the device keeps and the app shows by its address.
     (EngineCall, "engine_call", "iii", "i"),
     (EngineStart, "engine_start", "iii", "i"),
+    (EngineStream, "engine_stream", "iii", "i"),
     (EnginePicture, "engine_picture", "iii", "i"),
     (EngineStatus, "engine_status", "i", "i"),
     (EngineCancel, "engine_cancel", "i", "i"),

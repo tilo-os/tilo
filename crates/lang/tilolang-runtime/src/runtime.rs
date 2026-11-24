@@ -1280,6 +1280,18 @@ impl Runtime {
         *self.core.engine_work.borrow_mut() = Some(Box::new(host));
     }
 
+    /// The newest frame of the stream `slot` a device's engine ran (`engine.stream`): what a
+    /// window that shows `tilo-live://<slot>` paints.
+    #[must_use]
+    pub fn frame(&self, slot: &str) -> Option<crate::host_work::Frame> {
+        self.core.live_frames.get(slot)
+    }
+
+    /// Wake `wake` whenever a stream's frame arrives: the window showing the streams.
+    pub fn set_frame_wake(&self, wake: crate::host_work::Wake) {
+        self.core.live_frames.wake_with(wake);
+    }
+
     /// Where `model_call` goes.
     pub fn set_model_host(&self, host: impl ModelHost + 'static) {
         *self.core.models.borrow_mut() = Some(Box::new(host));

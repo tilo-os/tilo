@@ -3,18 +3,92 @@
 //! An app runs sandboxed, with no decoder, no renderer and no graphics stack of its own. Work
 //! that needs one is the device's: a video cut rendered, a page painted, a drawing rasterised.
 //! The app asks for it by name and the host answers — now (`engine.call`), for work that ends
-//! within a frame or two, or as a job that says how far it has got and can be stopped
-//! (`engine.start`, `engine.status`, `engine.cancel`).
+//! within a frame or two, as a job that says how far it has got and can be stopped
+//! (`engine.start`, `engine.status`, `engine.cancel`), or as a stream (`engine.stream`) whose
+//! newest frame the device keeps and the app shows by its address while the stream runs.
 //!
 //! What a name means is the device's, not the language's: the host registers the ops it answers
 //! for each app and refuses a name the app does not own. The answer is JSON, which the app reads
 //! into its own records with `json.decode<T>`, so one vocabulary serves every engine.
+
+use std::sync::Arc;
 
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_i32, trap};
 use crate::engine::{HostFail, Wasm};
 use crate::run::JournalEntry;
 use crate::value::Value;
+
+/// One picture a running stream holds for its app: the stream's slot, the frame's number in that
+/// stream, and its pixels — `width`×`height` RGBA8, straight alpha.
+#[derive(Clone, Debug)]
+pub struct Frame {
+    pub slot: String,
+    pub generation: u64,
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Arc<Vec<u8>>,
+}
+
+/// What an engine hands its app's window as a stream runs: each frame, as it arrives. The host
+/// keeps the newest frame of each slot and wakes the window, which paints it on its next draw;
+/// nothing here is polled.
+pub trait Push: Send + Sync {
+    /// The stream `frame.slot` shows `frame` now.
+    fn frame(&self, frame: Frame);
+}
+
+/// What wakes an app's window when a stream it shows has a new frame.
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
+
+/// The newest frame of every stream the device's engines ran: what its window paints, and what an
+/// embedder reads by the stream's slot.
+#[derive(Default)]
+pub struct LiveFrames {
+    newest: std::sync::Mutex<std::collections::HashMap<String, Frame>>,
+    wake: std::sync::Mutex<Option<Wake>>,
+}
+
+/// A lock held even after a thread panicked while holding it: a frame lost one way must not
+/// stop every later one.
+fn held<T>(lock: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl LiveFrames {
+    /// A new frame of the stream `frame.slot`: the newest one it shows from now on.
+    pub fn put(&self, frame: Frame) {
+        let slot = frame.slot.clone();
+        held(&self.newest).insert(slot, frame);
+        let wake = held(&self.wake).clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+
+    /// The newest frame of the stream `slot`.
+    #[must_use]
+    pub fn get(&self, slot: &str) -> Option<Frame> {
+        held(&self.newest).get(slot).cloned()
+    }
+
+    /// Forget the stream `slot`: one that ended shows nothing rather than its last frame.
+    pub fn forget(&self, slot: &str) {
+        held(&self.newest).remove(slot);
+    }
+
+    /// Wake `wake` whenever a frame arrives: the window showing the streams.
+    pub fn wake_with(&self, wake: Wake) {
+        *held(&self.wake) = Some(wake);
+    }
+}
+
+impl Push for LiveFrames {
+    fn frame(&self, frame: Frame) {
+        self.put(frame);
+    }
+}
 
 /// What the device answers an app's engine work with (`Runtime::set_engine`).
 pub trait EngineHost {
@@ -34,6 +108,25 @@ pub trait EngineHost {
     ///
     /// As [`Self::call`], for a request that cannot start.
     fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String>;
+
+    /// One stream started: a job that keeps running and hands `push` its newest frame as each one
+    /// arrives, the app showing it by `tilo-live://<job>`. The device wakes the app's window after
+    /// each frame, so the picture moves without the app asking how far the stream has got.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::call`], for a stream that cannot start; a device that runs no streams refuses
+    /// here rather than answering a job that never sends a frame.
+    fn stream(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        push: Arc<dyn Push>,
+    ) -> Result<String, String> {
+        let _ = (app, op, input, push);
+        Err("this device streams nothing to its apps".to_owned())
+    }
 
     /// How far a job has got, as JSON: its state (`queued`, `running`, `done`, `failed` or
     /// `cancelled`), how much it has done of how much, what it made, or why it failed. A job the
@@ -63,6 +156,12 @@ impl Core {
                 let op = self.text(a.h(1)?)?;
                 let input = self.text(a.h(2)?)?;
                 self.result(self.engine_begin(&app, &op, &input).map(Value::text))
+            }
+            Imp::EngineStream => {
+                let app = self.text(a.h(0)?)?;
+                let op = self.text(a.h(1)?)?;
+                let input = self.text(a.h(2)?)?;
+                self.result(self.engine_stream(&app, &op, &input).map(Value::text))
             }
             Imp::EnginePicture => {
                 let app = self.text(a.h(0)?)?;
@@ -113,6 +212,19 @@ impl Core {
         text_answer(answer)
     }
 
+    /// One stream the device's engine runs: the same request as `engine.start`, whose frames the
+    /// device keeps and the app's window shows by `tilo-live://<job>`.
+    fn engine_stream(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        let answer = self.device_work("stream", op, input, || {
+            let push: Arc<dyn Push> = Arc::clone(&self.live_frames) as Arc<dyn Push>;
+            match self.engine_work.borrow().as_ref() {
+                Some(host) => answered(host.stream(app, op, input, push)),
+                None => Value::Error(no_engine()),
+            }
+        })?;
+        text_answer(answer)
+    }
+
     fn engine_status(&self, job: &str) -> Result<String, String> {
         let answer = self.device_work("status", job, "", || {
             match self.engine_work.borrow().as_ref() {
@@ -124,6 +236,8 @@ impl Core {
     }
 
     fn engine_stop(&self, job: &str) -> bool {
+        // A stream's frames end with its job: the window shows nothing of it, not its last frame.
+        self.live_frames.forget(job);
         self.device_work("cancel", job, "", || {
             Value::Bool(
                 self.engine_work
