@@ -551,7 +551,7 @@ impl HostedBrowsers {
     /// action reaches its handler, admitted the same way. A host that places no window registers
     /// nothing, so an open is answered by its device's own refusal.
     pub fn provide_in(self: &Arc<Self>, providers: &Providers) {
-        let answers: Arc<dyn ActionProvider + Send + Sync> = Arc::clone(self);
+        let answers: Arc<dyn ActionProvider + Send + Sync> = Arc::<Self>::clone(self);
         providers.provide(PROVIDER, APP, Reach::Devices, Arc::clone(&answers));
         *self.publishing.lock_recover() = Some(RegisteredAs {
             providers: providers.downgrade(),

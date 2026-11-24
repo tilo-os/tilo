@@ -85,7 +85,7 @@ pub use tilo_workspace_service::{
     surfaces, workspace, workspace_documents, workspace_files, workspaces,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_workspace_service::{authority_epoch, handshake, workspace_access};
+use tilo_workspace_service::{authority_epoch, workspace_access};
 
 pub use tilo_server_client::frame;
 pub use tilo_server_protocol::{auth, config, devices, live, mesh, policy};

@@ -629,7 +629,6 @@ impl Server {
             let local = std::env::var_os("TILO_WORKSPACES_LOCAL").is_some();
             let _ = governed.invite_at(entry, local);
         }
-        let workspaces = sessions.workspaces.clone();
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
         let handler = sessions.handler.clone();
