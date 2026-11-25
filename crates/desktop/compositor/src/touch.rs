@@ -92,10 +92,16 @@ impl State {
         // Locked, the surface under the finger is one that stands over the lock (the session's own
         // view of it), as it is for the pointer: a finger reaches what unlocks.
         if let Some(index) = self.shell_surface_under(at)
-            && let Some(surface) = self.surfaces.get_mut(index)
+            && index < self.surfaces.len()
         {
-            surface.pointer_motion(at.x, at.y);
-            surface.pointer_button(BTN_LEFT, true);
+            self.note_shell_press(serial.into(), person);
+            let press = self.shell_press;
+            if let Some(surface) = self.surfaces.get_mut(index) {
+                surface.pointer_motion(at.x, at.y);
+                tilo_session_core::surface::handling_press(press, || {
+                    surface.pointer_button(BTN_LEFT, true);
+                });
+            }
             self.touch.surfaces.push((slot, index, at));
             return;
         }
@@ -230,8 +236,12 @@ impl State {
             .position(|(held, _, _)| *held == slot)
         {
             let (_, index, _) = self.touch.surfaces.remove(position);
+            let press = self.shell_press;
             if let Some(surface) = self.surfaces.get_mut(index) {
-                surface.pointer_button(BTN_LEFT, false);
+                // A control acts on the lift that completes the finger's press: the person's.
+                tilo_session_core::surface::handling_press(press, || {
+                    surface.pointer_button(BTN_LEFT, false);
+                });
                 surface.pointer_leave();
             }
             return;

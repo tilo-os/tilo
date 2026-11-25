@@ -524,23 +524,25 @@ impl Shared {
                 }
                 continue;
             }
-            let outcome = self
-                .published
-                .invoke(&invocation.address, &invocation.arguments, look)
-                .or_else(|error| {
-                    if !locked {
-                        return Err(error);
-                    }
-                    self.services
-                        .borrow_mut()
-                        .invoke(
-                            invocation.address.resource.as_str(),
-                            invocation.address.action.as_str(),
-                            &invocation.arguments,
-                        )
-                        .map(|result| result.map(answered))
-                        .unwrap_or(Err(error))
-                });
+            // What the person's key press asked for runs as that press's.
+            let outcome = tilo_session_core::surface::handling_press(invocation.press, || {
+                self.published
+                    .invoke(&invocation.address, &invocation.arguments, look)
+            })
+            .or_else(|error| {
+                if !locked {
+                    return Err(error);
+                }
+                self.services
+                    .borrow_mut()
+                    .invoke(
+                        invocation.address.resource.as_str(),
+                        invocation.address.action.as_str(),
+                        &invocation.arguments,
+                    )
+                    .map(|result| result.map(answered))
+                    .unwrap_or(Err(error))
+            });
             match outcome {
                 Ok(started) => {
                     if let Some(kind) = invocation.readout {

@@ -453,7 +453,13 @@ impl DesktopPass {
         }
         self.take_up_typed_ahead();
         let choices = std::mem::take(&mut self.handle.shared.borrow_mut().search_asks);
-        for (index, argument, way) in choices {
+        // What the person's press chose is carried out as that press's, the rows its choice
+        // leads to included.
+        let press = choices
+            .iter()
+            .find_map(|(.., press)| *press)
+            .or_else(tilo_actions::remote::press_points::handled);
+        for (index, argument, way, chosen_by) in choices {
             let mut search = search.borrow_mut();
             if !search.is_open() {
                 break;
@@ -464,13 +470,15 @@ impl DesktopPass {
                 Some("more") => Some(ui::search::ActivationModifier::Alt),
                 _ => None,
             };
-            search.choose_with(index, argument, held);
+            tilo_actions::remote::press_points::handling(chosen_by, || {
+                search.choose_with(index, argument, held)
+            });
         }
         let ask = self.handle.shared.borrow_mut().typed_ask.take();
         if let Some(ask) = ask {
             self.commit_typed(&ask);
         }
-        self.follow_search(tiles);
+        tilo_actions::remote::press_points::handling(press, || self.follow_search(tiles));
         self.publish_search_rows();
     }
 
@@ -856,7 +864,9 @@ impl DesktopPass {
             };
             let mut shared = self.handle.shared.borrow_mut();
             shared.search_choice_context = Some((scope, query, target.clone()));
-            shared.search_choices.push(target);
+            shared
+                .search_choices
+                .push((target, tilo_actions::remote::press_points::handled()));
             return;
         }
         let mut shared = self.handle.shared.borrow_mut();

@@ -52,6 +52,9 @@ pub(super) struct Presses {
     seen: Mutex<VecDeque<Press>>,
     /// Wakes the call waiting for its press's attestation.
     attested: Notify,
+    /// The person's own calls a press on the shell's own surfaces proved, by invocation and the
+    /// person, and when: what the app the call is delivered to runs as their act.
+    proved: Mutex<VecDeque<(tilo_actions::InvocationId, String, Instant)>>,
 }
 
 impl Presses {
@@ -134,6 +137,44 @@ impl Presses {
         }
     }
 
+    /// The press of `serial` on the shell's own surfaces proved `person`'s call `invocation`, when
+    /// the compositor attested it there, fresh and unused, which this uses up.
+    async fn prove_shell_call(
+        &self,
+        (invocation, person): (tilo_actions::InvocationId, String),
+        serial: Option<u32>,
+    ) {
+        if !self
+            .take(Some(runtime_collab::wire::shell::SHELL_SURFACES), serial)
+            .await
+        {
+            return;
+        }
+        let Ok(mut proved) = self.proved.lock() else {
+            return;
+        };
+        let now = tilo_clock::now();
+        proved.retain(|(_, _, at)| now.saturating_duration_since(*at) <= MAX_PRESS_AGE);
+        proved.push_back((invocation, person, now));
+        while proved.len() > KEPT {
+            let _ = proved.pop_front();
+        }
+    }
+
+    /// Whether `person`'s press on the shell's own surfaces proved their call `invocation`,
+    /// within [`MAX_PRESS_AGE`].
+    fn proved(&self, invocation: tilo_actions::InvocationId, person: &str) -> bool {
+        let Ok(proved) = self.proved.lock() else {
+            return false;
+        };
+        let now = tilo_clock::now();
+        proved.iter().any(|(proved, by, at)| {
+            *proved == invocation
+                && by == person
+                && now.saturating_duration_since(*at) <= MAX_PRESS_AGE
+        })
+    }
+
     /// `answer` of the press, if it is there, without waiting: `None` where it is not.
     fn look<T>(
         &self,
@@ -179,6 +220,30 @@ impl super::AppBrokerState {
         self.presses
             .take(self.window_of_peer(peer_id), serial)
             .await
+    }
+
+    /// The own call `invocation` of the person whose root key is `person`, made on their shell's
+    /// link, names `serial`: the compositor's serial of the press on the shell's own surfaces that
+    /// made it, when it names one. Proved once that press is attested there, fresh and unused,
+    /// the call runs as their act ([`Self::pressed_call`]); otherwise it is their plain call.
+    pub(super) async fn shell_pressed(
+        &self,
+        (invocation, person): (tilo_actions::InvocationId, [u8; 32]),
+        serial: Option<u32>,
+    ) {
+        self.presses
+            .prove_shell_call((invocation, super::person_id_for_root(person)), serial)
+            .await;
+    }
+
+    /// Whether the press of the person `person` (their member id) on the shell's own surfaces
+    /// made their call `invocation` ([`Self::shell_pressed`]).
+    pub(super) fn pressed_call(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        person: &str,
+    ) -> bool {
+        self.presses.proved(invocation, person)
     }
 
     /// The window connection `peer_id` is and where in it the person's press issued `serial`
@@ -267,6 +332,38 @@ mod tests {
         );
         noting.await.expect("the note lands");
         assert!(!presses.take(Some(5), Some(33)).await, "used once");
+    }
+
+    #[tokio::test]
+    async fn a_press_on_the_shells_own_surfaces_proves_one_call_of_its_person() {
+        use runtime_collab::wire::shell::SHELL_SURFACES;
+        let presses = Presses::default();
+        let (pick, again, unpressed) = (
+            tilo_actions::InvocationId::new(),
+            tilo_actions::InvocationId::new(),
+            tilo_actions::InvocationId::new(),
+        );
+        let ada = || "ada".to_owned();
+        presses.note(SHELL_SURFACES, 40, None, tilo_clock::now());
+        presses.note(7, 41, None, tilo_clock::now());
+        presses.prove_shell_call((unpressed, ada()), None).await;
+        presses.prove_shell_call((unpressed, ada()), Some(41)).await;
+        assert!(
+            !presses.proved(unpressed, "ada"),
+            "no serial, or one an app's window was issued, proves the shell's call"
+        );
+        presses.prove_shell_call((pick, ada()), Some(40)).await;
+        assert!(presses.proved(pick, "ada"), "the palette's pick is her act");
+        assert!(
+            !presses.proved(pick, "bo"),
+            "it is nobody else's act, whatever call names the invocation"
+        );
+        presses.prove_shell_call((again, ada()), Some(40)).await;
+        assert!(!presses.proved(again, "ada"), "one press proves one call");
+        assert!(
+            !presses.take(Some(7), Some(40)).await,
+            "no app's window takes a press on the shell's surfaces"
+        );
     }
 
     #[tokio::test]

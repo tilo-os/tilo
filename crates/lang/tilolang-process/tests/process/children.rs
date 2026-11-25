@@ -667,27 +667,45 @@ fn drafts(hosted: &Hosted) -> Vec<bool> {
         .collect()
 }
 
-/// Deliver the broker's invocation `id` of `action` on `resource`, with `arguments`, as `ada`:
-/// with her yes on the system's confirm when `approved`, as the dispatch admits a call again once
-/// she answered its asked record, and as her plain call otherwise.
+/// What is behind a call the dispatch delivers as `ada`.
+#[derive(Clone, Copy)]
+enum Behind {
+    /// Neither her press nor her yes: her plain call.
+    Nothing,
+    /// Her yes on the system's confirm, as the dispatch admits a call again once she answered
+    /// its asked record.
+    Approved,
+    /// Her press on the system's own surfaces (the palette's row), as the dispatch attested it.
+    Pressed,
+}
+
+/// Deliver the broker's invocation `id` of `action` on `resource`, with `arguments`, as `ada`,
+/// with `behind` behind it.
 fn deliver(
     inbox: &Inbox,
     id: u64,
     invocation: InvocationId,
     (resource, action): (String, String),
-    (arguments, approved): (&serde_json::Value, bool),
+    (arguments, behind): (&serde_json::Value, Behind),
 ) {
-    let context = approved.then(|| {
-        let record = tilo_actions::remote::asked::RecordRef {
-            workspace: "workspace".to_owned(),
-            record: format!("asked/{invocation:?}"),
-            device: None,
-        };
-        Box::new(tilo_actions::ActionContext {
-            approval: Some(tilo_actions::remote::asked::Approval::new(record, None)),
+    let context = match behind {
+        Behind::Nothing => None,
+        Behind::Approved => {
+            let record = tilo_actions::remote::asked::RecordRef {
+                workspace: "workspace".to_owned(),
+                record: format!("asked/{invocation:?}"),
+                device: None,
+            };
+            Some(Box::new(tilo_actions::ActionContext {
+                approval: Some(tilo_actions::remote::asked::Approval::new(record, None)),
+                ..tilo_actions::ActionContext::default()
+            }))
+        }
+        Behind::Pressed => Some(Box::new(tilo_actions::ActionContext {
+            pressed: true,
             ..tilo_actions::ActionContext::default()
-        })
-    });
+        })),
+    };
     inbox.borrow_mut().push_back(CollabEvent::Invocation {
         id,
         invocation,
@@ -751,7 +769,7 @@ tilo_test_env::scenario! {
             answer,
             (
                 &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
-                false,
+                Behind::Nothing,
             ),
         );
         settle(&mut host, &mut window);
@@ -791,7 +809,7 @@ tilo_test_env::scenario! {
                 child.target.address.resource.clone(),
                 child.target.address.action.clone(),
             ),
-            (&serde_json::Value::Object(arguments), true),
+            (&serde_json::Value::Object(arguments), Behind::Approved),
         );
         settle(&mut host, &mut window);
         assert!(
@@ -826,7 +844,7 @@ tilo_test_env::scenario! {
             answer,
             (
                 &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
-                true,
+                Behind::Approved,
             ),
         );
         settle(&mut host, &mut window);
@@ -842,6 +860,34 @@ tilo_test_env::scenario! {
         assert_eq!(drafts(host.instances().next().unwrap()), [true], "the draft went");
     }
 
+    phase pressed_the_answer_in_the_palette_runs_its_send_without_asking;
+    {
+        // Ada picked `answer` in the system's palette with a press the dispatch attested: the
+        // call is her act, so the send its own code makes runs without asking her again.
+        let (mut host, mut window, sent, inbox, answer) = answers();
+        deliver(
+            &inbox,
+            8,
+            InvocationId::new(),
+            answer,
+            (
+                &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
+                Behind::Pressed,
+            ),
+        );
+        settle(&mut host, &mut window);
+        assert!(
+            child_sent(&sent).is_none(),
+            "nobody is asked about the send her pick made"
+        );
+        assert!(
+            matches!(answered(&sent, 8), Some(InvocationUpdate::Succeeded { .. })),
+            "the picked answer runs to its end: {:?}",
+            answered(&sent, 8)
+        );
+        assert_eq!(drafts(host.instances().next().unwrap()), [true], "the draft went");
+    }
+
     phase declined_the_answer_ends_and_its_draft_is_taken_back;
     {
         // Ada's plain call again: the send asks her, and she says no.
@@ -853,7 +899,7 @@ tilo_test_env::scenario! {
             answer,
             (
                 &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
-                false,
+                Behind::Nothing,
             ),
         );
         settle(&mut host, &mut window);

@@ -74,16 +74,21 @@ pub struct Invocation {
     pub arguments: serde_json::Map<String, serde_json::Value>,
     /// The readout to show once it ran (a hardware key's answer on screen).
     pub readout: Option<OsdKind>,
+    /// The compositor's serial of the person's key press that asked for it, when one did: what
+    /// it does runs as that press's.
+    pub press: Option<u32>,
 }
 
 impl Invocation {
-    /// `action` of `resource` , without arguments.
+    /// `action` of `resource` , without arguments: asked by the person's press the session's
+    /// keys are answering now, when they answer one.
     #[must_use]
     pub fn new(resource: &str, action: &str) -> Self {
         Self {
             address: ActionAddress::new(resource, action),
             arguments: serde_json::Map::new(),
             readout: None,
+            press: tilo_session_core::surface::handled_press(),
         }
     }
 

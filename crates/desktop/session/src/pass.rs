@@ -397,6 +397,16 @@ impl Session {
     #[cfg(target_os = "linux")]
     fn deliver_person_presses(&self) {
         for press in self.compositor.person_presses().take() {
+            // A press on the compositor's own surfaces (the palette, a menu, a shortcut's key)
+            // proves the person's own call their shell makes with it.
+            if press.window == tilo_compositor::presses::SHELL {
+                self.shared.daemon.press(
+                    runtime_collab::wire::shell::SHELL_SURFACES,
+                    press.serial,
+                    None,
+                );
+                continue;
+            }
             let Some(tab) = self.shared.desktop.tab_of(press.window) else {
                 // A press in something that is no window of the layout (a layer, the lock screen):
                 // nothing an app's call names.

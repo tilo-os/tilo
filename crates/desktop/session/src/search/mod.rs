@@ -1458,8 +1458,12 @@ impl SessionSearch {
             apps.open_arrived();
         }
         let mut refused = Vec::new();
-        for choice in handle.take_search_choices() {
-            if let Err(error) = self.perform(&workspace, choice.clone(), own) {
+        for (choice, press) in handle.take_search_choices() {
+            // The person's press that chose the row is behind what it does.
+            let performed = tilo_actions::remote::press_points::handling(press, || {
+                self.perform(&workspace, choice.clone(), own)
+            });
+            if let Err(error) = performed {
                 refused.push((choice, error));
             }
         }

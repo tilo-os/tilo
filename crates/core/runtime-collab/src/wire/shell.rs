@@ -102,6 +102,11 @@ pub struct VouchedApp {
     pub member: Option<String>,
 }
 
+/// The window a press on the system's own surfaces (the shell's palette, menus and shortcuts)
+/// stands for in [`ShellCall::Press`]: no app's window, so no app's call can name it, and only the
+/// person's own calls on the shell's link prove themselves with it.
+pub const SHELL_SURFACES: u64 = u64::MAX;
+
 /// Where on the shell's screen the person pressed an action: the window's tab key and the
 /// resource the action is on, as the shell names them. Only the window key and the resource
 /// travel: the daemon fills the device with itself and the app with the action's own, so a shell
@@ -173,7 +178,8 @@ pub enum ShellCall {
     /// once. Only the shell connection, which the compositor told, may send one, and a shell
     /// names only the device's own person's press.
     Press {
-        /// The window the press reached, by its tab id, as `device.Window.key` names it.
+        /// The window the press reached, by its tab id, as `device.Window.key` names it, or
+        /// [`SHELL_SURFACES`] for the system's own.
         window: u64,
         /// The input serial the compositor issued to that window with the press.
         serial: u32,

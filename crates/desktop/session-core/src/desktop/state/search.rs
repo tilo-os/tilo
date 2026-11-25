@@ -310,8 +310,10 @@ impl DesktopHandle {
         self.wake();
     }
 
-    /// The rows chosen in search since the last call that the host carries out, in order.
-    pub fn take_search_choices(&self) -> Vec<Target> {
+    /// The rows chosen in search since the last call that the host carries out, in order, each
+    /// with the compositor's serial of the person's press on the system's own surfaces that chose
+    /// it, when one did.
+    pub fn take_search_choices(&self) -> Vec<(Target, Option<u32>)> {
         std::mem::take(&mut self.shared.borrow_mut().search_choices)
     }
 
@@ -378,12 +380,14 @@ impl DesktopHandle {
 
     /// Choose the open search's row `index` ([`Self::search_rows`]), with `argument` the line its
     /// action asks for and `way` the modifier it was chosen with (`here`, `beside` or `more`), on
-    /// the next update pass.
+    /// the next update pass: as the person's press on the system's own surfaces that chooses it
+    /// now, when one does.
     pub fn choose_search_row(&self, index: usize, argument: Option<String>, way: Option<String>) {
+        let press = tilo_actions::remote::press_points::handled();
         self.shared
             .borrow_mut()
             .search_asks
-            .push((index, argument, way));
+            .push((index, argument, way, press));
     }
 }
 

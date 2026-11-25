@@ -117,6 +117,13 @@ pub struct ActionContext {
     /// admitted the invocation, from the call itself, never from a caller's context.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval: Option<crate::remote::asked::Approval>,
+    /// The person made this invocation themselves, with a press the compositor attested to the
+    /// system's own surfaces (a palette's row, a menu's item, a shortcut's key): what an app's
+    /// handler runs as their own act, so what its code calls of its own does not ask them again.
+    /// Set only by the host that admitted the invocation, from the attestation it holds, never
+    /// from a caller's context.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pressed: bool,
 }
 
 read_through_json_value!(ActionContext);
@@ -176,6 +183,7 @@ impl Clone for ActionContext {
             change: self.change,
             shows: self.shows.clone(),
             approval: self.approval.clone(),
+            pressed: self.pressed,
         }
     }
 }
@@ -1257,6 +1265,7 @@ mod wire {
                 shows: self.shows,
                 action,
                 approval: None,
+                pressed: false,
             }
         }
     }

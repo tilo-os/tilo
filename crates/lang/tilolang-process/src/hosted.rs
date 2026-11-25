@@ -3254,7 +3254,10 @@ impl Hosted {
         let approval = attributed
             .as_ref()
             .and_then(|context| context.approval.clone());
-        let outcome = tilolang_tilo::page::answering(approval, || {
+        // The person's own press on the system's surfaces made it, as the host that admitted it
+        // attested: what its code calls of its own runs as their act.
+        let pressed = attributed.as_ref().is_some_and(|context| context.pressed);
+        let outcome = tilolang_tilo::page::answering((approval, pressed), || {
             self.invoke(&address, argument.as_deref(), &invoker, attributed.as_ref())
         });
         SERVING.with(|slot| *slot.borrow_mut() = None);

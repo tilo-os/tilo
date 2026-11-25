@@ -59,20 +59,22 @@ impl ShellDispatch {
         workspace: Option<String>,
         message: RemoteActionMessage,
     ) -> Result<RemoteActionMessage, ActionCallError> {
-        Self::ask_as(shell, workspace, None, message, None).await
+        Self::ask_as(shell, workspace, None, message, (None, None)).await
     }
 
-    /// [`Self::ask`], as `caller` ([`named`]) where it names one, and with the shell's window
-    /// when the person pressed the call there.
+    /// [`Self::ask`], as `caller` ([`named`]) where it names one, with the shell's window when
+    /// the person pressed the call there (`pressed`), and naming `press`, the compositor's serial
+    /// of the person's press on the shell's own surfaces that made it, when one did.
     async fn ask_as(
         shell: &ShellClient,
         workspace: Option<String>,
         caller: Option<Box<tilo_actions::remote::KeptCaller>>,
         message: RemoteActionMessage,
-        pressed: Option<crate::wire::shell::ShellPress>,
+        (pressed, press): (Option<crate::wire::shell::ShellPress>, Option<u32>),
     ) -> Result<RemoteActionMessage, ActionCallError> {
         let unavailable = |reason: String| ActionCallError::Unavailable { reason };
         let frame = RemoteActionFrame::new(message)
+            .pressed(press)
             .encode()
             .map_err(|error| unavailable(error.to_string()))?;
         match shell
@@ -105,9 +107,13 @@ impl ShellDispatch {
         let shell = self.0.shell.clone();
         let workspace = caller.workspace().map(str::to_owned);
         let named = named(caller);
+        // The person's own call, made now by their press on the shell's own surfaces, names it.
+        let press = (named.is_none() && matches!(message, RemoteActionMessage::Invoke(_)))
+            .then(tilo_actions::remote::press_points::handled)
+            .flatten();
         self.0.runtime.spawn(async move {
             done.complete(
-                Self::ask_as(&shell, workspace, named, message, None)
+                Self::ask_as(&shell, workspace, named, message, (None, press))
                     .await
                     .and_then(answer),
             );
@@ -125,7 +131,7 @@ impl ShellDispatch {
         workspace: Option<String>,
         request: InvokeRequest,
     ) -> Result<serde_json::Value, String> {
-        Self::settled_output(&self.0.shell, workspace, request)
+        Self::settled_output(&self.0.shell, workspace, request, None)
             .await
             .map(|output| output.value.unwrap_or_default())
     }
@@ -140,8 +146,10 @@ impl ShellDispatch {
     ) -> Pending<Result<tilo_actions::ActionOutput, String>> {
         let (done, result) = tilo_actions::remote::pending();
         let shell = self.0.shell.clone();
+        // The person's own call, made now by their press on the shell's own surfaces, names it.
+        let press = tilo_actions::remote::press_points::handled();
         self.0.runtime.spawn(async move {
-            done.complete(Self::settled_output(&shell, workspace, request).await);
+            done.complete(Self::settled_output(&shell, workspace, request, press).await);
         });
         result
     }
@@ -222,13 +230,16 @@ impl ShellDispatch {
         shell: &ShellClient,
         workspace: Option<String>,
         mut request: InvokeRequest,
+        press: Option<u32>,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let invocation = request.invocation;
         request.wait_ms = held();
-        let receipt = match Self::ask(
+        let receipt = match Self::ask_as(
             shell,
             workspace.clone(),
+            None,
             RemoteActionMessage::Invoke(request),
+            (None, press),
         )
         .await
         .map_err(|error| error.to_string())?
@@ -392,7 +403,7 @@ impl ResourceReads for ShellDispatch {
             read,
         };
         Box::pin(async move {
-            Self::ask_as(&shell, workspace, named, message, None)
+            Self::ask_as(&shell, workspace, named, message, (None, None))
                 .await
                 .unwrap_or_else(|error| RemoteActionMessage::ResourceReading {
                     correlation,

@@ -258,6 +258,10 @@ pub struct State {
     /// with the input serials it issued to those windows
     /// ([`crate::presses::PersonPresses`]).
     pub(crate) person_presses: std::sync::Arc<crate::presses::PersonPresses>,
+    /// The serial of the person's newest press on the compositor's own surfaces: what those
+    /// surfaces act on, a press and the release that completes it alike
+    /// ([`tilo_session_core::surface::handling_press`]). Input another seat sent there clears it.
+    pub(crate) shell_press: Option<u32>,
     /// The seats beside the person's: an agent's, a viewer's (§ seats).
     pub(crate) seats: crate::seats::Seats,
     /// A seat's keys are the app-facing seat's for this delivery: no surface takes them, and
@@ -481,6 +485,7 @@ impl State {
             pressed_surface: None,
             last_input_serial: std::collections::BTreeMap::new(),
             person_presses: std::sync::Arc::default(),
+            shell_press: None,
             seats: crate::seats::Seats::default(),
             seat_keys_only: false,
             protocols,
@@ -1149,7 +1154,12 @@ impl State {
                 // and gives them back.
                 self.seats.hold_person_key(keycode, pressed);
                 if !self.await_window_with_key(keycode, pressed, at) {
-                    self.key(keycode, pressed, serial, time, at, person);
+                    // What the person's key press makes the compositor's own surfaces do (a
+                    // shortcut, the palette's Enter) is that press's.
+                    let press = (pressed && person).then(|| u32::from(serial));
+                    tilo_session_core::surface::handling_press(press, || {
+                        self.key(keycode, pressed, serial, time, at, person);
+                    });
                 }
             }
             InputEvent::TouchDown { slot, x, y } => {
@@ -1284,6 +1294,9 @@ impl State {
             },
         );
         if let Some((index, key)) = routed {
+            if pressed {
+                self.note_shell_press(serial.into(), person);
+            }
             if let Some(surface) = self.surfaces.get_mut(index) {
                 surface.key(&key);
             }
@@ -1607,11 +1620,17 @@ impl State {
         if let PointerTarget::Surface(index) = self.pointer_target {
             if pressed {
                 self.pressed_surface = Some(index);
+                self.note_shell_press(serial.into(), person);
             }
             let held = self.held_modifiers();
+            let press = self.shell_press;
             if let Some(surface) = self.surfaces.get_mut(index) {
                 surface.pointer_modifiers(held);
-                surface.pointer_button(button, pressed);
+                // A control acts on the press or on the release that completes it: either is the
+                // person's press.
+                tilo_session_core::surface::handling_press(press, || {
+                    surface.pointer_button(button, pressed);
+                });
             }
             return;
         }
@@ -2815,6 +2834,20 @@ impl State {
             .zip(origin)
             .map(|(pointer, origin)| window_point(pointer - origin.to_f64()));
         self.person_presses.note(window, serial, at);
+    }
+
+    /// The person pressed the compositor's own surfaces (the shell's), delivered with `serial`:
+    /// the device's daemon is told, as of a press in a window ([`crate::presses::SHELL`]), and the
+    /// surfaces act on it until the next press there. A press another seat sent is no person's,
+    /// and leaves the surfaces acting on none.
+    pub(crate) fn note_shell_press(&mut self, serial: u32, person: bool) {
+        if !person {
+            self.shell_press = None;
+            return;
+        }
+        self.person_presses
+            .note(crate::presses::SHELL, serial, None);
+        self.shell_press = Some(serial);
     }
 
     /// Judge the pings in flight. Returns whether the set of windows whose app is not responding

@@ -81,6 +81,20 @@ impl AppBrokerState {
                 _ => None,
             },
         );
+        // The person's own call that their press on the shell's own surfaces made (a palette's
+        // row, a menu's item, a shortcut's key) runs as their act in the app it reaches, as a press
+        // in its window does: only the attestation this host holds says so, never a caller's
+        // context.
+        let pressed = requested
+            .zip(actor.actor().person_id())
+            .is_some_and(|(invocation, person)| self.pressed_call(invocation, person));
+        let context = match (context, pressed) {
+            (None, false) => None,
+            (context, pressed) => Some(tilo_actions::ActionContext {
+                pressed,
+                ..context.unwrap_or_default()
+            }),
+        };
         // A certified local origin retains its original registered clock and
         // exact person/workspace through an asynchronous directory lookup. Never
         // recapture a replacement origin at dispatch or accept a payload actor.

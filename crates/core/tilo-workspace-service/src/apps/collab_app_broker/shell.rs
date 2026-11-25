@@ -393,9 +393,34 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
             frame,
             caller,
             pressed,
-        } => ShellReply::Action(
-            dispatch(&services, &shell.caller, workspace, caller, pressed, &frame).await?,
-        ),
+        } => {
+            let frame = tilo_actions::remote::RemoteActionFrame::decode(&frame)
+                .map_err(|error| error.to_string())?;
+            // The person's own call, made by the press it names on the shell's own surfaces (a
+            // palette's row, a menu's item, a shortcut's key): it runs as their act once the
+            // compositor's record of that press proves it, as a window's press proves its app's
+            // call. A call for an app or an agent the shell names follows no press of theirs.
+            if caller.is_none()
+                && let RemoteActionMessage::Invoke(request) = &frame.message
+            {
+                shell
+                    .broker
+                    .state
+                    .shell_pressed((request.invocation, shell.caller.person), frame.press)
+                    .await;
+            }
+            ShellReply::Action(
+                dispatch(
+                    &services,
+                    &shell.caller,
+                    workspace,
+                    caller,
+                    pressed,
+                    frame.message,
+                )
+                .await?,
+            )
+        }
         // The connection registers what its shell serves itself (`WireConnection::provide`).
         ShellCall::Provide { .. } => {
             return Err("a provider is served on the shell's own connection".to_owned());
@@ -415,12 +440,9 @@ async fn dispatch(
     workspace: Option<String>,
     named: Option<Box<tilo_actions::remote::KeptCaller>>,
     pressed: Option<runtime_collab::wire::shell::ShellPress>,
-    frame: &[u8],
+    message: RemoteActionMessage,
 ) -> Result<Vec<u8>, String> {
     use tilo_actions::remote::RemoteActionFrame;
-    let message = RemoteActionFrame::decode(frame)
-        .map_err(|error| error.to_string())?
-        .message;
     let workspaces = &services.workspaces;
     let device = workspaces.device_cert();
     if caller.person != device.user_public_key {

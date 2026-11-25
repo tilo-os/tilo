@@ -913,7 +913,10 @@ impl HostInner {
 
     /// Run the call the API admitted for `invoker`, made through `through`'s process when it
     /// names one. A call the person approved on the system's confirm is the run they answered:
-    /// what its own code calls runs on that yes. Any other asks again for what asks.
+    /// what its own code calls runs on that yes. One they made with a press the host attested
+    /// (a palette's row, a menu's item, a shortcut's key) is their act, as a press in the app's
+    /// window is: what its own code calls runs, though a rule that asks them first still waits
+    /// for their yes. Any other asks again for what asks.
     fn run_admitted(
         &self,
         invoker: &Actor,
@@ -924,6 +927,9 @@ impl HostInner {
         if crate::page::approved() {
             self.runtime
                 .invoke_approved_through(invoker, through, action, from)
+        } else if crate::page::pressed() {
+            self.runtime
+                .invoke_pressed_through(invoker, through, action, from)
         } else {
             self.runtime
                 .invoke_admitted_through(invoker, through, action, from)

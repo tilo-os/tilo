@@ -31,6 +31,9 @@ thread_local! {
     /// it answers is filled from.
     static APPROVED: RefCell<Option<tilo_actions::remote::asked::Approval>> =
         const { RefCell::new(None) };
+    /// Whether the call being run on this thread is one the person made with a press the host
+    /// attested, while it runs.
+    static PRESSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The secrets the host holds for the app's code, each under its token, until a call or an
     /// engine takes it: each is taken once.
     static HELD: RefCell<std::collections::HashMap<String, String>> =
@@ -254,16 +257,25 @@ pub fn shown_in(tree: &mut tilo_render_protocol::patch::Node) {
 }
 
 /// Run `run` as the call the person approved with `approval`: a page call it makes that answers
-/// a sign-in with what they typed (`"typed": true`) is filled from it. Nothing of it outlives
-/// `run`.
+/// a sign-in with what they typed (`"typed": true`) is filled from it. `pressed` where they made
+/// it themselves with a press the host attested (a palette's row, a menu's item, a shortcut's
+/// key): what its own code calls runs as their act. Nothing of it outlives `run`.
 pub fn answering<R>(
-    approval: Option<tilo_actions::remote::asked::Approval>,
+    (approval, pressed): (Option<tilo_actions::remote::asked::Approval>, bool),
     run: impl FnOnce() -> R,
 ) -> R {
     let before = APPROVED.with(|slot| slot.replace(approval));
+    let was_pressed = PRESSED.with(|slot| slot.replace(pressed));
     let ran = run();
     APPROVED.with(|slot| slot.replace(before));
+    PRESSED.with(|slot| slot.set(was_pressed));
     ran
+}
+
+/// Whether this thread runs a call the person made with a press the host attested
+/// ([`answering`]).
+pub(crate) fn pressed() -> bool {
+    PRESSED.with(std::cell::Cell::get)
 }
 
 /// Whether this thread runs a call the person approved on the system's confirm
@@ -460,7 +472,7 @@ mod tests {
                 "fields": [{"label": "PIN", "value": {"$typed": 1}}],
             },
         });
-        let holds = answering(Some(approve(&[PASSWORD, "4711"])), || {
+        let holds = answering((Some(approve(&[PASSWORD, "4711"])), false), || {
             fill_secrets(&mut asked)
         })
         .unwrap();
@@ -573,7 +585,7 @@ mod tests {
     fn a_sign_in_carries_what_the_person_typed_only_to_the_window() {
         let (page, asked) = page();
         page.call(SIGN_IN).unwrap();
-        answering(Some(approve(&["ada", PASSWORD])), || page.call(SIGN_IN)).unwrap();
+        answering((Some(approve(&["ada", PASSWORD])), false), || page.call(SIGN_IN)).unwrap();
         page.call(SIGN_IN).unwrap();
         let asked: Vec<serde_json::Value> = asked
             .borrow()

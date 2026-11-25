@@ -5,6 +5,19 @@
 //! the vocabulary here, so the same role runs on the Linux desktop's compositor and on the page.
 
 pub mod drawing;
+
+/// Run `deliver` as what the person's press of `serial` on the system's own surfaces does: a
+/// call the person's shell makes for them within it names the press, which the compositor's
+/// record of it proves to the device's daemon ([`tilo_actions::remote::press_points::handling`]).
+pub fn handling_press<R>(serial: Option<u32>, deliver: impl FnOnce() -> R) -> R {
+    tilo_actions::remote::press_points::handling(serial, deliver)
+}
+
+/// The person's press the system's own surfaces act on now ([`handling_press`]), if any.
+#[must_use]
+pub fn handled_press() -> Option<u32> {
+    tilo_actions::remote::press_points::handled()
+}
 mod shell;
 
 pub use cursor_icon::CursorIcon;

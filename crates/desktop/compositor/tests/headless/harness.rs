@@ -1964,6 +1964,9 @@ delegate_noop!(Seen: ignore WlSurface);
 pub struct HostLog {
     pub motions: Vec<(f64, f64)>,
     pub buttons: Vec<(u32, bool)>,
+    /// The person's press each button and key was delivered as, in order: what a call the
+    /// surface made then would name.
+    pub handled: Vec<Option<u32>>,
     pub left: u32,
     pub keys: Vec<SurfaceKey>,
     pub wants_keyboard: bool,
@@ -2046,7 +2049,10 @@ impl ShellSurface for Square {
     }
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
-        self.log.borrow_mut().buttons.push((button, pressed));
+        let mut log = self.log.borrow_mut();
+        log.buttons.push((button, pressed));
+        log.handled
+            .push(tilo_session_core::surface::handled_press());
     }
 
     fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {
@@ -2061,7 +2067,10 @@ impl ShellSurface for Square {
     }
 
     fn key(&mut self, key: &SurfaceKey) {
-        self.log.borrow_mut().keys.push(key.clone());
+        let mut log = self.log.borrow_mut();
+        log.keys.push(key.clone());
+        log.handled
+            .push(tilo_session_core::surface::handled_press());
     }
 
     fn text_input(&self) -> Option<SurfaceTextInput> {

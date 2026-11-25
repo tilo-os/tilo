@@ -10,7 +10,7 @@ use crate::catalogue::{Signature, catalogue};
 use crate::core::{Core, ModelHost, OutsideSink};
 use crate::engine::{DEFAULT_LIMITS, EngineLimits};
 use crate::error::RuntimeError;
-use crate::exec::InvokeOutcome;
+use crate::exec::{Admission, InvokeOutcome};
 use crate::ids::{Actor, DocId, ModuleHash, PackageId, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
@@ -1035,7 +1035,7 @@ impl Runtime {
         let action = action.into();
         let from = from.or(action.from.as_ref());
         self.core
-            .invoke_admitted((actor, app), &action, from, false)
+            .invoke_admitted((actor, app), &action, from, Admission::Answered)
     }
 
     /// [`Runtime::invoke_admitted_through`] of a call the dispatch admitted again on the person's
@@ -1054,7 +1054,33 @@ impl Runtime {
     ) -> Result<InvokeOutcome, RuntimeError> {
         let action = action.into();
         let from = from.or(action.from.as_ref());
-        self.core.invoke_admitted((actor, app), &action, from, true)
+        self.core
+            .invoke_admitted((actor, app), &action, from, Admission::Approved)
+    }
+
+    /// [`Runtime::invoke_admitted_through`] of a call the person made themselves with a press
+    /// the dispatch attested on the system's own surfaces (a palette's row, a menu's item, a
+    /// shortcut's key): their act, as a press in the app's window is. What its own code goes on
+    /// to call runs as theirs, though a rule that asks them first still waits for their yes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::invoke_action`].
+    pub fn invoke_pressed_through(
+        &self,
+        actor: &Actor,
+        app: Option<&str>,
+        action: impl Into<ActionRef>,
+        from: Option<&crate::value::ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let action = action.into();
+        let from = from.or(action.from.as_ref());
+        self.core.invoke_admitted(
+            (actor, app),
+            &action,
+            from,
+            Admission::Pressed { shift: false },
+        )
     }
 
     /// The arguments of an invocation of `action` with those left out (`None`) given their

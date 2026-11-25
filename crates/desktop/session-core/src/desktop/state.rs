@@ -189,6 +189,10 @@ pub struct EndedAnswer {
     pub details: String,
 }
 
+/// A row a caller of the published search chose ([`Shared::search_asks`]): its place, the
+/// argument its action asks for, the modifier it was chosen with, and the press that chose it.
+pub type SearchAsk = (usize, Option<String>, Option<String>, Option<u32>);
+
 pub struct Shared {
     pub tree: Layout,
     /// The floating windows this device stands in the floating layer's column, and where the
@@ -301,8 +305,9 @@ pub struct Shared {
     pub host_choices: Vec<String>,
     /// What the host adds to search and carries out of it ([`DesktopHandle::set_search_host`]).
     pub search_host: Option<std::rc::Rc<dyn search::SearchHost>>,
-    /// Rows chosen in search that the host carries out, in order.
-    pub search_choices: Vec<tilo_desktop_search::Target>,
+    /// Rows chosen in search that the host carries out, in order, each with the compositor's
+    /// serial of the person's press on the system's own surfaces that chose it, when one did.
+    pub search_choices: Vec<(tilo_desktop_search::Target, Option<u32>)>,
     /// The search the host last carried a row out of: where it stood and what was typed, so a row
     /// it could not carry out is asked again with the answer on that row.
     pub search_choice_context: Option<(ui::search::Scope, String, tilo_desktop_search::Target)>,
@@ -310,9 +315,10 @@ pub struct Shared {
     /// say on that row.
     pub search_refusal: Option<(tilo_desktop_search::Target, String)>,
     /// The rows a caller of the published search chose, with the argument each one's action asks
-    /// for and the modifier it was chosen with (`here`, `beside` or `more`), taken on the next
-    /// update pass.
-    pub search_asks: Vec<(usize, Option<String>, Option<String>)>,
+    /// for, the modifier it was chosen with (`here`, `beside` or `more`) and the compositor's
+    /// serial of the person's press on the system's own surfaces that chose it, when one did,
+    /// taken on the next update pass.
+    pub search_asks: Vec<SearchAsk>,
     /// The open search, as last shown: its query and rows, and whether it is still filling in.
     pub shown_search: search::ShownSearch,
     /// The windows whose shown tab has drawn what it shows, as of the last update pass

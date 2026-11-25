@@ -1338,10 +1338,13 @@ impl Core {
     /// whoever had to say yes before it delivered the call, so the run does not ask again for the
     /// call itself.
     ///
-    /// When the person `approved` it on the system's confirm, the run is the one they answered:
-    /// what the app's own code goes on to call runs on that yes ([`Core::run_answered`]). A call
-    /// delivered with no such yes (the person's from the palette, an agent's, an automation's,
-    /// another app's process) still asks for what it goes on to call. Code an author wrote around
+    /// `admission` says how it was admitted. When the person approved it on the system's confirm
+    /// ([`Admission::Approved`]), the run is the one they answered: what the app's own code goes
+    /// on to call runs on that yes ([`Core::run_answered`]). When they made it themselves with a
+    /// press the dispatch attested on the system's own surfaces ([`Admission::Pressed`]), it is
+    /// their act, as a press in the app's window is. A call delivered with neither (an agent's,
+    /// an automation's, another app's process, the person's with no press behind it) still asks
+    /// for what it goes on to call. Code an author wrote around
     /// the call (a block, a view of someone's) still asks for what its author may not do: the
     /// admission decided the invoker, not that code.
     ///
@@ -1353,13 +1356,8 @@ impl Core {
         (invoker, app): (&Actor, Option<&str>),
         aref: &ActionRef,
         from: Option<&ResourceRef>,
-        approved: bool,
+        admission: Admission,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        let admission = if approved {
-            Admission::Approved
-        } else {
-            Admission::Answered
-        };
         self.invoke_direct_as_in(None, (invoker, app), aref, from, None, admission)
     }
 

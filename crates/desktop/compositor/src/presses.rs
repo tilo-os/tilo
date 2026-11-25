@@ -12,6 +12,11 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
+/// The window a press on the compositor's own surfaces (the shell's palette, menus and
+/// shortcuts) stands for: no client's window, so no app's call names it, and only the person's
+/// own calls their shell makes prove themselves with it.
+pub const SHELL: u64 = u64::MAX;
+
 /// How many presses wait to be handed over: enough for what the person can press before the
 /// session's next pass, and bounded so a session that fell behind is not grown without end.
 const KEPT: usize = 64;

@@ -859,6 +859,73 @@ fn a_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window() {
 }
 
 #[test]
+fn a_press_on_the_shells_own_surface_is_the_persons_and_what_it_does_names_it() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    compositor.add_surface(Rc::new(RefCell::new(Square::new(
+        (300, 220, 40, 40),
+        [0, 255, 0, 255],
+        Rc::clone(&log),
+    ))));
+    compositor.draw_frame().expect("a frame");
+    compositor
+        .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+        .unwrap();
+    for pressed in [true, false] {
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed,
+            })
+            .unwrap();
+    }
+    let presses = compositor.person_presses().take();
+    let [
+        PersonPress {
+            window: tilo_compositor::presses::SHELL,
+            serial,
+            at: None,
+        },
+    ] = presses[..]
+    else {
+        panic!("one press on the shell's own surfaces, at no window's point: {presses:?}");
+    };
+    assert_eq!(
+        log.borrow().handled,
+        [Some(serial), Some(serial)],
+        "a row acts on the press or on the release that completes it: both are that press's"
+    );
+
+    // A key the surface takes (the palette's Enter, a shortcut) is the person's press there too.
+    log.borrow_mut().wants_keyboard = true;
+    log.borrow_mut().handled.clear();
+    compositor
+        .input(InputEvent::Key {
+            keycode: KEY_A,
+            pressed: true,
+        })
+        .unwrap();
+    let presses = compositor.person_presses().take();
+    let [
+        PersonPress {
+            window: tilo_compositor::presses::SHELL,
+            serial: typed,
+            at: None,
+        },
+    ] = presses[..]
+    else {
+        panic!("the key is a press on the shell's own surfaces: {presses:?}");
+    };
+    assert_ne!(typed, serial, "each press has its own serial");
+    assert_eq!(log.borrow().handled, [Some(typed)]);
+    assert_eq!(
+        tilo_session_core::surface::handled_press(),
+        None,
+        "nothing after the press acts on it"
+    );
+}
+
+#[test]
 fn surfaces_draw_above_windows_and_take_the_pointer_over_them() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
