@@ -523,6 +523,10 @@ d-a4rv5wm6-body = Text
 d-t57taubn = Weitergeleitet
     .w-not-downloaded-so-not-sent-on = Nicht heruntergeladen, daher nicht weitergeschickt: { $names }
 
+d-cku57p6b = Ablehnung beim Senden
+    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
+    .w-pick-the-account-it-goes-from = Wähle das Konto, von dem sie ausgeht
+
 d-dqdt6fce = Titel des Platzes
     .w-all-mail = Alle Mails
 

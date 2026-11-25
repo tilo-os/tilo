@@ -1027,6 +1027,14 @@ d-hpdtxwj5 = Kommentieren
 
 d-hpdtxwj5-words = Wörter
 
+d-vho7oyzb = Seiten gesagt
+    .w-1-page = 1 Seite
+    .w-pages = { $count } Seiten
+
+d-w3lifrol = Zoom gesagt
+    .w-fit-width = An Breite anpassen
+    .w-fit-page = An Seite anpassen
+
 d-e5pfej3h = Quelle öffnen~present
 
 d-4qnr3itw = Seite verschieben~present

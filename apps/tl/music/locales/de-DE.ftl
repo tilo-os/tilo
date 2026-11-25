@@ -433,6 +433,28 @@ d-7fxad2em = Mehr von diesem Künstler
 
 d-7fxad2em-a = Album
 
+d-3j2slwyd = Empfehlungsgrund
+    .w-because-you-follow = Weil du { $artist } folgst.
+    .w-from-an-album-you-kept = Aus einem Album, das du behalten hast.
+    .w-because-you-liked = Weil dir { $title } gefallen hat.
+    .w-because-you-listen-to = Weil du { $kind } hörst.
+
+d-m34xk232 = Spotify-Kontozeile
+    .w-spotify = Spotify
+
+d-pju67pre = Gerätezeile
+    .w-playing-here = Spielt hier
+    .w-spotify-device = Spotify-Gerät
+
+d-33dcmprq = Anzahltext
+    .w-1-song = 1 Titel
+    .w-songs = { $n } Titel
+
+d-tg3ye5r4 = Hörer
+    .w-m-monthly-listeners = { $value } M monatliche Hörer
+    .w-k-monthly-listeners = { $value } K monatliche Hörer
+    .w-monthly-listeners = { $n } monatliche Hörer
+
 d-yyin4m4b = Bibliothek
     .w-music = Music
     .w-home = Home

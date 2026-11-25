@@ -258,6 +258,29 @@ d-wzx4ymwg-file = Datei
 d-flkitlvk = Den Tresor dieses Geräts importieren
     .doc = Nimmt in den Tresor, was der Geheimdienst dieses Geräts hält und ein Arbeitsbereich teilen darf.
 
+d-df7bfu5b = Artbezeichnung
+    .w-login = Anmeldung
+    .w-api-key = API-Schlüssel
+    .w-secure-note = Geheime Notiz
+    .w-wi-fi-network = WLAN
+    .w-secret = Geheimnis
+
+d-5wsa2elj = Geheimnisbezeichnung
+    .w-api-key = API-Schlüssel
+    .w-password = Passwort
+    .w-note = Notiz
+    .w-secret = Geheimnis
+
+d-uduyccu4 = Identitätsbezeichnung
+    .w-account = Konto
+    .w-network = Netzwerk
+    .w-username = Benutzername
+
+d-pishtc7x = Herkunftsbezeichnung
+    .w-service = Dienst
+    .w-websites = Websites
+    .w-website = Website
+
 d-ugwe3ulv = Anmeldung speichern
 
 d-z623qzrl = Favorit

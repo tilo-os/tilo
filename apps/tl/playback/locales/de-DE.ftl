@@ -272,6 +272,9 @@ d-gomcpa5y-index = Index
 
 d-gomcpa5y-level = Pegel
 
+d-7ioidz4k = Erste Ausgabe
+    .w-this-device = Dieses Gerät
+
 d-4zpe77fa = Live
     .w-nothing-playing = Nichts läuft
     .w-previous = Zurück
