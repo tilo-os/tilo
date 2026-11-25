@@ -577,10 +577,30 @@ async fn a_workspace_made_elsewhere_gets_a_folder_that_syncs() {
         "the workspace logged in to gets a folder",
     )
     .await;
-
     // Another device of the person's makes a workspace at their server.
     let garden = hosted.create("Garden").await.unwrap().workspace;
     put_on_server(&server, &garden, "seeds.txt", b"Tomatoes, basil\n").await;
+    // The person's own workspace, which holds their list of workspaces, is founded on their
+    // device when their identity is made, and that device hands it to the server it logs in at
+    // without a ticket. The server writes nothing of theirs: it answers the workspaces it keeps
+    // for them, and the laptop lists those under its own key, where its account reads them.
+    let person = tilo_test_env::within(
+        "the laptop founds the person's own workspace",
+        tilo_workspace_service::workspaces::person_workspace::found(computer.own.copies()),
+    )
+    .await
+    .expect("the person's own workspace");
+    tilo_test_env::within(
+        "the server takes the person's own workspace",
+        computer.own.copies().attach_server(
+            &person,
+            server_cert.device_public_key,
+            server.node_addr(),
+            tilo_peer_state::CopyRole::KeyHolder,
+        ),
+    )
+    .await
+    .expect("the server keeps the person's own workspace");
     holds(
         &home.join("Garden").join("seeds.txt"),
         b"Tomatoes, basil\n",
