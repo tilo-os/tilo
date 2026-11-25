@@ -9,7 +9,7 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::tooltip::TooltipSide;
+use crate::widget::TooltipSide;
 
 /// Why an invocation from a control did not run, and where that control is.
 #[derive(Clone, Debug, PartialEq)]

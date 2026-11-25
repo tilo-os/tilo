@@ -157,7 +157,7 @@ impl TextInput {
         if self.read_only && !self.has_selection() {
             let byte = self.resolve_position(self.last_mouse_pos).byte;
             if let Some(target) = self.link_at(byte) {
-                crate::widget::open_external_url(&target);
+                crate::platform::os_open(&target);
             }
         }
         self.report_selection();

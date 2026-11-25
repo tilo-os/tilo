@@ -8,7 +8,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::scrollbar::Scrollbar;
-use crate::widget::{Element, Widget};
+use crate::widget::{Element, ScrollAxis, Widget};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -21,13 +21,6 @@ mod bars;
 mod input;
 #[path = "scrollable_snap.rs"]
 mod snap;
-
-#[derive(Clone, Copy, Debug)]
-pub enum ScrollAxis {
-    Vertical,
-    Horizontal,
-    Both,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CursorMoveOutcome {
@@ -55,7 +48,7 @@ const LINE_STEP: f32 = 48.0;
     clippy::cast_possible_truncation,
     reason = "PAGE_FRACTION is a fixed 0..1 fraction; narrowing to f32 loses only unused precision"
 )]
-const PAGE_FRACTION: f32 = crate::widget::scrollbar::PAGE_FRACTION as f32;
+const PAGE_FRACTION: f32 = crate::widget::PAGE_FRACTION as f32;
 const HOLD_INITIAL_MS: u64 = 300;
 const HOLD_REPEAT_MS: u64 = 55;
 

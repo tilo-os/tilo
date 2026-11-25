@@ -105,7 +105,7 @@ impl Press {
             return;
         }
         if let Some(link) = &self.link {
-            crate::widget::open_external_url(link);
+            crate::platform::os_open(link);
         }
     }
 

@@ -17,7 +17,7 @@ fn toolkit_entry_points_reach_the_recording_process() {
             tilo_ui::text_selection::clipboard_paste().as_deref(),
             Some("copied")
         );
-        assert!(tilo_ui::widget::try_open_external_url("https://tilo.so").is_ok());
+        assert!(tilo_ui::platform::try_os_open("https://tilo.so").is_ok());
         let picked = PickRequest::open("Open", "Open").send().recv();
         assert_eq!(picked, Ok(PortalOutcome::Opened("/tmp/picked.txt".into())));
         let mut reader = tilo_ui::screen_reader::ScreenReader::new();

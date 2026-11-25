@@ -2,26 +2,11 @@
 
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::{COMPACT_BELOW, EXPANDED_BELOW, Length, MEDIUM_BELOW, WidthClass};
 
 #[must_use]
 pub fn rem_of(theme: &Theme) -> f32 {
     theme.tokens.typography.size(TextRole::Body).max(1.0)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Length {
-    Rem(f32),
-    Dp(f32),
-}
-
-impl Length {
-    #[must_use]
-    pub fn resolve(self, rem: f32) -> f32 {
-        match self {
-            Self::Rem(value) => value * rem,
-            Self::Dp(value) => value,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -288,64 +273,6 @@ impl Fit {
         }
         if let Some(align) = self.align {
             style.align_self = Some(align.this());
-        }
-    }
-}
-
-/// The width classes of a view's container (layout.md, "Responding to space"): in `rem`, so
-/// enlarged text moves a window to a narrower class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum WidthClass {
-    Compact,
-    Medium,
-    Expanded,
-    Wide,
-}
-
-/// Where the class boundaries lie, in `rem`: one token with what a tilolang app reads from
-/// `space` (`tilo_ui_graph::layout`), so the shell and an app agree on when a window is compact.
-pub const COMPACT_BELOW: f32 = tilo_ui_graph::layout::COMPACT_BELOW;
-pub const MEDIUM_BELOW: f32 = tilo_ui_graph::layout::MEDIUM_BELOW;
-pub const EXPANDED_BELOW: f32 = tilo_ui_graph::layout::EXPANDED_BELOW;
-pub const HYSTERESIS: f32 = tilo_ui_graph::layout::HYSTERESIS;
-
-impl WidthClass {
-    #[must_use]
-    pub fn of(width_rem: f32) -> Self {
-        if width_rem < COMPACT_BELOW {
-            Self::Compact
-        } else if width_rem < MEDIUM_BELOW {
-            Self::Medium
-        } else if width_rem < EXPANDED_BELOW {
-            Self::Expanded
-        } else {
-            Self::Wide
-        }
-    }
-
-    /// The class of `width_rem` given the class it was in: it holds inside a small band around
-    /// each boundary, so a window resized exactly at one does not flicker between layouts.
-    #[must_use]
-    pub fn with_history(width_rem: f32, previous: Option<Self>) -> Self {
-        let Some(previous) = previous else {
-            return Self::of(width_rem);
-        };
-        let (low, high) = previous.band();
-        if width_rem >= low - HYSTERESIS && width_rem < high + HYSTERESIS {
-            previous
-        } else {
-            Self::of(width_rem)
-        }
-    }
-
-    #[must_use]
-    pub const fn band(self) -> (f32, f32) {
-        match self {
-            Self::Compact => (f32::NEG_INFINITY, COMPACT_BELOW),
-            Self::Medium => (COMPACT_BELOW, MEDIUM_BELOW),
-            Self::Expanded => (MEDIUM_BELOW, EXPANDED_BELOW),
-            Self::Wide => (EXPANDED_BELOW, f32::INFINITY),
         }
     }
 }

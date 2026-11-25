@@ -601,9 +601,9 @@ impl Inputs {
 
     /// The width class the content beside a sidebar is in at the least
     /// ([`ContentKind::beside_sidebar_class`]).
-    fn content_beside_sidebar_class(&self) -> crate::widget::arrange::WidthClass {
+    fn content_beside_sidebar_class(&self) -> crate::widget::WidthClass {
         if !self.has_content {
-            return crate::widget::arrange::WidthClass::Compact;
+            return crate::widget::WidthClass::Compact;
         }
         self.kind.beside_sidebar_class()
     }
@@ -3400,7 +3400,7 @@ impl Widget for NavShell {
                     SidebarPlacement::Drawer => crate::widget::SidebarPosition::Over,
                     SidebarPlacement::Screen => crate::widget::SidebarPosition::Alone,
                 },
-                beside: crate::widget::arrange::WidthClass::of(beside_rem),
+                beside: crate::widget::WidthClass::of(beside_rem),
                 needs: inputs.content_beside_sidebar_class(),
                 beside_width,
                 rows: crate::widget::HeaderRows { rows },

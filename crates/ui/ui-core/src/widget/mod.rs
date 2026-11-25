@@ -1,5 +1,11 @@
 mod contract;
-pub use contract::Widget;
+#[cfg(feature = "model")]
+pub use contract::AppActivation;
+pub use contract::{
+    COMPACT_BELOW, EXPANDED_BELOW, FIT_EPS, HYSTERESIS, Length, MEDIUM_BELOW, PAGE_FRACTION,
+    PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollAxis, ScrollMetrics,
+    TooltipSide, Widget, WidthClass,
+};
 mod action_directory_identity;
 pub(crate) mod component_walk;
 mod wheel;
@@ -1818,9 +1824,7 @@ pub use divider::{Divider, DividerAxis, RuleEdge, paint_rule};
 mod rule;
 pub use rule::{Rule, RuleProps};
 mod link;
-pub use link::{
-    Link, LinkProps, os_open as open_external_url, try_os_open as try_open_external_url,
-};
+pub use link::{Link, LinkProps};
 mod flap;
 pub use flap::{FlapState, SplitLayout};
 mod bottom_sheet;
@@ -1983,10 +1987,7 @@ pub use tabs::{
     TabStrip, TabStripProps, draw_app_mark, pack_point, unpack_point,
 };
 pub mod scrollbar;
-pub use scrollbar::{
-    PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
-    Scrollbar, TrackMark,
-};
+pub use scrollbar::{PressOutcome, Scrollbar, TrackMark};
 pub mod date_indexed_scrollbar;
 pub use date_indexed_scrollbar::{
     DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexPreview, DateIndexedScrollbar,
@@ -2007,7 +2008,7 @@ pub mod drag_source;
 pub mod drop_target;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;
-pub use scrollable::{ScrollAxis, ScrollProps, Scrollable};
+pub use scrollable::{ScrollProps, Scrollable};
 mod scroll_region;
 pub use scroll_region::ScrollRegion;
 pub use scrollbar::BarFade;

@@ -16,7 +16,7 @@
 //! 3. [`ProcessServices::null`], which performs nothing outside the process.
 //!
 //! The existing free functions (`text_selection::clipboard_copy`,
-//! `portal::PickRequest::send`, `widget::try_open_external_url`, …) resolve
+//! `portal::PickRequest::send`, `ui::platform::try_os_open`, …) resolve
 //! through [`current`], so apps need no changes. New code that holds a
 //! `ui::application::ProcessContext` can use its `services()` directly.
 

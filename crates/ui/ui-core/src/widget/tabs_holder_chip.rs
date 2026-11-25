@@ -28,7 +28,7 @@ impl TabBar {
         let at = crate::widget::tooltip::person_tooltip_rect_on(
             tr,
             theme,
-            (*rect, crate::widget::tooltip::TooltipSide::Below),
+            (*rect, crate::widget::TooltipSide::Below),
             &label,
             viewport,
         );

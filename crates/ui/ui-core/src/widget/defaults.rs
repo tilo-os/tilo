@@ -271,7 +271,7 @@ pub(super) fn take_accessibility_request(
 pub(super) fn take_app_activation(
     children: ChildrenMut<'_>,
     ready: bool,
-) -> Option<crate::application::AppActivation> {
+) -> Option<crate::widget::AppActivation> {
     children
         .into_iter()
         .find_map(|child| child.take_app_activation(ready))

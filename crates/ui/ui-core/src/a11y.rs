@@ -5,6 +5,17 @@
 
 use vello::kurbo::Rect;
 
+/// One control of a window as the shell names it when a person points at it
+/// ([`crate::a11y_tree::SemanticTree::pointed_at`]): its semantic id, its role and its accessible
+/// name. What a field has is never part of it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PointedControl {
+    pub id: String,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
 /// A thin subset of AccessKit's 182 roles covering the widgets the toolkit
 /// supports; unknown/rare cases fall back to [`Role::Generic`].
 #[non_exhaustive]

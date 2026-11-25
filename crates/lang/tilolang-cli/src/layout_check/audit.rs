@@ -105,12 +105,12 @@ fn has_words(node: &InspectionNode) -> bool {
         || node.children.iter().any(has_words)
 }
 
-fn class_name(class: ui::widget::arrange::WidthClass) -> &'static str {
+fn class_name(class: ui::widget::WidthClass) -> &'static str {
     match class {
-        ui::widget::arrange::WidthClass::Compact => "a phone's screen",
-        ui::widget::arrange::WidthClass::Medium => "a column",
-        ui::widget::arrange::WidthClass::Expanded => "an expanded column",
-        ui::widget::arrange::WidthClass::Wide => "a wide column",
+        ui::widget::WidthClass::Compact => "a phone's screen",
+        ui::widget::WidthClass::Medium => "a column",
+        ui::widget::WidthClass::Expanded => "an expanded column",
+        ui::widget::WidthClass::Wide => "a wide column",
     }
 }
 
@@ -890,7 +890,7 @@ pub fn indented_bodies(
 /// Whether a column `width` logical pixels wide, at `rem` pixels to the text size, is a phone's
 /// screen: narrower than the width class a column starts at.
 fn phone_screen(width: f64, rem: f64) -> bool {
-    let (_, column) = ui::widget::arrange::WidthClass::Compact.band();
+    let (_, column) = ui::widget::WidthClass::Compact.band();
     width / rem < f64::from(column)
 }
 

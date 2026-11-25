@@ -85,8 +85,8 @@ tilo_test_env::scenario! {
         let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
         shell.layout = Some(ui::widget::LayoutInfo::Shell(ui::widget::ShellLayout {
             sidebar: ui::widget::SidebarPosition::None,
-            beside: ui::widget::arrange::WidthClass::Compact,
-            needs: ui::widget::arrange::WidthClass::Compact,
+            beside: ui::widget::WidthClass::Compact,
+            needs: ui::widget::WidthClass::Compact,
             beside_width: 400.0,
             rows: ui::widget::HeaderRows {
                 rows: [
@@ -311,13 +311,13 @@ fn row_that_opens(
 
 fn shell_layout(
     sidebar: ui::widget::SidebarPosition,
-    beside: ui::widget::arrange::WidthClass,
+    beside: ui::widget::WidthClass,
     width: f32,
 ) -> ui::widget::ShellLayout {
     ui::widget::ShellLayout {
         sidebar,
         beside,
-        needs: ui::widget::arrange::WidthClass::Medium,
+        needs: ui::widget::WidthClass::Medium,
         beside_width: width,
         rows: ui::widget::HeaderRows { rows: [None; 4] },
     }
@@ -331,7 +331,7 @@ tilo_test_env::scenario! {
     // screen, so the sidebar folds behind the bar's toggle there instead.
     {
         use ui::widget::SidebarPosition;
-        use ui::widget::arrange::WidthClass;
+        use ui::widget::WidthClass;
         let with = |sidebar, beside, width| {
             let mut shell = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
             shell.layout = Some(ui::widget::LayoutInfo::Shell(shell_layout(

@@ -5,7 +5,7 @@
 use vello::kurbo::Point;
 
 use super::{SemanticId, SemanticNode, SemanticTree};
-use crate::floating_surface::PointedControl;
+use crate::a11y::PointedControl;
 
 fn pointed(node: &SemanticNode) -> PointedControl {
     let role = match serde_json::to_value(node.role) {

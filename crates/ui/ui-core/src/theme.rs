@@ -8,8 +8,9 @@ pub use crate::theme_layers::{
     DISTRIBUTION_DEFAULTS_KEY, DISTRIBUTION_DEFAULTS_SCHEMA_VERSION, DISTRIBUTION_LAYER_ID,
     DistributionDefaults, DistributionPolicy, FinishLayer, LIGHT_THEME_KEY, MODE_KEY, PIN_DENSITY,
     PIN_EMPHASIS, PIN_MATERIAL, PIN_MOTION, PIN_PALETTE, PIN_PRESENCE, PIN_SHAPE, PIN_TYPE,
-    PINNABLE, TRANSLUCENCY_KEY, THEME_PACKAGE_KEY, ThemeLayerStack, UI_FACE_KEY,
-    WORKSPACE_TEMPERATURES_KEY, resolve_theme_layers, user_document, workspace_temperature_override,
+    PINNABLE, THEME_PACKAGE_KEY, TRANSLUCENCY_KEY, ThemeLayerStack, UI_FACE_KEY,
+    WORKSPACE_TEMPERATURES_KEY, resolve_theme_layers, user_document,
+    workspace_temperature_override,
 };
 #[cfg(feature = "model")]
 pub use crate::theme_record::{
@@ -1278,16 +1279,6 @@ impl Theme {
             Some(hue) => theme.with_your_colour(hue),
             None => theme,
         }
-    }
-
-    /// This theme in a window floating over the shell as a card
-    /// ([`crate::window_toolbar::floats`]): its ground is the card's, so the app under
-    /// the card's header draws on the same surface as the header and every other card in
-    /// the column, not on a window's darker ground.
-    #[must_use]
-    pub fn as_card(mut self) -> Self {
-        self.tokens.colors.surfaces.content = crate::widget::floating_surface::card_ground(&self);
-        self
     }
 }
 

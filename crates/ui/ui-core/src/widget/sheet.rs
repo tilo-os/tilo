@@ -20,8 +20,9 @@ use crate::text_edit::{EditCore, Motion};
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::ScrollMetrics;
 use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
-use crate::widget::scrollbar::{ScrollMetrics, Scrollbar};
+use crate::widget::scrollbar::Scrollbar;
 use crate::widget::{EventCtx, NodeId, TaffyTreeExt, Widget};
 
 /// A zero-based cell: its column, then its row.

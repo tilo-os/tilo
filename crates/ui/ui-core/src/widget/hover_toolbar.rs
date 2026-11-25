@@ -142,7 +142,7 @@ impl HoverToolbar {
                     clippy::cast_possible_truncation,
                     reason = "a band a few dozen pixels tall"
                 )]
-                let tall = crate::widget::arrange::Length::Dp(height as f32);
+                let tall = crate::widget::Length::Dp(height as f32);
                 let mut band = crate::widget::arrange::Part::new(Box::new(bar));
                 let sizing = crate::widget::arrange::Sizing::hug().min(tall);
                 band.fit = crate::widget::arrange::Fit::fill(1.0).height(if captioned {

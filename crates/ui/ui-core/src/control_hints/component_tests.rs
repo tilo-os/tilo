@@ -14,7 +14,8 @@ use crate::component::{Described, Event, Fired, Intent, Value};
 use crate::headless::Driver;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::widget::arrange::{Fit, Length, Sizing, Stack};
+use crate::widget::Length;
+use crate::widget::arrange::{Fit, Sizing, Stack};
 use crate::widget::{
     CanvasPlace, Manual, Map, MapProps, MeasureConstraint, PLACE_BAND, PinPlace, PlaceProps,
     Scrollable, Spacer, Widget, WindowFrame, WindowFrameProps,

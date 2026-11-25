@@ -28,7 +28,8 @@ use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
 use crate::widget::DrawChild;
-use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+use crate::widget::ScrollMetrics;
+use crate::widget::scrollbar::{PressOutcome, Scrollbar};
 use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
 
 /// One line of `role` as the renderer will lay it out: the role's resolved size times its leading,

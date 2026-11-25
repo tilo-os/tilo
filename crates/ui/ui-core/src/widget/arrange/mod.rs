@@ -18,9 +18,8 @@ pub use motion::DrawnPart;
 pub use page::{MEASURE_REM, Page, PageLayout, TranscriptEdges};
 pub use split::{Collapse, Navigation, Pane, Side, Split, SplitLayout};
 pub use units::{
-    Align, At, Axis, Direction, Distribute, Fit, Length, Orientation, PaneSplit, Sizing, Space,
-    WidthClass, class_min_width, column_min_width, columns_for, page_content_width, pane_split_for,
-    rem_of,
+    Align, At, Axis, Direction, Distribute, Fit, Orientation, PaneSplit, Sizing, Space,
+    class_min_width, column_min_width, columns_for, page_content_width, pane_split_for, rem_of,
 };
 
 /// A vertical scroll view around `child`: the constraint on its axis is unbounded, so the child

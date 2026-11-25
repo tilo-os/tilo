@@ -4,8 +4,9 @@ use taffy::style_helpers::{fr, length, minmax, repeat};
 use taffy::{Size, Style};
 
 use super::arranged::{Arranged, Layout, Part, Resolved, lead_container, wrapper_style};
-use super::units::{Axis, Length, columns_for};
+use super::units::{Axis, columns_for};
 use crate::tokens::Rhythm;
+use crate::widget::Length;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Columns {

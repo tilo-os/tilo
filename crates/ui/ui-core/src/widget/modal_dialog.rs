@@ -1722,11 +1722,7 @@ impl ModalDialog<dyn Widget> {
             scene,
             transform,
             track,
-            crate::widget::scrollbar::ScrollMetrics::new(
-                self.content_size.1,
-                body.height(),
-                self.scroll,
-            ),
+            crate::widget::ScrollMetrics::new(self.content_size.1, body.height(), self.scroll),
             theme,
             false,
         );

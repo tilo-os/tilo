@@ -7,8 +7,9 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TooltipSide;
 use crate::widget::Widget;
-use crate::widget::tooltip::{TooltipHost, TooltipSide};
+use crate::widget::tooltip::TooltipHost;
 
 /// Every tooltip `widget` and the shown widgets under `point` within it offer there.
 pub(super) fn targets_under(

@@ -505,7 +505,7 @@ decorator_trait! {
         fn for_each_child_in_clip(visitor: &mut dyn FnMut(&dyn Widget));
         fn for_each_hosted_child(visitor: &mut dyn FnMut(&dyn Widget));
         fn name() -> &str;
-        fn readable_column() -> Option<crate::widget::arrange::Length>;
+        fn readable_column() -> Option<crate::widget::Length>;
         fn test_id() -> Option<&str>;
         fn kept_in_view() -> Option<&str>;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
@@ -522,7 +522,7 @@ decorator_trait! {
         fn claims_raw_touch(point: vello::kurbo::Point) -> bool;
         fn touch_claim(point: vello::kurbo::Point) -> crate::interaction::TouchClaim;
         fn tooltip() -> Option<std::borrow::Cow<'_, str>>;
-        fn tooltip_side() -> crate::widget::tooltip::TooltipSide;
+        fn tooltip_side() -> crate::widget::TooltipSide;
         fn tooltip_target_at(point: vello::kurbo::Point) -> Option<(vello::kurbo::Rect, String)>;
         fn is_focusable() -> bool;
         fn is_focused() -> bool;
@@ -651,7 +651,7 @@ decorator_trait! {
         fn take_focus_reset() -> bool;
         fn take_accessibility_request() -> Option<crate::a11y::AccessibilityRequest>;
         #[cfg(feature = "model")]
-        fn take_app_activation(ready: bool) -> Option<crate::application::AppActivation>;
+        fn take_app_activation(ready: bool) -> Option<crate::widget::AppActivation>;
         fn take_focus_request() -> Option<String>;
         fn restore_dev_route(route: &crate::widget::router::RouteSnapshot) -> bool;
         fn set_motion_reduced(reduced: bool);

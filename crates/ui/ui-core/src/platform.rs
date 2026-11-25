@@ -413,6 +413,20 @@ impl HostShortcut {
     }
 }
 
+/// Best-effort and non-blocking — a launch failure is logged, not surfaced.
+pub fn os_open(url: &str) {
+    crate::portal::open_uri_detached(url);
+}
+
+/// Hand a URL to the current host's URI handler and report the outcome.
+/// May block until the handler answers; call it from a worker thread.
+///
+/// # Errors
+/// See [`crate::portal::open_uri`].
+pub fn try_os_open(url: &str) -> std::io::Result<()> {
+    crate::portal::open_uri(url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6,6 +6,8 @@
 )]
 use serde::{Deserialize, Serialize};
 
+use crate::a11y::PointedControl;
+
 pub use tilo_actions::send_to::{Recipient, RecipientKind, recipients_matching};
 
 /// One part of a paint payload too large for one message
@@ -353,17 +355,6 @@ pub enum FloatingSurfaceClientMessage {
     SidewaysWheel {
         travel: f64,
     },
-}
-
-/// One control of an app's window as the shell names it when a person
-/// points at it: its semantic id, its role and its accessible name. What a
-/// field has is never part of it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PointedControl {
-    pub id: String,
-    pub role: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
 }
 
 /// Owner-only operations on Terminal's existing device-shell PTY.

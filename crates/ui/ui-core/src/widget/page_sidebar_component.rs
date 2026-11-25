@@ -323,7 +323,7 @@ impl crate::widget::Widget for DeclaredRail {
         self.rail.tooltip_target_at(point)
     }
 
-    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
+    fn tooltip_side(&self) -> crate::widget::TooltipSide {
         self.rail.tooltip_side()
     }
 

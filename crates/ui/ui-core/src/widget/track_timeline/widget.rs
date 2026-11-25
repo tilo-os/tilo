@@ -20,7 +20,8 @@ use crate::paint::{PaintCtx, with_alpha_scaled};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{MotionSource, TextRole};
-use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+use crate::widget::ScrollMetrics;
+use crate::widget::scrollbar::{PressOutcome, Scrollbar};
 use crate::widget::{Ink, TaffyTreeExt, Widget};
 
 use super::{EDGE_GRAB, Geom, SNAP_REACH, on_grid, snap_target, tick_steps, timecode};

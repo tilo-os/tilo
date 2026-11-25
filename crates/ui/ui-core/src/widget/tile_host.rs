@@ -1590,7 +1590,7 @@ impl Widget for TileHost {
             _ => false,
         }
     }
-    fn take_app_activation(&mut self, _ready: bool) -> Option<crate::application::AppActivation> {
+    fn take_app_activation(&mut self, _ready: bool) -> Option<crate::widget::AppActivation> {
         None
     }
     fn needs_idle_sync(&self) -> bool {

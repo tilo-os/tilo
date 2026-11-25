@@ -8,7 +8,7 @@ use super::{
 };
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
-use crate::widget::scrollbar::ScrollMetrics;
+use crate::widget::ScrollMetrics;
 use vello::Scene;
 use vello::kurbo::{Point, RoundedRect};
 

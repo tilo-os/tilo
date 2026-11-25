@@ -14,7 +14,7 @@ use vello::kurbo::{Point, Rect, Vec2};
 
 use super::Side;
 use super::motion::{DrawnPart, PartMotions, draw_posed};
-use super::units::{At, Fit, Length, WidthClass};
+use super::units::{At, Fit};
 use crate::interaction::InteractionEnvironment;
 use crate::motion::Feel;
 use crate::text_render::TextRenderer;
@@ -23,6 +23,7 @@ use crate::tokens::Rhythm;
 use crate::widget::DrawChild;
 use crate::widget::layout::Styles;
 use crate::widget::{AppModel, Element, ModelPath, StructureChange, TaffyTreeExt, Widget};
+use crate::widget::{Length, WidthClass};
 
 /// What a layout reads of the theme: the `rem`, the rhythm gaps and a control's least side,
 /// in logical pixels.

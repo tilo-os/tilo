@@ -1735,7 +1735,8 @@ mod host_shell_allow_tests {
     #[cfg(unix)]
     #[test]
     fn a_point_of_the_window_is_answered_with_the_control_drawn_there() {
-        use crate::floating_surface::{FloatingSurfaceClientMessage, PointedControl};
+        use crate::a11y::PointedControl;
+        use crate::floating_surface::FloatingSurfaceClientMessage;
         use crate::widget::{Button, Column};
         use std::io::{Read, Write};
         use std::os::unix::net::UnixStream;

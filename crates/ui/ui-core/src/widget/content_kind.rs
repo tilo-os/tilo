@@ -44,12 +44,12 @@ impl ContentKind {
     /// of tiles or a surface drawn on works narrower than a column, which is what its own minimum
     /// states.
     #[must_use]
-    pub fn beside_sidebar_class(self) -> crate::widget::arrange::WidthClass {
+    pub fn beside_sidebar_class(self) -> crate::widget::WidthClass {
         match self {
             Self::List | Self::Reading | Self::Page | Self::Document => {
-                crate::widget::arrange::WidthClass::Medium
+                crate::widget::WidthClass::Medium
             }
-            Self::Grid | Self::Canvas => crate::widget::arrange::WidthClass::Compact,
+            Self::Grid | Self::Canvas => crate::widget::WidthClass::Compact,
         }
     }
 

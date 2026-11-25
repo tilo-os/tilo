@@ -161,7 +161,7 @@ impl TabBar {
             transform,
             tr,
             theme,
-            (rect, crate::widget::tooltip::TooltipSide::Below),
+            (rect, crate::widget::TooltipSide::Below),
             (&tip, colour),
             spare,
         );

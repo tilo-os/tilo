@@ -2483,7 +2483,7 @@ impl WindowGroup {
         let chip = crate::widget::tooltip::hover_chip_rect_on(
             tr,
             theme,
-            (anchor, crate::widget::tooltip::TooltipSide::Beside),
+            (anchor, crate::widget::TooltipSide::Beside),
             &label,
             within,
         );

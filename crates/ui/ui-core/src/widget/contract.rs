@@ -2,10 +2,242 @@
 
 use super::{
     AppModel, Disclosing, DrawCtx, Edits, EventCtx, HashMap, Instant, LayoutInfo, ManualPolicy,
-    ModelPath, NativeViewLifecycle, NodeId, ObjId, PhysicalInput, Placement, PrimaryScrollAction,
-    PrimaryScrollRegion, PrimaryScrollResult, Remount, StructureChange, TaffyTree, TextRenderer,
-    Theme, WindowEvent, capability, defaults, router,
+    ModelPath, NativeViewLifecycle, NodeId, ObjId, PhysicalInput, Placement, Remount,
+    StructureChange, TaffyTree, TextRenderer, Theme, WindowEvent, capability, defaults, router,
 };
+
+/// A length in a widget's own units: `Rem` follows the theme's body size, so enlarged text grows
+/// it, and `Dp` is logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Length {
+    Rem(f32),
+    Dp(f32),
+}
+
+impl Length {
+    #[must_use]
+    pub fn resolve(self, rem: f32) -> f32 {
+        match self {
+            Self::Rem(value) => value * rem,
+            Self::Dp(value) => value,
+        }
+    }
+}
+
+/// The width classes of a view's container (layout.md, "Responding to space"): in `rem`, so
+/// enlarged text moves a window to a narrower class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WidthClass {
+    Compact,
+    Medium,
+    Expanded,
+    Wide,
+}
+
+/// Where the class boundaries lie, in `rem`: one token with what a tilolang app reads from
+/// `space` (`tilo_ui_graph::layout`), so the shell and an app agree on when a window is compact.
+pub const COMPACT_BELOW: f32 = tilo_ui_graph::layout::COMPACT_BELOW;
+pub const MEDIUM_BELOW: f32 = tilo_ui_graph::layout::MEDIUM_BELOW;
+pub const EXPANDED_BELOW: f32 = tilo_ui_graph::layout::EXPANDED_BELOW;
+pub const HYSTERESIS: f32 = tilo_ui_graph::layout::HYSTERESIS;
+
+impl WidthClass {
+    #[must_use]
+    pub fn of(width_rem: f32) -> Self {
+        if width_rem < COMPACT_BELOW {
+            Self::Compact
+        } else if width_rem < MEDIUM_BELOW {
+            Self::Medium
+        } else if width_rem < EXPANDED_BELOW {
+            Self::Expanded
+        } else {
+            Self::Wide
+        }
+    }
+
+    /// The class of `width_rem` given the class it was in: it holds inside a small band around
+    /// each boundary, so a window resized exactly at one does not flicker between layouts.
+    #[must_use]
+    pub fn with_history(width_rem: f32, previous: Option<Self>) -> Self {
+        let Some(previous) = previous else {
+            return Self::of(width_rem);
+        };
+        let (low, high) = previous.band();
+        if width_rem >= low - HYSTERESIS && width_rem < high + HYSTERESIS {
+            previous
+        } else {
+            Self::of(width_rem)
+        }
+    }
+
+    #[must_use]
+    pub const fn band(self) -> (f32, f32) {
+        match self {
+            Self::Compact => (f32::NEG_INFINITY, COMPACT_BELOW),
+            Self::Medium => (COMPACT_BELOW, MEDIUM_BELOW),
+            Self::Expanded => (MEDIUM_BELOW, EXPANDED_BELOW),
+            Self::Wide => (EXPANDED_BELOW, f32::INFINITY),
+        }
+    }
+}
+
+/// The axis a scroll view scrolls along.
+#[derive(Clone, Copy, Debug)]
+pub enum ScrollAxis {
+    Vertical,
+    Horizontal,
+    Both,
+}
+
+/// Which side of a control its tooltip goes: below it, or beside it for a control in a vertical
+/// rail.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TooltipSide {
+    #[default]
+    Below,
+    Beside,
+}
+
+/// What [`Widget::take_app_activation`] reports: the person gave the keyboard to another window.
+#[cfg(feature = "model")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppActivation {
+    /// The window's app is not in yet, or the frame may not hand it the keyboard now (a dialog or
+    /// search has it). A control left focused in the window the person left gives the keyboard up
+    /// at once, so nothing typed meanwhile reaches it.
+    Moved,
+    /// The window's app is in: the frame gives it keyboard focus.
+    Ready(collab_types::history::InstanceId),
+}
+
+/// Logical pixels one page of a scroll view moves: the fraction of the viewport a
+/// page action turns.
+pub const PAGE_FRACTION: f64 = 0.9;
+
+/// Content must exceed the viewport by more than this (logical px) on an
+/// axis before it is considered scrollable — otherwise the content
+/// "fits" and the bar should be hidden entirely.
+pub const FIT_EPS: f64 = 0.5;
+
+/// The scroll geometry along one axis, all lengths in logical px. `content` is the full
+/// scrollable extent, `viewport` the visible window, and `offset` the current scroll position
+/// (`0` = start).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollMetrics {
+    pub content: f64,
+    pub viewport: f64,
+    pub offset: f64,
+}
+
+impl ScrollMetrics {
+    pub fn new(content: f64, viewport: f64, offset: f64) -> Self {
+        Self {
+            content,
+            viewport,
+            offset,
+        }
+    }
+
+    /// The maximum reachable offset — how far the content can travel past
+    /// the viewport. Zero when the content fits.
+    pub fn max_scroll(&self) -> f64 {
+        (self.content - self.viewport).max(0.0)
+    }
+
+    /// Whether the content overflows the viewport by more than [`FIT_EPS`]
+    /// (i.e. a bar is worth showing).
+    pub fn overflows(&self) -> bool {
+        self.content > self.viewport + FIT_EPS && self.viewport > 0.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PrimaryScrollRegion {
+    pub key: &'static str,
+    pub owner_generation: Option<uuid::Uuid>,
+    pub metrics: ScrollMetrics,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PrimaryScrollAction {
+    Line(i8),
+    Page(i8),
+    Absolute(f64),
+    Start,
+    End,
+}
+impl PrimaryScrollAction {
+    pub fn offset(self, m: ScrollMetrics) -> Option<f64> {
+        if !m.content.is_finite()
+            || !m.viewport.is_finite()
+            || !m.offset.is_finite()
+            || m.content < 0.0
+            || m.viewport < 0.0
+        {
+            return None;
+        }
+        let next = match self {
+            Self::Line(sign @ (-1 | 1)) => m.offset + f64::from(sign) * 48.0,
+            Self::Page(sign @ (-1 | 1)) => m.offset + f64::from(sign) * m.viewport * PAGE_FRACTION,
+            Self::Absolute(offset) => offset,
+            Self::Start => 0.0,
+            Self::End => m.max_scroll(),
+            _ => return None,
+        };
+        next.is_finite().then(|| next.clamp(0.0, m.max_scroll()))
+    }
+
+    /// Apply the action to `target`, whose primary region `region` reads:
+    /// `set` moves it to the clamped offset only when that differs, and the
+    /// result reports the region as it reads afterwards.
+    #[expect(
+        clippy::float_cmp,
+        reason = "the clamped target is compared exactly: identical means the scroll did not move"
+    )]
+    pub fn apply_to<T: ?Sized>(
+        self,
+        target: &mut T,
+        region: impl Fn(&T) -> Option<PrimaryScrollRegion>,
+        set: impl FnOnce(&mut T, &PrimaryScrollRegion, f64),
+    ) -> PrimaryScrollResult {
+        let Some(before) = region(target) else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        let Some(next) = self.offset(before.metrics) else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        if next == before.metrics.offset {
+            return PrimaryScrollResult::Unchanged(before);
+        }
+        set(target, &before, next);
+        region(target).map_or(
+            PrimaryScrollResult::Unsupported,
+            PrimaryScrollResult::Changed,
+        )
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PrimaryScrollResult {
+    Unsupported,
+    Unchanged(PrimaryScrollRegion),
+    Changed(PrimaryScrollRegion),
+}
+impl PrimaryScrollResult {
+    #[must_use]
+    pub fn stamp(self, generation: uuid::Uuid) -> Self {
+        match self {
+            Self::Unsupported => self,
+            Self::Unchanged(mut r) => {
+                r.owner_generation = Some(generation);
+                Self::Unchanged(r)
+            }
+            Self::Changed(mut r) => {
+                r.owner_generation = Some(generation);
+                Self::Changed(r)
+            }
+        }
+    }
+}
 
 pub trait Widget {
     /// Concrete identity for host-side frame maps that must distinguish a wrapper from its first field
@@ -259,7 +491,7 @@ pub trait Widget {
 
     /// The readable column this widget keeps what it shows in, when it is one: a page's measure, a list
     /// that reads its rows at it.
-    fn readable_column(&self) -> Option<crate::widget::arrange::Length> {
+    fn readable_column(&self) -> Option<Length> {
         None
     }
 
@@ -367,7 +599,7 @@ pub trait Widget {
 
     /// Offsets along `axis` that this widget, as a scroll view's content, offers it to settle on,
     /// measured from its own leading edge: a board's lists ([`crate::widget::Board`]).
-    fn snap_points(&self, axis: crate::widget::ScrollAxis, out: &mut Vec<f32>) {
+    fn snap_points(&self, axis: ScrollAxis, out: &mut Vec<f32>) {
         let _ = (axis, out);
     }
 
@@ -409,8 +641,8 @@ pub trait Widget {
 
     /// Which side of the control its tooltip goes: below by default, beside it for a control in a
     /// vertical rail.
-    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
-        crate::widget::tooltip::TooltipSide::Below
+    fn tooltip_side(&self) -> TooltipSide {
+        TooltipSide::Below
     }
 
     fn tooltip_target_at(
@@ -491,12 +723,12 @@ pub trait Widget {
     }
 
     /// One-shot (reading MUST clear it): the person brought another window forward (they opened,
-    /// clicked or switched to it). [`crate::application::AppActivation::Ready`] names its app
+    /// clicked or switched to it). [`AppActivation::Ready`] names its app
     /// instance, whose keyboard focus the frame restores, or puts on its default control, so what
     /// they type next reaches it; only when `ready` (the frame may hand the keyboard over now) is it
     /// taken, and until then the move alone is reported.
     #[cfg(feature = "model")]
-    fn take_app_activation(&mut self, ready: bool) -> Option<crate::application::AppActivation> {
+    fn take_app_activation(&mut self, ready: bool) -> Option<AppActivation> {
         defaults::take_app_activation(self.children_mut(), ready)
     }
 

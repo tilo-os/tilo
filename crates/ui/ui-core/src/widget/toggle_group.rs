@@ -2416,11 +2416,11 @@ impl Widget for ToggleGroup {
         }
     }
 
-    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
+    fn tooltip_side(&self) -> crate::widget::TooltipSide {
         if self.orientation == Orientation::Vertical {
-            crate::widget::tooltip::TooltipSide::Beside
+            crate::widget::TooltipSide::Beside
         } else {
-            crate::widget::tooltip::TooltipSide::Below
+            crate::widget::TooltipSide::Below
         }
     }
 

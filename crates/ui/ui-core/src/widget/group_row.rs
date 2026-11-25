@@ -4683,8 +4683,8 @@ impl Widget for GroupRow {
 
     /// The shell gave the keyboard to another window of the row since the frame last asked: a search
     /// chose it, it opened, the one in front closed, or the person clicked it. Its app is the shell's
-    /// to name ([`crate::application::AppActivation::Ready`]); the row reports the move.
-    fn take_app_activation(&mut self, _ready: bool) -> Option<crate::application::AppActivation> {
+    /// to name ([`crate::widget::AppActivation::Ready`]); the row reports the move.
+    fn take_app_activation(&mut self, _ready: bool) -> Option<crate::widget::AppActivation> {
         let now = self
             .groups
             .iter()
@@ -4692,7 +4692,7 @@ impl Widget for GroupRow {
             .map(|group| group.id);
         let before = std::mem::replace(&mut self.keyboard_window, now);
         (before.is_some() && now.is_some() && now != before)
-            .then_some(crate::application::AppActivation::Moved)
+            .then_some(crate::widget::AppActivation::Moved)
     }
 
     fn wants_pointer_capture(&self) -> bool {

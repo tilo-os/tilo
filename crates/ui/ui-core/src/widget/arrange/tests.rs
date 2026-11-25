@@ -481,7 +481,7 @@ tilo_test_env::scenario! {
     // body holds starts on the page's gutter, so the words keep the width a control's cell would
     // take from every line, while the column what it holds is read in is a column.
     {
-        use super::units::COMPACT_BELOW;
+        use crate::widget::COMPACT_BELOW;
         let theme = Theme::dark();
         let rem = f64::from(rem_of(&theme));
         let lead = f64::from(Resolved::of(&theme).lead());

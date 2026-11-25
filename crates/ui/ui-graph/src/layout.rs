@@ -1,6 +1,6 @@
 //! The width classes a view's container is laid out in (layout.md, "Responding to space").
 //!
-//! One token, read by the toolkit's layout (`ui::widget::arrange::WidthClass`) and by a
+//! One token, read by the toolkit's layout (`ui::widget::WidthClass`) and by a
 //! tilolang app's `space`: a window is compact, medium, expanded or wide by the same widths in
 //! both, so what an app reads and what the shell lays out agree on when a window is compact.
 

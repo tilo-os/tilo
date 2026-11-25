@@ -1136,8 +1136,8 @@ impl Widget for PageSidebar {
         (self.show_add && self.add_icon_only && self.add_rect.contains(point))
             .then(|| (self.add_rect, self.add_label.clone()))
     }
-    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
-        crate::widget::tooltip::TooltipSide::Beside
+    fn tooltip_side(&self) -> crate::widget::TooltipSide {
+        crate::widget::TooltipSide::Beside
     }
     fn test_id(&self) -> Option<&str> {
         Some("page_sidebar")

@@ -929,9 +929,7 @@ impl DesktopPass {
             // thread.
             Target::Open { uri, fallback } => {
                 #[cfg(target_arch = "wasm32")]
-                if let Err(error) =
-                    ui::widget::try_open_external_url(fallback.as_deref().unwrap_or(&uri))
-                {
+                if let Err(error) = ui::platform::try_os_open(fallback.as_deref().unwrap_or(&uri)) {
                     shared.say(ui::window_toolbar::ToolbarNotice::new(
                         error.to_string(),
                         ui::widget::toast::ToastKind::Error,
@@ -943,13 +941,13 @@ impl DesktopPass {
                         let host = ui::process::current();
                         std::thread::spawn(move || {
                             ui::process::scoped(&host, || {
-                                if ui::widget::try_open_external_url(&uri).is_err() {
-                                    ui::widget::open_external_url(&fallback);
+                                if ui::platform::try_os_open(&uri).is_err() {
+                                    ui::platform::os_open(&fallback);
                                 }
                             });
                         });
                     }
-                    None => ui::widget::open_external_url(&uri),
+                    None => ui::platform::os_open(&uri),
                 }
                 None
             }

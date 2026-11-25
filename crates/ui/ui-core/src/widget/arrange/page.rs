@@ -4,7 +4,7 @@ use taffy::style_helpers::length;
 use taffy::{Size, Style};
 
 use super::arranged::{Arranged, Layout, Part, Resolved, wrapper_style};
-use super::units::Length;
+use crate::widget::Length;
 
 /// The readable width of a page, in `rem`.
 pub const MEASURE_REM: f32 = 40.0;

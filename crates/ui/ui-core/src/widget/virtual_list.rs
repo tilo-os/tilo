@@ -26,8 +26,9 @@ use crate::theme::Theme;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
+use crate::widget::ScrollMetrics;
 use crate::widget::rows::RowStep;
-use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+use crate::widget::scrollbar::{PressOutcome, Scrollbar};
 use crate::widget::{ArrivingRows, Element, TaffyTreeExt, Widget};
 
 #[path = "virtual_list_groups.rs"]

@@ -14,7 +14,8 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+use crate::widget::ScrollMetrics;
+use crate::widget::scrollbar::{PressOutcome, Scrollbar};
 use crate::widget::{TaffyTreeExt, Widget};
 
 #[path = "hex_grid/hex_grid_component.rs"]

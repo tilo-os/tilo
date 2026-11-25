@@ -6,7 +6,7 @@
 
 use super::colors::{Colors, mix8};
 use crate::color::contrast_ratio;
-use crate::widget::code_editor::TokenKind;
+use tilo_highlight::TokenKind;
 use vello::peniko::Color;
 
 const AA: f64 = 4.5;

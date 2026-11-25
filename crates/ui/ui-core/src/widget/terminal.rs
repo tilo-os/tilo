@@ -21,7 +21,8 @@ use crate::terminal::{
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::scrollbar::{PressOutcome, ScrollMetrics};
+use crate::widget::ScrollMetrics;
+use crate::widget::scrollbar::PressOutcome;
 use crate::widget::{OverlayScrollbar, TaffyTreeExt, Widget};
 
 #[path = "terminal/terminal_component.rs"]
@@ -585,7 +586,7 @@ impl Terminal {
                     .link_at(self.selection.map_or(GridPos::default(), |s| s.cursor))
                     .map(str::to_owned)
                 {
-                    crate::widget::open_external_url(&url);
+                    crate::platform::os_open(&url);
                 }
             }
             self.finish_selection();

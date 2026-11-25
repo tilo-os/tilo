@@ -31,17 +31,6 @@ pub use surface::prepare_private_surface;
 
 pub use collab_types::history::InstanceId;
 
-/// What [`crate::widget::Widget::take_app_activation`] reports: the person gave the keyboard to
-/// another window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AppActivation {
-    /// The window's app is not in yet, or the frame may not hand it the keyboard now (a dialog or
-    /// search has it). A control left focused in the window the person left gives the keyboard up
-    /// at once, so nothing typed meanwhile reaches it.
-    Moved,
-    /// The window's app is in: the frame gives it keyboard focus.
-    Ready(InstanceId),
-}
 pub type ComponentFactory =
     fn(ProcessContext, LaunchTarget, RestoreInput) -> Result<AppComponent, LaunchError>;
 pub struct ApplicationDefinition {

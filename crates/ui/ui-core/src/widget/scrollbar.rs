@@ -7,17 +7,11 @@ use vello::peniko::Color;
 
 use crate::theme::Theme;
 use crate::tokens::colors::tier_on;
+use crate::widget::{PAGE_FRACTION, ScrollMetrics};
 
 /// Minimum thumb length (logical px) so a near-infinite content still
 /// leaves a grabbable target.
 pub const MIN_THUMB_LEN: f64 = 24.0;
-
-pub const PAGE_FRACTION: f64 = 0.9;
-
-/// Content must exceed the viewport by more than this (logical px) on an
-/// axis before it is considered scrollable — otherwise the content
-/// "fits" and the bar should be hidden entirely.
-pub const FIT_EPS: f64 = 0.5;
 
 /// Alpha of the track behind a pinned or expanded bar — the faintest
 /// derived tier, so the track reads as a groove and not a second thumb.
@@ -273,38 +267,6 @@ pub fn clear_of_corners(
         t.x1 = t.x1.min(b.x1 - right).max(t.x0);
     }
     t
-}
-
-/// The scroll geometry along one axis, all lengths in logical px. `content` is the full
-/// scrollable extent, `viewport` the visible window, and `offset` the current scroll position
-/// (`0` = start).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ScrollMetrics {
-    pub content: f64,
-    pub viewport: f64,
-    pub offset: f64,
-}
-
-impl ScrollMetrics {
-    pub fn new(content: f64, viewport: f64, offset: f64) -> Self {
-        Self {
-            content,
-            viewport,
-            offset,
-        }
-    }
-
-    /// The maximum reachable offset — how far the content can travel past
-    /// the viewport. Zero when the content fits.
-    pub fn max_scroll(&self) -> f64 {
-        (self.content - self.viewport).max(0.0)
-    }
-
-    /// Whether the content overflows the viewport by more than [`FIT_EPS`]
-    /// (i.e. a bar is worth showing).
-    pub fn overflows(&self) -> bool {
-        self.content > self.viewport + FIT_EPS && self.viewport > 0.0
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -894,92 +856,5 @@ mod primary_region_tests {
             PrimaryScrollAction::End.offset(ScrollMetrics::new(f64::INFINITY, 20.0, 0.0)),
             None
         );
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PrimaryScrollRegion {
-    pub key: &'static str,
-    pub owner_generation: Option<uuid::Uuid>,
-    pub metrics: ScrollMetrics,
-}
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PrimaryScrollAction {
-    Line(i8),
-    Page(i8),
-    Absolute(f64),
-    Start,
-    End,
-}
-impl PrimaryScrollAction {
-    pub fn offset(self, m: ScrollMetrics) -> Option<f64> {
-        if !m.content.is_finite()
-            || !m.viewport.is_finite()
-            || !m.offset.is_finite()
-            || m.content < 0.0
-            || m.viewport < 0.0
-        {
-            return None;
-        }
-        let next = match self {
-            Self::Line(sign @ (-1 | 1)) => m.offset + f64::from(sign) * 48.0,
-            Self::Page(sign @ (-1 | 1)) => m.offset + f64::from(sign) * m.viewport * PAGE_FRACTION,
-            Self::Absolute(offset) => offset,
-            Self::Start => 0.0,
-            Self::End => m.max_scroll(),
-            _ => return None,
-        };
-        next.is_finite().then(|| next.clamp(0.0, m.max_scroll()))
-    }
-
-    /// Apply the action to `target`, whose primary region `region` reads:
-    /// `set` moves it to the clamped offset only when that differs, and the
-    /// result reports the region as it reads afterwards.
-    #[expect(
-        clippy::float_cmp,
-        reason = "the clamped target is compared exactly: identical means the scroll did not move"
-    )]
-    pub fn apply_to<T: ?Sized>(
-        self,
-        target: &mut T,
-        region: impl Fn(&T) -> Option<PrimaryScrollRegion>,
-        set: impl FnOnce(&mut T, &PrimaryScrollRegion, f64),
-    ) -> PrimaryScrollResult {
-        let Some(before) = region(target) else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        let Some(next) = self.offset(before.metrics) else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        if next == before.metrics.offset {
-            return PrimaryScrollResult::Unchanged(before);
-        }
-        set(target, &before, next);
-        region(target).map_or(
-            PrimaryScrollResult::Unsupported,
-            PrimaryScrollResult::Changed,
-        )
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PrimaryScrollResult {
-    Unsupported,
-    Unchanged(PrimaryScrollRegion),
-    Changed(PrimaryScrollRegion),
-}
-impl PrimaryScrollResult {
-    #[must_use]
-    pub fn stamp(self, generation: uuid::Uuid) -> Self {
-        match self {
-            Self::Unsupported => self,
-            Self::Unchanged(mut r) => {
-                r.owner_generation = Some(generation);
-                Self::Unchanged(r)
-            }
-            Self::Changed(mut r) => {
-                r.owner_generation = Some(generation);
-                Self::Changed(r)
-            }
-        }
     }
 }

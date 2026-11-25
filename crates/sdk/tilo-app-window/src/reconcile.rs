@@ -14,9 +14,10 @@ use std::rc::Rc;
 use crate::{UiNode, Value};
 use ui::LocalState;
 use ui::tokens::{Rhythm, TextRole};
+use ui::widget::Length;
 use ui::widget::arrange::{
-    Align, At, Collapse, Distribute, Fit, Grid, Layers, Length, Navigation, Page, Part, Row, Side,
-    Split, Stack,
+    Align, At, Collapse, Distribute, Fit, Grid, Layers, Navigation, Page, Part, Row, Side, Split,
+    Stack,
 };
 use ui::widget::{
     Avatar, AvatarSize, Button, ButtonRole, Checkbox, Container, ControlSize, Divider, Dropdown,

@@ -11,7 +11,8 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::ScrollAxis;
-use super::scrollbar::{BarFade, PAGE_FRACTION, PressOutcome, ScrollMetrics, Scrollbar};
+use super::scrollbar::{BarFade, PressOutcome, Scrollbar};
+use super::{PAGE_FRACTION, ScrollMetrics};
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 

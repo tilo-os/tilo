@@ -131,8 +131,8 @@ pub enum SidebarPosition {
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct ShellLayout {
     pub sidebar: SidebarPosition,
-    pub beside: crate::widget::arrange::WidthClass,
-    pub needs: crate::widget::arrange::WidthClass,
+    pub beside: crate::widget::WidthClass,
+    pub needs: crate::widget::WidthClass,
     pub beside_width: f32,
     pub rows: HeaderRows,
 }

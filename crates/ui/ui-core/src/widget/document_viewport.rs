@@ -22,8 +22,9 @@ use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
+use crate::widget::ScrollMetrics;
 use crate::widget::TaffyTreeExt;
-use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+use crate::widget::scrollbar::{PressOutcome, Scrollbar};
 use crate::widget::{Element, Widget};
 
 pub const DEFAULT_MIN_ZOOM: f64 = 0.25;

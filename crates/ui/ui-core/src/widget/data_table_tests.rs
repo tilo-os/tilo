@@ -1690,7 +1690,7 @@ tilo_test_env::scenario! {
             dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
             assert!(!t.vbar.is_dragging(), "track click is not a drag");
             let expected =
-                5.0 * f32_of_f64(ROW_HEIGHT) * f32_of_f64(crate::widget::scrollbar::PAGE_FRACTION);
+                5.0 * f32_of_f64(ROW_HEIGHT) * f32_of_f64(crate::widget::PAGE_FRACTION);
             assert!(
                 (t.scroll_y() - expected).abs() < 1.0,
                 "page step ≈ viewport*frac ({expected}), got {}",

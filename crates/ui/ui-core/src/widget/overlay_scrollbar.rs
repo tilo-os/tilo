@@ -9,7 +9,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 
-use super::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar, thumb_color};
+use super::ScrollMetrics;
+use super::scrollbar::{BarFade, PressOutcome, Scrollbar, thumb_color};
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 

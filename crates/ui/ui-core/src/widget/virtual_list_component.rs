@@ -20,9 +20,8 @@ use crate::component::{
 };
 use crate::selection::KeySelection;
 use crate::tokens::{Rhythm, TextRole};
-use crate::widget::arrange::{
-    Align, Fit, Length, MEASURE_REM, Page, Part, Row, Stack, TranscriptEdges,
-};
+use crate::widget::Length;
+use crate::widget::arrange::{Align, Fit, MEASURE_REM, Page, Part, Row, Stack, TranscriptEdges};
 use crate::widget::conversation::list::GROUPING_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, SectionDivider};
 use crate::widget::{

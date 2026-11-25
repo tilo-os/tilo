@@ -229,11 +229,7 @@ impl AppTree<'_> {
     pub(crate) fn tooltips_at(
         &self,
         point: vello::kurbo::Point,
-    ) -> Vec<(
-        vello::kurbo::Rect,
-        String,
-        crate::widget::tooltip::TooltipSide,
-    )> {
+    ) -> Vec<(vello::kurbo::Rect, String, crate::widget::TooltipSide)> {
         self.node_map
             .keys()
             .filter_map(|&node| {
@@ -442,11 +438,7 @@ impl crate::app::App {
     pub(crate) fn tooltip_target_at(
         &self,
         point: vello::kurbo::Point,
-    ) -> Option<(
-        vello::kurbo::Rect,
-        String,
-        crate::widget::tooltip::TooltipSide,
-    )> {
+    ) -> Option<(vello::kurbo::Rect, String, crate::widget::TooltipSide)> {
         if !self.pointer_hovers() {
             return None;
         }

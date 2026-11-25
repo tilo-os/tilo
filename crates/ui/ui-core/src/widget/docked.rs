@@ -1,7 +1,8 @@
 //! Content above a bar docked at the foot of its column, as a described component.
 
 use crate::component::{Component, Described, PartViews};
-use crate::widget::arrange::{Fit, Length, Page, Part, Stack};
+use crate::widget::Length;
+use crate::widget::arrange::{Fit, Page, Part, Stack};
 use crate::widget::{Decorator, Element, Widget};
 
 /// Content that fills its column above a bar that stays at the column's foot: a

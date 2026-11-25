@@ -8,6 +8,7 @@ use winit::event::WindowEvent;
 
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
+use crate::widget::TooltipSide;
 use crate::widget::floating_surface::PopoverSide;
 
 pub const HOVER_DWELL: Duration = Duration::from_millis(500);
@@ -87,13 +88,6 @@ fn fit_size(m: &ChipMetrics, size: (f64, f64), viewport: Rect) -> (f64, f64) {
         size.0.min((viewport.width() - 2.0 * m.margin).max(0.0)),
         size.1.min((viewport.height() - 2.0 * m.margin).max(0.0)),
     )
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TooltipSide {
-    #[default]
-    Below,
-    Beside,
 }
 
 pub fn chip_rect_on(

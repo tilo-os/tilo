@@ -11552,7 +11552,7 @@ impl Widget for BlockEditor {
             // A link a document carries opens as any link does, when its scheme is one the
             // system opens; a document can say anything, so the others stay inert.
             if opens_safely(url) {
-                ui::widget::open_external_url(url);
+                ui::platform::os_open(url);
             }
             self.pending_external_link_opens.push(url.to_string());
             self.dirty = true;

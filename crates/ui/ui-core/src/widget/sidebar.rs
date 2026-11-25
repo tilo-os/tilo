@@ -102,7 +102,7 @@ pub struct SidebarDrawer {
 #[derive(Clone, Copy, Debug)]
 struct ContentMinimum {
     extent: AuthoredExtent,
-    class: crate::widget::arrange::WidthClass,
+    class: crate::widget::WidthClass,
 }
 
 /// The drawer's show/hide button in a painted header row: its rect, hover
@@ -191,7 +191,7 @@ impl SidebarDrawer {
     pub fn content_min_width(mut self, px: f64) -> Self {
         self.content_min = Some(ContentMinimum {
             extent: AuthoredExtent::text(px),
-            class: crate::widget::arrange::WidthClass::Medium,
+            class: crate::widget::WidthClass::Medium,
         });
         self
     }

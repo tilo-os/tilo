@@ -4,8 +4,9 @@ use taffy::style_helpers::length;
 use taffy::{Size, Style};
 
 use super::arranged::{Arranged, Layout, Part, Resolved, lead_container, wrapper_style};
-use super::units::{Axis, Direction, Length, PaneSplit, pane_split_for};
+use super::units::{Axis, Direction, PaneSplit, pane_split_for};
 use crate::tokens::Rhythm;
+use crate::widget::Length;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
