@@ -1525,9 +1525,10 @@ impl AttachedView {
                     || self
                         .records
                         .with(&checkout.id, |doc| {
-                            doc.get_changes(&[])
-                                .iter()
-                                .any(|change| change.message() != Some(founding.as_str()))
+                            doc.get_changes(&[]).iter().any(|change| {
+                                change.message() != Some(founding.as_str())
+                                    && !derived_step(change)
+                            })
                         })
                         .unwrap_or(false)
             })
@@ -1787,6 +1788,14 @@ fn publish(
 ///
 /// # Errors
 /// As [`publish`].
+/// Whether `change` is a step of a record's version chain, which every holder derives alike
+/// from the record alone, so it is nobody's change to send.
+fn derived_step(change: &ui_core::automerge::Change) -> bool {
+    tilo_actions::stamp::Stamp::of(change)
+        .and_then(|stamp| stamp.migration())
+        .is_some_and(|(_, rewrite)| !rewrite)
+}
+
 fn publish_beside(
     sync: &mut DocumentSync,
     records: &ResourceStore,

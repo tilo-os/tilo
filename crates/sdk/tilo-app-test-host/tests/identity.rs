@@ -341,10 +341,26 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();
         assert_eq!(app.state().owner, "test-author");
-        let seed = app
+        // Before the seed, only the steps that bring the record to its version, which every
+        // holder derives alike and nobody writes.
+        let mut contexts = app
             .versions()
             .into_iter()
-            .find_map(|version| version.context)
+            .filter_map(|version| version.context);
+        let seed = contexts
+            .find(|context| {
+                let step = matches!(
+                    context.what,
+                    Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
+                        op: tilo_actions::HistoryOp::Migrate { rewrite: false, .. },
+                        ..
+                    }))
+                );
+                if step {
+                    assert_eq!(context.change, tilo_actions::ChangeKind::Housekeeping);
+                }
+                !step
+            })
             .unwrap();
         assert_eq!(seed.change, tilo_actions::ChangeKind::External);
         assert_eq!(

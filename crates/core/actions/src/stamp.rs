@@ -436,6 +436,20 @@ impl Stamp {
         context
     }
 
+    /// The version a migration change brings its record to, and whether it is a rewrite by
+    /// one who may write the record rather than the step every holder derives alike; `None`
+    /// for any other change.
+    #[must_use]
+    pub fn migration(&self) -> Option<(u32, bool)> {
+        match &self.context.as_deref()?.what {
+            Some(crate::Did::History(step)) => match step.op {
+                crate::HistoryOp::Migrate { to, rewrite } => Some((to, rewrite)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The stamp `change` carries; `None` for a change that carries none.
     #[must_use]
     pub fn of(change: &automerge::Change) -> Option<Self> {
