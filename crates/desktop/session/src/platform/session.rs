@@ -656,10 +656,6 @@ impl Session {
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
         let shell_surfaces = surfaces.clone();
-        // What the keys ask the panel's own app, which the surface loop hands
-        // the running app each pass. A device whose shell draws the panel has
-        // one; the shell's own view of the quick settings answers its own keys.
-        let panel_asks: Rc<RefCell<Vec<&'static str>>> = Rc::default();
         let lists_surface: tilo_session_core::surfaces::Shared =
             crate::shell::lists_surface(desktop.clone(), surfaces.clone());
         published.add(Rc::clone(&lists_surface));

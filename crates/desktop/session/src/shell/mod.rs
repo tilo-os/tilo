@@ -1475,7 +1475,6 @@ impl ShellChrome {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
-        use tilo_session_core::desktop::host::contract::DesktopAsk;
         use tilo_session_core::desktop::navigation::{ChromeEffect, Verb};
         use tilo_session_core::desktop::state::chrome_verbs::Carried;
         if address.resource != tilo_session_core::desktop::verbs::CHROME_RESOURCE {
@@ -1501,25 +1500,13 @@ impl ShellChrome {
                 self.performed(performed);
                 None
             }
-            Carried::Shell => {
-                let intent = match verb {
-                    // The strips of the workspace shown, each where it stands: the overview.
-                    ChromeEffect::ShowStrips => {
-                        self.surfaces
-                            .open(tilo_session_core::desktop::overlays::Overlay::Overview.name());
-                        return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )));
-                    }
-                    _ => return Ok(None),
-                };
-                tilo_session_core::desktop::shell_verbs::ask(
-                    &self.desktop,
-                    &self.asks,
-                    DesktopAsk::Intent(intent),
-                );
+            // The strips of the workspace shown, each where it stands: the overview.
+            Carried::Shell if verb == ChromeEffect::ShowStrips => {
+                self.surfaces
+                    .open(tilo_session_core::desktop::overlays::Overlay::Overview.name());
                 None
             }
+            Carried::Shell => return Ok(None),
         };
         Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput {
