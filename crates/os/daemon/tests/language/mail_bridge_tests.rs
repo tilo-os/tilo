@@ -5,7 +5,11 @@
 //! The connector is the app's own, run by the daemon beside its instances: its protocol code is
 //! the connector crate's, over the same mail server a person rents.
 
+use std::sync::Arc;
+
 use serde_json::json;
+use tilo_workspace_service::workspaces::MemberDevice;
+use tilo_workspace_service::workspaces::fixtures::{TestGroupKeys, governor, test_host_holding};
 use tilolang_mail::test_support::{Rig, served};
 
 const ADA: &str = "ada@example.test";
@@ -16,9 +20,18 @@ const PASSWORD: &str = "the-password-her-vault-keeps";
 /// password.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_connected_mail_account_is_kept_where_the_bridge_reads_it() {
-    let device = super::Device::start("Mail", Some(accounts::person::ACCOUNTS_OWNER)).await;
-    let workspace = device.workspace.clone();
-    let acting = tilo_action_policy::Acting::person(device.person());
+    // The workspace's own store, with no window and no app's package: what the account is kept
+    // in is the one record, and the connector reads it there.
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
+    let workspaces = host.workspaces().clone();
+    workspaces.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let workspace = workspaces.create("Mail").await.unwrap().workspace;
+    let acting = tilo_action_policy::Acting::person(hex::encode(cert.user_public_key));
 
     let mut account =
         accounts::Account::new(accounts::AccountId::from(ADA), accounts::email::TYPE_ID);
@@ -32,16 +45,14 @@ async fn a_connected_mail_account_is_kept_where_the_bridge_reads_it() {
         "smtp_host": "smtp.example.test",
         "smtp_port": 465,
     });
-    device
-        .workspaces()
+    workspaces
         .keep_workspace_account((&workspace, &acting, None), &account)
         .await
         .expect("the account is kept");
 
     // What the connector's account source reads: the workspace's email accounts, each with the
     // servers and user name its sign-in is released for.
-    let held = device
-        .workspaces()
+    let held = workspaces
         .workspace_accounts(&workspace)
         .await
         .expect("the workspace's accounts are read");
@@ -59,12 +70,13 @@ async fn a_connected_mail_account_is_kept_where_the_bridge_reads_it() {
         kept.config.get("smtp_host").and_then(|v| v.as_str()),
         Some("smtp.example.test")
     );
+    assert!(kept.enabled, "an added account signs in");
     assert!(
         !serde_json::to_string(&kept).unwrap().contains(PASSWORD),
         "a kept account carries no password"
     );
 
-    device.shutdown().await;
+    host.shutdown().await;
 }
 
 /// The app shows what its server holds — a conversation with the message on it — and a message

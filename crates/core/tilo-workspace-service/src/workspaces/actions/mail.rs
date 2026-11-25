@@ -16,8 +16,6 @@ use tilo_actions::remote::{
     CatalogueRow, WORKSPACE_MAIL_ACCOUNTS, person_accounts, person_vault,
     workspace_governance_child, workspace_governance_resource,
 };
-#[cfg(feature = "agents")]
-use tilo_actions::{ActionContract, contract::Audience};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 
 use super::{Publisher, Verb};
