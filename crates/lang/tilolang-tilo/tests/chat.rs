@@ -1533,6 +1533,14 @@ fn a_channel_lists_its_threads_and_opening_one_opens_it() {
 #[test]
 fn a_place_is_keyed_by_its_conversation_so_a_rename_and_a_twin_name_stay_apart() {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    // Ada owns the workspace: a channel's name is its moderators' to change.
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
+        ],
+        None,
+    );
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let design = call(
