@@ -578,8 +578,9 @@ action export_markdown(n: Note) -> Text (icon: .download) {
 
 /// A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a
 /// picture is one zip — `Q3 plan.md` and `Q3 plan/images/fox.png` — because Markdown reaches a
-/// picture by a path and by nothing else; a note of words alone is that Markdown itself.
-action export_note(n: Note) -> File (icon: .download) {
+/// picture by a path and by nothing else; a note of words alone is that Markdown itself. The
+/// system's one Export… saves it where the person says.
+action export_note(n: Note) -> File (icon: .download, export: "Markdown") {
     if n.images.keys().is_empty() {
         File.of_text("{file_name(n)}.md", export_markdown(n))
     } else {
@@ -591,7 +592,7 @@ action export_note(n: Note) -> File (icon: .download) {
 /// note it stands in, and the pictures it shows in its own `images` folder beside it. That is the
 /// shape the import reads, so the notebook comes back as the tree it is, titles, bodies and
 /// pictures alike.
-action export_notebook(nb: Notebook) -> File (icon: .download) {
+action export_notebook(nb: Notebook) -> File (icon: .download, export: "Zip of Markdown files") {
     // Every note is named before any file is written: two notes of one title are two files, a
     // note's folder follows the name its note took, and a link reaches the file of the note it
     // names rather than the first note of that title.
@@ -604,7 +605,10 @@ action export_notebook(nb: Notebook) -> File (icon: .download) {
 /// The notebook as one Markdown document, where each note is a heading one level deeper than
 /// the note it stands under (six at the deepest), its body beneath it and the notes under it
 /// after it, read as one text in the order the tree keeps it.
-action export_notebook_markdown(nb: Notebook) -> File (icon: .download) {
+action export_notebook_markdown(nb: Notebook) -> File (
+    icon: .download,
+    export: "One Markdown document",
+) {
     File.of_text("Notes.md", notebook_markdown(nb))
 }
 
@@ -1589,10 +1593,11 @@ view notebook_head(open: Option<Note>) {
     notebook_menu(root Notebook, open)
 }
 
-/// The notebook's own commands: a Markdown file or a zip of them in, the whole notebook out,
-/// and — while a note is open — a note under it, a picture into it and the note out as a file of
-/// its own. They stand in the sidebar's header, where the notebook's controls stand, so the page
-/// keeps no file control of its own and every command has one place at every width.
+/// The notebook's own commands: a Markdown file or a zip of them in, and — while a note is
+/// open — a note under it and a picture into it. What it writes goes through the system's one
+/// Export…, which lists every format the notebook and the open note publish. They stand in the
+/// sidebar's header, where the notebook's controls stand, so the page keeps no file control of
+/// its own and every command has one place at every width.
 view notebook_menu(nb: Notebook, open: Option<Note>) {
     ui.MenuButton("File", icon: .file_plus) {
         ui.MenuItem("Import Markdown…", icon: .file_plus) {
@@ -1604,12 +1609,6 @@ view notebook_menu(nb: Notebook, open: Option<Note>) {
                 accept: ["application/zip", "application/json"],
             )
         }
-        ui.MenuItem("Export the notebook…", icon: .download) {
-            on choose: file.save(export_notebook(nb), name: "Notes.zip")
-        }
-        ui.MenuItem("Export the notebook as one Markdown document…", icon: .download) {
-            on choose: file.save(export_notebook_markdown(nb), name: "Notes.md")
-        }
         if let n = open {
             ui.MenuItem("New sub-note", icon: .plus) {
                 on choose: new_child(n)
@@ -1619,9 +1618,6 @@ view notebook_menu(nb: Notebook, open: Option<Note>) {
                     place_image(n),
                     accept: ["image/png", "image/jpeg", "image/webp"],
                 )
-            }
-            ui.MenuItem("Export this note…", icon: .download) {
-                on choose: file.save(export_note(n), name: export_name(n))
             }
         }
     }
@@ -1840,12 +1836,6 @@ view note_details(n: Note) {
 /// The notes `n` stands under, the one it stands under first: the path its page shows above it.
 fn above(n: Note) -> List<Note> {
     if let p = n.parent { [[p], above(p)].flat_map(notes -> notes) } else { [] }
-}
-
-/// The name a note's file is offered as: the Markdown's own while the note shows no picture, and
-/// the zip's when it does.
-fn export_name(n: Note) -> Text {
-    if n.images.keys().is_empty() { "{file_name(n)}.md" } else { "{file_name(n)}.zip" }
 }
 
 /// The files one note's export holds: its Markdown at `folder`/`name`, and each picture it shows

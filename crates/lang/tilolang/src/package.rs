@@ -793,6 +793,7 @@ fn build_meta(
                     settles: None,
                     key: None,
                     group: None,
+                    export: None,
                     guard: false,
                     applies: false,
                     outside: Vec::new(),
@@ -891,6 +892,7 @@ fn build_meta(
                     settles: c.present.settles.clone(),
                     key: c.present.key.clone(),
                     group: c.present.group.clone(),
+                    export: c.present.export.clone(),
                     guard: a
                         .requires
                         .iter()
@@ -1177,6 +1179,7 @@ pub fn compile_program_reading(
             settles: None,
             key: None,
             group: None,
+            export: None,
             uses: Vec::new(),
             guard: false,
             applies: false,

@@ -1482,10 +1482,22 @@ impl ViewInstance {
                 )));
             }
         };
-        let request = crate::blob::SaveRequest {
-            name: name.clone(),
-            media,
+        // A file made by an export stands under the name it gives itself, as the system's one
+        // Export… saves it: nothing else knows that format's name.
+        let name = if name.is_empty() {
+            match &made {
+                Value::File(file) if !file.name.is_empty() => file.name.clone(),
+                _ => {
+                    return Err(RuntimeError::BadArgs(
+                        "`file.save` names what it saves, and what it made has no name of its own"
+                            .to_owned(),
+                    ));
+                }
+            }
+        } else {
+            name.clone()
         };
+        let request = crate::blob::SaveRequest { name, media };
         let blobs = self.core.blobs.borrow();
         let Some(blobs) = blobs.as_ref() else {
             return Err(RuntimeError::Package("this host saves no files".to_owned()));

@@ -82,6 +82,7 @@ mod note_import;
 mod notebook_order;
 mod notes;
 mod notes_checklist;
+mod notes_export;
 mod notice;
 mod opened;
 mod opens_page;

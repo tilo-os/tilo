@@ -239,6 +239,10 @@ pub struct Presentation {
     /// `group: "Reply"`: the run of the resource's actions this one stands in, as the app names it. A
     /// surface draws the runs in the order the app declared them.
     pub group: Option<String>,
+    /// `export: "Markdown"`: the format the action writes its resource in, named as the person
+    /// reads it. The platform lists it under the system's one Export… and saves what the action
+    /// makes ([`crate::meta::ActionMeta::export`]).
+    pub export: Option<String>,
     /// `did: "moved this"`: what the action did, as history's sentence reads it after who did it ("Ana
     /// moved this").
     pub did: Option<String>,
