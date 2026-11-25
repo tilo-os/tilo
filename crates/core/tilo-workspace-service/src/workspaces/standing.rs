@@ -108,7 +108,13 @@ pub fn reading(
                 .and_then(|holder| labels.get(&holder).cloned())
                 .unwrap_or_default(),
             here: holder == Some(reader.device),
-            admitted: admitted.contains(&reader.device),
+            // A device keeping the workspace for its own person is let in by that naming, not as
+            // a member's device, which the member list leaves it out of: it waits for no host.
+            admitted: admitted.contains(&reader.device)
+                || membership.keeping_devices().iter().any(|keeping| {
+                    keeping.host.device_public_key == reader.device
+                        && keeping.host.user_public_key == reader.person
+                }),
         }),
         holders,
         holder,

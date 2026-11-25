@@ -795,6 +795,37 @@ async fn a_founded_workspaces_standing_crosses_as_json() {
     };
     let reading = standing::reading(*workspace, peer, &reader, None, Vec::new());
     assert_eq!(reading.id, founded);
+    // It keeps the workspace it founded, and so waits for no host to take it in: its shell
+    // launches the workspace's apps at once.
+    assert!(
+        reading
+            .hosting
+            .as_ref()
+            .is_some_and(|hosting| hosting.admitted),
+        "the founding device is admitted to its own workspace: {:?}",
+        reading.hosting
+    );
+    // It is the holders record naming it that lets it in, not the copy: another device of the
+    // same person reading these same bytes, named nowhere in it, waits for its host.
+    let unnamed = SigningKey::from_bytes(&[7; 32])
+        .verifying_key()
+        .to_bytes();
+    let copy = standing::reading(
+        *workspace,
+        peer,
+        &standing::Reader {
+            person,
+            device: unnamed,
+            signer: signer.as_ref(),
+        },
+        None,
+        Vec::new(),
+    );
+    assert!(
+        copy.hosting.as_ref().is_some_and(|hosting| !hosting.admitted),
+        "a device with a copy that no holders record names is not admitted: {:?}",
+        copy.hosting
+    );
     assert!(
         reading
             .members
