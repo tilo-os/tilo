@@ -246,7 +246,7 @@ params = [
   { name = "environment", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "exit", type = "int", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
   { name = "ended_ms", type = "int", required = true, schema = { type = "integer" } },
-  { name = "actor", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] }] } },
+  { name = "actor", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, person = { type = "string" } }, required = ["id", "person"] } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] }] } },
   { name = "session", type = "text", required = true, schema = { type = "string" } },
   { name = "run", type = "text", required = true, schema = { type = "string" } },
 ]
@@ -261,7 +261,7 @@ params = [
   { name = "environment", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "exit", type = "int", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
   { name = "ended_ms", type = "int", required = true, schema = { type = "integer" } },
-  { name = "actor", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] }] } },
+  { name = "actor", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, person = { type = "string" } }, required = ["id", "person"] } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] }] } },
   { name = "session", type = "text", required = true, schema = { type = "string" } },
   { name = "run", type = "text", required = true, schema = { type = "string" } },
 ]

@@ -85,19 +85,33 @@ primitive! {
     uuid::Uuid => json!({"type": "string", "format": "uuid"}), Text,
 }
 
-/// A member as serde writes it: `{"person": "<id>"}`, `{"agent": "<id>"}` or
-/// `{"bot": "<id>"}`.
+/// A member as serde writes it: `{"person": "<id>"}`, `{"bot": "<id>"}`, or an agent by its
+/// id and the person its certificate chains to (`{"agent": {"id": …, "person": …}}`).
 impl JsonSchema for tilo_action_policy::MemberId {
     fn json_schema() -> Value {
+        let text = || json!({"type": "string"});
         let kind = |name: &str| {
             json!({
                 "type": "object",
-                "properties": { name: {"type": "string"} },
+                "properties": { name: text() },
                 "required": [name],
                 "additionalProperties": false,
             })
         };
-        json!({"oneOf": [kind("person"), kind("agent"), kind("bot")]})
+        let agent = json!({
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "type": "object",
+                    "properties": {"id": text(), "person": text()},
+                    "required": ["id", "person"],
+                    "additionalProperties": false,
+                },
+            },
+            "required": ["agent"],
+            "additionalProperties": false,
+        });
+        json!({"oneOf": [kind("person"), agent, kind("bot")]})
     }
 }
 

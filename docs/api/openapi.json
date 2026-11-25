@@ -4857,7 +4857,20 @@
                     "additionalProperties": false,
                     "properties": {
                       "agent": {
-                        "type": "string"
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "person": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "person"
+                        ],
+                        "type": "object"
                       }
                     },
                     "required": [
@@ -4944,7 +4957,20 @@
                     "additionalProperties": false,
                     "properties": {
                       "agent": {
-                        "type": "string"
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "person": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "person"
+                        ],
+                        "type": "object"
                       }
                     },
                     "required": [
@@ -20830,8 +20856,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -20871,8 +20911,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -20912,8 +20966,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -21119,8 +21187,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -21164,8 +21246,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -21484,8 +21580,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -21529,8 +21639,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -21931,8 +22055,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -22911,8 +23049,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -23408,8 +23560,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -24173,7 +24339,20 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "person": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -24229,7 +24408,20 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "person": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -24287,7 +24479,20 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "person": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -40518,8 +40723,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -40575,8 +40794,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -40649,8 +40882,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -40702,8 +40949,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -40751,8 +41012,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -40808,8 +41083,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -40856,8 +41145,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -66040,7 +66343,8 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "two_sided"
+              "two_sided",
+              "handed"
             ],
             "type": "string"
           },
@@ -66193,9 +66497,7 @@
         "properties": {
           "field": {
             "description": "The name of the field to set.",
-            "enum": [
-              "showing"
-            ],
+            "enum": [],
             "type": "string"
           },
           "value": {
@@ -66263,11 +66565,11 @@
         ],
         "description": "Takes a document another app hands over as what this window prints, and shows the print\nform so the person chooses the printer and how it prints: the one action an app calls to\nprint a file it made. The file's bytes are the workspace's content, so the app that hands\nit over never needs this window's own files."
       },
-      "tl.so.tilo.print-centre.PrintCentre.clear_showing.Arguments": {
+      "tl.so.tilo.print-centre.PrintCentre.leave_handed.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Leaves the place another app asked this window to show, so the person's own choice stands."
+        "description": "Leaves the print form a handed-over document opened, so the person's own choice of place\nstands."
       },
       "tl.so.tilo.print-centre.PrintCentre.send_to_printer.Arguments": {
         "type": "object",
@@ -83384,8 +83686,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -83952,8 +84268,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -84219,8 +84549,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
-                    "minLength": 1,
-                    "type": "string"
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "person": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "person"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -90449,7 +90793,7 @@
           "track",
           "with"
         ],
-        "description": "Moves a clip to `start`, as a drag on the timeline lands it, and every other clip among `with`,\nthe clips chosen, by as much. A clip moved alone goes onto the track `track` names when that is\nanother track of its kind, unlocked, with room for it there."
+        "description": "Moves a clip to `start`, as a drag on the timeline lands it, and every other clip among `with`,\nthe clips chosen, by as much. The track `track` names is where the grabbed clip lands: a clip\nmoved alone goes there, and a chosen group moves down or up the rows by the same step, each\nclip onto the track of its kind that is open and has room for it after the move."
       },
       "tl.so.tilo.video-editor.Project.trim_to.Arguments": {
         "type": "object",
@@ -120900,8 +121244,8 @@
     {
       "app": "so.tilo.print-centre",
       "resource": "tl.so.tilo.print-centre.PrintCentre",
-      "action": "clear_showing",
-      "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintCentre.clear_showing.Arguments"
+      "action": "leave_handed",
+      "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintCentre.leave_handed.Arguments"
     },
     {
       "app": "so.tilo.print-centre",
