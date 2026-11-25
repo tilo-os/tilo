@@ -853,7 +853,7 @@ scenario "the switcher, twenty windows" {
                     title: "Perf numbers",
                     origin_app: "Charts",
                     app_key: "so.tilo.charts",
-                    icon: "chart_line",
+                    icon: "bar-chart",
                     strip: "Money",
                     workspace: "Studio",
                     workspace_key: "studio",
