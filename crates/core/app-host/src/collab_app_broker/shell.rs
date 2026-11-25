@@ -428,9 +428,9 @@ fn asking(call: &ShellCall) -> String {
         ShellCall::Write {
             workspace,
             app,
-            document,
+            record,
             ..
-        } => write!(start, "Write of {app} {document} in {workspace}"),
+        } => write!(start, "Write of {app} {record} in {workspace}"),
         other => write!(start, "{other:?}"),
     };
     // A call longer than what is shown stops the writing there, and says it goes on.
