@@ -1161,7 +1161,7 @@ mod tests {
             .windows(b"\"generation\":1,".len())
             .position(|window| window == b"\"generation\":1,")
             .ok_or("the split names its generation")?
-            + b"\"generation\":".len();
+            .saturating_add(b"\"generation\":".len());
         let entry = Appended {
             revision: 2,
             fields: vec![
@@ -1171,8 +1171,8 @@ mod tests {
                 },
                 Run::Bytes(b"7".to_vec()),
                 Run::Copy {
-                    from: wide(at + 1),
-                    len: wide(split.len() - at - 1),
+                    from: wide(at.saturating_add(1)),
+                    len: wide(split.len().saturating_sub(at).saturating_sub(1)),
                 },
             ],
             answered: if answered { vec![()] } else { Vec::new() },
@@ -1285,7 +1285,9 @@ mod tests {
                     .is_some_and(Vec::is_empty);
             let index: Index =
                 serde_json::from_slice(kept.get(INDEX_NAME).ok_or("the index is kept")?)?;
-            (pair_written, index.held.get(&workspace) == Some(&1))
+            let index_names_earlier = index.held.get(&workspace) == Some(&1);
+            drop(kept);
+            (pair_written, index_names_earlier)
         };
         check(
             pair_written,
