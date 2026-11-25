@@ -49,6 +49,7 @@ fn pixels() -> ImageData {
 struct Heard {
     taken: Mutex<Vec<(u32, String)>>,
     tokens: Mutex<Vec<Option<String>>>,
+    closed: Mutex<Vec<(u32, CloseReason)>>,
 }
 
 struct Rig {
@@ -88,6 +89,10 @@ fn rig_at(history: Option<super::KeptCentre>) -> Rig {
             }
         };
         tap.taken.lock().unwrap().push((id, said));
+    });
+    let gone = Arc::clone(&heard);
+    daemon.on_closed(move |id, reason| {
+        gone.closed.lock().unwrap().push((id, reason));
     });
     let desktop = DesktopNotifications::default();
     desktop.show_banners_elsewhere();
@@ -141,6 +146,11 @@ impl Rig {
     /// The activation tokens the apps were handed, in their order.
     fn tokens(&self) -> Vec<Option<String>> {
         std::mem::take(&mut *self.heard.tokens.lock().unwrap())
+    }
+
+    /// The closes the apps were told, by notification id and why, in their order.
+    fn closed(&self) -> Vec<(u32, CloseReason)> {
+        std::mem::take(&mut *self.heard.closed.lock().unwrap())
     }
 
     fn live(&self, id: u32) -> bool {
@@ -501,7 +511,16 @@ tilo_test_env::scenario! {
         let banner = rig.banner().id;
         rig.ask(Ask::Banner(BannerAsk::Invoke(banner, "archive".into())));
         rig.step();
-        assert_eq!(rig.heard(), [(id, "action archive".into())]);
+        assert_eq!(
+            rig.heard(),
+            [(id, "action archive".into())],
+            "the app hears the choice before its notification ends"
+        );
+        assert_eq!(
+            rig.closed(),
+            [(id, CloseReason::Dismissed)],
+            "a chosen banner ends as one the person dealt with, not one that ran out"
+        );
         assert!(!rig.live(id), "a chosen banner is closed");
 
         let id = rig.daemon.alloc_id();
