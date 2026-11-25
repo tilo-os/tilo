@@ -146,7 +146,9 @@ impl VirtualRows {
             let Some(child) = node else {
                 continue;
             };
-            let top = top + self.band_gap(index);
+            // The list's own offset is snapped where it places them; a row's top within it
+            // stands on a device pixel too, whatever offset the rows were laid out from.
+            let top = crate::widget::layout::snap_to_device_pixels(top + self.band_gap(index));
             let Some(current) = taffy.style_of(child) else {
                 continue;
             };

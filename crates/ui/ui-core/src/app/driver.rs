@@ -609,6 +609,9 @@ impl Driver {
     /// that asks for a measure — is taken up as a frame after an event takes it.
     fn take_up_reported_layout(&mut self) {
         if let Some(root) = self.app.layout.root_node {
+            // Placed on the surface's device pixels, as its frames lay the widgets out: a list's
+            // offset snapped to another grid stands its rows between pixels.
+            let _grid = crate::widget::layout::enter_device_scale(self.surface.scale.get());
             let tree = crate::widget::layout::TreeId::of(&self.app.layout.taffy);
             crate::widget::layout::placing_again_in(tree, || {
                 self.app.apply_history_presentation(root);
