@@ -418,7 +418,9 @@ mod cases {
                 dump(view.tree())
             );
             let (copy_result, result_key) = keyed(&view, "ui.Button", "Copy result");
-            assert_eq!(result_key, "Ctrl+c");
+            // A control's key is the shortcut its app declared, in that spelling; a press
+            // answers it whatever case the keyboard reports.
+            assert_eq!(result_key, "Ctrl+C");
             view.fire(&copy_result, "press").unwrap();
             view.poll_patches().unwrap();
             assert_eq!(
@@ -429,7 +431,7 @@ mod cases {
             *selection.0.borrow_mut() = None;
             let (copy_expression, expression_key) =
                 keyed(&view, "ui.Button", "Copy expression");
-            assert_eq!(expression_key, "Ctrl+Shift+c");
+            assert_eq!(expression_key, "Ctrl+Shift+C");
             view.fire(&copy_expression, "press").unwrap();
             view.poll_patches().unwrap();
             assert_eq!(
@@ -438,7 +440,7 @@ mod cases {
                 "the expression's control copies the expression"
             );
             let (clear, clear_key) = keyed(&view, "ui.Button", "AC");
-            assert_eq!(clear_key, "escape", "AC answers Escape");
+            assert_eq!(clear_key, "Escape", "AC answers Escape");
             view.fire(&clear, "press").unwrap();
             view.poll_patches().unwrap();
             let cleared = c.window();
