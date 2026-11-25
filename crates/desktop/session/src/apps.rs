@@ -363,8 +363,9 @@ enum Beginning {
 }
 
 /// The device's tilolang processes, each ask on a connection asked for on `link`, the shell link
-/// the device's daemon started this session with.
-fn processes_over(link: runtime_collab::ShellClient) -> DeviceProcesses {
+/// the device's daemon started this session with: what hands them this session's windows'
+/// instances and starts its tasks' hosts.
+pub(crate) fn processes_over(link: runtime_collab::ShellClient) -> DeviceProcesses {
     let runtime = tilo_rt::app().handle().clone();
     DeviceProcesses::over(Arc::new(move || {
         let link = link.clone();
@@ -654,12 +655,12 @@ impl Apps {
     /// tilolang process the device's daemon runs for its workspace and app, which the session
     /// hands it to with the connections it opened; the daemon attaches it to its app's outside
     /// service.
-    /// Each hand-over goes on a connection the session asks for on `daemon`, the shell link the
-    /// device's daemon started it with.
+    /// Each hand-over goes to `processes`, the device's as the session reaches them on the shell
+    /// link the device's daemon started it with, or why it reaches none.
     pub fn lend_links(
         self: &Rc<Self>,
         links: Rc<Links>,
-        daemon: &tilo_workspace_service::apps::services::DeviceDaemon,
+        processes: Result<DeviceProcesses, String>,
     ) {
         let me = Rc::downgrade(self);
         links.hand_instances_to(Box::new(move |hosted| {
@@ -669,10 +670,7 @@ impl Apps {
         }));
         let mut state = self.state.borrow_mut();
         state.me = Rc::downgrade(self);
-        state.processes = state
-            .launcher
-            .is_some()
-            .then(|| daemon.clone().map(processes_over));
+        state.processes = state.launcher.is_some().then_some(processes);
         state.links = Some(links);
     }
 

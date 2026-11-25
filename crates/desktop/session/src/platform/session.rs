@@ -153,6 +153,9 @@ impl Session {
         if let Err(reason) = &daemon_link {
             tracing::error!(%reason, "this session reads and writes no workspace");
         }
+        // The device's tilolang processes, which the daemon runs: each window's instance is
+        // handed to them, and a task's host is started there, on asks made on that link.
+        let device_processes = daemon_link.clone().map(crate::apps::processes_over);
         // The person's other devices join the networks this one shares through the daemon.
         #[cfg(target_os = "linux")]
         if daemon_link.is_ok() {
@@ -594,7 +597,7 @@ impl Session {
         let wells = policy.wells();
         policy.set_window_mapped(Rc::new(move |pid| settling.window_mapped(pid)));
         if let Some(launch) = &options.launch {
-            launch.lend_links(Rc::clone(&window_links), &daemon_link);
+            launch.lend_links(Rc::clone(&window_links), device_processes.clone());
         }
 
         // The programs the person downloaded: the registry takes the
@@ -937,13 +940,10 @@ impl Session {
         if let Some(view) = &view {
             session_services.keep_view(std::sync::Arc::clone(view));
         }
-        // A task's host is started by the device's processes, as every tilolang process here is.
-        if let Some(processes) = options
-            .launch
-            .as_ref()
-            .and_then(|launch| launch.device_processes().ok())
-        {
-            session_services.keep_processes(processes);
+        // A task's host is started by the device's daemon, as every tilolang process here is,
+        // whether or not this session launches apps itself.
+        if let Ok(processes) = &device_processes {
+            session_services.keep_processes(processes.clone());
         }
         // Until the first pass says whether the person has workspaces of their own, an ask of the
         // workspace the shell started with waits: that workspace is founded the moment it is known

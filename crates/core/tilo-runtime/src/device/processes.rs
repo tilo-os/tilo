@@ -2175,6 +2175,43 @@ mod tests {
             }
             assert!(daemon.running().unwrap().is_empty(), "nothing started");
         }
+
+        /// A task's host the shell asks for in a workspace the device has none of the person's is
+        /// refused, naming why, and starts nothing: a session reaches the programs of its own
+        /// workspaces alone.
+        #[test]
+        fn a_task_in_a_workspace_the_device_has_not_is_refused() {
+            let device = Device::new();
+            let daemon = device.shell();
+            let (_api, program) = std::os::unix::net::UnixStream::pair().unwrap();
+            let refused = daemon
+                .start_task(
+                    TaskRequest {
+                        task: "run-1".to_owned(),
+                        workspace: ELSEWHERE.to_owned(),
+                        person: Some("ada".to_owned()),
+                        apps_len: 2,
+                        documents_under: std::collections::BTreeMap::new(),
+                        changed_at_document: std::collections::BTreeSet::new(),
+                    },
+                    TaskFds {
+                        program: program.into(),
+                        apps: tilo_render_protocol::shm::sealed_blob("tilolang-apps", b"[]")
+                            .unwrap(),
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(
+                refused.kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "{refused}"
+            );
+            assert!(
+                refused.to_string().contains("has no workspace"),
+                "{refused}"
+            );
+            assert!(device.processes.running().is_empty(), "nothing started");
+        }
     }
 
     /// What changed reaches every process it is about, once, and no other: the person's formats
