@@ -154,12 +154,20 @@ fn a_still_stage_takes_no_zoom_or_keys_and_its_places_still_move() {
     let fitted = shown(&mut host).scale();
 
     host.dispatch_to_root(&synthetic_input::cursor_moved(400.0, 300.0));
-    let wheeled = host.dispatch_to_root_with(&synthetic_input::mouse_wheel(0.0, 120.0), &command());
-    assert!(!wheeled, "the wheel is the view's");
+    host.dispatch_to_root_with(&synthetic_input::mouse_wheel(0.0, 120.0), &command());
     assert!(
         (shown(&mut host).scale() - fitted).abs() < 1e-9,
         "the page did not zoom"
     );
+    // The wheel the stage left is the window's: it zooms the window's content, which a person
+    // undoes with Ctrl+0 before going on.
+    assert!(
+        host.app().content_zoom() > 1.0,
+        "the window zooms what the still stage left it"
+    );
+    host.app_mut()
+        .zoom_window_content(crate::content_zoom::ZoomStep::Reset);
+    host.relayout();
 
     // The first place stands at page (96, 90), 160 by 90: its middle is at (110, 159) on a
     // stage 800 by 600 with the page fitted. Dragging it 20 window pixels moves it 32 page
@@ -209,7 +217,10 @@ fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
         Box::new(boxes_stage(&queue, 2)),
         (800, 600),
     );
-    shown(&mut host).set_focus(true);
+    // The window puts the keyboard on the stage, as a reader's focus does: the keys go where the
+    // window's focus is.
+    host.perform_named("Slide", &crate::a11y::Action::Focus)
+        .expect("the stage takes the keyboard");
 
     // Tab chooses the first place, then the next, wrapping back to the first.
     host.dispatch_to_root(&synthetic_input::named_key(winit::keyboard::NamedKey::Tab));

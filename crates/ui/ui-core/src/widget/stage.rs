@@ -1796,6 +1796,11 @@ impl Widget for Stage {
         self.focused
     }
 
+    /// Tab walks a working stage's places, as a canvas editor's does, rather than leaving it.
+    fn wants_tab_input(&self) -> bool {
+        !self.still && !self.pins.is_empty()
+    }
+
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         self.platform = conventions;
     }
