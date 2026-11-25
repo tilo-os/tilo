@@ -1715,7 +1715,8 @@ fn parse_text_scale(value: &str) -> Result<f32, LaunchError> {
 /// The store a launch fixture's process writes through: a test that launches twice on one
 /// `--fixture-root` meets the same records and saved views, and a test that makes the workspace
 /// refuse a view's write makes the close that fails to save one.
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 pub(crate) mod fixture_workspace {
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
@@ -1868,7 +1869,8 @@ pub(crate) mod fixture_workspace {
     }
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod tests {
     #[cfg(all(unix, feature = "broker-transport"))]
     include!("launch/native_construction_owner_tests.rs");
@@ -2644,7 +2646,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod prepared_launch_tests {
     use super::*;
     use crate::application::{

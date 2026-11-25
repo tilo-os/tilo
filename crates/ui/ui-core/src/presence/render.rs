@@ -1902,7 +1902,8 @@ pub fn draw_remote_presence(
     painted
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod tests {
     use super::*;
     use crate::offscreen::OffscreenRenderer;

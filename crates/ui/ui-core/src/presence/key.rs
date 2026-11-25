@@ -4,7 +4,8 @@ pub use tilo_presence_types::{
     DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange,
 };
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod view_key_tests {
     use super::*;
     use crate::presence::local_workspace_key;

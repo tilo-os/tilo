@@ -306,7 +306,8 @@ pub trait FreezeThaw {
     }
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod tests {
     use super::*;
     use crate::Theme;

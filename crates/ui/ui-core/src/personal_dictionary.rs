@@ -103,7 +103,8 @@ pub fn edit(_: u64, _: Edit) -> io::Result<()> {
     ))
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod tests {
     use super::*;
 

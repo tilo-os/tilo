@@ -1070,7 +1070,8 @@ fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> Str
     }
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 pub(crate) mod tests {
     use super::*;
     use crate::text_render::TextRenderer;

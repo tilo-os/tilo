@@ -534,7 +534,8 @@ impl SemanticTree {
             false,
         )
     }
-    #[cfg(all(test, feature = "model"))]
+    #[cfg(test)]
+    #[cfg(feature = "model")]
     pub(crate) fn bound_actions_for_test(
         &self,
     ) -> Vec<(SemanticId, crate::bound_dispatch::BoundActionTarget)> {

@@ -657,7 +657,8 @@ pub(crate) fn set_recipients(all: Vec<Recipient>) {
     known.readings = known.readings.saturating_add(1);
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod tests {
     use super::*;
 

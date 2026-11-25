@@ -1961,7 +1961,8 @@ mod color_override_tests {
     }
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod remote_cursor_tests {
     use super::*;
 
@@ -2058,7 +2059,8 @@ mod remote_cursor_tests {
     }
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod string_id_wrapper_tests {
     use super::*;
 
@@ -2575,7 +2577,8 @@ mod string_id_wrapper_tests {
 /// A session must not paint its own member, and must go on
 /// painting everybody else. Both halves are asserted here: the second
 /// is the one that keeps a fix in this area from hiding the workspace.
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod own_identity_tests {
     use super::*;
     use crate::collaboration::PresencePayload;
@@ -3079,7 +3082,8 @@ mod own_identity_tests {
 ///
 /// Two halves: which layer is entitled to paint a given arrival, and how many
 /// rows one person may occupy in the store behind it.
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod one_person_one_pointer_tests {
     use super::*;
     use crate::collaboration::PresencePayload;

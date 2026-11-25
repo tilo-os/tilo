@@ -2286,7 +2286,8 @@ mod component_adapter {
 #[cfg(feature = "model")]
 pub(crate) use component_adapter::BoundAppWidget;
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 mod native_lifecycle_tests {
     use super::*;
     use crate::application::{LaunchTarget, RestoreInput};

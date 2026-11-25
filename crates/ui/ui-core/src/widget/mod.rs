@@ -876,7 +876,8 @@ pub fn find_test_id_mut<'a>(root: &'a mut dyn Widget, id: &str) -> Option<&'a mu
 }
 
 /// Test traversal probe; production callers retain bound provenance.
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 pub(crate) fn resolve_widget_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -887,7 +888,8 @@ pub(crate) fn resolve_widget_resource(
     })
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(test)]
+#[cfg(feature = "model")]
 fn resolve_bound_resource<R>(
     widget: &dyn Widget,
     doc: &AutoCommit,
