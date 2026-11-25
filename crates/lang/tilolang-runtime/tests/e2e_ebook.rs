@@ -1305,7 +1305,7 @@ action open_window(resource: host.Resource) {
             assert!(
                 matches!(
                     dialog.props.get("open"),
-                    Some(Value::Bool(true) | Value::Int(1))
+                    Some(Value::Bool(true))
                 ),
                 "the form stands open: {:?}",
                 dialog.props
@@ -1321,7 +1321,7 @@ action open_window(resource: host.Resource) {
             assert!(
                 matches!(
                     dialog.props.get("primary_enabled"),
-                    Some(Value::Bool(false) | Value::Int(0))
+                    Some(Value::Bool(false))
                 ),
                 "a book without a title cannot be saved: {:?}",
                 dialog.props

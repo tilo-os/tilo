@@ -45,7 +45,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   with a length is `ui_prop_f(n, "<name>.<unit>", value)` (`"min.rem"`). Options that take one of
   the primitives' enums (`gap: .section`, `at: .bottom_trailing`, `collapse: .drawer`, button
   `style: .primary`) are `ui_prop_h` props holding the variant's name, so hosts read the same
-  strings as before (see "Syntax revision"). Bare flags (`truncate`, `page(full)`) are `ui_prop_i(n, "<flag>", 1)`; `fill` is
+  strings as before (see "Syntax revision"). Bare flags (`truncate`, `page(full)`) are `ui_prop_b(n, "<flag>", 1)`, as every `Bool` prop is; `fill` is
   `ui_prop_f(n, "fill", 1.0)` and `fill(2)` carries the weight. `aspect: 16/9` is constant-folded to a
   Float. `primary`/`secondary` are primitives (slots of `split`); the compiler does not check they sit
   in a `split`. `;` separates statements on one line.

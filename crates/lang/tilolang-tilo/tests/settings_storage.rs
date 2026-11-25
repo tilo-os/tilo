@@ -468,14 +468,10 @@ fn fetched_files_are_fetched_ahead_or_held_to_a_space_the_person_chooses() {
     let sent = Sent::default();
     host.runtime().set_invoker(sent.clone());
 
-    // The switch shows what the daemon does now, and turning it off asks the storage resource. A
-    // flag reaches a prop as the flag or as the integer it was boxed as.
+    // The switch shows what the daemon does now, and turning it off asks the storage resource.
     let prefetch = node_with(&view, "ui.Toggle", "label", "Prefetch files");
     assert!(
-        matches!(
-            prefetch.props.get("shown"),
-            Some(Value::Bool(true) | Value::Int(1))
-        ),
+        matches!(prefetch.props.get("shown"), Some(Value::Bool(true))),
         "prefetching is on as the daemon reports it: {:?}",
         prefetch.props.get("shown")
     );
@@ -506,10 +502,7 @@ fn fetched_files_are_fetched_ahead_or_held_to_a_space_the_person_chooses() {
     let (_host, view) = installed(&off);
     let prefetch = node_with(&view, "ui.Toggle", "label", "Prefetch files");
     assert!(
-        matches!(
-            prefetch.props.get("shown"),
-            Some(Value::Bool(false) | Value::Int(0))
-        ),
+        matches!(prefetch.props.get("shown"), Some(Value::Bool(false))),
         "prefetching is off as the daemon reports it: {:?}",
         prefetch.props.get("shown")
     );

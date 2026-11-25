@@ -2338,7 +2338,7 @@ fn a_reply_with_no_account_to_send_it_says_so_and_does_not_send() {
         if send.kind == "ui.Button" {
             assert_eq!(
                 send.props.get("enabled"),
-                Some(&RtValue::Int(0)),
+                Some(&RtValue::Bool(false)),
                 "a Send with no account is unavailable: {:?}",
                 send.props
             );

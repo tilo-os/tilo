@@ -265,7 +265,7 @@ fn swipe(row: &UiNode) -> Option<(String, bool)> {
     actions.first().map(|action| {
         (
             action.props.get("label").map(display).unwrap_or_default(),
-            matches!(action.props.get("destructive"), Some(Value::Int(1))),
+            action.props.get("destructive") == Some(&Value::Bool(true)),
         )
     })
 }
@@ -390,10 +390,7 @@ fn a_notebook_is_its_tree_with_the_chosen_note_beside_it_naming_the_window() {
         .find_map(|node| find(node, &|node| node.kind == "ui.TextInput"))
         .expect("the page edits the note's title");
     assert!(
-        matches!(
-            title.props.get("title"),
-            Some(&Value::Int(1) | &Value::Bool(true))
-        ),
+        matches!(title.props.get("title"), Some(&Value::Bool(true))),
         "the page binds the title as its large title: {:?}",
         title.props.get("title")
     );

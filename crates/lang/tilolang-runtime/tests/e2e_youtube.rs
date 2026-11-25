@@ -351,7 +351,7 @@ mod cases {
                 .into_iter()
                 .find(|b| b.props.get("icon") == Some(&Value::text("heart")))
                 .expect("the comment offers a heart");
-            assert_eq!(heart.props.get("toggled"), Some(&Value::Int(1)));
+            assert_eq!(heart.props.get("toggled"), Some(&Value::Bool(true)));
             // Pressing it again takes the like back.
             w.call(
                 "like_comment",

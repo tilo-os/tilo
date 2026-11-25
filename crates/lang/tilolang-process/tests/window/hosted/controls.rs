@@ -829,7 +829,7 @@ mod access {
         let button = new_task_button(&mut session);
         assert_eq!(
             button.props.get("enabled"),
-            Some(&tilo_app_window::Value::Int(0)),
+            Some(&tilo_app_window::Value::Bool(false)),
             "a viewer's New task is disabled: {button:?}"
         );
         assert_eq!(
@@ -866,7 +866,7 @@ mod access {
         let button = new_task_button(&mut session);
         assert_ne!(
             button.props.get("enabled"),
-            Some(&tilo_app_window::Value::Int(0)),
+            Some(&tilo_app_window::Value::Bool(false)),
             "an editor's New task is offered in the window already open: {button:?}"
         );
         let answered = session.invoke_doing(

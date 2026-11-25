@@ -148,10 +148,7 @@ fn rows_done(view: &mut ViewInstance) -> Vec<bool> {
         let Some(item) = row.of_kind("ui.ListItem").first().copied() else {
             continue;
         };
-        out.push(matches!(
-            item.props.get("done"),
-            Some(Value::Bool(true) | Value::Int(1))
-        ));
+        out.push(matches!(item.props.get("done"), Some(Value::Bool(true))));
     }
     out
 }

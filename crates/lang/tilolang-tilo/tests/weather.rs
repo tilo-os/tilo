@@ -101,7 +101,7 @@ tilo_test_env::scenario! {
             .of_kind("ui.Button")
             .into_iter()
             // A declared action the view never placed stands behind the bar's own "…".
-            .filter(|button| !matches!(button.props.get("in_menu"), Some(Value::Int(n)) if *n != 0))
+            .filter(|button| button.props.get("in_menu") != Some(&Value::Bool(true)))
             .filter_map(label)
             .collect();
         for once in ["Add place", "Refresh", "Show first", "Delete place"] {

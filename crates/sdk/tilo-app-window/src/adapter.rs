@@ -499,10 +499,7 @@ fn bound<'a>(
 /// nothing (`navigates: false`), and answers the activation with its own event.
 fn presented(node: &UiNode, description: &Description) -> Option<ResourceRef> {
     if description.prop("navigates").is_some()
-        && matches!(
-            node.props.get("navigates"),
-            Some(Value::Bool(false) | Value::Int(0))
-        )
+        && matches!(node.props.get("navigates"), Some(Value::Bool(false)))
     {
         return None;
     }

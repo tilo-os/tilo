@@ -299,7 +299,6 @@ view chooser(p: Picking) {
         match node.props.get(prop) {
             None => unset,
             Some(Value::Bool(b)) => *b,
-            Some(Value::Int(i)) => *i != 0,
             Some(other) => panic!("{prop} is a flag, not {other:?}"),
         }
     }

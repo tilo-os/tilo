@@ -640,7 +640,7 @@ mod cases {
             assert!(
                 matches!(
                     fetched.props.get("past"),
-                    Some(Value::Bool(true) | Value::Int(1))
+                    Some(Value::Bool(true))
                 ),
                 "the fetched moment reads as past: {:?}",
                 dump(window.tree())

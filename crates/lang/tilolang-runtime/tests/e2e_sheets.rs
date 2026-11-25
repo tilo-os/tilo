@@ -369,7 +369,7 @@ view member_row(p: Member) {
         window.poll_patches().unwrap();
         let entry = of_kind(&bar_of(&window), "ui.TextInput")
             .into_iter()
-            .find(|field| field.props.get("autofocus") == Some(&Value::Int(1)))
+            .find(|field| field.props.get("autofocus") == Some(&Value::Bool(true)))
             .unwrap_or_else(|| panic!("the entry takes the keyboard:\n{}", dump(&bar)))
             .key
             .clone();

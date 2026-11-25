@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one range for all of them: the image serves
 # every version from `oldest` to `version`.
 name = "runtime"
-version = 50
+version = 51
 version_const = "crates/core/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 oldest_const = "crates/core/runtime-portal/src/lib.rs:OLDEST_RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"

@@ -767,6 +767,7 @@ impl Core {
                 self.set_prop(a.h(0)?, a.h(1)?, v)
             }
             Imp::UiPropI => self.set_prop(a.h(0)?, a.h(1)?, Value::Int(a.long(2)?)),
+            Imp::UiPropB => self.set_prop(a.h(0)?, a.h(1)?, Value::Bool(a.h(2)? != 0)),
             Imp::UiPropF => self.set_prop(a.h(0)?, a.h(1)?, Value::Float(a.float(2)?)),
             Imp::UiPropPic => {
                 let src = self.text(a.h(2)?)?;
@@ -891,7 +892,7 @@ impl Core {
             let at = vs.nodes.get_mut(node).ok_or("unknown ui node")?;
             at.events.insert(event, act);
             if let Some(reason) = unmet {
-                at.props.insert("enabled".to_owned(), Value::Int(0));
+                at.props.insert("enabled".to_owned(), Value::Bool(false));
                 at.props
                     .insert("description".to_owned(), Value::text(reason));
             }

@@ -343,10 +343,7 @@ fn a_channel_transcript_follows_its_end_and_offers_the_way_back_to_the_latest() 
         .first_of_kind("ui.VirtualList")
         .expect("a transcript");
     assert!(
-        matches!(
-            list.props.get("follow_end"),
-            Some(Value::Bool(true) | Value::Int(1))
-        ),
+        matches!(list.props.get("follow_end"), Some(Value::Bool(true))),
         "the transcript follows its end: {:?}",
         list.props.get("follow_end")
     );

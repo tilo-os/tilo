@@ -743,7 +743,7 @@ landlock = "strict"
 mode = "off"
 
 [sandbox.services]
-collab = "optional@50"
+collab = "optional@51"
 
 [entrypoint]
 bin = "app"

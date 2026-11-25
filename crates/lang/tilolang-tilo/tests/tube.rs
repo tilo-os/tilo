@@ -599,10 +599,7 @@ fn playing_a_video_is_the_shared_session_and_the_player_moves_it() {
     let mut page = ada.host.open_resource(&magnet, None).unwrap();
     let player = drawn(&mut page, "ui.VideoPlayer");
     assert!(
-        matches!(
-            player.props.get("playing"),
-            Some(Value::Bool(true) | Value::Int(1))
-        ),
+        matches!(player.props.get("playing"), Some(Value::Bool(true))),
         "the page's player plays what the session plays: {:?}",
         player.props.get("playing")
     );

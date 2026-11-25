@@ -2911,7 +2911,7 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
     let clear = button("Delete finished tasks");
     assert_eq!(
         clear.props.get("enabled"),
-        Some(&tilo_app_window::Value::Int(0)),
+        Some(&tilo_app_window::Value::Bool(false)),
         "nothing is finished, so Delete finished tasks is disabled"
     );
     assert_eq!(

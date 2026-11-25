@@ -273,7 +273,7 @@ view item(item: Todo) {
             assert_eq!(text_prop(&present(), "label"), "Check");
             w.check(vec![Value::resource(&w.item)]);
             assert_eq!(text_prop(&present(), "label"), "Uncheck");
-            assert_eq!(present().props["on"], Value::Int(1));
+            assert_eq!(present().props["on"], Value::Bool(true));
         }
 
         phase the_catalogue_shows_the_default;

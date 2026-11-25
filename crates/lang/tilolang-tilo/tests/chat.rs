@@ -614,7 +614,7 @@ tilo_test_env::scenario! {
             labels
                 .iter()
                 .any(|(label, destructive)| label == &Some(Value::text("Delete"))
-                    && destructive == &Some(Value::Int(1))),
+                    && destructive == &Some(Value::Bool(true))),
             "Delete is a destructive item of the message's menu: {labels:?}"
         );
         let offered = ada

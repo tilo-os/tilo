@@ -106,12 +106,8 @@ pub(super) fn shortcut_action_where(
 
 fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {
     // A control that cannot be pressed now does not answer its key either: a click on it does
-    // nothing. `enabled` reaches the window as a flag (surfaces) or as the 0 a view's Bool prop
-    // travels as.
-    let disabled = matches!(
-        node.props.get("enabled"),
-        Some(Value::Bool(false) | Value::Int(0))
-    );
+    // nothing.
+    let disabled = node.props.contains_key("enabled") && !crate::reconcile::flag(node, "enabled");
     if disabled {
         return None;
     }

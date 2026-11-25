@@ -70,10 +70,10 @@ use Imp::{
     TimeShift, TimeSpan, TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps,
     ToolOpenLink, ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
     TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
-    UiBindState, UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
-    Unreadable, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode, VersionChange, VersionEnd,
-    Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost, WebPostBytes,
-    WebStatus, WebStatusText, WebText, WindowState, Withdraw, Word, Zones,
+    UiBindState, UiBindStateAt, UiChild, UiNode, UiOn, UiPropB, UiPropF, UiPropH, UiPropI,
+    UiPropPic, Unreadable, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode, VersionChange,
+    VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost,
+    WebPostBytes, WebStatus, WebStatusText, WebText, WindowState, Withdraw, Word, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -744,12 +744,12 @@ impl Core {
                 self.engine_import(imp, a)
             }
             VaultCode => self.vault_import(a),
-            UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
-            | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | UiBindStateAt
-            | StateGet | StateAt | ArgAt | ActSet | ActThen | ActAnswer | ActMadeFrom | ActMany
-            | ActOpen | ActUndo | ChangeView | UiActions | UiAction | ActChoose
-            | ActChooseFolder | ActSave | ActBlur | ActCall | ActCallInput | ActCallVolume
-            | ActRunLine => self.ui_import(imp, a),
+            UiNode | UiPropH | UiPropI | UiPropB | UiPropF | UiPropPic | UiChild | UiBind
+            | UiBindBegin | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState
+            | UiBindStateAt | StateGet | StateAt | ArgAt | ActSet | ActThen | ActAnswer
+            | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView | UiActions | UiAction
+            | ActChoose | ActChooseFolder | ActSave | ActBlur | ActCall | ActCallInput
+            | ActCallVolume | ActRunLine => self.ui_import(imp, a),
             EventValue | EventPart | EventPress | Actions | Lenses | CallMembers | CallInputs
             | Invoked | LinesRun | Delivery | Reach | MetaOf | Versions | VersionChange | Links
             | RunChanges | Unreadable | Unseen | FirstUnseen | SeenBy | Mentions | Steps

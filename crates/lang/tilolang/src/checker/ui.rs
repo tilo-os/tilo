@@ -7,7 +7,7 @@ use super::{Checker, Ctx, Ex, StateRef, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
-use crate::ir::{self, Conv, Ek, LocalId, Stmt};
+use crate::ir::{self, Ek, LocalId, Stmt};
 use crate::prims::{self, Prim};
 use crate::resolve::{CKind, Callable, TypeInfo};
 use crate::types::Ty;
@@ -852,9 +852,9 @@ impl Checker<'_> {
                 )));
             }
             ExprKind::Ident(name) => {
-                let on = Ex::new(Ek::Int(1), Ty::Int);
+                let on = Ex::new(Ek::Bool(true), Ty::Bool);
                 self.emit(Stmt::Eval(Ex::host(
-                    Imp::UiPropI,
+                    Imp::UiPropB,
                     vec![node, Ex::str(name), on],
                     Ty::Unit,
                 )));
@@ -1153,6 +1153,15 @@ impl Checker<'_> {
         };
         match &v.ty {
             Ty::Error => {}
+            // A flag reaches the window as a flag, so a prop that is one reads as `true`, not as
+            // the 1 it is in wasm.
+            Ty::Bool => {
+                self.emit(Stmt::Eval(Ex::host(
+                    Imp::UiPropB,
+                    vec![node, Ex::str(name), v],
+                    Ty::Unit,
+                )));
+            }
             Ty::Length(u) => {
                 let prop = format!("{name}.{}", u.text());
                 self.emit(Stmt::Eval(Ex::host(
@@ -1352,8 +1361,12 @@ impl Checker<'_> {
             .is_some_and(|named| named.id == f.id);
         if titled && named && f.ty == Ty::Text {
             self.emit(Stmt::Eval(Ex::host(
-                Imp::UiPropI,
-                vec![node.clone(), Ex::str("title"), Ex::int(1)],
+                Imp::UiPropB,
+                vec![
+                    node.clone(),
+                    Ex::str("title"),
+                    Ex::new(Ek::Bool(true), Ty::Bool),
+                ],
                 Ty::Unit,
             )));
         }
@@ -1481,14 +1494,10 @@ impl Checker<'_> {
     pub(super) fn arg_prop(&mut self, node: Ex, name: &str, v: Ex) {
         let imp = match v.ty.abi_repr() {
             None => return,
-            Some(crate::types::Repr::I64 | crate::types::Repr::Bool) => Imp::UiPropI,
+            Some(crate::types::Repr::I64) => Imp::UiPropI,
+            Some(crate::types::Repr::Bool) => Imp::UiPropB,
             Some(crate::types::Repr::F64) => Imp::UiPropF,
             Some(crate::types::Repr::Handle) => Imp::UiPropH,
-        };
-        let v = if v.ty == Ty::Bool {
-            conv(Some(Conv::BoolToInt), v, Ty::Int)
-        } else {
-            v
         };
         self.emit(Stmt::Eval(Ex::host(
             imp,

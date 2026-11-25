@@ -1090,11 +1090,11 @@ impl Checker<'_> {
         // it stands.
         if opens {
             self.emit(host(
-                Imp::UiPropI,
+                Imp::UiPropB,
                 vec![
                     Ex::local(n, Ty::View),
                     Ex::str(crate::toolkit::OPENS_PROP),
-                    Ex::int(1),
+                    Ex::new(crate::ir::Ek::Bool(true), Ty::Bool),
                 ],
             ));
         }

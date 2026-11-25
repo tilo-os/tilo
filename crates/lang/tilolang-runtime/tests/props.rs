@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, EngineKind, Runtime, SimpleAuthority, Value};
 
     const SOURCE: &str = r#"app so.tilo.talk "Talk"
 
@@ -136,4 +136,124 @@ view post(p: Post) {
     ui.Reactions(reactions: p.reactions)
 }
 "#;
+
+    const FLAGS: &str = r#"app so.tilo.flags "Flags"
+
+type Board {
+    zoom: Int
+}
+
+action set_zoom(b: Board, zoom: Int) {
+    b.zoom = zoom
+}
+
+view small_row(title: Text, smaller: Bool) {
+    ui.ListRow(title: title, dense: smaller)
+}
+
+view board(b: Board) {
+    small_row("Row", b.zoom == 2)
+    ui.Button("Toggled", toggled: b.zoom == 2)
+    ui.Text("Lines", lines: 3)
+}
+"#;
+
+    /// A flag reads as a flag on every tier: a comparison's answer, and a `Bool` parameter's value
+    /// handed on, reach a prop as `true` or `false`, never as the 1 the guest computes it as.
+    #[test]
+    fn a_flag_prop_reads_as_a_flag_on_every_tier() {
+        // The tiered process checks both legs; a process pinned to one engine through
+        // `TILOLANG_ENGINE` runs its own, and takes the compiled artifact only where it can.
+        let engine = Runtime::new(AmStore::new(), SimpleAuthority::new())
+            .unwrap()
+            .engine()
+            .kind();
+        let legs: &[(bool, EngineKind)] = match engine {
+            EngineKind::Tiered => &[(false, EngineKind::Wasmi), (true, EngineKind::Cranelift)],
+            EngineKind::Wasmi => &[(false, EngineKind::Wasmi)],
+            EngineKind::Cranelift => &[(true, EngineKind::Cranelift)],
+            EngineKind::Winch => &[(false, EngineKind::Winch)],
+        };
+        for &(compiled, tier) in legs {
+            // Each leg loads a module of its own, so the adopted artifact of the compiled leg
+            // is not the interpreter's module already loaded under the same digest.
+            let src = FLAGS.replacen(
+                "so.tilo.flags",
+                if compiled {
+                    "so.tilo.flags.compiled"
+                } else {
+                    "so.tilo.flags"
+                },
+                1,
+            );
+            let app = App::compile(&src, &[]);
+            if compiled {
+                crate::common::adopt_compiled(&app.compiled.wasm);
+            }
+            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            app.load(&rt);
+            let hash = Runtime::module_hash(&app.compiled.wasm);
+            assert_eq!(
+                rt.engine().tier(&hash),
+                Some(tier),
+                "the module runs on the {tier:?} tier"
+            );
+
+            let b = rt.create("Board").unwrap();
+            let zoom = |zoom: i64| {
+                rt.invoke_action(
+                    &me(),
+                    (
+                        app.action("set_zoom").as_str(),
+                        vec![Value::resource(&b), Value::Int(zoom)],
+                    ),
+                )
+                .unwrap();
+            };
+            let flags = || {
+                let view = rt
+                    .open_view(&me(), &app.view("board"), vec![Value::resource(&b)])
+                    .unwrap();
+                let tree = view.tree();
+                let dense = of_kind(tree, "ui.ListRow")[0].props.get("dense").cloned();
+                let toggled = of_kind(tree, "ui.Button")
+                    .into_iter()
+                    .find(|b| b.props.get("label") == Some(&Value::text("Toggled")))
+                    .unwrap_or_else(|| panic!("the toggled button: {}", dump(tree)))
+                    .props
+                    .get("toggled")
+                    .cloned();
+                // A number still crosses as a number: the flag's own path did not take
+                // the integer props with it.
+                let lines = of_kind(tree, "ui.Text")
+                    .into_iter()
+                    .find(|t| t.props.get("value") == Some(&Value::text("Lines")))
+                    .unwrap_or_else(|| panic!("the numbered text: {}", dump(tree)))
+                    .props
+                    .get("lines")
+                    .cloned();
+                (dense, toggled, lines)
+            };
+            zoom(2);
+            assert_eq!(
+                flags(),
+                (
+                    Some(Value::Bool(true)),
+                    Some(Value::Bool(true)),
+                    Some(Value::Int(3))
+                ),
+                "both flags are true, and the number is a number, on {tier:?}"
+            );
+            zoom(1);
+            assert_eq!(
+                flags(),
+                (
+                    Some(Value::Bool(false)),
+                    Some(Value::Bool(false)),
+                    Some(Value::Int(3))
+                ),
+                "both flags are false, and the number is a number, on {tier:?}"
+            );
+        }
+    }
 }

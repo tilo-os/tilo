@@ -1495,12 +1495,7 @@ mod cases {
         let mut w = s.place_view("week");
         let entry = of_kind(w.tree(), "ui.TextInput")
             .into_iter()
-            .find(|field| {
-                matches!(
-                    field.props.get("entry"),
-                    Some(Value::Int(1) | Value::Bool(true))
-                )
-            })
+            .find(|field| matches!(field.props.get("entry"), Some(Value::Bool(true))))
             .unwrap_or_else(|| panic!("the week ends in its entry: {}", dump(w.tree())))
             .key
             .clone();

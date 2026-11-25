@@ -679,7 +679,7 @@ mod cases {
                 .find(|node| text(node, "label") == label)
                 .unwrap_or_else(|| panic!("no `{label}` property in:\n{}", dump(window.tree())));
             assert!(
-                matches!(property.props.get("copyable"), Some(Value::Int(1))),
+                property.props.get("copyable") == Some(&Value::Bool(true)),
                 "`{label}` copies: {:?}",
                 property.props.get("copyable")
             );

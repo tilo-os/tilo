@@ -256,6 +256,7 @@ imports! {
     (UiNode, "ui_node", "ii", "i"),
     (UiPropH, "ui_prop_h", "iii", ""),
     (UiPropI, "ui_prop_i", "iil", ""),
+    (UiPropB, "ui_prop_b", "iii", ""),
     (UiPropF, "ui_prop_f", "iif", ""),
     (UiPropPic, "ui_prop_picture", "iii", ""),
     (UiChild, "ui_child", "ii", ""),
