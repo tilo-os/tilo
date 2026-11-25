@@ -197,7 +197,7 @@ fn person(hex_key: &str) -> Result<[u8; 32], CollaborationError> {
 /// Whether `hosted` lists a device of `person`'s own now: one of the person's
 /// devices, never a key acting for them nor a device that serves the workspace.
 fn has_device_of(hosted: &HostedWorkspace, person: [u8; 32]) -> bool {
-    // One read of the workspace, held across the row it reads: its peer is not locked twice.
+    // One read of the workspace, kept across the row it reads: its peer is not locked twice.
     let peer = hosted.peer();
     let keeping: BTreeSet<[u8; 32]> = peer
         .governance()
@@ -217,7 +217,7 @@ fn has_device_of(hosted: &HostedWorkspace, person: [u8; 32]) -> bool {
         .map(|cert| cert.device_public_key)
         .collect();
     peer.governance()
-        .governed_members(tilo_clock::wall())
+        .member_list(tilo_clock::wall())
         .is_ok_and(|members| {
             members
                 .devices
@@ -657,30 +657,28 @@ impl Workspaces {
         entries
     }
 
-    /// Let the person `join` names into the public workspace `workspace`: an
-    /// invitation only they can redeem, and the token of a pre-admission at
-    /// the listing's default role, under the owner's entry. The entry answers
-    /// them with an invitation, or with a [`tilo_server_protocol::directory::EntryRefused`].
+    /// Let the person `join` names into the public workspace `workspace`: the
+    /// entry answers them with an invitation only they can redeem, or with a
+    /// [`tilo_server_protocol::directory::EntryRefused`].
     ///
     /// A workspace whose entry takes people by invitation answers its entry only
-    /// to a person it has in it (joining again from another device of theirs),
-    /// one an invitation still names
+    /// to a person with a device already in it (joining again from another
+    /// device of theirs), one an invitation still names
     /// [`PendingInvitation::recipient_user_public_key`], or one it declared a
     /// member before their device arrived. Everyone else is turned away with
     /// the entry's own words.
     ///
-    /// Someone the workspace has in it is let in at the part they hold there,
-    /// never the listing's default: their device's redemption writes the
-    /// invitation's part as theirs, and an entry that handed them another would
-    /// change it. A device of theirs that enters on its session is admitted as
-    /// theirs before it would ask this entry at all.
+    /// The entry admits strangers: a person with a device already in it is told
+    /// to add another from that device, and a device of theirs that enters on
+    /// its session is admitted as theirs before it would ask this entry at all.
     ///
-    /// For a person an invitation still names, the entry answers with that
-    /// invitation, and records a grant for it at once so the page that made
-    /// the join redeems it the way every page redeems an entry's answer: its
-    /// token is the one the entry hands back. The invitation itself is the
-    /// decision — its role and lifetime are the inviter's — and the entry
-    /// mints nothing.
+    /// Someone the workspace declared, or an invitation it still holds for them,
+    /// is answered with an invitation at the part they hold there, never the
+    /// listing's default: their device's redemption writes the invitation's part
+    /// as theirs, and an entry that handed them another would change it. An
+    /// invitation a member made is the decision, and the entry never changes its
+    /// role or lifetime; for a person the workspace declared itself, it issues
+    /// one at their part, so the declaration is what lets their device in.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the workspace is held while the invitation is written: a change between the two would hand out a role the workspace no longer has"
@@ -731,10 +729,6 @@ impl Workspaces {
             // declared them here.
             if entry.invitation_only && part.is_none() {
                 let Some(issued) = hosted.invitation_for(user, now) else {
-                    return Err(EntryRefusal::InvitationOnly);
-                };
-                return Ok(Listed::Invited(issued));
-            }
                     return Err(EntryRefusal::InvitationOnly);
                 };
                 return Ok(Listed::Invited(issued));
@@ -1598,10 +1592,24 @@ pub(crate) mod entry_tests {
                 .removed_within_the_day(&workspace, guest.user_public_key)
                 .await
         );
+        // Holding them again lifts the removal: the person is listed once more,
+        // and the device they came in with is one the workspace has in it.
+        let summary = workspaces.summary(&workspace).await.unwrap();
+        assert!(
+            summary
+                .devices
+                .get(&tilo_action_policy::MemberId::person(hex::encode(
+                    guest.user_public_key
+                )))
+                .is_some_and(|devices| devices.contains(&guest.device_public_key)),
+            "the device they came in with is the workspace's again"
+        );
+        // The entry admits strangers: a person whose device is in is told to
+        // add another from it, and this one needs nothing.
         let reply = walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest)).await;
         assert!(
-            matches!(reply, Ok(JoinReply::Admitted { .. })),
-            "an administrator holding them again lets their device in: {reply:?}"
+            matches!(&reply, Err(said) if said.contains("as one of yours") && said.contains("already in")),
+            "the entry answers them as a member: {reply:?}"
         );
 
         an_invitation_is_let_in(workspaces, &workspace, &owner, &guest, &guest_key, &join).await;
