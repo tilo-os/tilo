@@ -13,6 +13,8 @@ use ui::presence::{CursorChats, PeerCursor, PlacedPointer, PresenceCtx};
 use ui::time::Instant;
 use ui::tokens::EffectiveMotion;
 
+use crate::layout::Busy;
+
 /// Keep drawing this long after the newest pointer was heard, so it eases to rest instead of
 /// stopping mid-move.
 const SETTLE_MS: f64 = 250.0;
@@ -160,11 +162,33 @@ pub struct Owed {
     pub tell: Option<(String, Option<MemberId>)>,
 }
 
+/// A press, as judging what the view follows needs it: while it is down it may still turn out to be
+/// about the following, and the ask its release carries reaches the session a pass or so after the
+/// press ended, so what an ended press said is judged after that ask has had time to arrive.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Press {
+    #[default]
+    Idle,
+    Down,
+    Ended,
+}
+
+/// How many passes an ended press waits for the ask its release carries to reach the session before
+/// it counts as the person working. The shell's press and the action it names travel to this session
+/// over a connection served once a pass, and a couple of passes of slack costs nothing the person
+/// can see.
+const PRESS_ASK_PASSES: u8 = 8;
+
 /// A view's following of one person, across passes.
 #[derive(Debug, Default)]
 pub struct Follow {
     followed: Option<String>,
     brought: Option<Target>,
+    /// A press that has not said yet what it is: a press may be about the following itself (the
+    /// chip that opens the followed person's card), and only what it says does the person's work.
+    pressed: Press,
+    /// Passes since that press ended, while it waits for what it said.
+    waited: u8,
     /// Whom the workspace's apps were told this view follows (`None`: nobody), and in which
     /// workspace: only a change is told again.
     told: Option<(String, MemberId)>,
@@ -186,6 +210,8 @@ impl Follow {
         }
         self.followed = id;
         self.brought = None;
+        self.pressed = Press::Idle;
+        self.waited = 0;
         true
     }
 
@@ -197,23 +223,64 @@ impl Follow {
 
     /// What following owes this pass, from the person's own word (`followed`): where the view goes
     /// as `places` has everyone here (`member` is who they follow, as the apps name them), and whom
-    /// the apps of `workspace` are to hear. `working` says the person is doing something of their
-    /// own, which takes their view back, except the press that asked to follow (`follow_asked`);
-    /// that press owes nothing yet. `None` where the pass owes nothing, and the press' ask stands.
+    /// the apps of `workspace` are to hear. `busy` says the person is doing something of their own,
+    /// which takes their view back — typing now, a press when it ends, since a press may be about
+    /// the following itself (the chip that opens the followed person's card) and the ask that says
+    /// so (`follow_asked`) arrives with its release. That ask, and the press that asked to follow,
+    /// keep the view they follow. `None` where the pass owes nothing, and the press' ask stands.
     pub fn owe(
         &mut self,
         followed: Option<String>,
-        working: bool,
+        busy: Busy,
         follow_asked: bool,
         places: &[Place<'_>],
         member: Option<MemberId>,
         workspace: &str,
     ) -> Option<Owed> {
-        if working {
+        let worked = if busy.holds() {
             if follow_asked {
+                // The press asked to follow, or to look at the person followed: it keeps the view
+                // through its own press.
+                self.pressed = Press::Idle;
                 return None;
             }
-            self.follow(None);
+            if busy.typing {
+                // Typing is work a press cannot take back: their view comes back now.
+                self.pressed = Press::Idle;
+                true
+            } else {
+                // A press may still turn out to be about the following: what it does is judged
+                // when it ends, with the ask its release carries.
+                self.pressed = Press::Down;
+                return None;
+            }
+        } else if follow_asked {
+            // The press said it was about the following, with its release: the view it follows
+            // stands.
+            self.pressed = Press::Idle;
+            false
+        } else {
+            match self.pressed {
+                // The press ended, and what it said comes with its release, which the shell carries
+                // back to this session a pass or so later.
+                Press::Down => {
+                    self.pressed = Press::Ended;
+                    self.waited = 0;
+                    return None;
+                }
+                Press::Ended => {
+                    self.waited = self.waited.saturating_add(1);
+                    if self.waited < PRESS_ASK_PASSES {
+                        return None;
+                    }
+                    self.pressed = Press::Idle;
+                    true
+                }
+                Press::Idle => false,
+            }
+        };
+        if worked && self.followed.take().is_some() {
+            self.brought = None;
             return Some(Owed {
                 step: Step::Rest,
                 ended: true,
@@ -511,24 +578,38 @@ mod tests {
         let here = [place("ada", Some(7), None), place("cy", Some(9), None)];
         let ada = Some(member("ada-person"));
         let owed = follow
-            .owe(Some("ada".into()), false, false, &here, ada.clone(), "work")
+            .owe(
+                Some("ada".into()),
+                Busy::default(),
+                false,
+                &here,
+                ada.clone(),
+                "work",
+            )
             .expect("the pass owes following");
         assert_eq!(owed.step, Step::Bring(Target::Window(7)));
         assert_eq!(owed.tell, Some(("work".into(), ada.clone())));
         assert!(!owed.ended);
         let again = follow
-            .owe(Some("ada".into()), false, false, &here, ada, "work")
+            .owe(
+                Some("ada".into()),
+                Busy::default(),
+                false,
+                &here,
+                ada,
+                "work",
+            )
             .expect("the pass owes following");
         assert_eq!(again.step, Step::Rest);
         assert_eq!(again.tell, None, "the apps were told, and nothing moved");
         let stopped = follow
-            .owe(None, false, false, &here, None, "work")
+            .owe(None, Busy::default(), false, &here, None, "work")
             .expect("stopping is owed");
         assert_eq!(stopped.tell, Some(("work".into(), None)));
         assert!(!stopped.ended, "the person's own word ended it");
         assert_eq!(
             follow
-                .owe(None, false, false, &here, None, "work")
+                .owe(None, Busy::default(), false, &here, None, "work")
                 .map(|owed| owed.tell),
             Some(None),
             "nothing more is told"
@@ -542,18 +623,144 @@ mod tests {
         let mut follow = Follow::default();
         let here = [place("ada", Some(7), None)];
         let ada = Some(member("ada-person"));
-        follow.owe(Some("ada".into()), false, false, &here, ada, "work");
+        follow.owe(
+            Some("ada".into()),
+            Busy::default(),
+            false,
+            &here,
+            ada,
+            "work",
+        );
         assert_eq!(
-            follow.owe(Some("ada".into()), true, true, &here, None, "work"),
+            follow.owe(
+                Some("ada".into()),
+                Busy {
+                    gesture: true,
+                    typing: false
+                },
+                true,
+                &here,
+                None,
+                "work",
+            ),
             None,
             "the press that asked is still in flight"
         );
         let ended = follow
-            .owe(Some("ada".into()), true, false, &here, None, "work")
+            .owe(
+                Some("ada".into()),
+                Busy {
+                    gesture: false,
+                    typing: true,
+                },
+                false,
+                &here,
+                None,
+                "work",
+            )
             .expect("their work ends following");
         assert!(ended.ended);
         assert_eq!(ended.step, Step::Rest);
         assert_eq!(ended.tell, Some(("work".into(), None)));
+    }
+
+    /// A press is judged when it ends, not when it goes down: a press that turns out to be about
+    /// the following (the chip that opens the followed person's card) says so with its release,
+    /// and the view it follows stands; one that says nothing else is the person working, and their
+    /// view comes back as the press ends.
+    #[test]
+    fn a_press_takes_the_view_back_when_it_ends_unless_it_asked_to_keep_it() {
+        let mut follow = Follow::default();
+        let here = [place("ada", Some(7), None)];
+        let ada = Some(member("ada-person"));
+        let down = Busy {
+            gesture: true,
+            typing: false,
+        };
+        follow.owe(
+            Some("ada".into()),
+            Busy::default(),
+            false,
+            &here,
+            ada.clone(),
+            "work",
+        );
+        assert_eq!(
+            follow.owe(Some("ada".into()), down, false, &here, None, "work"),
+            None,
+            "a press may still name the following"
+        );
+        // Its release asks to look at the person followed: the view they follow stands.
+        let kept = follow
+            .owe(
+                Some("ada".into()),
+                Busy::default(),
+                true,
+                &here,
+                None,
+                "work",
+            )
+            .expect("the pass owes the view kept");
+        assert!(!kept.ended, "the press kept the view it follows");
+        assert_eq!(follow.followed(), Some("ada"));
+        let after = follow
+            .owe(
+                Some("ada".into()),
+                Busy::default(),
+                false,
+                &here,
+                ada,
+                "work",
+            )
+            .expect("the pass owes their view");
+        assert!(!after.ended);
+        assert_eq!(after.step, Step::Rest, "their place was brought already");
+
+        // Another press says nothing about it: the view comes back as the press ends.
+        let mut follow = Follow::default();
+        follow.owe(
+            Some("ada".into()),
+            Busy::default(),
+            false,
+            &here,
+            Some(member("ada-person")),
+            "work",
+        );
+        assert_eq!(
+            follow.owe(Some("ada".into()), down, false, &here, None, "work"),
+            None,
+            "a press that may yet name the following owes nothing"
+        );
+        // Its release says nothing about the following: the press waits as many passes as the ask
+        // its release may still be carried in, and is the person working when none comes.
+        for pass in 0..PRESS_ASK_PASSES {
+            assert_eq!(
+                follow.owe(
+                    Some("ada".into()),
+                    Busy::default(),
+                    false,
+                    &here,
+                    None,
+                    "work"
+                ),
+                None,
+                "the pass {pass} the press ended in says nothing yet"
+            );
+        }
+        let ended = follow
+            .owe(
+                Some("ada".into()),
+                Busy::default(),
+                false,
+                &here,
+                None,
+                "work",
+            )
+            .expect("the press that ended was the person working");
+        assert!(ended.ended);
+        assert_eq!(ended.step, Step::Rest);
+        assert_eq!(ended.tell, Some(("work".into(), None)));
+        assert_eq!(follow.followed(), None, "the press was the person working");
     }
 
     /// Following someone who left ends it, and the workspace the apps were told in hears that.
