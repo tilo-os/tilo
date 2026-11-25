@@ -2053,7 +2053,7 @@ fn disable_unavailable(node: &mut crate::a11y::AccessNode, shared: &NavShared) {
     }
 }
 
-impl crate::widget::decorator::concrete::Decorator for NavList {
+impl crate::widget::identity::concrete::Decorator for NavList {
     type Inner = VirtualList<NavModel>;
 
     fn inner(&self) -> &Self::Inner {
@@ -2247,7 +2247,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        crate::widget::decorator::concrete::Decorator::accessibility_shared(self)
+        crate::widget::identity::concrete::Decorator::accessibility_shared(self)
             .map(crate::a11y::SharedAccessNode::into_owned)
     }
 

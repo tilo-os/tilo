@@ -1,7 +1,7 @@
 //! A view that answers the window bar's search: the query view of an app whose view is a function
 //! of its resource.
 use crate::widget::capability::{Request, RequestMut};
-use crate::widget::decorator::concrete;
+use crate::widget::identity::concrete;
 use crate::widget::search_field::FilterCount;
 use crate::widget::{Element, Widget};
 

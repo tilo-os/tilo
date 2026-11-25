@@ -875,8 +875,8 @@ impl super::Decorator for ContextMenuArea {
     crate::provides!(
         dyn super::ResourceOperations,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::decorator::Decorated,
-        dyn crate::widget::decorator::DecoratedMut;
+        dyn crate::widget::Decorated,
+        dyn crate::widget::DecoratedMut;
         inner = content
     );
 
@@ -977,7 +977,7 @@ impl super::Decorator for ContextMenuArea {
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         let node = self.content.build_layout(taffy, theme, node_map);
-        super::decorator::register_node(node_map, node, self);
+        super::register_node(node_map, node, self);
         node
     }
 

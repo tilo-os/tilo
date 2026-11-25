@@ -2,7 +2,7 @@
 
 use super::Widget;
 use super::capability::{capability, capability_mut};
-use super::decorator::{Decorated, DecoratedMut};
+use super::{Decorated, DecoratedMut};
 
 /// The first widget of `root`'s subtree, `root` included, that is a `T`, to
 /// change: a view or a page wraps the widget it places (a row's swipe around

@@ -1268,7 +1268,7 @@ impl crate::widget::Decorator for ViewportContent {
                 ..Default::default()
             },
         );
-        crate::widget::decorator::register_node(nodes, node, self);
+        crate::widget::register_node(nodes, node, self);
         node
     }
 

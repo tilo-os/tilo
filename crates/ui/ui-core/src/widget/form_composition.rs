@@ -272,7 +272,7 @@ impl FormSection {
         const DEPTH: usize = 6;
         fn each(widget: &mut dyn Widget, depth: usize, f: &mut dyn FnMut(&mut FormSection)) {
             use super::capability::{capability, capability_mut};
-            use super::decorator::{Decorated, DecoratedMut};
+            use super::{Decorated, DecoratedMut};
             // A wrapper (a language view's pane round the form it shows) answers as itself, and
             // its children are its inner widget's: the form it wraps is reached through it.
             if capability::<dyn Decorated>(widget).is_some() {

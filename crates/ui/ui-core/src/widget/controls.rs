@@ -205,9 +205,9 @@ pub(crate) fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBi
 
 /// What the widget a decorator wraps binds, for a decorator that stands for one: a decorator's
 /// inner widget is no child of it, and a decorator that keeps its inner widget out of the tree
-/// answers no [`Decorated`](crate::widget::decorator::Decorated).
+/// answers no [`Decorated`](crate::widget::Decorated).
 fn decorated_bindings(widget: &(impl Widget + ?Sized)) -> Option<Vec<ControlBindingMetadata>> {
-    capability::<dyn crate::widget::decorator::Decorated>(widget)
+    capability::<dyn crate::widget::Decorated>(widget)
         .and_then(|decorated| capability::<dyn ActionControls>(decorated.decorated()))
         .map(ActionControls::control_action_bindings)
 }
@@ -379,7 +379,7 @@ pub fn action_control_bindings(widget: &dyn Widget) -> Vec<ControlBindingMetadat
 /// — no child of it, but met in its place.
 pub fn children_action_control_bindings(widget: &dyn Widget) -> Vec<ControlBindingMetadata> {
     let mut bindings = Vec::new();
-    if let Some(inner) = capability::<dyn crate::widget::decorator::Decorated>(widget)
+    if let Some(inner) = capability::<dyn crate::widget::Decorated>(widget)
         && let Some(controls) = capability::<dyn ActionControls>(inner.decorated())
     {
         bindings.extend(controls.action_control_bindings());
@@ -408,7 +408,7 @@ pub fn has_action_control_bindings(widget: &dyn Widget) -> bool {
 /// Whether any of `widget`'s exposed children contain controls consuming action availability; the
 /// counterpart of [`children_action_control_bindings`].
 pub fn children_have_action_control_bindings(widget: &dyn Widget) -> bool {
-    if capability::<dyn crate::widget::decorator::Decorated>(widget)
+    if capability::<dyn crate::widget::Decorated>(widget)
         .and_then(|inner| capability::<dyn ActionControls>(inner.decorated()))
         .is_some_and(ActionControls::has_action_control_bindings)
     {

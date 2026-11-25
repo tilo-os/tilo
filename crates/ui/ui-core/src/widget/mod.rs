@@ -1484,9 +1484,8 @@ pub mod document_effects;
 pub mod document_offers;
 pub mod identity;
 pub use crate::pen::PenSample;
-pub use decorator::Decorator;
 pub use document_offers::{DocumentOffer, PaintedOffers};
-pub use identity::Identified;
+pub use identity::{Decorated, DecoratedMut, Decorator, Identified, register_node};
 
 pub(crate) mod layout;
 mod offered;

@@ -948,7 +948,7 @@ fn header_history_control_opens_the_registered_history() {
 #[test]
 fn opening_history_lays_the_shell_out_at_its_narrower_width() {
     use crate::icons::Icon;
-    use crate::widget::decorator::Decorator;
+    use crate::widget::Decorator;
     struct Probe(Button, Rc<Cell<Rect>>);
     impl Decorator for Probe {
         type Inner = Button;

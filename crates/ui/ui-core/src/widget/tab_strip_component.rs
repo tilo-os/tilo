@@ -312,7 +312,7 @@ pub struct TabStrip {
     tabs: Tabs,
 }
 
-impl crate::widget::decorator::concrete::Decorator for TabStrip {
+impl crate::widget::identity::concrete::Decorator for TabStrip {
     type Inner = TabBar;
 
     fn inner(&self) -> &TabBar {

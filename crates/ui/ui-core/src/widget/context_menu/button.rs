@@ -157,7 +157,7 @@ impl crate::widget::Decorator for MenuButton {
         let node = Widget::build_layout(&mut self.button, taffy, theme, node_map);
         // Focus and keyboard activation reach the menu button, not the
         // button inside it.
-        crate::widget::decorator::register_node(node_map, node, self);
+        crate::widget::register_node(node_map, node, self);
         node
     }
 

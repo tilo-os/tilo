@@ -12,9 +12,9 @@ use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, Resourc
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::capability::SearchSource;
 use ui_core::view::ThawError;
+use ui_core::widget::Decorated;
 use ui_core::widget::capability::{Request, RequestMut};
 use ui_core::widget::controls::{ActionControls, AttributedControlInvocation};
-use ui_core::widget::decorator::Decorated;
 use ui_core::widget::empty_state::PaintedEmptyStates;
 use ui_core::widget::resources::PublishesResources;
 use ui_core::widget::{AppKind, AppModel, AppWidget, Decorator, IconDescriptor, ModelPath, Widget};

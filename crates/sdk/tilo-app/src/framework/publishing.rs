@@ -305,8 +305,8 @@ impl Decorator for Publishing {
 
     ui_core::provides!(
         dyn SurfacePublication,
-        dyn ui_core::widget::decorator::Decorated,
-        dyn ui_core::widget::decorator::DecoratedMut;
+        dyn ui_core::widget::Decorated,
+        dyn ui_core::widget::DecoratedMut;
         inner = content
     );
 

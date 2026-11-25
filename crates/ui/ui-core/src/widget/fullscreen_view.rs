@@ -20,7 +20,7 @@ use crate::fullscreen::{FullscreenRequest, FullscreenTarget};
 use crate::motion::{Presence, Transient};
 use crate::theme::Theme;
 use crate::tokens::MotionSource;
-use crate::widget::decorator::concrete::Decorator;
+use crate::widget::identity::concrete::Decorator;
 use crate::widget::{
     Button, ButtonRole, ControlSize, DrawChild, Element, EventCtx, FullscreenProvider,
     TaffyTreeExt, Widget, layout_rect,

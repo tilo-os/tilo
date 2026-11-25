@@ -13,7 +13,7 @@ use crate::motion::{Drill, DrillDepth, Pose};
 use crate::theme::Theme;
 use crate::tokens::MotionSource;
 use crate::widget::DrawChild;
-use crate::widget::decorator::concrete::Decorator;
+use crate::widget::identity::concrete::Decorator;
 use crate::widget::{Element, Placement, layout_rect};
 
 /// The identity a slide built by [`PageSlide::new`] leaves its motion under: one page part in

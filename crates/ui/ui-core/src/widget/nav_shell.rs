@@ -2962,7 +2962,7 @@ impl Widget for NavShell {
             && let Some(sidebar) = &self.sidebar
         {
             sidebar.provide(request);
-        } else if !request.wants::<dyn crate::widget::decorator::Decorated>() {
+        } else if !request.wants::<dyn crate::widget::Decorated>() {
             self.content.provide(request);
         }
     }
@@ -2981,7 +2981,7 @@ impl Widget for NavShell {
             && let Some(sidebar) = &mut self.sidebar
         {
             sidebar.provide_mut(request);
-        } else if !request.wants::<dyn crate::widget::decorator::Decorated>() {
+        } else if !request.wants::<dyn crate::widget::Decorated>() {
             self.content.provide_mut(request);
         }
     }
@@ -3677,7 +3677,7 @@ fn button_of(action: &dyn Widget) -> Option<&Button> {
         return Some(button);
     }
     if let Some(inner) =
-        crate::widget::capability::capability::<dyn crate::widget::decorator::Decorated>(action)
+        crate::widget::capability::capability::<dyn crate::widget::Decorated>(action)
     {
         return button_of(inner.decorated());
     }
@@ -3716,9 +3716,8 @@ fn button_mut(action: &mut dyn Widget) -> Option<*mut Button> {
     {
         return Some(std::ptr::from_mut(button));
     }
-    if let Some(inner) = crate::widget::capability::capability_mut::<
-        dyn crate::widget::decorator::DecoratedMut,
-    >(action)
+    if let Some(inner) =
+        crate::widget::capability::capability_mut::<dyn crate::widget::DecoratedMut>(action)
         && let Some(button) = button_mut(inner.decorated_mut())
     {
         return Some(button);

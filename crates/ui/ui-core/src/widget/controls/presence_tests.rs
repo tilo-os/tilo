@@ -195,7 +195,7 @@ struct SurfaceRoot {
     view: Column,
 }
 impl Widget for SurfaceRoot {
-    crate::provides!(dyn ActionControls, dyn crate::widget::decorator::Decorated);
+    crate::provides!(dyn ActionControls, dyn crate::widget::Decorated);
 
     fn build_layout(
         &mut self,
@@ -215,7 +215,7 @@ impl Widget for SurfaceRoot {
         self.view.children()
     }
 }
-impl crate::widget::decorator::Decorated for SurfaceRoot {
+impl crate::widget::Decorated for SurfaceRoot {
     fn decorated(&self) -> &dyn Widget {
         &self.view
     }

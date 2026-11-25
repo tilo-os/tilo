@@ -254,7 +254,7 @@ impl<M: ListModel> std::ops::DerefMut for VirtualList<M> {
     }
 }
 
-impl<M: ListModel + 'static> crate::widget::decorator::concrete::Decorator for VirtualList<M> {
+impl<M: ListModel + 'static> crate::widget::identity::concrete::Decorator for VirtualList<M> {
     type Inner = VirtualRows;
 
     fn inner(&self) -> &VirtualRows {

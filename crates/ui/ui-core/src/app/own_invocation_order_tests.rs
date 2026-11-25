@@ -34,8 +34,8 @@ impl crate::widget::Decorator for KeepsBeside {
             request.provide::<dyn crate::bound_dispatch::BoundWidget>(self);
         } else if request.wants::<dyn crate::widget::component_walk::ComponentBoundary>() {
             request.provide::<dyn crate::widget::component_walk::ComponentBoundary>(self);
-        } else if request.wants::<dyn crate::widget::decorator::Decorated>() {
-            request.provide::<dyn crate::widget::decorator::Decorated>(self);
+        } else if request.wants::<dyn crate::widget::Decorated>() {
+            request.provide::<dyn crate::widget::Decorated>(self);
         } else {
             self.content.provide(request);
         }

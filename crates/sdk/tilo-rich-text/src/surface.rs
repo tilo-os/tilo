@@ -1152,7 +1152,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     ) -> ui::taffy::NodeId {
         let node = self.editor.build_layout(taffy, theme, nodes);
         // Synthetic block actions belong to this canonical document surface.
-        ui::widget::decorator::register_node(nodes, node, self);
+        ui::widget::register_node(nodes, node, self);
         node
     }
 

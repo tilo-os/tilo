@@ -42,7 +42,7 @@ tilo_test_env::scenario! {
         /// the inner widget's answer.
         fn decorator_forwards_every_widget_method() {
             let widget = block_methods(include_str!("contract.rs"), "pub trait Widget {");
-            let source = include_str!("decorator.rs");
+            let source = include_str!("identity.rs");
             // `decorator_trait!` turns each `ref`/`mut` line into both copies;
             // the methods written out by hand must appear in both blocks.
             let mut own = block_methods(source, "    trait {");
@@ -66,7 +66,7 @@ tilo_test_env::scenario! {
             assert!(
                 missing.is_empty(),
                 "add these Widget methods to the `ref` or `mut` list of `decorator_trait!` \
-         in widget/decorator.rs: {missing:?}"
+         in widget/identity.rs: {missing:?}"
             );
             let stale: Vec<_> = own.symmetric_difference(&blanket_own).collect();
             assert!(

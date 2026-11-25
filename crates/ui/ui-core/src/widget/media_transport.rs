@@ -1811,7 +1811,7 @@ impl MediaTransport {
     }
 }
 
-impl crate::widget::decorator::concrete::Decorator for MediaTransport {
+impl crate::widget::identity::concrete::Decorator for MediaTransport {
     type Inner = Manual;
 
     fn inner(&self) -> &Manual {
