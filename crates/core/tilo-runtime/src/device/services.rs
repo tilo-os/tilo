@@ -6287,13 +6287,12 @@ impl ActionProvider for RuntimeActionProvider {
             // caller reads the words in a rejected receipt, never a dispatch that failed to
             // answer at all.
             let invocation = request.invocation;
-            return answered.then(move |answer| match answer {
-                Some(Ok(receipt)) => Ok(receipt),
-                Some(Err(error)) => Ok(InvocationReceipt {
+            return answered.map(move |answer| match answer {
+                Ok(receipt) => Ok(receipt),
+                Err(error) => Ok(InvocationReceipt {
                     invocation,
                     status: ReceiptStatus::Rejected { error },
                 }),
-                None => Err(ActionCallError::Unanswered),
             });
         }
         // An approve only the device hands back: one a caller writes into its own call is
