@@ -616,8 +616,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 
     /// The host has already bound this exact authenticated run to its action
     /// server. This constructor does not mint or replace the execution identity.
+    /// The run is a person's, or an agent's acting for one: a key's own run is
+    /// the agent its certificate names.
     pub fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
-        if caller.acting().person_id().is_none() {
+        if caller.acting().person_id().is_none()
+            && caller.acting().acted_for_person().is_none()
+        {
             return Err(std::io::Error::other(
                 "MCP requires an admitted person execution",
             ));

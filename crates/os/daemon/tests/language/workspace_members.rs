@@ -283,11 +283,15 @@ fn an_agents_grant_is_refused_what_its_grant_does_not_allow() {
             )
             .await;
         assert_ne!(status, 200, "an agent's grant invites no one: {refused}");
+        assert_eq!(
+            refused["error"]["code"], "not_permitted",
+            "the agent is refused by its own grant: {refused}"
+        );
         assert!(
             refused["error"]["message"]
                 .as_str()
-                .is_some_and(|said| said.contains("may not invite")),
-            "the agent is refused by its own grant: {refused}"
+                .is_some_and(|said| said.contains("permissions don't let you")),
+            "the agent is told its grant is what refuses it: {refused}"
         );
 
         // The same invitation, by a device of the person's: the request is the workspace's to

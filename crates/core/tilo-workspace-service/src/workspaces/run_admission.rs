@@ -22,7 +22,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::TransportHint;
 use tilo_user_identity::DeviceCert;
 
-use super::Workspaces;
+use super::{Workspaces, system_time};
 
 const MAX_EXECUTIONS: usize = 512;
 
@@ -269,18 +269,30 @@ impl Workspaces {
         {
             return Err("this key's grant does not reach that workspace".into());
         }
-        self.workspace(workspace)
+        let held = self
+            .workspace(workspace)
             .await
             .map_err(|_| "this device does not keep that workspace")?;
         // A server key is the person at the key, as its certificate says
         // ([`tilo_user_identity::DeviceCapabilities::own_key_in`]). Any other grant is an
-        // agent's: it acts as its own member, never as the person who delegated it.
+        // agent's: it acts as its own member, never as the person who delegated it, and every
+        // call of its run is decided by the grant its person signed for it — the workspace's
+        // grants naming that agent.
         let caller = if key.capabilities.agent.is_some() && !key.capabilities.server_key {
+            let granted = {
+                let governed = held.lock().await;
+                governed
+                    .peer()
+                    .permissions(key.device_public_key, system_time(tilo_clock::unix_now_ns()))
+                    .map_err(|_| "the workspace holds no grant for this key")?
+                    .granted
+            };
             Caller::delegated_agent(
                 tilo_action_policy::key_agent_id(&key.device_public_key),
                 key.user_public_key,
                 key.device_public_key,
             )
+            .granting(granted)
         } else {
             Caller::authenticated(key.user_public_key, key.device_public_key)
         }
