@@ -184,6 +184,16 @@ impl PersonResources {
         package == self.own_app
     }
 
+    /// Found the person's records of `surface`'s kind by the type an app holds of it
+    /// ([`ResourceStore::declare_type`]).
+    pub fn declare_type(
+        &self,
+        kind: &str,
+        surface: impl FnOnce() -> tilo_actions::surface::Surface,
+    ) {
+        self.store.declare_type(kind, surface);
+    }
+
     /// Open the person's record of `kind`, created with `initialize` — its
     /// genesis, the same change on every device — when nothing holds it yet.
     /// When another window of the app keeps it, this window opens a replica

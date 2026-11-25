@@ -20,7 +20,9 @@ use tilo_app_id::AppId;
 use tilo_lock::MutexRecover as _;
 use tilo_sort::CompactSort as _;
 
-use super::{DocumentCheckout, DocumentId, ResourceOpenError, ResourceType, content_genesis};
+use super::{
+    DocumentCheckout, DocumentId, RecordTypes, ResourceOpenError, ResourceType, content_genesis,
+};
 
 mod actions;
 mod arrival;
@@ -329,6 +331,8 @@ pub struct ResourceSet {
     /// What this copy of each record writes as: the device's, and its own
     /// ([`collab_types::history::authors::copy_writer`]).
     writer: automerge::ActorId,
+    /// The types this store founds its records by ([`ResourceStore::declare_type`]).
+    types: RecordTypes,
 }
 
 struct Reserved {
@@ -368,6 +372,7 @@ impl ResourceSet {
         port: Option<Rc<dyn DocumentPort>>,
         writes: bool,
         writer: automerge::ActorId,
+        types: RecordTypes,
     ) -> Self {
         Self {
             generation: Cell::new(0),
@@ -390,6 +395,7 @@ impl ResourceSet {
             port,
             writes,
             writer,
+            types,
         }
     }
 
@@ -404,6 +410,7 @@ impl ResourceSet {
             None,
             false,
             automerge::ActorId::random(),
+            RecordTypes::default(),
         )
     }
 
@@ -564,11 +571,26 @@ impl ResourceSet {
             return Ok(false);
         };
         let heads = doc.get_heads();
+        self.merge_split(&mut doc, want)?;
         self.open.insert(
             want.id.clone(),
             Parked::new(doc, want.kind.clone(), Some(heads)),
         );
         Ok(true)
+    }
+
+    /// Bring together the root containers of `doc`, the record `want` names, that devices made
+    /// each of their own before its founding was the same everywhere
+    /// ([`super::merge_split_containers`]), by the type this store founds its kind by.
+    fn merge_split(
+        &self,
+        doc: &mut AutoCommit,
+        want: &DocumentCheckout,
+    ) -> Result<(), ResourceOpenError> {
+        if let Some(founding) = self.types.founding(want.kind.as_str()) {
+            super::merge_split_containers(doc, want.kind.as_str(), want.id.route(), &founding)?;
+        }
+        Ok(())
     }
 
     /// A new document for `want`, a record the workspace holds none of: its derived founding
@@ -578,7 +600,8 @@ impl ResourceSet {
         // It is held from now on.
         self.answered.borrow_mut().remove(&want.id);
         let mut doc = AutoCommit::new().with_actor(self.writer.clone());
-        content_genesis(&mut doc, want, |_| Ok(()))?;
+        let founding = self.types.founding(want.kind.as_str());
+        content_genesis(&mut doc, want, founding.as_deref(), |_| Ok(()))?;
         Ok(doc)
     }
 
@@ -594,6 +617,10 @@ impl ResourceSet {
             let (doc, stored) = match self.read(want) {
                 Ok(Some(mut doc)) => {
                     let heads = doc.get_heads();
+                    if let Err(error) = self.merge_split(&mut doc, want) {
+                        tracing::warn!(record = %want.id, %error, "a record could not be opened");
+                        return false;
+                    }
                     (doc, Some(heads))
                 }
                 Ok(None) => match self.founded(want) {
@@ -809,6 +836,8 @@ pub struct ResourceOwners {
     /// The device the records are opened on, which each copy's writer names.
     device: Option<String>,
     owners: OwnerIndex,
+    /// The types every store of these founds its records by.
+    types: RecordTypes,
 }
 
 impl ResourceOwners {
@@ -820,6 +849,7 @@ impl ResourceOwners {
             writes: false,
             device: None,
             owners: Rc::default(),
+            types: RecordTypes::default(),
         }
     }
 
@@ -831,6 +861,7 @@ impl ResourceOwners {
             writes: false,
             device: None,
             owners: Rc::default(),
+            types: RecordTypes::default(),
         }
     }
 
@@ -843,6 +874,7 @@ impl ResourceOwners {
             writes: true,
             device: None,
             owners: Rc::default(),
+            types: RecordTypes::default(),
         }
     }
 
@@ -943,6 +975,7 @@ impl ResourceOwners {
                 .map_or_else(automerge::ActorId::random, |device| {
                     collab_types::history::authors::copy_writer(device.as_bytes())
                 }),
+            self.types.clone(),
         ));
         self.owners
             .borrow_mut()
@@ -1159,16 +1192,19 @@ impl ResourceReservation {
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), ResourceOpenError> {
-        let writer = {
+        let (writer, founding) = {
             let set = self.store.0.borrow();
             set.pending
                 .get(&self.checkout.id)
                 .filter(|p| p.generation == self.generation)
                 .ok_or(ResourceOpenError::Busy)?;
-            set.writer.clone()
+            (
+                set.writer.clone(),
+                set.types.founding(self.checkout.kind.as_str()),
+            )
         };
         let mut doc = AutoCommit::new().with_actor(writer);
-        content_genesis(&mut doc, &self.checkout, initialize)?;
+        content_genesis(&mut doc, &self.checkout, founding.as_deref(), initialize)?;
         seed(&mut doc).map_err(ResourceOpenError::Initialization)?;
         let mut set = self.store.set_mut();
         if set
@@ -1715,6 +1751,47 @@ impl ResourceStore {
             Ok(())
         } else {
             Err(ResourceOpenError::IdentityMismatch)
+        }
+    }
+
+    /// Found the records of `surface`'s kind by the containers its type declares, in this store
+    /// and every other store of the owners it came from: what an app holding the type says of it
+    /// before it makes one ([`content_genesis`]).
+    ///
+    /// A record of the kind open here already is brought together as one opened from now on is
+    /// ([`super::merge_split_containers`]).
+    pub fn declare_type(
+        &self,
+        kind: &str,
+        surface: impl FnOnce() -> tilo_actions::surface::Surface,
+    ) {
+        let types = self.0.borrow().types.clone();
+        if types.founding(kind).is_some() {
+            return;
+        }
+        types.declare_kind(kind, surface);
+        let Some(founding) = types.founding(kind) else {
+            return;
+        };
+        let Ok(mut set) = self.try_set_mut() else {
+            return;
+        };
+        let mut merged = false;
+        for (id, parked) in &mut set.open {
+            if parked.kind.as_str() != kind {
+                continue;
+            }
+            if let Some(doc) = parked.doc.as_mut() {
+                match super::merge_split_containers(doc, kind, id.route(), &founding) {
+                    Ok(changed) => merged |= changed,
+                    Err(error) => {
+                        tracing::warn!(record = %id, %error, "a record's split containers were not brought together");
+                    }
+                }
+            }
+        }
+        if merged {
+            set.tick();
         }
     }
 

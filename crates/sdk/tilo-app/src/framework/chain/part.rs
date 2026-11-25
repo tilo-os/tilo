@@ -63,6 +63,8 @@ pub(super) struct PartType {
     pub(super) held_whole: bool,
     pub(super) table: Option<&'static tilo_resource::table::ModelTable>,
     pub(super) initialize: fn(&mut AutoCommit) -> Result<(), String>,
+    /// The part's type, which its records are founded by.
+    pub(super) surface: fn() -> tilo_resource::surface::Surface,
     /// Read the part a document holds, brought up to the resource's storage
     /// version first.
     pub(super) read: ReadPart,
@@ -202,6 +204,7 @@ impl<P: Chained> Of<P> {
         held_whole: P::HELD_WHOLE,
         table: P::RESOURCE_TABLE,
         initialize: initialize::<P>,
+        surface: <P as Resource>::surface,
         read: read_part::<P>,
         state: state::<P>,
         child: child::<P>,

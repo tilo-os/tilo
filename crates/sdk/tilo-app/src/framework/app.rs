@@ -1368,6 +1368,11 @@ fn create<A: ResourceApp>(
     target: LaunchTarget,
     restore: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
+    // The window's record is founded by the type the app holds of it, the same on every device.
+    context.records().declare_type(
+        <A::Resource as Resource>::KIND,
+        <A::Resource as Resource>::surface,
+    );
     create_component(hooks::<A>(), context, &target, &restore)
 }
 
@@ -1447,10 +1452,13 @@ fn start_resource(
         .map(|file| replay_of(app, context, file, created))
         .transpose()?;
     match &replay {
+        // The replay's record is the recording, whole: a private record nobody else founds,
+        // whose containers are the recording's own rather than a founding beside them.
         Some(recording) => initialize_resource(context, &mut |_| Ok(()), &mut |doc| {
-            tilo_automerge::ApplyIncoming::merge_incoming(doc, &mut recording.doc().clone())
-                .map(drop)
-                .map_err(|error| error.to_string())
+            let mut recorded = recording.doc().clone();
+            recorded.set_actor(doc.get_actor().clone());
+            *doc = recorded;
+            Ok(())
         })?,
         None if created => (app.new_resource)(context, &arguments, file.as_ref(), &options)?,
         None => {}

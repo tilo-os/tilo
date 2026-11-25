@@ -235,6 +235,19 @@ tilo_test_env::scenario! {
             .map(|_member| {
                 let mut owners = ResourceOwners::in_memory();
                 let store = owners.open("so.tilo.test", "workspace-a").unwrap();
+                // The app holds the notebook's type, which keeps its pages and tags in maps.
+                store.declare_type("notebook", || {
+                    serde_json::from_value(serde_json::json!({
+                        "kind": "notebook",
+                        "label": "Notebook",
+                        "version": 1,
+                        "fields": [
+                            {"path": "pages", "type": {"map": "text"}},
+                            {"path": "tags", "type": {"map": "text"}},
+                        ],
+                    }))
+                    .unwrap()
+                });
                 store
                     .reserve_resource(&checkout)
                     .unwrap()

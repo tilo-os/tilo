@@ -768,6 +768,7 @@ impl PersonState {
             &PersonResourceType {
                 kind: P::KIND,
                 label: P::LABEL,
+                surface: P::surface,
                 unreadable: &|reason| {
                     tilo_resource::resource::unreadable_parts::<P>(
                         &resource_id(P::KIND),
@@ -805,6 +806,7 @@ impl PersonState {
         }
         let opened = {
             let records = self.resources_of(owner)?;
+            records.declare_type(kind, of.surface);
             open_resource(&records, kind.to_owned(), kind, initialize)
         };
         let record = match opened {
@@ -1180,6 +1182,8 @@ fn unreadable_person_resource(kind: &'static str, error: &dyn std::fmt::Display)
 struct PersonResourceType<'a> {
     kind: &'static str,
     label: &'static str,
+    /// The record's type, which it is founded by.
+    surface: fn() -> tilo_resource::surface::Surface,
     /// What the record publishes when it could not be opened, for why.
     unreadable: &'a dyn Fn(&str) -> tilo_actions::ResourceSpec,
 }

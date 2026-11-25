@@ -480,6 +480,7 @@ impl<C: ChildResource> ChildrenState<C> {
             let initialize = |doc: &mut ui_core::automerge::AutoCommit| {
                 C::initialize(doc).map_err(|error| error.to_string())
             };
+            self.workspace.store.declare_type(C::KIND, C::surface);
             match self.workspace.store.reserve_resource(&checkout) {
                 Ok(mut reservation) => reservation
                     .initialize(initialize)

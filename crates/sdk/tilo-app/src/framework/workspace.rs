@@ -570,6 +570,7 @@ impl<P: Resource> WorkspaceResource<P> {
         permissions: Option<LivePermissions>,
         wake: Option<WakeHandle>,
     ) -> Result<Self, Unopened> {
+        declare::<P>(records, owner);
         let opened = records.open_resource(owner, P::KIND, &|doc| {
             P::initialize(doc).map_err(|error| error.to_string())
         });
@@ -608,6 +609,7 @@ impl<P: Resource> WorkspaceResource<P> {
         permissions: Option<LivePermissions>,
         wake: Option<WakeHandle>,
     ) -> Result<Self, Unopened> {
+        declare::<P>(records, owner);
         let opened = records.open_resource_at(owner, id, P::KIND, &|doc| {
             P::initialize(doc).map_err(|error| error.to_string())
         });
@@ -634,6 +636,7 @@ impl<P: Resource> WorkspaceResource<P> {
         permissions: Option<LivePermissions>,
         wake: Option<WakeHandle>,
     ) -> Option<Self> {
+        declare::<P>(records, owner);
         let opened = records.open_primary(owner, P::KIND, &|doc| {
             P::initialize(doc).map_err(|error| error.to_string())
         });
@@ -1737,6 +1740,14 @@ impl WorkspaceState {
 #[inline(never)]
 fn unreadable_workspace_record(kind: &'static str, error: &dyn std::fmt::Display) {
     tracing::warn!(kind, %error, "workspace record unreadable");
+}
+
+/// Found `owner`'s records of `P`'s kind by the type this app holds of it, the same on every
+/// device. A store that cannot be had is not one a record is founded in either.
+fn declare<P: Resource>(records: &WorkspaceResources, owner: &str) {
+    if let Ok(store) = records.store_of(owner) {
+        store.declare_type(P::KIND, P::surface);
+    }
 }
 
 #[cfg(test)]

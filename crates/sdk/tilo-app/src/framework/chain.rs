@@ -1522,6 +1522,9 @@ impl ChainCore {
         checkout: &DocumentCheckout,
         initialize: impl Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.workspace
+            .store
+            .declare_type(self.part.kind, self.part.surface);
         match self.workspace.store.reserve_resource(checkout) {
             Ok(mut reservation) => reservation
                 .initialize(initialize)
