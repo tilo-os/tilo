@@ -539,7 +539,7 @@ fn several_files_chosen_at_once_are_all_handed_over() {
     let mut read = Vec::new();
     for reference in references {
         let (tx, rx) = std::sync::mpsc::channel();
-        let ask = reference.clone();
+        let ask = reference;
         link.reopen(&ask, false, move |opened| {
             let _ = tx.send(opened);
         });
@@ -808,7 +808,7 @@ fn a_revoked_grant_opens_nothing_and_neither_app_reaches_another() {
     // Revoked through the file's sharing, the grant opens nothing again.
     workspace.revoke(&format!("chosen:{APP}:{}:read", id.0));
     let (tx, rx) = std::sync::mpsc::channel();
-    let ask = reference.clone();
+    let ask = reference;
     link.reopen(&ask, false, move |opened| {
         let _ = tx.send(opened);
     });

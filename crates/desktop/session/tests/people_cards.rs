@@ -132,7 +132,7 @@ fn open_who_is_here(session: &mut Session) {
 
 /// Whether who is here stands open: its list of the people here, or the words it says when that
 /// list is empty.
-fn who_is_here_up(session: &mut Session) -> bool {
+fn who_is_here_up(session: &Session) -> bool {
     session.shell_says("People here now") || session.shell_says("Nobody else is here")
 }
 

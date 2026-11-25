@@ -411,7 +411,7 @@ fn an_app_the_session_did_not_start_reads_nothing_of_the_part() {
     // refused and it is told why.
     let workspace = session.handle().read(|tree| tree.active.to_string());
     let (seen, received) = std::sync::mpsc::channel();
-    let asking = socket.clone();
+    let asking = socket;
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

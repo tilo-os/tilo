@@ -203,9 +203,11 @@ impl PeopleDevice {
             .borrow()
             .as_ref()
             .map_or_else(String::new, |(who, at)| {
-                (ui::time::now().saturating_duration_since(*at) < STOPPED_SHOWN)
-                    .then(|| who.clone())
-                    .unwrap_or_default()
+                if ui::time::now().saturating_duration_since(*at) < STOPPED_SHOWN {
+                    who.clone()
+                } else {
+                    String::new()
+                }
             })
     }
 
@@ -249,7 +251,7 @@ impl PeopleDevice {
     /// whether the card changed without building it.
     fn mine(&self) -> Own {
         let (_, identity) = self.face();
-        let given = self.given();
+        let given = Self::given();
         Own {
             actions: self
                 .own_actions()
@@ -258,9 +260,9 @@ impl PeopleDevice {
                 .collect(),
             photo_change: self.photo_action(SET_PHOTO),
             photo_remove: self.photo_action(RESET_PHOTO),
-            control_hints: self.control_hints(),
+            control_hints: Some(Self::control_hints()),
             colour_id: settings_store::identity::COLOUR.get().unwrap_or_default(),
-            colour_slot: Some(self.worn_colour(&identity) as u32),
+            colour_slot: u32::try_from(Self::worn_colour(&identity)).ok(),
             given,
             chat: (self.chat)(),
             identity_generation: ui::local_identity::generation(),
@@ -276,7 +278,7 @@ impl PeopleDevice {
 
     /// The name the person gave themselves; empty while they gave none, so their card asks for one
     /// rather than holding the words said in place of it.
-    fn given(&self) -> String {
+    fn given() -> String {
         crate::platform::person::given_name(
             ui::local_identity::load().map(|identity| identity.display_name),
         )
@@ -285,7 +287,7 @@ impl PeopleDevice {
 
     /// The colour the person's face is drawn in now: the one they chose, else the one their
     /// identity derives.
-    fn worn_colour(&self, identity: &str) -> usize {
+    fn worn_colour(identity: &str) -> usize {
         settings_store::identity::COLOUR
             .get()
             .as_deref()
@@ -296,8 +298,8 @@ impl PeopleDevice {
 
     /// Whether the desktop's control hints show: the person's own record, which every device of
     /// theirs reads.
-    fn control_hints(&self) -> Option<bool> {
-        Some(settings_store::control_hints::LEARNED.get().enabled)
+    fn control_hints() -> bool {
+        settings_store::control_hints::LEARNED.get().enabled
     }
 
     /// What the host's personal action with `id` is called and drawn as, where it offers it.
@@ -357,7 +359,7 @@ impl PeopleDevice {
 
     /// The presence colours a person may wear, in the order their card offers them, painted in the
     /// dark presence palette identity colours are defined at.
-    fn colours(&self) -> Vec<PresenceColour> {
+    fn colours() -> Vec<PresenceColour> {
         let palette = ui::theme::Theme::dark().tokens.colors.presence;
         ui::tokens::PresenceHue::ALL
             .into_iter()
@@ -474,7 +476,7 @@ impl PeopleDevice {
     fn me(&self) -> Person {
         // The card's field holds the name they gave, never the words that stand in for one they
         // have not: an empty field says what to type and leaves nothing to type over.
-        let given = self.given();
+        let given = Self::given();
         let (name, identity) = self.face();
         let colour_id = settings_store::identity::COLOUR.get().unwrap_or_default();
         let Some(sync) = &self.sync else {
@@ -487,7 +489,7 @@ impl PeopleDevice {
                 me: true,
                 availability: "available".to_owned(),
                 given,
-                colour_slot: Some(self.worn_colour(&identity) as u32),
+                colour_slot: u32::try_from(Self::worn_colour(&identity)).ok(),
                 colour_id,
                 ..Person::default()
             };
@@ -513,7 +515,7 @@ impl PeopleDevice {
                 .as_ref()
                 .map_or_else(String::new, |call| call.call.name.clone()),
             given,
-            colour_slot: Some(self.worn_colour(&identity) as u32),
+            colour_slot: u32::try_from(Self::worn_colour(&identity)).ok(),
             colour_id,
             ..Person::default()
         }
@@ -618,11 +620,11 @@ impl PeopleDevice {
         People {
             rows,
             me: self.me(),
-            colours: self.colours(),
+            colours: Self::colours(),
             actions: self.own_actions(),
             photo_change: self.photo_action(SET_PHOTO),
             photo_remove: self.photo_action(RESET_PHOTO),
-            control_hints: self.control_hints(),
+            control_hints: Some(Self::control_hints()),
             showing: self.surfaces.person.borrow().clone(),
             following,
             stopped,
@@ -637,25 +639,7 @@ impl PeopleDevice {
     /// Carry out what a card or the bar asked of the people.
     fn act(&self, effect: &PeopleEffect) -> Result<Started, ApiError> {
         match effect {
-            PeopleEffect::Show => {
-                self.keep_typed(true);
-                if self.surfaces.overlays.here()
-                    == tilo_session_core::desktop::overlays::Overlay::People
-                {
-                    self.surfaces.close("people");
-                } else {
-                    // Their press closed it a moment ago: this is that press, not another.
-                    let dismissed = self
-                        .closed
-                        .borrow_mut()
-                        .take()
-                        .is_some_and(|at| at.elapsed() < DISMISS_GRACE);
-                    if !dismissed {
-                        self.surfaces.person.borrow_mut().clear();
-                        self.surfaces.open("people");
-                    }
-                }
-            }
+            PeopleEffect::Show => self.show_card(),
             PeopleEffect::Close => {
                 // Closing the card keeps what was typed and not yet kept, as a field that loses
                 // focus keeps it: there is no Save button, so nothing typed is lost.
@@ -664,23 +648,7 @@ impl PeopleDevice {
                 self.surfaces.person.borrow_mut().clear();
                 self.surfaces.close("people");
             }
-            PeopleEffect::ShowPerson { person } => {
-                // Leaving the card keeps what was typed.
-                self.keep_typed(true);
-                let person = person.trim().to_owned();
-                // Opening the card of the person whose view this is is a gesture about the
-                // following itself, not the person working: it leaves the view they follow as it
-                // is, as the bar's own chip does in the shell.
-                if let Some(sync) = &self.sync
-                    && !person.is_empty()
-                    && sync.own().following.as_deref() == Some(person.as_str())
-                {
-                    sync.keep_following_through_gesture();
-                }
-                // An empty key comes back from a card to the roster; anyone else's opens on them.
-                *self.surfaces.person.borrow_mut() = person;
-                self.surfaces.open("people");
-            }
+            PeopleEffect::ShowPerson { person } => self.show_person(person),
             PeopleEffect::Follow { person } => {
                 self.asks
                     .borrow_mut()
@@ -706,21 +674,7 @@ impl PeopleDevice {
                     .borrow_mut()
                     .push(crate::people::PeopleAsk::Wave { who });
             }
-            PeopleEffect::Message { person } => {
-                // Chat holds the conversation each pair of people shares on the record their root
-                // keys name: someone whose key is not known here has none to open.
-                let key = self.sync.as_ref().and_then(|sync| {
-                    let here = sync.here();
-                    let here = here.borrow();
-                    here.user_of(person.trim()).map(str::to_owned)
-                });
-                if let Some(key) = key {
-                    self.asks
-                        .borrow_mut()
-                        .push(crate::people::PeopleAsk::Message { key });
-                }
-                self.taken_elsewhere();
-            }
+            PeopleEffect::Message { person } => self.message(person),
             PeopleEffect::GoTo { person } => {
                 self.asks.borrow_mut().push(crate::people::PeopleAsk::GoTo {
                     who: person.trim().to_owned(),
@@ -732,36 +686,10 @@ impl PeopleDevice {
                     .borrow_mut()
                     .push(crate::people::PeopleAsk::Picture(picture.clone()));
             }
-            PeopleEffect::SetName { name } => {
-                // Enter keeps what is in the field: the pause that was coming is answered here
-                // rather than kept a second time from the same words.
-                self.drafts.borrow_mut().name = None;
-                if self.name_says_more(name) {
-                    self.kept.borrow_mut().0 = name.trim().to_owned();
-                    self.asks
-                        .borrow_mut()
-                        .push(crate::people::PeopleAsk::Rename(name.clone()));
-                }
-            }
-            PeopleEffect::SetDoing { text } => {
-                self.drafts.borrow_mut().doing = None;
-                if self.doing_says_more(text) {
-                    self.kept.borrow_mut().1 = text.trim().to_owned();
-                    self.asks
-                        .borrow_mut()
-                        .push(crate::people::PeopleAsk::Status(text.clone()));
-                }
-            }
+            PeopleEffect::SetName { name } => self.set_name(name),
+            PeopleEffect::SetDoing { text } => self.set_doing(text),
             PeopleEffect::SetAvailability { availability } => {
-                let chosen = collab_types::presence::Availability::from_id(availability.trim())
-                    .ok_or_else(|| {
-                        ApiError::InvalidArguments(format!(
-                            "`{availability}` is not one of available, focusing, away, idle"
-                        ))
-                    })?;
-                self.asks
-                    .borrow_mut()
-                    .push(crate::people::PeopleAsk::Availability(chosen));
+                self.choose_availability(availability)?;
             }
             PeopleEffect::PairDevice => {
                 self.asks
@@ -784,63 +712,9 @@ impl PeopleDevice {
                 person,
                 client,
                 ask,
-            } => {
-                use tilo_session_core::desktop::launchpad::AgentAsk;
-                let ask = match ask.trim() {
-                    "stop" => AgentAsk::Stop,
-                    "undo-run" => AgentAsk::UndoSession,
-                    "take-over" => AgentAsk::TakeOver,
-                    "revoke" => AgentAsk::Revoke,
-                    "card" => AgentAsk::Card,
-                    other => {
-                        return Err(ApiError::InvalidArguments(format!(
-                            "`{other}` is not one of stop, undo-run, take-over, revoke, card"
-                        )));
-                    }
-                };
-                self.asks
-                    .borrow_mut()
-                    .push(crate::people::PeopleAsk::Agent {
-                        who: person.trim().to_owned(),
-                        client: client.trim().to_owned(),
-                        ask,
-                    });
-                self.taken_elsewhere();
-            }
-            PeopleEffect::Colour { slot } => {
-                let hue = usize::try_from(*slot)
-                    .ok()
-                    .filter(|slot| *slot < ui::tokens::PresenceHue::ALL.len())
-                    .map(ui::tokens::PresenceHue::from_slot)
-                    .ok_or_else(|| {
-                        ApiError::InvalidArguments(format!(
-                            "`{slot}` is not one of the presence colours the card offers"
-                        ))
-                    })?;
-                self.asks
-                    .borrow_mut()
-                    .push(crate::people::PeopleAsk::Colour(hue.id().to_owned()));
-            }
-            PeopleEffect::HostAction { id } => {
-                let id = id.trim();
-                if let Some(link) = own_settings_link(id) {
-                    self.asks
-                        .borrow_mut()
-                        .push(crate::people::PeopleAsk::Settings(link.to_owned()));
-                } else if self
-                    .handle
-                    .host_actions()
-                    .iter()
-                    .any(|action| action.id == id)
-                {
-                    // What the host offered the card: the choice it asks for, answered here rather
-                    // than on the avatar the ask waits on.
-                    self.asks
-                        .borrow_mut()
-                        .push(crate::people::PeopleAsk::HostAction(id.to_owned()));
-                    self.taken_elsewhere();
-                }
-            }
+            } => self.act_agent(person, client, ask)?,
+            PeopleEffect::Colour { slot } => self.choose_colour(*slot)?,
+            PeopleEffect::HostAction { id } => self.host_action(id),
             PeopleEffect::ControlHints { on } => {
                 // The hints' switch is the person's record, which every device reads: the shell
                 // folds it in as their settings move.
@@ -850,17 +724,178 @@ impl PeopleDevice {
                     tracing::warn!(%error, "could not keep the control hints' switch");
                 }
             }
-            PeopleEffect::Draft { field, text } => {
-                let field = field.trim();
-                if field != "name" && field != "doing" {
-                    return Err(ApiError::InvalidArguments(format!(
-                        "`{field}` is not a field of the person's card"
-                    )));
-                }
-                self.note_draft(field, text);
-            }
+            PeopleEffect::Draft { field, text } => self.draft(field, text)?,
         }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+
+    /// Keep `name` as the person's, as Enter does.
+    fn set_name(&self, name: &str) {
+        // Enter keeps what is in the field: the pause that was coming is answered here rather
+        // than kept a second time from the same words.
+        self.drafts.borrow_mut().name = None;
+        if self.name_says_more(name) {
+            name.trim().clone_into(&mut self.kept.borrow_mut().0);
+            self.asks
+                .borrow_mut()
+                .push(crate::people::PeopleAsk::Rename(name.to_owned()));
+        }
+    }
+
+    /// Keep `text` as what the person is doing, as Enter does.
+    fn set_doing(&self, text: &str) {
+        self.drafts.borrow_mut().doing = None;
+        if self.doing_says_more(text) {
+            text.trim().clone_into(&mut self.kept.borrow_mut().1);
+            self.asks
+                .borrow_mut()
+                .push(crate::people::PeopleAsk::Status(text.to_owned()));
+        }
+    }
+
+    /// Open the card, or close it again where it stands: what the bar's faces do.
+    fn show_card(&self) {
+        self.keep_typed(true);
+        if self.surfaces.overlays.here() == tilo_session_core::desktop::overlays::Overlay::People {
+            self.surfaces.close("people");
+        } else {
+            // Their press closed it a moment ago: this is that press, not another.
+            let dismissed = self
+                .closed
+                .borrow_mut()
+                .take()
+                .is_some_and(|at| at.elapsed() < DISMISS_GRACE);
+            if !dismissed {
+                self.surfaces.person.borrow_mut().clear();
+                self.surfaces.open("people");
+            }
+        }
+    }
+
+    /// Open the card on `person`, or back to the roster for an empty key.
+    fn show_person(&self, person: &str) {
+        // Leaving the card keeps what was typed.
+        self.keep_typed(true);
+        let person = person.trim().to_owned();
+        // Opening the card of the person whose view this is is a gesture about the following
+        // itself, not the person working: it leaves the view they follow as it is, as the bar's
+        // own chip does in the shell.
+        if let Some(sync) = &self.sync
+            && !person.is_empty()
+            && sync.own().following.as_deref() == Some(person.as_str())
+        {
+            sync.keep_following_through_gesture();
+        }
+        *self.surfaces.person.borrow_mut() = person;
+        self.surfaces.open("people");
+    }
+
+    /// Open the conversation `person` shares with this person, where its key is known here.
+    fn message(&self, person: &str) {
+        // Chat holds the conversation each pair of people shares on the record their root keys
+        // name: someone whose key is not known here has none to open.
+        let key = self.sync.as_ref().and_then(|sync| {
+            let here = sync.here();
+            let here = here.borrow();
+            here.user_of(person.trim()).map(str::to_owned)
+        });
+        if let Some(key) = key {
+            self.asks
+                .borrow_mut()
+                .push(crate::people::PeopleAsk::Message { key });
+        }
+        self.taken_elsewhere();
+    }
+
+    /// Keep the availability `availability` names, where the card offers it.
+    fn choose_availability(&self, availability: &str) -> Result<(), ApiError> {
+        let chosen = collab_types::presence::Availability::from_id(availability.trim())
+            .ok_or_else(|| {
+                ApiError::InvalidArguments(format!(
+                    "`{availability}` is not one of available, focusing, away, idle"
+                ))
+            })?;
+        self.asks
+            .borrow_mut()
+            .push(crate::people::PeopleAsk::Availability(chosen));
+        Ok(())
+    }
+
+    /// Carry out what an agent's card asked of `person`'s agent `client`.
+    fn act_agent(&self, person: &str, client: &str, ask: &str) -> Result<(), ApiError> {
+        use tilo_session_core::desktop::launchpad::AgentAsk;
+        let ask = match ask.trim() {
+            "stop" => AgentAsk::Stop,
+            "undo-run" => AgentAsk::UndoSession,
+            "take-over" => AgentAsk::TakeOver,
+            "revoke" => AgentAsk::Revoke,
+            "card" => AgentAsk::Card,
+            other => {
+                return Err(ApiError::InvalidArguments(format!(
+                    "`{other}` is not one of stop, undo-run, take-over, revoke, card"
+                )));
+            }
+        };
+        self.asks
+            .borrow_mut()
+            .push(crate::people::PeopleAsk::Agent {
+                who: person.trim().to_owned(),
+                client: client.trim().to_owned(),
+                ask,
+            });
+        self.taken_elsewhere();
+        Ok(())
+    }
+
+    /// Wear the presence colour the card offers at `slot`.
+    fn choose_colour(&self, slot: u32) -> Result<(), ApiError> {
+        let hue = usize::try_from(slot)
+            .ok()
+            .filter(|slot| *slot < ui::tokens::PresenceHue::ALL.len())
+            .map(ui::tokens::PresenceHue::from_slot)
+            .ok_or_else(|| {
+                ApiError::InvalidArguments(format!(
+                    "`{slot}` is not one of the presence colours the card offers"
+                ))
+            })?;
+        self.asks
+            .borrow_mut()
+            .push(crate::people::PeopleAsk::Colour(hue.id().to_owned()));
+        Ok(())
+    }
+
+    /// Do what the host offered the card as `id`, where it offers it.
+    fn host_action(&self, id: &str) {
+        let id = id.trim();
+        if let Some(link) = own_settings_link(id) {
+            self.asks
+                .borrow_mut()
+                .push(crate::people::PeopleAsk::Settings(link.to_owned()));
+        } else if self
+            .handle
+            .host_actions()
+            .iter()
+            .any(|action| action.id == id)
+        {
+            // What the host offered the card: the choice it asks for, answered here rather than
+            // on the avatar the ask waits on.
+            self.asks
+                .borrow_mut()
+                .push(crate::people::PeopleAsk::HostAction(id.to_owned()));
+            self.taken_elsewhere();
+        }
+    }
+
+    /// Hold what the person typed into `field` of their card, for the pause that keeps it.
+    fn draft(&self, field: &str, text: &str) -> Result<(), ApiError> {
+        let field = field.trim();
+        if field != "name" && field != "doing" {
+            return Err(ApiError::InvalidArguments(format!(
+                "`{field}` is not a field of the person's card"
+            )));
+        }
+        self.note_draft(field, text);
+        Ok(())
     }
 
     /// Hold what the person just typed into their card: the pause it starts is what keeps it, as
@@ -933,7 +968,7 @@ impl PeopleDevice {
     fn name_says_more(&self, name: &str) -> bool {
         let name = name.trim();
         !ui::presence::is_unnamed_person(name)
-            && name != self.given()
+            && name != Self::given()
             && name != self.kept.borrow().0
     }
 
@@ -1103,6 +1138,69 @@ fn note_following(rows: &mut [Person], pairs: &[(String, String)], own: Option<&
 /// A colour as the reading writes it, `rrggbb`.
 fn colour_of((red, green, blue): (u8, u8, u8)) -> String {
     format!("{red:02x}{green:02x}{blue:02x}")
+}
+
+impl Service for PeopleDevice {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        vec![offer::<PeopleEffect>(tilo_resource::typed_resource::<
+            PeopleRoot,
+        >(
+            RESOURCE,
+            crate::i18n::t("session-people"),
+        ))]
+    }
+
+    fn read(&self, resource: &str) -> Option<Value> {
+        (resource == RESOURCE).then(|| reading(&self.read()))
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        if resource != RESOURCE {
+            return Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
+                resource, action,
+            )));
+        }
+        let effect = decode::<PeopleEffect>(&self.resources(), resource, action, arguments)?;
+        self.act(&effect)
+    }
+
+    /// Whether the roster, the person here or what the bar says about a wave or an arrival moved.
+    fn poll(&mut self) -> bool {
+        // Whatever closed the card — its own button, the bar's people button, Escape, another
+        // surface coming up — keeps what was typed, as a field that loses focus does. While it
+        // stands, only the pause keeps it. Done before the key is read, so the pass that keeps it
+        // carries it out and draws what came of it.
+        let card_open = !self.surfaces.person.borrow().is_empty()
+            && self.surfaces.overlays.here()
+                == tilo_session_core::desktop::overlays::Overlay::People;
+        self.keep_typed(!card_open);
+        let key = self.key();
+        if self.seen.borrow().as_ref() == Some(&key) {
+            return false;
+        }
+        let now = self.read();
+        *self.seen.borrow_mut() = Some(key);
+        if self.published.borrow().as_ref() == Some(&now) {
+            return false;
+        }
+        *self.published.borrow_mut() = Some(now);
+        true
+    }
+
+    /// When a wave or an arrival stops showing, or a pause in typing keeps what was typed: the
+    /// pass that does either has to wake then.
+    fn wakes_in(&self) -> Option<std::time::Duration> {
+        match (self.noticed_in(), self.typed_due()) {
+            (Some(notice), Some(typed)) => Some(notice.min(typed)),
+            (notice, typed) => notice.or(typed),
+        }
+        .map(|left| left.max(std::time::Duration::from_millis(16)))
+    }
 }
 
 #[cfg(test)]
@@ -1349,68 +1447,5 @@ mod tests {
             agent,
             ..Person::default()
         }
-    }
-}
-
-impl Service for PeopleDevice {
-    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        vec![offer::<PeopleEffect>(tilo_resource::typed_resource::<
-            PeopleRoot,
-        >(
-            RESOURCE,
-            crate::i18n::t("session-people"),
-        ))]
-    }
-
-    fn read(&self, resource: &str) -> Option<Value> {
-        (resource == RESOURCE).then(|| reading(&self.read()))
-    }
-
-    fn invoke(
-        &mut self,
-        resource: &str,
-        action: &str,
-        arguments: &Map<String, Value>,
-    ) -> Result<Started, ApiError> {
-        if resource != RESOURCE {
-            return Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
-                resource, action,
-            )));
-        }
-        let effect = decode::<PeopleEffect>(&self.resources(), resource, action, arguments)?;
-        self.act(&effect)
-    }
-
-    /// Whether the roster, the person here or what the bar says about a wave or an arrival moved.
-    fn poll(&mut self) -> bool {
-        // Whatever closed the card — its own button, the bar's people button, Escape, another
-        // surface coming up — keeps what was typed, as a field that loses focus does. While it
-        // stands, only the pause keeps it. Done before the key is read, so the pass that keeps it
-        // carries it out and draws what came of it.
-        let card_open = !self.surfaces.person.borrow().is_empty()
-            && self.surfaces.overlays.here()
-                == tilo_session_core::desktop::overlays::Overlay::People;
-        self.keep_typed(!card_open);
-        let key = self.key();
-        if self.seen.borrow().as_ref() == Some(&key) {
-            return false;
-        }
-        let now = self.read();
-        *self.seen.borrow_mut() = Some(key);
-        if self.published.borrow().as_ref() == Some(&now) {
-            return false;
-        }
-        *self.published.borrow_mut() = Some(now);
-        true
-    }
-
-    /// When a wave or an arrival stops showing, or a pause in typing keeps what was typed: the
-    /// pass that does either has to wake then.
-    fn wakes_in(&self) -> Option<std::time::Duration> {
-        match (self.noticed_in(), self.typed_due()) {
-            (Some(notice), Some(typed)) => Some(notice.min(typed)),
-            (notice, typed) => notice.or(typed),
-        }
-        .map(|left| left.max(std::time::Duration::from_millis(16)))
     }
 }

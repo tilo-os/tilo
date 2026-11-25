@@ -581,7 +581,7 @@ pub struct PeerSurfaces {
 impl PeerSurfaces {
     /// The tile in `tab` stands on a display showing `display` : its pictures are prepared for that
     /// display from now on. The tab the desktop gives no such tile has nothing to change.
-    pub fn set_tile_display(&mut self, tab: TabId, display: DisplayCapabilities) {
+    pub fn set_tile_display(&self, tab: TabId, display: DisplayCapabilities) {
         if let Some(tile) = self.tiles.get(&tab) {
             tile.borrow_mut().set_display(display);
         }
@@ -618,7 +618,7 @@ impl PeerSurfaces {
     /// Take one encoded unit of the stream `peer` shares through `surface` . `None` for a stream
     /// this desktop shows nowhere.
     pub fn push(
-        &mut self,
+        &self,
         peer: PeerId,
         surface: SurfaceId,
         seq: u64,
@@ -631,14 +631,14 @@ impl PeerSurfaces {
 
     /// Take one object of the page of the window `surface` shows. `None` for a stream this desktop
     /// shows nowhere, and whether the frame changed for one it does.
-    pub fn push_page(&mut self, peer: PeerId, surface: SurfaceId, payload: &[u8]) -> Option<bool> {
+    pub fn push_page(&self, peer: PeerId, surface: SurfaceId, payload: &[u8]) -> Option<bool> {
         let tab = *self.streams.get(&(peer, surface))?;
         let tile = Rc::clone(self.tiles.get(&tab)?);
         Some(tile.borrow_mut().push_page(payload))
     }
 
     /// Show every picture that came out after its unit was pushed. Whether any tile changed.
-    pub fn collect_pictures(&mut self) -> bool {
+    pub fn collect_pictures(&self) -> bool {
         let mut changed = false;
         for tile in self.tiles.values() {
             if tile.borrow_mut().collect_late_picture().is_some() {

@@ -672,7 +672,7 @@ impl SessionNotifications {
             self.answer_local(daemon_id, chosen.as_deref());
         }
         for (route, notice) in followed.show {
-            self.remote_project(route, notice, now);
+            self.remote_project(&route, notice, now);
         }
         for (source, id) in followed.gone {
             self.desktop.retire_remote(&source, id);
@@ -682,7 +682,7 @@ impl SessionNotifications {
     /// Show what another of the person's devices shows, which `route` leads back to: an app's
     /// notification there, named after that device, when this person lets this app's
     /// notifications cross.
-    fn remote_project(&self, route: RemoteNotificationRoute, notice: SharedNotice, now_ms: i64) {
+    fn remote_project(&self, route: &RemoteNotificationRoute, notice: SharedNotice, now_ms: i64) {
         let effective = self.effective(Some(notice.app_id.as_str()), false);
         if !effective.cross_device {
             return;
@@ -724,7 +724,7 @@ impl SessionNotifications {
         } else {
             self.desktop.post_quiet(notification)
         };
-        self.mirror.shown(id, &route, notice);
+        self.mirror.shown(id, route, notice);
     }
 
     /// Carry out what the person answered on another device of the notification this one keeps in

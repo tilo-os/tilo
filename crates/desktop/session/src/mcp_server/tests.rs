@@ -315,9 +315,8 @@ fn a_pass_that_moves_the_readings_wakes_the_follows() {
     let (wake, woken) = ResourceWake::new();
     services.watch_reading(&wake);
     services.readings_moved(1);
-    let woken = match woken.wait_timeout(std::time::Duration::from_millis(50)) {
-        Err(woken) => woken,
-        Ok(_) => panic!("a pass at the revision the follow already saw wakes none"),
+    let Err(woken) = woken.wait_timeout(std::time::Duration::from_millis(50)) else {
+        panic!("a pass at the revision the follow already saw wakes none");
     };
     services.readings_moved(2);
     assert!(
@@ -330,6 +329,10 @@ fn a_pass_that_moves_the_readings_wakes_the_follows() {
 /// follows shows the new reading: the pass that moved what the services publish wakes the follow,
 /// which reads again, rather than a timer asking.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one test's whole flow, from its setup to what it proves"
+)]
 fn a_live_reading_that_changes_reaches_its_follower() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tilo_actions::remote::{ResourceAddress, ResourceAsk, ResourceCopy, read_resources};
@@ -456,8 +459,6 @@ fn a_live_reading_that_changes_reaches_its_follower() {
     session.readings_woken.lock_recover().clear();
     let follower = {
         let records = Arc::clone(&records);
-        let caller = caller.clone();
-        let asks = asks.clone();
         let after = first.revision.clone();
         std::thread::spawn(move || {
             tilo_rt::block_on(read_resources(

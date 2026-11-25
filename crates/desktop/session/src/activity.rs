@@ -50,12 +50,12 @@ impl tilo_session_core::desktop::activity::GovernanceReader for GovernanceValues
             | MembershipOpCommand::Enter { person, .. } => MembershipWrite::Admitted {
                 person: hex::encode(person),
             },
-            MembershipOpCommand::Governance { .. } => MembershipWrite::Recorded,
-            // The document's history starting over from a base: a record kept beside the member
-            // list that changes no membership, and nothing a person did.
-            MembershipOpCommand::Compact { .. } => MembershipWrite::Recorded,
-            // A removed device taken back onto the member list: the row it names says which.
-            MembershipOpCommand::Readmit { .. } => MembershipWrite::Recorded,
+            // Records kept beside the member list that change no membership, and nothing a
+            // person did: governance, the document's history starting over from a base, and a
+            // removed device taken back onto the member list, which the row it names says.
+            MembershipOpCommand::Governance { .. }
+            | MembershipOpCommand::Compact { .. }
+            | MembershipOpCommand::Readmit { .. } => MembershipWrite::Recorded,
         })
     }
 
@@ -1163,7 +1163,7 @@ impl ActivityHost for Host {
             self.0
                 .undos
                 .start(api, self.0.person.clone(), undo, move || {
-                    ask_for_frame(&woken, wake.as_ref())
+                    ask_for_frame(&woken, wake.as_ref());
                 })
         }
         #[cfg(not(target_os = "linux"))]

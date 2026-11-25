@@ -100,7 +100,7 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
     // A device that is away and offered a way to be woken takes a wake-up signal: nothing plays
     // there to take, so this is what its press is for.
     if !device.online && device.wakeable {
-        if let Err(refusal) = shared.waking.request(shared, row) {
+        if let Err(refusal) = crate::wake::Wake::request(shared, row) {
             // The panel has no line to show a refusal on; a wake that could
             // not be planned changes nothing the person sees.
             tilo_failure::ignored!(

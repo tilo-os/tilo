@@ -631,9 +631,10 @@ mod tests {
         let elsewhere = Caller::local_person(person_id).in_workspace(ELSEWHERE);
         let dispatch = device.dispatch();
         let request = run_line("session.new_strip()");
-        match answered(&mut device, || dispatch.invoke(&elsewhere, request.clone())) {
-            // Refused where it was asked: nothing ran.
-            Err(refused) => assert!(
+        // Refused where it was asked: nothing ran.
+        if let Err(refused) = answered(&mut device, || dispatch.invoke(&elsewhere, request.clone()))
+        {
+            assert!(
                 matches!(
                     refused,
                     ActionCallError::NotPermitted
@@ -641,15 +642,14 @@ mod tests {
                         | ActionCallError::Unavailable { .. }
                 ),
                 "the line is refused in the system's words: {refused:?}"
-            ),
+            );
+        } else {
             // Admitted where it was asked, and the line ends where it runs: it ran nowhere.
-            Ok(_) => {
-                let ended = followed(&mut device, &dispatch, &elsewhere, &request);
-                assert!(
-                    ended.is_err(),
-                    "the line runs nowhere in a workspace the person is no member of: {ended:?}"
-                );
-            }
+            let ended = followed(&mut device, &dispatch, &elsewhere, &request);
+            assert!(
+                ended.is_err(),
+                "the line runs nowhere in a workspace the person is no member of: {ended:?}"
+            );
         }
     }
 

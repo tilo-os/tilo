@@ -2290,7 +2290,9 @@ impl Device {
             },
         });
         let RemoteActionMessage::ResourceReading { result, .. } = answer else {
-            panic!("{} answered a read with {answer:?}", self.label);
+            return Err(tilo_actions::remote::ActionCallError::Unavailable {
+                reason: format!("{} answered a read with {answer:?}", self.label),
+            });
         };
         result.map(|read| serde_json::from_str(&read).expect("a reading is JSON"))
     }

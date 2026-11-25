@@ -14,8 +14,8 @@ fn own_workspace(session: &Session, members: &[&str]) {
     for member in members {
         tilo_session_core::desktop::workspace_settings::set_member_role(
             workspace,
-            &PERSON.to_owned(),
-            &(*member).to_owned(),
+            PERSON,
+            member,
             tilo_action_policy::Role::Viewer,
         )
         .expect("the person may admit a member");

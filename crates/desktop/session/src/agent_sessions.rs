@@ -101,6 +101,7 @@ impl AgentSessions {
         workspace.clone_into(&mut connection.workspace);
         workspace_name.clone_into(&mut connection.workspace_name);
         inner.revision = inner.revision.wrapping_add(1);
+        drop(inner);
         self.changed.notify_waiters();
     }
 
@@ -116,6 +117,7 @@ impl AgentSessions {
         }
         connection.doing = doing;
         inner.revision = inner.revision.wrapping_add(1);
+        drop(inner);
         self.changed.notify_waiters();
         true
     }
@@ -224,6 +226,7 @@ impl AgentSessions {
             return;
         }
         inner.revision = inner.revision.wrapping_add(1);
+        drop(inner);
         self.changed.notify_waiters();
     }
 
@@ -266,6 +269,7 @@ impl AgentSessions {
                 .filter_map(|id| inner.sessions.remove(id))
                 .collect();
             inner.revision = inner.revision.wrapping_add(1);
+            drop(inner);
             self.changed.notify_waiters();
             ended
         };

@@ -738,8 +738,6 @@ fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
 }
 
 /// The lock the power menu offers is the session's own: choosing it starts the lock screen, as the
-
-/// The lock the power menu offers is the session's own: choosing it starts the lock screen, as the
 /// session's own action does.
 #[test]
 fn the_power_menus_lock_starts_the_lock_screen() {

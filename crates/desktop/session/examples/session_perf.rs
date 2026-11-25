@@ -169,7 +169,7 @@ impl Marks {
     }
 
     /// How long the marks `from` and `to` took apart, in microseconds.
-    fn phase_us(&self, from: &str, to: &str) -> Option<u64> {
+    fn phase_us(from: &str, to: &str) -> Option<u64> {
         let events = tilo_startup_metrics::events();
         let at = |name: &str| {
             events
@@ -432,7 +432,7 @@ fn place(session: &mut Session, resource: &str) {
         "height": 360,
     })
     .as_object()
-    .map(Clone::clone)
+    .cloned()
     .expect("an object");
     session
         .invoke("shell:layout", "place", &arguments)
@@ -800,11 +800,10 @@ fn stat(summary: (u32, u32, u32)) -> String {
 }
 
 /// The `arriving` profile: the shell on a desktop nobody has opened anything on.
-fn run_arriving(marks: &Marks, json_path: Option<String>, device: &str) {
+fn run_arriving(_marks: &Marks, json_path: Option<String>, device: &str) {
     let (mut session, session_build_us) = session(vec![]);
-    let build_us = marks
-        .phase_us("shell-build-start", "shell-build-done")
-        .unwrap_or(session_build_us);
+    let build_us =
+        Marks::phase_us("shell-build-start", "shell-build-done").unwrap_or(session_build_us);
     let (_first_frame_wall, first) = first_frame(&mut session);
     // The shell's bar is up: what a person lands on. Measured from here, not from the empty loop.
     until(&mut session, "the shell's bar", |session| {
@@ -879,12 +878,11 @@ fn run_arriving(marks: &Marks, json_path: Option<String>, device: &str) {
 }
 
 /// The `apps` profile: the shell with a note window in each place, typed into.
-fn run_apps(marks: &Marks, json_path: Option<String>, device: &str, tabs: usize) {
+fn run_apps(_marks: &Marks, json_path: Option<String>, device: &str, tabs: usize) {
     let (notebook, notes) = notebook(&TITLES[..tabs.clamp(1, TITLES.len())]);
     let (mut session, session_build_us) = session(vec![Box::new(notebook)]);
-    let build_us = marks
-        .phase_us("shell-build-start", "shell-build-done")
-        .unwrap_or(session_build_us);
+    let build_us =
+        Marks::phase_us("shell-build-start", "shell-build-done").unwrap_or(session_build_us);
     let (_first_frame_wall, first) = first_frame(&mut session);
     until(&mut session, "the shell's bar", |session| {
         session.shell_control("Notifications").is_some()
@@ -991,12 +989,11 @@ fn run_apps(marks: &Marks, json_path: Option<String>, device: &str, tabs: usize)
 /// The `activities` profile: the floating layer over the shell. The cards a live activity shows
 /// dock at the shell's corner (the person does not drag them); the thing a person carries over
 /// the shell is the strip's windows, so that is what the drag measures.
-fn run_activities(marks: &Marks, json_path: Option<String>, device: &str) {
+fn run_activities(_marks: &Marks, json_path: Option<String>, device: &str) {
     let (notebook, notes) = notebook(&TITLES[..6]);
     let (mut session, session_build_us) = session(vec![Box::new(notebook)]);
-    let build_us = marks
-        .phase_us("shell-build-start", "shell-build-done")
-        .unwrap_or(session_build_us);
+    let build_us =
+        Marks::phase_us("shell-build-start", "shell-build-done").unwrap_or(session_build_us);
     let (_first_frame_wall, first) = first_frame(&mut session);
     until(&mut session, "the shell's bar", |session| {
         session.shell_control("Notifications").is_some()

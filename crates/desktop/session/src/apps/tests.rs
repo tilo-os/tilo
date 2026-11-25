@@ -766,7 +766,7 @@ fn a_hosted_launch_hands_a_file_of_the_persons_as_content() {
     std::fs::write(&plan, b"# Plan\n").unwrap();
     let launch = Launch::Package {
         app: "so.tilo.notes".to_owned(),
-        open: Some(tilo_app_launch::Open::File(plan.clone())),
+        open: Some(tilo_app_launch::Open::File(plan)),
     };
 
     let handed = apps

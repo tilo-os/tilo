@@ -672,9 +672,8 @@ mod tests {
         assert_eq!(listed[0].id, member);
         assert_eq!(
             listed[0].acts_for, person,
-            "the broker lists the member {} as the person's before its client is told it may \
-             join",
-            member
+            "the broker lists the member {member} as the person's before its client is told it may \
+             join"
         );
         assert_eq!(
             name, CLIENT,
@@ -684,7 +683,7 @@ mod tests {
         // The same client again is the same member, found and still listed: no second one.
         assert_eq!(
             session.shared.mcp_member(STUDIO, CLIENT),
-            Ok((member.clone(), name.clone()))
+            Ok((member.clone(), name))
         );
         assert_eq!(
             roster.listed(STUDIO).len(),

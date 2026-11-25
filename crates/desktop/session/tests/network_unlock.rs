@@ -115,7 +115,6 @@ fn person() -> Person {
 
 /// The shell's session, the phone's, and the boot early boot plays.
 struct Devices {
-    person: Person,
     half: Half,
     cert: DeviceCert,
     slot: SlotId,
@@ -178,7 +177,7 @@ impl Devices {
                 Entry {
                     identity: Some(DeviceIdentity::kept(
                         person.phone_cert.clone(),
-                        person.phone_key.clone(),
+                        person.phone_key,
                     )),
                     own: OwnPresence::default(),
                     hosts: Vec::new(),
@@ -212,7 +211,6 @@ impl Devices {
                 .expect("the boot's endpoint binds")
         });
         Self {
-            person,
             half,
             cert,
             slot,

@@ -884,6 +884,10 @@ verbs = [
 
         /// A shell of two workspaces, the one `elsewhere` names founded for [`ANOTHER`]: this
         /// device stays one of its administrators, and the person is not its owner.
+        #[expect(
+            clippy::too_many_lines,
+            reason = "one test's whole flow, from its setup to what it proves"
+        )]
         fn new_elsewhere(elsewhere: Option<WorkspaceId>) -> Self {
             let mut home = tilo_test_env::TestHome::new().expect("a home");
             let started = home.home().join("started");
@@ -912,7 +916,7 @@ verbs = [
                 std::os::unix::net::UnixListener::bind(&control).expect("the app's control socket");
             // The launcher records what it was asked, then runs the window's app as the launcher
             // runs a package's: the app connects to the device's daemon itself.
-            let launcher = tilo_test_env::stand_in(
+            let stand_in = tilo_test_env::stand_in(
                 home.home().join("tilo-launcher"),
                 &format!(
                     "printf '%s\\n' \"$$\" >> '{started}'\n\
@@ -939,7 +943,7 @@ verbs = [
             let apps = Rc::new(Apps::with_launcher(
                 environment,
                 None,
-                Some(launcher.path().to_owned()),
+                Some(stand_in.path().to_owned()),
             ));
             let mut session = Session::headless(
                 Options {

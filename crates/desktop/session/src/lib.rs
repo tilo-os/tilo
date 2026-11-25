@@ -176,7 +176,6 @@ pub mod controllers;
 #[cfg(target_os = "linux")]
 mod controls;
 #[cfg(target_os = "linux")]
-mod daemon_actions;
 #[cfg(target_os = "linux")]
 pub mod desktop_services;
 #[cfg(target_os = "linux")]

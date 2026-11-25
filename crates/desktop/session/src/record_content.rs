@@ -201,11 +201,9 @@ impl RecordContent {
     /// # Errors
     /// The workspace and app name no store, or the store refused the bytes.
     fn keep_in(&self, workspace: &str, app: &str, bytes: &[u8]) -> Result<String, String> {
-        let stored = self
-            .on(workspace, app, |scoped| {
-                scoped.put(bytes, "application/octet-stream")
-            })
-            .map_err(|error| error.to_string())?;
+        let stored = self.on(workspace, app, |scoped| {
+            scoped.put(bytes, "application/octet-stream")
+        })?;
         let hash = tilo_content::hash_bytes(bytes);
         if stored.hash == hash {
             Ok(hash)

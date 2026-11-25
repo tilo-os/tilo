@@ -86,11 +86,11 @@ fn provide<T: Admits + Send + Sync + 'static>(
     let mut moved = served.0.subscribe();
     runtime.spawn(async move {
         let answers = Arc::clone(&provider) as Arc<dyn ActionProvider + Send + Sync>;
-        let provided = match shell
+        let listing = match shell
             .provide(T::PROVIDER, &page(provider.as_ref(), 0), answers)
             .await
         {
-            Ok(provided) => provided,
+            Ok(listing) => listing,
             Err(error) => {
                 tracing::warn!(%error, provider = T::PROVIDER, "the device's dispatch reaches none of this provider's steps");
                 return;
@@ -98,7 +98,7 @@ fn provide<T: Admits + Send + Sync + 'static>(
         };
         while moved.changed().await.is_ok() {
             let generation = *moved.borrow_and_update();
-            if let Err(error) = provided.publish(&page(provider.as_ref(), generation)).await {
+            if let Err(error) = listing.publish(&page(provider.as_ref(), generation)).await {
                 tracing::warn!(%error, provider = T::PROVIDER, "the daemon is handed this provider's steps no more");
                 return;
             }

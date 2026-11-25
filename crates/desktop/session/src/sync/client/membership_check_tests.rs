@@ -350,6 +350,10 @@ fn a_joined_workspace_the_person_owns_is_theirs_before_any_host_answers() {
 /// this device among its devices no more (the person left it, or was taken out of it), it is handed
 /// to the session to let go of, and nothing else of the person's goes with it.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one test's whole flow, from its setup to what it proves"
+)]
 fn a_workspace_the_daemon_holds_elsewhere_is_listed_and_let_go_once_this_device_is_out_of_it() {
     use tilo_peer_state::workspace_view::{LIST, Listed, WorkspaceReading, resource};
 
@@ -435,7 +439,7 @@ fn a_workspace_the_daemon_holds_elsewhere_is_listed_and_let_go_once_this_device_
     // Where the device's daemon enters it, as it reads the list.
     let address = list
         .get(notes)
-        .and_then(|listed| listed.address())
+        .and_then(tilo_user_identity::ListedWorkspace::address)
         .expect("the list says where the workspace's host is reached");
     let hint: tilo_peer_state::join::TransportHint =
         postcard::from_bytes(&address).expect("the host's address reads");

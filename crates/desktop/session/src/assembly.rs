@@ -38,13 +38,14 @@ pub(crate) enum BoxAsk {
 /// [`Surfaces::revision`]: tilo_session_core::surfaces::Surfaces::revision
 pub(crate) type Observed = RefCell<Vec<(usize, u64)>>;
 
-#[cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        dead_code,
-        reason = "the page builds its own host over this state next"
-    )
-)]
+/// A deletion this device's daemon was asked for: the workspace, its name, and the answer the
+/// daemon sends, once it does.
+pub(crate) type AskedDeletion = (
+    tilo_desktop_model::WorkspaceId,
+    String,
+    crate::engine_write::Polled<Result<(), String>>,
+);
+
 /// What the session keeps between frames, shared with the loop.
 pub(crate) struct Shared {
     pub(crate) handle: DesktopHandle,
@@ -255,13 +256,7 @@ pub(crate) struct Shared {
     pub(crate) delete_workspace: Option<tilo_sheets::delete_workspace::DeleteWorkspaceState>,
     pub(crate) delete_workspace_ask: RefCell<Option<tilo_desktop_model::WorkspaceId>>,
     /// The deletions this device's daemon was asked for, by workspace and name, until it answers.
-    pub(crate) deletions: RefCell<
-        Vec<(
-            tilo_desktop_model::WorkspaceId,
-            String,
-            crate::engine_write::Polled<Result<(), String>>,
-        )>,
-    >,
+    pub(crate) deletions: RefCell<Vec<AskedDeletion>>,
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
     #[cfg(target_os = "linux")]
@@ -462,6 +457,25 @@ pub(crate) struct Shared {
     pub(crate) session_services: std::sync::Arc<crate::mcp_server::SessionServices>,
 }
 
+/// Where a session stands in its life: before its first frame reaches the display, running, or
+/// ended by the person logging out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Life {
+    /// No frame has reached the display yet: the startup is still measured.
+    #[default]
+    Starting,
+    Running,
+    /// The person logged out: the loop ends.
+    Ended,
+}
+
+impl Life {
+    /// Whether the first frame has not reached the display yet.
+    pub(crate) fn starting(self) -> bool {
+        matches!(self, Self::Starting)
+    }
+}
+
 #[cfg_attr(
     target_arch = "wasm32",
     allow(
@@ -478,11 +492,9 @@ pub struct Session {
     /// The input preferences the compositor runs with now.
     #[cfg(target_os = "linux")]
     pub(crate) input: tilo_compositor::InputConfig,
-    /// The person logged out: the loop ends.
-    pub(crate) ended: bool,
-    /// The first frame reached the display: the startup is measured and
-    /// closed.
-    pub(crate) first_frame: bool,
+    /// Where the session stands in its life: starting, running, or ended by the person logging
+    /// out.
+    pub(crate) life: Life,
     /// The workspace in front, as this pass last read it: a change is a
     /// switch to time.
     pub(crate) active_workspace: Option<tilo_desktop_model::WorkspaceId>,
@@ -750,5 +762,5 @@ pub struct Session {
     /// The test's daemon this session is the shell of ([`crate::Options::shell_daemon`]): the
     /// last field, so it ends after everything of the session that reaches it.
     #[cfg(unix)]
-    pub(crate) shell_daemon: Option<Box<dyn std::any::Any>>,
+    pub(crate) _shell_daemon: Option<Box<dyn std::any::Any>>,
 }

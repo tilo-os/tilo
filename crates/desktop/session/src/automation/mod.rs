@@ -139,7 +139,7 @@ impl Automation {
             self.focus.replace(focus),
             focus,
         ));
-        self.start(firings);
+        self.start(&firings);
     }
 
     /// When this session next looks at the apps and focus modes: only while a shortcut is armed
@@ -165,7 +165,7 @@ impl Automation {
     /// whose keyboard trigger names it, once.
     pub fn press(&self, chord: &KeyChord) {
         let firings = chord_pressed(&self.armed_now, chord);
-        self.start(firings);
+        self.start(&firings);
     }
 
     /// The chords the armed shortcuts' keyboard triggers answer, as the desktop's shortcut table
@@ -229,8 +229,8 @@ impl Automation {
     }
 
     /// Start every firing as its saver.
-    fn start(&self, firings: Vec<Firing>) {
-        for firing in &firings {
+    fn start(&self, firings: &[Firing]) {
+        for firing in firings {
             match &self.dispatch {
                 Some(dispatch) => run_fired(dispatch.as_ref(), firing),
                 None => {

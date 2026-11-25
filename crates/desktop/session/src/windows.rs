@@ -240,7 +240,7 @@ fn bar_of(toolbar: &ui::window_toolbar::WindowToolbar) -> Bar {
                 ui::widget::toast::ToastKind::Success => "success",
                 ui::widget::toast::ToastKind::Warning => "warning",
                 ui::widget::toast::ToastKind::Error => "error",
-                _ => "info",
+                ui::widget::toast::ToastKind::Info => "info",
             }
             .to_owned(),
             actions: notice.actions.iter().map(action).collect(),

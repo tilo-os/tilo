@@ -509,7 +509,9 @@ impl WorkspaceFiles for PolicyFiles {
         // The workspace's reading reaches this session a moment after it takes the change. Wait
         // for it, so a reopen right after the choice reads the grant and nothing this session
         // cannot read again is answered for.
-        let deadline = std::time::Instant::now() + GRANT_WAIT;
+        let deadline = std::time::Instant::now()
+            .checked_add(GRANT_WAIT)
+            .unwrap_or_else(std::time::Instant::now);
         while self.held(node, app, write).is_none() {
             if std::time::Instant::now() >= deadline {
                 return Err(

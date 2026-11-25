@@ -242,7 +242,7 @@ impl Fabric {
                 tilo_workspace_service::workspaces::person_workspace::genesis::<Devices>("")
                     .expect("the record's first state"),
             )),
-            local: DeviceId::new(&key("this-laptop")).expect("a device id"),
+            local: DeviceId::new(key("this-laptop")).expect("a device id"),
         };
         fabric.publish("this-laptop", "This laptop");
         fabric

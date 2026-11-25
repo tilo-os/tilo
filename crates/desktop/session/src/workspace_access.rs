@@ -40,6 +40,7 @@ use crate::workspace_view::WorkspaceView;
 pub(crate) const RESOURCE: &str = "workspace/access";
 
 /// The action that takes a grant or a device-record choice back, by its id.
+#[cfg(test)]
 pub(crate) const REVOKE: &str = "revoke";
 
 /// What the workspace's access list offers: taking a grant or a chosen file back.

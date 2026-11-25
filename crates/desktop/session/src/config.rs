@@ -495,8 +495,10 @@ mod tests {
         };
         use tilo_compositor::backend::drm::tablet::StylusButtonAction as Pressed;
 
-        let mut stored = TabletConfig::default();
-        stored.upper_button = StylusButtonAction::Shortcut(ShortcutAction::Search);
+        let mut stored = TabletConfig {
+            upper_button: StylusButtonAction::Shortcut(ShortcutAction::Search),
+            ..TabletConfig::default()
+        };
         stored.pad_buttons.insert(2, ShortcutAction::Lock);
         stored.pad_rings.insert(
             0,

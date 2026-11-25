@@ -73,35 +73,7 @@ impl tilo_system_service::windows_apps::WindowsManager for SessionWindows {
                 };
             }
         };
-        appliance.shared_session = SharedSession {
-            active: list.vm_availability.shared_session.active,
-            grants: list
-                .vm_availability
-                .shared_session
-                .effective_grants
-                .iter()
-                .map(|grant| match grant {
-                    compat_service::VmSharedSessionGrantKind::AudioPlayback => "audio-playback",
-                    compat_service::VmSharedSessionGrantKind::Clipboard => "clipboard",
-                    compat_service::VmSharedSessionGrantKind::Microphone => "microphone",
-                    compat_service::VmSharedSessionGrantKind::NetworkEgress => "network-egress",
-                    compat_service::VmSharedSessionGrantKind::PortalFilesReadOnly => {
-                        "portal-files-read-only"
-                    }
-                    compat_service::VmSharedSessionGrantKind::PortalFilesReadWrite => {
-                        "portal-files-read-write"
-                    }
-                })
-                .map(str::to_owned)
-                .collect(),
-            contributors: list
-                .vm_availability
-                .shared_session
-                .contributors
-                .iter()
-                .map(|contributor| contributor.display_name.clone())
-                .collect(),
-        };
+        appliance.shared_session = shared_session(&list);
         if let Some(end) = &list.ended {
             *lock(&self.ended) = Some((
                 Instant::now(),
@@ -183,17 +155,17 @@ impl tilo_system_service::windows_apps::WindowsManager for SessionWindows {
                 };
                 let source =
                     File::open(path).map_err(|error| format!("could not open {path}: {error}"))?;
-                self.appliance.import_iso(source)
+                ApplianceOwner::import_iso(source)
             }
             WindowsAppsAction::Recovery => self.appliance.recovery(),
-            WindowsAppsAction::Start => self.appliance.lifecycle("start"),
-            WindowsAppsAction::Restart => self.appliance.lifecycle("restart"),
-            WindowsAppsAction::Suspend => self.appliance.lifecycle("suspend"),
-            WindowsAppsAction::Resume => self.appliance.lifecycle("resume"),
-            WindowsAppsAction::Shutdown => self.appliance.lifecycle("shutdown"),
-            WindowsAppsAction::TemporaryNetwork => self.appliance.egress_open("activation"),
-            WindowsAppsAction::UpdateNetwork => self.appliance.egress_open("windows-update"),
-            WindowsAppsAction::RevokeNetwork => self.appliance.egress_revoke(),
+            WindowsAppsAction::Start => ApplianceOwner::lifecycle("start"),
+            WindowsAppsAction::Restart => ApplianceOwner::lifecycle("restart"),
+            WindowsAppsAction::Suspend => ApplianceOwner::lifecycle("suspend"),
+            WindowsAppsAction::Resume => ApplianceOwner::lifecycle("resume"),
+            WindowsAppsAction::Shutdown => ApplianceOwner::lifecycle("shutdown"),
+            WindowsAppsAction::TemporaryNetwork => ApplianceOwner::egress_open("activation"),
+            WindowsAppsAction::UpdateNetwork => ApplianceOwner::egress_open("windows-update"),
+            WindowsAppsAction::RevokeNetwork => ApplianceOwner::egress_revoke(),
             WindowsAppsAction::InstallPrivateCapsule => {
                 self.manager()?.install_in_capsule(workspace)
             }
@@ -443,6 +415,39 @@ fn route_of(route: RouteKind) -> Route {
     }
 }
 
+/// What the appliance's shared session is, as the manager's `list` says it.
+fn shared_session(list: &compat_service::ManagerList) -> SharedSession {
+    SharedSession {
+        active: list.vm_availability.shared_session.active,
+        grants: list
+            .vm_availability
+            .shared_session
+            .effective_grants
+            .iter()
+            .map(|grant| match grant {
+                compat_service::VmSharedSessionGrantKind::AudioPlayback => "audio-playback",
+                compat_service::VmSharedSessionGrantKind::Clipboard => "clipboard",
+                compat_service::VmSharedSessionGrantKind::Microphone => "microphone",
+                compat_service::VmSharedSessionGrantKind::NetworkEgress => "network-egress",
+                compat_service::VmSharedSessionGrantKind::PortalFilesReadOnly => {
+                    "portal-files-read-only"
+                }
+                compat_service::VmSharedSessionGrantKind::PortalFilesReadWrite => {
+                    "portal-files-read-write"
+                }
+            })
+            .map(str::to_owned)
+            .collect(),
+        contributors: list
+            .vm_availability
+            .shared_session
+            .contributors
+            .iter()
+            .map(|contributor| contributor.display_name.clone())
+            .collect(),
+    }
+}
+
 /// The owner's status, as the appliance page reads it, and the commands that change it.
 struct ApplianceOwner {
     status: Mutex<(Option<Instant>, Appliance)>,
@@ -483,34 +488,34 @@ impl ApplianceOwner {
         status.1.clone()
     }
 
-    fn import_iso(&self, source: File) -> Result<(), String> {
+    fn import_iso(source: File) -> Result<(), String> {
         let mut command = Command::new("pkexec");
         command.arg(OWNER).arg("import-iso");
         command_with_stdin(command, source)?;
-        self.start_recovery()
+        Self::start_recovery()
     }
 
     fn recovery(&self) -> Result<(), String> {
         if !self.reading().recovery_available {
             return Err("This appliance has no recovery desktop to open.".to_owned());
         }
-        self.start_recovery()
+        Self::start_recovery()
     }
 
-    fn lifecycle(&self, action: &str) -> Result<(), String> {
+    fn lifecycle(action: &str) -> Result<(), String> {
         run_privileged([OWNER, "lifecycle", action])
     }
 
-    fn egress_open(&self, purpose: &str) -> Result<(), String> {
+    fn egress_open(purpose: &str) -> Result<(), String> {
         run_privileged([OWNER, "egress-open", purpose, "600"])?;
-        self.start_recovery()
+        Self::start_recovery()
     }
 
-    fn egress_revoke(&self) -> Result<(), String> {
+    fn egress_revoke() -> Result<(), String> {
         run_privileged([OWNER, "egress-revoke"])
     }
 
-    fn start_recovery(&self) -> Result<(), String> {
+    fn start_recovery() -> Result<(), String> {
         run_privileged([OWNER, "recovery-start"])?;
         Command::new(RECOVERY_CONSOLE)
             .arg("--owner-authorized")

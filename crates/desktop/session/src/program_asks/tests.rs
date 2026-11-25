@@ -100,7 +100,8 @@ impl Device {
     /// The call `invocation` stands as `update` now.
     fn stands(&self, invocation: InvocationId, update: InvocationUpdate) {
         self.states.lock().unwrap().insert(invocation, update);
-        for change in std::mem::take(&mut *self.changes.lock().unwrap()) {
+        let changes = std::mem::take(&mut *self.changes.lock().unwrap());
+        for change in changes {
             change.complete(());
         }
     }
@@ -291,7 +292,7 @@ impl AskedDispatch for Device {
 /// The session's side of the programs' questions, and the device it raises them through.
 fn session() -> (tilo_service::AskSender, Arc<Device>) {
     let (sender, receiver) = tilo_service::asks::channel();
-    let asks = ProgramAsks::over(receiver, tokio::runtime::Handle::current(), || {});
+    let asks = ProgramAsks::over(&receiver, tokio::runtime::Handle::current(), || {});
     (sender, Device::start(&asks))
 }
 

@@ -46,10 +46,18 @@ pub(crate) fn follow_daemon(
                 answer: tilo_actions::remote::ReadAnswer::Document,
             };
             let taken = daemon.read(read).await.and_then(|readings| {
-                let reading = serde_json::to_vec(&readings["records"][0]["value"])
-                    .map_err(|error| error.to_string())?;
+                let raw = readings
+                    .get("records")
+                    .and_then(|records| records.get(0))
+                    .and_then(|first| first.get("value"))
+                    .ok_or_else(|| "the reading holds no record".to_owned())?;
+                let reading =
+                    serde_json::to_vec(raw).map_err(|error| error.to_string())?;
                 rows.take_reading(&reading)?;
-                Ok(readings["revision"].as_str().map(str::to_owned))
+                Ok(readings
+                    .get("revision")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned))
             });
             match taken {
                 Ok(revision) if revision.is_some() && revision != after => after = revision,
@@ -91,12 +99,19 @@ pub(crate) fn follow_window_notes(
                 answer: tilo_actions::remote::ReadAnswer::Document,
             };
             let taken = daemon.read(read).await.and_then(|readings| {
-                let reading = serde_json::to_vec(&readings["records"][0]["value"])
-                    .map_err(|error| error.to_string())?;
+                let raw = readings
+                    .get("records")
+                    .and_then(|records| records.get(0))
+                    .and_then(|first| first.get("value"))
+                    .ok_or_else(|| "the reading holds no record".to_owned())?;
+                let reading = serde_json::to_vec(raw).map_err(|error| error.to_string())?;
                 let notes =
                     tilo_workspace_service::window_notes::WindowNotes::take_reading(&reading)?;
                 *routes.lock_recover() = notes.routes();
-                Ok(readings["revision"].as_str().map(str::to_owned))
+                Ok(readings
+                    .get("revision")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned))
             });
             match taken {
                 Ok(revision) if revision.is_some() && revision != after => after = revision,
@@ -203,16 +218,15 @@ fn located<'a>(
     resources: &'a [tilo_actions::ResourceSpec],
     row: &tilo_workspace_service::live::LiveRow,
 ) -> Option<(String, String, Option<&'a tilo_actions::ResourceSpec>)> {
-    match published(resources, &row.kind, &row.id) {
-        Some(spec) => Some((
+    if let Some(spec) = published(resources, &row.kind, &row.id) {
+        Some((
             spec.id.as_str().to_owned(),
             tilolang_tilo::publish::app_of(spec.id.as_str())?.to_owned(),
             Some(spec),
-        )),
-        None => {
-            let (resource, app) = address(&row.kind, &row.id)?;
-            Some((resource, app, None))
-        }
+        ))
+    } else {
+        let (resource, app) = address(&row.kind, &row.id)?;
+        Some((resource, app, None))
     }
 }
 
@@ -356,6 +370,21 @@ impl Sources {
                 })
             })
             .collect();
+        self.player_row(&mut rows);
+        self.activity_rows(&mut rows);
+        let mut collapsed = self.collapsed.borrow_mut();
+        // A row that went is forgotten: the next thing live under its key is on the bar again.
+        collapsed.retain(|key| rows.iter().any(|row| &row.key == key));
+        for row in &mut rows {
+            row.collapsed = collapsed.contains(&row.key);
+        }
+        drop(collapsed);
+        self.cards.borrow_mut().mark(&mut rows);
+        Live { rows }
+    }
+
+    /// The row of what plays on this device now, where something does.
+    fn player_row(&self, rows: &mut Vec<LiveItem>) {
         if let Some(playing) = self.readings.borrow().playing() {
             let mut controls = Vec::new();
             if playing.can_previous {
@@ -390,10 +419,14 @@ impl Sources {
                 ..LiveItem::default()
             });
         }
+    }
+
+    /// A row for each live activity the apps published.
+    fn activity_rows(&self, rows: &mut Vec<LiveItem>) {
         for (app, summary, floats) in self.activities.summaries() {
             let (progress, elapsed, remaining) = match (summary.progress, summary.length) {
                 (Some(progress), Some(length)) => {
-                    let length = length as f64;
+                    let length = ui::num::f64_of_u64(length);
                     along(f64::from(progress) * length, length)
                 }
                 (Some(progress), None) => (Some(f64::from(progress)), String::new(), String::new()),
@@ -439,15 +472,6 @@ impl Sources {
                 ..LiveItem::default()
             });
         }
-        let mut collapsed = self.collapsed.borrow_mut();
-        // A row that went is forgotten: the next thing live under its key is on the bar again.
-        collapsed.retain(|key| rows.iter().any(|row| &row.key == key));
-        for row in &mut rows {
-            row.collapsed = collapsed.contains(&row.key);
-        }
-        drop(collapsed);
-        self.cards.borrow_mut().mark(&mut rows);
-        Live { rows }
     }
 
     /// Do what `effect` asks of the rows.
@@ -602,7 +626,7 @@ pub(crate) fn press_player(sources: &Sources, services: &mut tilo_service::Servi
 /// How far along `at` seconds is of `length`, and the two ends of its bar as the person reads
 /// them ("1:12", "-2:48"); nothing where the length is unknown.
 fn along(at: f64, length: f64) -> (Option<f64>, String, String) {
-    if !(length > 0.0) {
+    if length <= 0.0 {
         return (None, String::new(), String::new());
     }
     let at = at.clamp(0.0, length);
@@ -919,6 +943,10 @@ mod tests {
     /// back; at most three stand, the ones touched last; a card the person moves keeps its place
     /// until it is docked again.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one test's whole flow, from its setup to what it proves"
+    )]
     fn cards_stand_as_their_apps_ask_and_as_the_person_leaves_them() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
         let live = sources(&board);

@@ -89,15 +89,17 @@ fn shell_tree(session: &Session) -> TreeUpdate {
         .a11y_windows()
         .into_iter()
         .find(|(_, name, _)| name == SHELL)
-        .map(|(_, _, tree)| tree)
-        .unwrap_or_else(|| {
-            let names: Vec<String> = session
-                .a11y_windows()
-                .into_iter()
-                .map(|(_, name, _)| name)
-                .collect();
-            panic!("the shell draws a window named {SHELL:?}; it draws {names:?}")
-        })
+        .map_or_else(
+            || {
+                let names: Vec<String> = session
+                    .a11y_windows()
+                    .into_iter()
+                    .map(|(_, name, _)| name)
+                    .collect();
+                panic!("the shell draws a window named {SHELL:?}; it draws {names:?}")
+            },
+            |(_, _, tree)| tree,
+        )
 }
 
 /// The label of the control that holds the keyboard, as a reader finds it: nothing while the
@@ -119,15 +121,17 @@ fn labelled<'t>(tree: &'t TreeUpdate, label: &str) -> &'t Node {
     tree.nodes
         .iter()
         .find(|(_, node)| node.label() == Some(label))
-        .map(|(_, node)| node)
-        .unwrap_or_else(|| {
-            let names: Vec<&str> = tree
-                .nodes
-                .iter()
-                .filter_map(|(_, node)| node.label())
-                .collect();
-            panic!("no node named {label:?}; the shell says {names:?}")
-        })
+        .map_or_else(
+            || {
+                let names: Vec<&str> = tree
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| node.label())
+                    .collect();
+                panic!("no node named {label:?}; the shell says {names:?}")
+            },
+            |(_, node)| node,
+        )
 }
 
 /// Whether the shell publishes a row named `label`.
@@ -278,7 +282,10 @@ fn a_press_off_who_is_here_closes_it_and_does_not_reopen_it() {
     open_who_is_here(&mut session);
 
     // A press on the empty shell off the panel puts it away.
-    click(&mut session, (WIDTH as f64 * 0.2, HEIGHT as f64 * 0.7));
+    click(
+        &mut session,
+        (f64::from(WIDTH) * 0.2, f64::from(HEIGHT) * 0.7),
+    );
     until(&mut session, "who is here gone", |session| {
         crate::common::shell_here(session) != "people"
     });

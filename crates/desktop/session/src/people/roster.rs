@@ -356,7 +356,6 @@ impl PeopleOverlay {
         let header_h = ui::widget::TextStackFace::new(model.workspace)
             .secondary("0")
             .height(text, theme);
-        let control = f64::from(metrics.bar_control_height);
         let groups = model.present_groups();
         let footer_h = footer_height(model, text, theme, width);
         let face = FloatingPanelFace::new()
@@ -497,7 +496,6 @@ impl PeopleOverlay {
         let spacing = &theme.tokens.spacing;
         let row_h = f64::from(metrics.row_avatar);
         let heading_h = f64::from(metrics.row_single);
-        let control = f64::from(metrics.bar_control_height);
         let RowsPlan {
             groups,
             labelled,
@@ -529,10 +527,7 @@ impl PeopleOverlay {
                 let Some(row) = model.rows.get(index) else {
                     continue;
                 };
-                let (mut place, follow_right) =
-                    self.row_place(text, theme, (index, rect), row, widths);
-                // The open part's lines end where Follow ends.
-                let line_right = follow_right + bleed;
+                let mut place = self.row_place(text, theme, (index, rect), row, widths);
                 y += row_h;
                 let under_h = under.get(index).copied().unwrap_or(0.0);
                 if under_h > 0.0 {
@@ -576,16 +571,15 @@ impl PeopleOverlay {
         (index, rect): (usize, Rect),
         row: &RosterRow,
         widths: ButtonWidths,
-    ) -> (RowPlace, f64) {
+    ) -> RowPlace {
         let (follow, wave) = self.trailing_slots(text, theme, rect, &row.label, widths.follow);
-        let place = RowPlace {
+        RowPlace {
             index,
             rect,
             follow: if row.followable { follow } else { Rect::ZERO },
             wave: if row.is_agent() { Rect::ZERO } else { wave },
             ..RowPlace::default()
-        };
-        (place, follow.x1)
+        }
     }
 
     /// Wave and Follow sit in a row's trailing slot, inside its disclosure chevron when it has
@@ -888,7 +882,7 @@ impl PeopleOverlay {
             if row.is_agent() {
                 face = face.tags(&tags);
             }
-            let mut face = face
+            let face = face
                 .leading(RowLeading::Paint(&paint_face))
                 .leading_column(FACE)
                 // Software, which is never waved at, keeps no room for Wave.
@@ -1030,38 +1024,8 @@ impl PeopleOverlay {
         }
     }
 
-    /// Where the panel's header stands: the grip that drags a roster kept on screen to another edge.
-    #[must_use]
-    pub fn body_rect(&self) -> Rect {
-        self.body
-    }
-
     pub fn header_rect(&self) -> Rect {
         self.header
-    }
-
-    pub fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
-        self.scroll_theme.as_ref()?;
-        self.scroll.as_ref()?.primary_vertical_scroll()
-    }
-
-    pub fn apply_primary_vertical_scroll(
-        &mut self,
-        action: ui::widget::PrimaryScrollAction,
-    ) -> ui::widget::PrimaryScrollResult {
-        let Some(scroll) = &mut self.scroll else {
-            return ui::widget::PrimaryScrollResult::Unsupported;
-        };
-        let result = scroll.apply_primary_vertical_scroll(action);
-        if matches!(result, ui::widget::PrimaryScrollResult::Changed(_)) {
-            self.targets.cancel_pointer_press();
-            self.register_targets(self.host);
-        }
-        result
-    }
-
-    pub fn clear(&mut self) {
-        *self = Self::default();
     }
 
     fn target_id(&self, hit: PeopleHit) -> Option<String> {
@@ -1107,50 +1071,6 @@ impl PeopleOverlay {
         self.targets.cancel_pointer_press();
         self.targets.set_host_focus(false);
         self.keyboard_focus = None;
-    }
-
-    /// Step a glide after a flick to the frame's time, from the host's `update` ; returns whether the roster moved.
-    pub fn advance_scroll(&mut self) -> bool {
-        let moved = self
-            .scroll
-            .as_mut()
-            .is_some_and(ui::widget::ScrollRegion::advance);
-        if moved {
-            self.targets.cancel_pointer_press();
-        }
-        moved
-    }
-
-    pub fn needs_animation_frame(&self) -> bool {
-        self.scroll_theme.as_ref().is_some_and(|theme| {
-            self.scroll
-                .as_ref()
-                .is_some_and(|scroll| scroll.needs_animation_frame(theme))
-        })
-    }
-
-    pub fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        let scrollbar = self.scroll_theme.as_ref().and_then(|theme| {
-            self.scroll
-                .as_ref()
-                .and_then(|scroll| scroll.next_wake_deadline(theme))
-        });
-        // Someone here is in a call: an arc sweeps round their ring.
-        let breath = self
-            .shown_rows
-            .iter()
-            .any(|row| row.call.is_some())
-            .then(|| ui::motion::Sweep::next_frame(ui::time::now(), self.motion))
-            .flatten();
-        [scrollbar, breath, self.shown_waved_until]
-            .into_iter()
-            .flatten()
-            .filter(|at| *at > ui::time::now())
-            .min()
-    }
-
-    pub fn wants_pointer_capture(&self) -> bool {
-        self.targets.wants_pointer_capture()
     }
 
     fn scroll_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
@@ -1294,15 +1214,18 @@ impl PeopleOverlay {
     }
 
     /// The Invite button, where it is painted.
+    #[cfg(test)]
     pub fn invite_rect(&self) -> Rect {
         self.invite
     }
 
+    #[cfg(test)]
     pub fn contains(&self, point: Point) -> bool {
         self.panel.area() > 0.0 && self.panel.contains(point)
     }
 
     /// The stable person behind a painted Wave button.
+    #[cfg(test)]
     pub fn wave_target(&self, index: usize) -> Option<&str> {
         self.shown_rows
             .get(index)
@@ -1310,15 +1233,8 @@ impl PeopleOverlay {
             .map(|row| row.id.as_str())
     }
 
-    /// Where a painted row's header stands, so a card about that person opens under it.
-    pub fn row_rect(&self, index: usize) -> Option<Rect> {
-        self.rows
-            .iter()
-            .find(|row| row.index == index)
-            .map(|row| row.rect)
-    }
-
     /// What a press at `point` (on screen) means.
+    #[cfg(test)]
     pub fn hit_test(&self, point: Point) -> PeopleHit {
         if !self.contains(point) {
             return PeopleHit::Dismiss;
@@ -1399,79 +1315,6 @@ impl PeopleOverlay {
             PeopleHit::Absorb | PeopleHit::Dismiss => None,
         }
         .filter(|rect| rect.area() > 0.0)
-    }
-
-    /// Bring the focused control into view.
-    fn reveal_focus(&mut self) {
-        let Some(rect) = self
-            .keyboard_focus
-            .filter(|hit| !matches!(hit, PeopleHit::Invite | PeopleHit::Pin))
-            .and_then(|hit| self.rect_for_hit(hit))
-        else {
-            return;
-        };
-        // In the bar's terms (the whole panel): the rect, with the panel's fixed parts below it,
-        // fits the panel when the rect fits the list.
-        let fixed = self.panel.height() - self.body.height();
-        let rect = Affine::translate((-self.body.x0, -self.body.y0))
-            .transform_rect_bbox(rect.inflate(3.0, 3.0));
-        let content = Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + fixed);
-        if let Some(scroll) = &mut self.scroll {
-            scroll.scroll_into_view(content);
-        }
-    }
-
-    /// Arrows, Tab, Home and End move through the controls; Enter or Space activates the focused one; Escape closes.
-    pub fn key(&mut self, key: &Key, backwards: bool) -> Option<PeopleHit> {
-        if matches!(key, Key::Named(NamedKey::Escape)) {
-            self.keyboard_focus = None;
-            return Some(PeopleHit::Dismiss);
-        }
-        if matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
-            return self.keyboard_focus;
-        }
-        let reverse = matches!(key, Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp))
-            || (backwards && matches!(key, Key::Named(NamedKey::Tab)));
-        if !matches!(
-            key,
-            Key::Named(
-                NamedKey::Tab
-                    | NamedKey::ArrowLeft
-                    | NamedKey::ArrowRight
-                    | NamedKey::ArrowUp
-                    | NamedKey::ArrowDown
-                    | NamedKey::Home
-                    | NamedKey::End
-            )
-        ) {
-            return None;
-        }
-        let order = self.focus_order();
-        if order.is_empty() {
-            return None;
-        }
-        let current = self
-            .keyboard_focus
-            .and_then(|focus| order.iter().position(|candidate| *candidate == focus));
-        let last = order.len().saturating_sub(1);
-        let next = if matches!(key, Key::Named(NamedKey::Home)) {
-            0
-        } else if matches!(key, Key::Named(NamedKey::End)) {
-            last
-        } else if reverse {
-            current
-                .and_then(|index| index.checked_sub(1))
-                .unwrap_or(last)
-        } else {
-            current
-                .and_then(|index| index.checked_add(1))
-                .filter(|index| *index < order.len())
-                .unwrap_or(0)
-        };
-        self.keyboard_focus = order.get(next).copied();
-        self.reveal_focus();
-        self.register_targets(self.host);
-        None
     }
 
     /// What the wave on row `index` is called: sent, or to send.

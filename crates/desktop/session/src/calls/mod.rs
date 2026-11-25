@@ -1211,7 +1211,7 @@ impl Shared {
     /// what the person set for them here, never what anyone else's call changes.
     pub(crate) fn set_volume(&self, member: &str, percent: u16) {
         let mut volumes = self.volumes.lock_recover();
-        if percent == u16::from(runtime_collab::native_media::MAX_VOLUME_PERCENT) / 2 {
+        if percent == runtime_collab::native_media::MAX_VOLUME_PERCENT / 2 {
             volumes.remove(member);
         } else {
             volumes.insert(member.to_owned(), percent);
@@ -1255,6 +1255,7 @@ impl Shared {
             return;
         }
         *sent = wanted.clone();
+        drop(sent);
         self.side.lock_recover().voice.set_volumes(wanted);
     }
 

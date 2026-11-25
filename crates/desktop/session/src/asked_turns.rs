@@ -31,7 +31,7 @@ fn answer_in<'a>(reading: &'a Value, app: &str) -> Option<&'a str> {
         .iter()
         .filter(|link| link["how"] == "field" && link["ty"].as_str() == Some(message.as_str()))
         .filter_map(|link| link.get("ref")?.as_str())
-        .last()
+        .next_back()
 }
 
 /// Whether `resource` is `id` or holds it among its children, at any depth.

@@ -132,21 +132,18 @@ fn start_and_wait(args: &[String]) -> Result<ExitCode, String> {
     // A session in a window of another desktop sends that window's connection with its start,
     // as a descriptor on this connection: the service starts the shell with it and with a link
     // of the shell's own.
-    let started = match named_descriptor(WAYLAND_SOCKET) {
-        Some(fd) => {
-            let line = format!("{start}\n");
-            // SAFETY: the descriptor is this process's window connection; sending a copy of it
-            // leaves it this process's.
-            let connection = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
-            runtime_portal::fd_transport::send_with_fd(&stream, line.as_bytes(), connection)
-                .map_err(|error| format!("Tilo's service did not take the start: {error}"))?;
-            answer(&mut reader)?
-        }
-        None => {
-            writeln!(&stream, "{start}")
-                .map_err(|error| format!("Tilo's service stopped answering: {error}"))?;
-            answer(&mut reader)?
-        }
+    let started = if let Some(fd) = named_descriptor(WAYLAND_SOCKET) {
+        let line = format!("{start}\n");
+        // SAFETY: the descriptor is this process's window connection; sending a copy of it
+        // leaves it this process's.
+        let connection = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        runtime_portal::fd_transport::send_with_fd(&stream, line.as_bytes(), connection)
+            .map_err(|error| format!("Tilo's service did not take the start: {error}"))?;
+        answer(&mut reader)?
+    } else {
+        writeln!(&stream, "{start}")
+            .map_err(|error| format!("Tilo's service stopped answering: {error}"))?;
+        answer(&mut reader)?
     };
     let pid = started
         .get("pid")

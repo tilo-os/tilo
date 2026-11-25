@@ -433,7 +433,7 @@ fn another_pair_is_another_conversation() {
     );
     let theirs = direct(&carol_laptop, &bob_key).expect("the conversation Carol opened");
     assert_ne!(
-        Some(theirs.clone()),
+        Some(theirs),
         direct(&studio.bob_laptop, &ada_key),
         "Carol and Bob's conversation is not Ada and Bob's"
     );
@@ -776,12 +776,12 @@ fn invoke(device: &Device, action: &RemoteActionTarget, args: &Value) -> Result<
     match answer["update"]["state"].as_str() {
         Some("succeeded") => Ok(answer["update"]["output"].clone()),
         Some("failed" | "cancelled") => Err(answer["update"].to_string()),
-        other => panic!(
+        other => Err(format!(
             "{} {:?} ended as {other:?}: {answer}\n{}",
             device.label,
             action.address,
             device.diagnostic()
-        ),
+        )),
     }
 }
 

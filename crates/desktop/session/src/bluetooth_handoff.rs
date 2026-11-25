@@ -142,40 +142,10 @@ impl Handoffs {
                     device,
                     asked,
                 } => {
-                    match asked {
-                        Ok(()) => tell(
-                            shared,
-                            0,
-                            t_args(
-                                "session-bluetooth-moving",
-                                &[("accessory", name.as_str().into())],
-                            ),
-                            t_args(
-                                "session-bluetooth-moving-body",
-                                &[("device", device.as_str().into())],
-                            ),
-                        ),
-                        Err(error) => {
-                            tracing::warn!(%error, "a Bluetooth handoff was not asked");
-                            refused(shared, &name, &t("session-bluetooth-target-away"));
-                        }
-                    }
+                    Self::asked(shared, &name, &device, asked);
                     continue;
                 }
-                Done::Turned { turn, worked } => {
-                    // A device that holds no bond of the accessory says so; it is no failure.
-                    if let Err(error) = &worked
-                        && turn.radio != Radio::Inspect
-                    {
-                        tracing::warn!(%error, radio = ?turn.radio, "a Bluetooth step did not work");
-                    }
-                    accessory::finished(
-                        &turn,
-                        worked.is_ok(),
-                        &mut self.part.borrow_mut(),
-                        now_ns(),
-                    )
-                }
+                Done::Turned { turn, worked } => self.turned(&turn, &worked),
             };
             if let Some(write) = write {
                 record.invoke_unwaited(&write, |written| {
@@ -213,6 +183,41 @@ impl Handoffs {
             self.spawn_turn(turn);
         }
         self.tell_ended(shared, &held, &local);
+    }
+
+    /// Tell the person how the ask to move `name` to `device` ended.
+    fn asked(shared: &Shared, name: &str, device: &str, asked: Result<(), String>) {
+        match asked {
+            Ok(()) => tell(
+                shared,
+                0,
+                t_args("session-bluetooth-moving", &[("accessory", name.into())]),
+                t_args(
+                    "session-bluetooth-moving-body",
+                    &[("device", device.into())],
+                ),
+            ),
+            Err(error) => {
+                tracing::warn!(%error, "a Bluetooth handoff was not asked");
+                refused(shared, name, &t("session-bluetooth-target-away"));
+            }
+        }
+    }
+
+    /// Take in how a Bluetooth step this device took went: what the record writes of it, if
+    /// anything.
+    fn turned(
+        &self,
+        turn: &Turn,
+        worked: &Result<(), String>,
+    ) -> Option<tilo_resource::Invoke<Devices>> {
+        // A device that holds no bond of the accessory says so; it is no failure.
+        if let Err(error) = worked
+            && turn.radio != Radio::Inspect
+        {
+            tracing::warn!(%error, radio = ?turn.radio, "a Bluetooth step did not work");
+        }
+        accessory::finished(turn, worked.is_ok(), &mut self.part.borrow_mut(), now_ns())
     }
 
     /// Check that the accessory the person named can move to `device`, and read what it is called
@@ -280,7 +285,9 @@ impl Handoffs {
             let origin = kept.from == local;
             let ended_here = origin && kept.stage.ended();
             let came_here = kept.to == local && kept.stage == MoveStage::Moved;
-            if kept.asked_ns < self.since_ns
+            // A move asked before this session started was told by the session that asked it.
+            let asked_before = kept.asked_ns < self.since_ns;
+            if asked_before
                 || !(ended_here || came_here)
                 || !told.insert((address.as_str().to_owned(), kept.asked_ns))
             {
@@ -297,10 +304,7 @@ impl Handoffs {
                         "session-bluetooth-taken",
                         &[("accessory", kept.name.as_str().into())],
                     ),
-                    t_args(
-                        "session-bluetooth-taken-body",
-                        &[("device", device.as_str().into())],
-                    ),
+                    t_args("session-bluetooth-taken-body", &[("device", device.into())]),
                 );
             }
         }
@@ -319,21 +323,18 @@ fn tell_end(shared: &Shared, record: &Devices, kept: &AccessoryMove) {
                     "session-bluetooth-moved",
                     &[("accessory", kept.name.as_str().into())],
                 ),
-                t_args(
-                    "session-bluetooth-moved-body",
-                    &[("device", device.as_str().into())],
-                ),
+                t_args("session-bluetooth-moved-body", &[("device", device.into())]),
             );
             return;
         }
         MoveStage::NotPaired => t_args(
             "session-bluetooth-not-paired-there",
-            &[("device", device.as_str().into())],
+            &[("device", device.into())],
         ),
         MoveStage::NotReleased => t("session-bluetooth-not-released"),
         MoveStage::NotConnected => t_args(
             "session-bluetooth-not-connected-there",
-            &[("device", device.as_str().into())],
+            &[("device", device.into())],
         ),
         MoveStage::GivenUp if kept.ran_out() => t("session-bluetooth-timed-out"),
         MoveStage::GivenUp => t("session-bluetooth-target-away"),

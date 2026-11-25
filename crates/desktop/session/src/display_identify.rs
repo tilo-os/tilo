@@ -60,7 +60,7 @@ impl Numbers {
             id: request.requested_unix_ms,
             labels,
         });
-        self.until = Some(ui::time::now() + Duration::from_millis(IDENTIFY_MS));
+        self.until = ui::time::now().checked_add(Duration::from_millis(IDENTIFY_MS));
     }
 
     /// What each display says while it says it: its number and the name Settings gives it, by the

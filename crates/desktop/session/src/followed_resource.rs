@@ -195,7 +195,10 @@ impl<P: Resource> FollowedResource<P> {
                         .await
                     {
                         Ok(readings) => {
-                            after = readings["revision"].as_str().map(str::to_owned);
+                            after = readings
+                                .get("revision")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned);
                             if take(&latest, &readings) {
                                 wake();
                             }
@@ -590,7 +593,10 @@ where
                         .await
                     {
                         Ok(readings) => {
-                            after = readings["revision"].as_str().map(str::to_owned);
+                            after = readings
+                                .get("revision")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned);
                             if let Some(now) = reading_value::<T>(&readings) {
                                 let mut latest = latest.lock_recover();
                                 latest.0 = latest.0.wrapping_add(1);

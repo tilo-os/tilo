@@ -117,14 +117,17 @@ impl Listings {
                     };
                     match daemon.read(read).await {
                         Ok(readings) => {
-                            let revision = readings["revision"].as_str().map(str::to_owned);
+                            let revision = readings
+                                .get("revision")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned);
                             if revision.is_some() && revision == after {
                                 continue;
                             }
                             after = revision;
-                            let reading = readings["records"]
-                                .as_array()
-                                .and_then(|records| records.first())
+                            let reading = readings
+                                .get("records")
+                                .and_then(|records| records.get(0))
                                 .and_then(|first| first.get("value"))
                                 .filter(|value| value.is_object())
                                 .cloned();

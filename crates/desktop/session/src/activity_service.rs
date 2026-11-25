@@ -373,7 +373,7 @@ pub(crate) struct Span {
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
 #[serde(default)]
-pub(crate) struct Execution {
+pub(crate) struct RunPlace {
     pub workspace: Option<String>,
     pub app_id: String,
     pub record: String,
@@ -426,7 +426,7 @@ pub(crate) struct SessionAction {
     pub record: String,
     /// The execution a command ran as, when its shell recorded one: what reads everything it
     /// printed.
-    pub execution: Option<Execution>,
+    pub execution: Option<RunPlace>,
     /// The action that undoes this record's share of the session alone, when it can be undone on
     /// its own here.
     pub undo_label: Option<String>,
@@ -495,7 +495,7 @@ pub(crate) struct AgentSession {
 /// Every agent session the history holds, newest first.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default)]
-pub(crate) struct Sessions {
+pub(crate) struct SessionList {
     pub sessions: Vec<AgentSession>,
     pub total: i64,
     pub pending: bool,
@@ -515,7 +515,7 @@ pub(crate) struct Activity {
     /// The layout at each recent change.
     pub replay: Option<Replay>,
     /// Every agent session.
-    pub sessions: Option<Sessions>,
+    pub sessions: Option<SessionList>,
     /// What the person was asked to open from outside, until the app shows it.
     pub focus: Option<Focus>,
 }
@@ -901,7 +901,7 @@ impl Served {
         let everywhere: Feed = self.last(Read::Everywhere).unwrap_or_default();
         let summary: Summary = self.last(Read::Summary).unwrap_or_default();
         let replay: Replay = self.last(Read::Replay).unwrap_or_default();
-        let sessions: Sessions = self
+        let sessions: SessionList = self
             .last::<SessionsValue>(Read::Sessions)
             .map(SessionsValue::into_sessions)
             .unwrap_or_default();
@@ -929,9 +929,7 @@ impl Service for Served {
         if resource == RESOURCE {
             return Some(self.json.clone());
         }
-        let Some(key) = Key::of(resource) else {
-            return None;
-        };
+        let key = Key::of(resource)?;
         let mut keyed = self.keyed.borrow_mut();
         if let Some(json) = keyed.json.get(resource) {
             return Some(json.clone());
@@ -1256,8 +1254,8 @@ struct SessionsValue {
 }
 
 impl SessionsValue {
-    fn into_sessions(self) -> Sessions {
-        Sessions {
+    fn into_sessions(self) -> SessionList {
+        SessionList {
             sessions: self.sessions.iter().map(session).collect(),
             total: i64::try_from(self.total).unwrap_or(i64::MAX),
             pending: self.pending,
@@ -1338,6 +1336,22 @@ fn change(change: &wire::SessionChange) -> SessionChange {
     }
 }
 
+/// A file change's lines, as an app reads them.
+fn diff_lines(lines: &[wire::DiffLine]) -> Vec<DiffLine> {
+    lines
+        .iter()
+        .map(|line| DiffLine {
+            side: match line.side {
+                wire::DiffSide::Both => "both",
+                wire::DiffSide::Removed => "removed",
+                wire::DiffSide::Added => "added",
+            }
+            .to_owned(),
+            text: line.text.clone(),
+        })
+        .collect()
+}
+
 /// One action of an agent session as an app reads it.
 fn action(action: &wire::SessionAction) -> SessionAction {
     let (kind, place, title, cwd, output, more, exit, ended_ms, diff) = match &action.view {
@@ -1350,18 +1364,7 @@ fn action(action: &wire::SessionAction) -> SessionAction {
             false,
             None,
             None,
-            lines
-                .iter()
-                .map(|line| DiffLine {
-                    side: match line.side {
-                        wire::DiffSide::Both => "both",
-                        wire::DiffSide::Removed => "removed",
-                        wire::DiffSide::Added => "added",
-                    }
-                    .to_owned(),
-                    text: line.text.clone(),
-                })
-                .collect(),
+            diff_lines(lines),
         ),
         wire::ActionView::Command {
             command,
@@ -1409,7 +1412,7 @@ fn action(action: &wire::SessionAction) -> SessionAction {
         wire::ActionView::Command {
             execution: Some(execution),
             ..
-        } => Some(Execution {
+        } => Some(RunPlace {
             workspace: execution.workspace.clone(),
             app_id: execution.app_id.clone(),
             record: execution.record.clone(),
@@ -1736,6 +1739,10 @@ mod tests {
             self.revision
         }
 
+        #[expect(
+            clippy::too_many_lines,
+            reason = "one test's whole flow, from its setup to what it proves"
+        )]
         fn read(&mut self, action: &str, arguments: &Map<String, Value>) -> Result<Value, String> {
             let feed = |workspace: &str, summary: &str| {
                 serde_json::json!({
@@ -1869,6 +1876,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one test's whole flow, from its setup to what it proves"
+    )]
     fn the_reads_an_app_shows_are_one_reading_and_a_write_runs_on_the_model() {
         let requests = activity_requests(Arc::new(AtomicBool::new(false)));
         let mut model = Model::new();

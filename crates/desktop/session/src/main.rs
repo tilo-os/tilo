@@ -729,7 +729,7 @@ fn start(
         portal,
         power,
         machine,
-        windows_manager: windows_manager.clone(),
+        windows_manager,
         agent_key,
         test_control,
         admin_control,

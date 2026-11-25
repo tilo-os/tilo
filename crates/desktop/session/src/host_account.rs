@@ -129,7 +129,8 @@ impl Served {
 
     /// The reading as it stands, or the one it would have before the host answered.
     fn reading(&self) -> Value {
-        if let Some(held) = self.held.lock_recover().clone() {
+        let held = self.held.lock_recover().clone();
+        if let Some(held) = held {
             return held;
         }
         shell(State::Reading, host_name(&self.source), "")
@@ -176,7 +177,8 @@ impl Service for Served {
     /// Ask the host when its answer is wanted again, off this thread: the loop draws
     /// windows while the host answers. Whether a new reading landed.
     fn poll(&mut self) -> bool {
-        if let Some(landed) = self.landed.lock_recover().take() {
+        let landed = self.landed.lock_recover().take();
+        if let Some(landed) = landed {
             *self.held.lock_recover() = Some(landed);
             *self.asked.lock_recover() = Instant::now();
             return true;
@@ -249,39 +251,59 @@ fn account_reading(account: &ServerAccount) -> Value {
         )
     };
     let mut reading = shell(state, &account.server, words);
+    let mut put = |key: &str, value: Value| {
+        if let Some(map) = reading.as_object_mut() {
+            map.insert(key.to_owned(), value);
+        }
+    };
     let plan = account.plan();
-    reading["plan_name"] = json!(plan.map(|plan| plan.name.clone()).unwrap_or_default());
-    reading["plan_price"] = json!(plan.and_then(|plan| plan.price.clone()).unwrap_or_default());
-    reading["manage"] = json!(account.manage_billing.as_deref().map_or("", page));
+    put(
+        "plan_name",
+        json!(plan.map(|plan| plan.name.clone()).unwrap_or_default()),
+    );
+    put(
+        "plan_price",
+        json!(plan.and_then(|plan| plan.price.clone()).unwrap_or_default()),
+    );
+    put(
+        "manage",
+        json!(account.manage_billing.as_deref().map_or("", page)),
+    );
     if let Some(subscription) = subscription {
         if let Some(card) = &subscription.payment_method {
-            reading["has_card"] = json!(true);
-            reading["card_brand"] = json!(card.brand.clone().unwrap_or_default());
-            reading["card_last4"] = json!(card.last4.clone().unwrap_or_default());
+            put("has_card", json!(true));
+            put("card_brand", json!(card.brand.clone().unwrap_or_default()));
+            put("card_last4", json!(card.last4.clone().unwrap_or_default()));
         }
-        reading["usage_seconds"] = json!(subscription.usage.vm_seconds());
+        put("usage_seconds", json!(subscription.usage.vm_seconds()));
         if let Some(included) = subscription
             .limits
             .as_ref()
             .and_then(|limits| limits.included_vm_seconds)
         {
-            reading["included_seconds"] = json!(included);
+            put("included_seconds", json!(included));
         }
-        reading["credit"] = json!(subscription.credit.clone().unwrap_or_default());
-        reading["invoices"] = Value::Array(
-            subscription
-                .invoices
-                .iter()
-                .map(|invoice| {
-                    json!({
-                        "id": invoice.id,
-                        "amount": invoice.amount,
-                        "status": status_word(invoice.status),
-                        "issued": issued(invoice.issued_ms),
-                        "page": page(&invoice.url),
+        put(
+            "credit",
+            json!(subscription.credit.clone().unwrap_or_default()),
+        );
+        put(
+            "invoices",
+            Value::Array(
+                subscription
+                    .invoices
+                    .iter()
+                    .map(|invoice| {
+                        json!({
+                            "id": invoice.id,
+                            "amount": invoice.amount,
+                            "status": status_word(invoice.status),
+                            "issued": issued(invoice.issued_ms),
+                            "page": page(&invoice.url),
+                        })
                     })
-                })
-                .collect(),
+                    .collect(),
+            ),
         );
     }
     reading

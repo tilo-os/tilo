@@ -24,7 +24,7 @@ impl ShellSurface for ShellPart {
     /// the pictures it names are drawn above every window, as what it shows is the person's
     /// to look at rather than a backdrop behind their windows.
     fn below_windows(&self) -> bool {
-        self.widgets.below_windows() && !self.cover
+        self.widgets.below_windows() && !self.cover.over()
     }
 
     /// The live pictures the part's views name: each window's own pixels, where the view would
@@ -86,7 +86,7 @@ impl ShellSurface for ShellPart {
         // the menu it closes it, as a press outside any menu does. The held Super's keys are a
         // picture over the windows, not one: a press there is the window's, so the shell takes
         // none of its display.
-        if self.cover
+        if self.cover.over()
             && self.origin.borrow().link.surface() != tilo_session_core::shell::PEEK_SURFACE
             && let Some((_, (ox, oy, width, height))) = self.output
         {
@@ -173,7 +173,7 @@ impl ShellSurface for ShellPart {
         // The shell under the windows takes the keys when one of its own controls put the caret
         // somewhere it answers: a field of the bar's, or a canvas's place, which pans with the
         // arrow keys (`ui.Map`). A shell with none leaves the keys to the window in front.
-        self.cover || self.text_input().is_some() || self.widgets.takes_keys()
+        self.cover.over() || self.text_input().is_some() || self.widgets.takes_keys()
     }
 
     /// The regions the shell's translucent material records: the compositor blurs what lies

@@ -65,10 +65,9 @@ fn title_in(value: &Value) -> Option<String> {
                 .get("control")
                 .and_then(Value::as_str)
                 .is_some_and(|control| control.starts_with("title:"))
+                && let Some(title) = fields.get("value").and_then(Value::as_str)
             {
-                if let Some(title) = fields.get("value").and_then(Value::as_str) {
-                    return Some(title.to_owned());
-                }
+                return Some(title.to_owned());
             }
             fields.values().find_map(title_in)
         }
@@ -176,7 +175,7 @@ fn attributed_history(device: &Device) -> Vec<(String, Value)> {
         .iter()
         .map(|version| {
             if let Some(by) = version["by"].as_str() {
-                author = by.to_owned();
+                by.clone_into(&mut author);
             }
             (author.clone(), version.clone())
         })
@@ -293,7 +292,7 @@ fn changed_in(a: &image::RgbaImage, b: &image::RgbaImage, rect: [f64; 4]) -> usi
 #[test]
 fn an_edit_on_one_members_checklist_reaches_the_other_with_its_caret_and_history() {
     let (site, ada, bob, first, second) =
-        two_people_at_a_site_carrying(&[], |device| device.install_shared_checklist());
+        two_people_at_a_site_carrying(&[], super::common::people::Device::install_shared_checklist);
     show(&first, &site);
     show(&second, &site);
     // Both devices read the workspace they joined as their person: a refused read is why the

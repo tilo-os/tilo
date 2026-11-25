@@ -405,6 +405,23 @@ impl Clone for Displays {
     }
 }
 
+/// What the person's display settings last read as: not read yet, read as none kept, or read as
+/// the stamp it stands at.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SettingsRead {
+    #[default]
+    NotYet,
+    NoneKept,
+    At(settings_store::SettingsStamp),
+}
+
+impl SettingsRead {
+    /// What a settings document read as `stamp` says: none kept for a session that keeps none.
+    fn of(stamp: Option<settings_store::SettingsStamp>) -> Self {
+        stamp.map_or(Self::NoneKept, Self::At)
+    }
+}
+
 /// What the session knows of its displays between passes.
 #[derive(Default)]
 struct Inner {
@@ -443,11 +460,110 @@ struct Inner {
     tools: Vec<TrustedTool>,
     /// The settings revision `tools` were read at, and the monitor set `config` was, so an
     /// unchanged document is not read again.
-    followed_stamp: Option<Option<settings_store::SettingsStamp>>,
+    followed_stamp: SettingsRead,
     followed_set: Option<String>,
     /// Where this person's display settings are kept, which a change tried from a view is
     /// written to; `None` in a session with no settings document.
     source: Option<Arc<dyn settings_store::SettingsSource>>,
+}
+
+/// `display`'s entry in `config`, which every display change edits.
+fn output_mut<'a>(
+    config: &'a mut settings_store::hardware::DisplayConfig,
+    display: &str,
+) -> Result<&'a mut settings_store::hardware::OutputConfig, ApiError> {
+    config
+        .outputs
+        .get_mut(display)
+        .ok_or_else(|| ApiError::InvalidArguments(format!("`{display}` is not a display")))
+}
+
+/// `display` as the compositor offers it, among `observed`.
+fn offered<'a>(
+    observed: &'a settings_store::hardware::DisplayHardwareSnapshot,
+    display: &str,
+) -> Result<&'a settings_store::hardware::DisplayOutputSnapshot, ApiError> {
+    observed
+        .outputs
+        .iter()
+        .find(|output| output.descriptor.connector == display)
+        .ok_or_else(|| ApiError::InvalidArguments(format!("`{display}` is not a display")))
+}
+
+/// One display the compositor shows, as `output` describes it, with `observed` what the
+/// compositor says of its modes and `config` what the person's settings keep of it.
+fn shown_of(
+    output: &OutputInfo,
+    observed: Option<&settings_store::hardware::DisplayOutputSnapshot>,
+    config: Option<&settings_store::hardware::OutputConfig>,
+) -> Shown {
+    Shown {
+        connector: output.name.clone(),
+        monitor: output.monitor.clone(),
+        name: display_name(output),
+        colour: output.colour,
+        rect: output.rect.unwrap_or_default(),
+        scale: output.scale,
+        transform: transform_name(output.transform).to_owned(),
+        primary: output.primary,
+        mode: observed
+            .map(|observed| Mode {
+                width: i64::from(observed.current_mode.width),
+                height: i64::from(observed.current_mode.height),
+                refresh_mhz: i64::from(observed.current_mode.refresh_mhz),
+            })
+            .or_else(|| {
+                output.mode.map(|(width, height, refresh_mhz)| Mode {
+                    width: i64::from(width),
+                    height: i64::from(height),
+                    refresh_mhz: i64::from(refresh_mhz),
+                })
+            }),
+        modes: observed.map_or_else(Vec::new, |observed| {
+            observed
+                .descriptor
+                .modes
+                .iter()
+                .map(|mode| Mode {
+                    width: i64::from(mode.width),
+                    height: i64::from(mode.height),
+                    refresh_mhz: i64::from(mode.refresh_mhz),
+                })
+                .collect()
+        }),
+        hdr: observed.is_some_and(|observed| observed.descriptor.hdr),
+        hdr_on: config.map_or(output.colour.supports_pq_output, |config| config.hdr),
+        sink_hdr: observed.is_some_and(|observed| observed.sink_hdr),
+        hdr_unavailable: observed
+            .and_then(|observed| observed.hdr_unavailable_reason)
+            .map(hdr_reason),
+        sdr_brightness_nits: config.map_or(DEFAULT_SDR_BRIGHTNESS_NITS, |config| {
+            i64::from(config.sdr_brightness_nits)
+        }),
+        vrr: observed.is_some_and(|observed| observed.descriptor.vrr),
+        vrr_on: config.is_none_or(|config| config.vrr),
+        sink_vrr: observed.is_some_and(|observed| observed.sink_vrr),
+        vrr_unavailable: observed
+            .and_then(|observed| observed.vrr_unavailable_reason)
+            .map(vrr_reason),
+        colour_profile: config.and_then(|config| config.color_profile.clone()),
+        colour_profiles: observed.map_or_else(Vec::new, |observed| {
+            observed
+                .descriptor
+                .color_profiles
+                .iter()
+                .filter_map(|id| {
+                    observed
+                        .color_profile_labels
+                        .get(id)
+                        .map(|label| ColourProfile {
+                            key: id.clone(),
+                            label: label.clone(),
+                        })
+                })
+                .collect()
+        }),
+    }
 }
 
 /// One display the compositor shows.
@@ -489,9 +605,9 @@ impl Inner {
         &mut self,
         snapshot: Option<&settings_store::hardware::DisplayHardwareSnapshot>,
     ) {
-        let stamp = settings_store::stamp();
-        if self.followed_stamp != Some(stamp) {
-            self.followed_stamp = Some(stamp);
+        let read = SettingsRead::of(settings_store::stamp());
+        if self.followed_stamp != read {
+            self.followed_stamp = read;
             // The display tools the person trusts, read at the same revision.
             let tools = trusted_display_tools();
             self.settings_moved |= self.tools != tools;
@@ -648,73 +764,7 @@ impl Displays {
                         .find(|observed| observed.descriptor.connector == output.name)
                 });
                 let config = inner.config.outputs.get(&output.name);
-                Shown {
-                    connector: output.name.clone(),
-                    monitor: output.monitor.clone(),
-                    name: display_name(output),
-                    colour: output.colour,
-                    rect: output.rect.unwrap_or_default(),
-                    scale: output.scale,
-                    transform: transform_name(output.transform).to_owned(),
-                    primary: output.primary,
-                    mode: observed
-                        .map(|observed| Mode {
-                            width: i64::from(observed.current_mode.width),
-                            height: i64::from(observed.current_mode.height),
-                            refresh_mhz: i64::from(observed.current_mode.refresh_mhz),
-                        })
-                        .or_else(|| {
-                            output.mode.map(|(width, height, refresh_mhz)| Mode {
-                                width: i64::from(width),
-                                height: i64::from(height),
-                                refresh_mhz: i64::from(refresh_mhz),
-                            })
-                        }),
-                    modes: observed.map_or_else(Vec::new, |observed| {
-                        observed
-                            .descriptor
-                            .modes
-                            .iter()
-                            .map(|mode| Mode {
-                                width: i64::from(mode.width),
-                                height: i64::from(mode.height),
-                                refresh_mhz: i64::from(mode.refresh_mhz),
-                            })
-                            .collect()
-                    }),
-                    hdr: observed.is_some_and(|observed| observed.descriptor.hdr),
-                    hdr_on: config.map_or(output.colour.supports_pq_output, |config| config.hdr),
-                    sink_hdr: observed.is_some_and(|observed| observed.sink_hdr),
-                    hdr_unavailable: observed
-                        .and_then(|observed| observed.hdr_unavailable_reason)
-                        .map(hdr_reason),
-                    sdr_brightness_nits: config.map_or(DEFAULT_SDR_BRIGHTNESS_NITS, |config| {
-                        i64::from(config.sdr_brightness_nits)
-                    }),
-                    vrr: observed.is_some_and(|observed| observed.descriptor.vrr),
-                    vrr_on: config.is_none_or(|config| config.vrr),
-                    sink_vrr: observed.is_some_and(|observed| observed.sink_vrr),
-                    vrr_unavailable: observed
-                        .and_then(|observed| observed.vrr_unavailable_reason)
-                        .map(vrr_reason),
-                    colour_profile: config.and_then(|config| config.color_profile.clone()),
-                    colour_profiles: observed.map_or_else(Vec::new, |observed| {
-                        observed
-                            .descriptor
-                            .color_profiles
-                            .iter()
-                            .filter_map(|id| {
-                                observed
-                                    .color_profile_labels
-                                    .get(id)
-                                    .map(|label| ColourProfile {
-                                        key: id.clone(),
-                                        label: label.clone(),
-                                    })
-                            })
-                            .collect()
-                    }),
-                }
+                shown_of(output, observed, config)
             })
             .collect();
         let arrangement = current(outputs);
@@ -923,9 +973,7 @@ fn level_of(level: f64) -> Result<f32, ApiError> {
 impl Displays {
     /// The displays the compositor shows now, the monitors they are arranged for, and the
     /// configuration they run with: the starting point of a change a view asks for.
-    fn running(
-        &self,
-    ) -> Result<
+    fn running() -> Result<
         (
             settings_store::hardware::DisplayHardwareSnapshot,
             settings_store::hardware::DisplaySet,
@@ -977,7 +1025,7 @@ impl Displays {
             &mut settings_store::hardware::DisplayConfig,
         ) -> Result<(), ApiError>,
     ) -> Result<(), ApiError> {
-        let (observed, set, mut candidate) = self.running()?;
+        let (observed, set, mut candidate) = Self::running()?;
         edit(&observed, &mut candidate)?;
         let source = self.settings_source()?;
         settings_store::display_control::execute(
@@ -994,7 +1042,7 @@ impl Displays {
 
     /// Say which screen is which, on the screens themselves.
     fn identify(&self) -> Result<(), ApiError> {
-        let (observed, _, _) = self.running()?;
+        let (observed, _, _) = Self::running()?;
         let source = self.settings_source()?;
         settings_store::display_control::execute(
             source.as_ref(),
@@ -1010,7 +1058,7 @@ impl Displays {
     fn decide(&self, transaction: i64, keep: bool) -> Result<(), ApiError> {
         let transaction = u64::try_from(transaction)
             .map_err(|_| ApiError::InvalidArguments("the change's id is not a number".into()))?;
-        let (observed, _, _) = self.running()?;
+        let (observed, _, _) = Self::running()?;
         let source = self.settings_source()?;
         let command = if keep {
             settings_store::display_control::DisplayCommand::Keep { transaction }
@@ -1103,182 +1151,27 @@ impl Service for Displays {
                 let level = level_of(level)?;
                 self.set(&display, level)?;
             }
-            DisplaysAction::ArrangeDisplays { display, x, y } => {
-                self.stage(|_, config| {
-                    let output = config.outputs.get_mut(&display).ok_or_else(|| {
-                        ApiError::InvalidArguments(format!("`{display}` is not a display"))
-                    })?;
-                    output.x = i32::try_from(x).map_err(|_| {
-                        ApiError::InvalidArguments("the place is out of range".into())
-                    })?;
-                    output.y = i32::try_from(y).map_err(|_| {
-                        ApiError::InvalidArguments("the place is out of range".into())
-                    })?;
-                    Ok(())
-                })?;
-            }
+            DisplaysAction::ArrangeDisplays { display, x, y } => self.arrange(&display, x, y)?,
             DisplaysAction::SetDisplayMode {
                 display,
                 width,
                 height,
                 refresh_mhz,
-            } => {
-                self.stage(|observed, config| {
-                    let offered = observed
-                        .outputs
-                        .iter()
-                        .find(|output| output.descriptor.connector == display)
-                        .ok_or_else(|| {
-                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
-                        })?;
-                    let matches = |mode: &&settings_store::hardware::OutputMode| {
-                        i64::from(mode.width) == width
-                            && i64::from(mode.height) == height
-                            && refresh_mhz
-                                .is_none_or(|refresh| i64::from(mode.refresh_mhz) == refresh)
-                    };
-                    let mode = offered
-                        .descriptor
-                        .modes
-                        .iter()
-                        .filter(matches)
-                        .max_by_key(|mode| mode.refresh_mhz)
-                        .copied()
-                        .ok_or_else(|| {
-                            ApiError::InvalidArguments(format!(
-                                "{width} × {height} is not a mode of `{display}`"
-                            ))
-                        })?;
-                    let output = config.outputs.get_mut(&display).ok_or_else(|| {
-                        ApiError::InvalidArguments(format!("`{display}` is not a display"))
-                    })?;
-                    output.mode = Some(mode);
-                    Ok(())
-                })?;
-            }
+            } => self.set_mode(&display, width, height, refresh_mhz)?,
             DisplaysAction::SetDisplayScale { display, scale } => {
-                self.stage(|_, config| {
-                    let output = config.outputs.get_mut(&display).ok_or_else(|| {
-                        ApiError::InvalidArguments(format!("`{display}` is not a display"))
-                    })?;
-                    if !(scale.is_finite() && scale > 0.0) {
-                        return Err(ApiError::InvalidArguments(
-                            "the scale is not a positive number".into(),
-                        ));
-                    }
-                    output.scale = scale;
-                    Ok(())
-                })?;
+                self.set_scale(&display, scale)?;
             }
             DisplaysAction::RotateDisplay { display, transform } => {
-                let transform = transform_of(&transform).ok_or_else(|| {
-                    ApiError::InvalidArguments(format!("`{transform}` is not a turn"))
-                })?;
-                self.stage(|_, config| {
-                    let output = config.outputs.get_mut(&display).ok_or_else(|| {
-                        ApiError::InvalidArguments(format!("`{display}` is not a display"))
-                    })?;
-                    output.transform = transform;
-                    Ok(())
-                })?;
+                self.rotate(&display, &transform)?;
             }
-            DisplaysAction::MakeDisplayPrimary { display } => {
-                self.stage(|_, config| {
-                    if !config.outputs.contains_key(&display) {
-                        return Err(ApiError::InvalidArguments(format!(
-                            "`{display}` is not a display"
-                        )));
-                    }
-                    for (connector, output) in &mut config.outputs {
-                        output.primary = *connector == display;
-                    }
-                    Ok(())
-                })?;
-            }
-            DisplaysAction::SetDisplayHdr { display, on } => {
-                self.stage(|observed, config| {
-                    let offered = observed
-                        .outputs
-                        .iter()
-                        .find(|output| output.descriptor.connector == display)
-                        .ok_or_else(|| {
-                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
-                        })?;
-                    if on && !offered.descriptor.hdr {
-                        return Err(ApiError::Unavailable {
-                            code: "no-hdr".into(),
-                            reason: format!("`{display}` cannot show high dynamic range"),
-                        });
-                    }
-                    config
-                        .outputs
-                        .get_mut(&display)
-                        .ok_or_else(|| {
-                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
-                        })?
-                        .hdr = on;
-                    Ok(())
-                })?;
-            }
+            DisplaysAction::MakeDisplayPrimary { display } => self.make_primary(&display)?,
+            DisplaysAction::SetDisplayHdr { display, on } => self.set_hdr(&display, on)?,
             DisplaysAction::SetDisplaySdrBrightness { display, nits } => {
-                if !SDR_BRIGHTNESS_NITS.contains(&nits) {
-                    return Err(ApiError::InvalidArguments(format!(
-                        "SDR brightness is from {start} to {end} cd/m², not {nits}",
-                        start = SDR_BRIGHTNESS_NITS.start(),
-                        end = SDR_BRIGHTNESS_NITS.end(),
-                    )));
-                }
-                let nits = u16::try_from(nits).map_err(|_| {
-                    ApiError::InvalidArguments("the SDR brightness is out of range".into())
-                })?;
-                self.stage(|_, config| {
-                    config
-                        .outputs
-                        .get_mut(&display)
-                        .ok_or_else(|| {
-                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
-                        })?
-                        .sdr_brightness_nits = nits;
-                    Ok(())
-                })?;
+                self.set_sdr_brightness(&display, nits)?;
             }
-            DisplaysAction::SetDisplayVrr { display, on } => {
-                self.stage(|_, config| {
-                    config
-                        .outputs
-                        .get_mut(&display)
-                        .ok_or_else(|| {
-                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
-                        })?
-                        .vrr = on;
-                    Ok(())
-                })?;
-            }
+            DisplaysAction::SetDisplayVrr { display, on } => self.set_vrr(&display, on)?,
             DisplaysAction::SetDisplayColourProfile { display, profile } => {
-                self.stage(|observed, config| {
-                    let offered = observed
-                        .outputs
-                        .iter()
-                        .find(|output| output.descriptor.connector == display)
-                        .ok_or_else(|| {
-                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
-                        })?;
-                    if let Some(profile) = &profile
-                        && !offered.descriptor.color_profiles.contains(profile)
-                    {
-                        return Err(ApiError::InvalidArguments(format!(
-                            "`{profile}` is not a colour profile of `{display}`"
-                        )));
-                    }
-                    config
-                        .outputs
-                        .get_mut(&display)
-                        .ok_or_else(|| {
-                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
-                        })?
-                        .color_profile = profile;
-                    Ok(())
-                })?;
+                self.set_colour_profile(&display, profile)?;
             }
             DisplaysAction::IdentifyDisplays => self.identify()?,
             DisplaysAction::KeepDisplayChange { transaction } => self.decide(transaction, true)?,
@@ -1302,6 +1195,145 @@ impl Service for Displays {
 }
 
 impl Displays {
+    /// Move the display `display` to `x`, `y`.
+    fn arrange(&self, display: &str, x: i64, y: i64) -> Result<(), ApiError> {
+        self.stage(|_, config| {
+            let output = output_mut(config, display)?;
+            output.x = i32::try_from(x)
+                .map_err(|_| ApiError::InvalidArguments("the place is out of range".into()))?;
+            output.y = i32::try_from(y)
+                .map_err(|_| ApiError::InvalidArguments("the place is out of range".into()))?;
+            Ok(())
+        })
+    }
+
+    /// Set the display `display` to the mode `width` by `height` at `refresh_mhz`, where the
+    /// compositor offers it.
+    fn set_mode(
+        &self,
+        display: &str,
+        width: i64,
+        height: i64,
+        refresh_mhz: Option<i64>,
+    ) -> Result<(), ApiError> {
+        self.stage(|observed, config| {
+            let offered = offered(observed, display)?;
+            let matches = |mode: &&settings_store::hardware::OutputMode| {
+                i64::from(mode.width) == width
+                    && i64::from(mode.height) == height
+                    && refresh_mhz.is_none_or(|refresh| i64::from(mode.refresh_mhz) == refresh)
+            };
+            let mode = offered
+                .descriptor
+                .modes
+                .iter()
+                .filter(matches)
+                .max_by_key(|mode| mode.refresh_mhz)
+                .copied()
+                .ok_or_else(|| {
+                    ApiError::InvalidArguments(format!(
+                        "{width} × {height} is not a mode of `{display}`"
+                    ))
+                })?;
+            output_mut(config, display)?.mode = Some(mode);
+            Ok(())
+        })
+    }
+
+    /// Draw the display `display` at `scale`.
+    fn set_scale(&self, display: &str, scale: f64) -> Result<(), ApiError> {
+        self.stage(|_, config| {
+            if !(scale.is_finite() && scale > 0.0) {
+                return Err(ApiError::InvalidArguments(
+                    "the scale is not a positive number".into(),
+                ));
+            }
+            output_mut(config, display)?.scale = scale;
+            Ok(())
+        })
+    }
+
+    /// Turn the display `display` as `transform` names.
+    fn rotate(&self, display: &str, transform: &str) -> Result<(), ApiError> {
+        let transform = transform_of(transform)
+            .ok_or_else(|| ApiError::InvalidArguments(format!("`{transform}` is not a turn")))?;
+        self.stage(|_, config| {
+            output_mut(config, display)?.transform = transform;
+            Ok(())
+        })
+    }
+
+    /// Make the display `display` the primary one.
+    fn make_primary(&self, display: &str) -> Result<(), ApiError> {
+        self.stage(|_, config| {
+            if !config.outputs.contains_key(display) {
+                return Err(ApiError::InvalidArguments(format!(
+                    "`{display}` is not a display"
+                )));
+            }
+            for (connector, output) in &mut config.outputs {
+                output.primary = connector == display;
+            }
+            Ok(())
+        })
+    }
+
+    /// Show high dynamic range on the display `display`, where it offers it.
+    fn set_hdr(&self, display: &str, on: bool) -> Result<(), ApiError> {
+        self.stage(|observed, config| {
+            let offered = offered(observed, display)?;
+            if on && !offered.descriptor.hdr {
+                return Err(ApiError::Unavailable {
+                    code: "no-hdr".into(),
+                    reason: format!("`{display}` cannot show high dynamic range"),
+                });
+            }
+            output_mut(config, display)?.hdr = on;
+            Ok(())
+        })
+    }
+
+    /// Light the display `display` for standard dynamic range at `nits`.
+    fn set_sdr_brightness(&self, display: &str, nits: i64) -> Result<(), ApiError> {
+        if !SDR_BRIGHTNESS_NITS.contains(&nits) {
+            return Err(ApiError::InvalidArguments(format!(
+                "SDR brightness is from {start} to {end} cd/m², not {nits}",
+                start = SDR_BRIGHTNESS_NITS.start(),
+                end = SDR_BRIGHTNESS_NITS.end(),
+            )));
+        }
+        let nits = u16::try_from(nits)
+            .map_err(|_| ApiError::InvalidArguments("the SDR brightness is out of range".into()))?;
+        self.stage(|_, config| {
+            output_mut(config, display)?.sdr_brightness_nits = nits;
+            Ok(())
+        })
+    }
+
+    /// Run variable refresh rate on the display `display`.
+    fn set_vrr(&self, display: &str, on: bool) -> Result<(), ApiError> {
+        self.stage(|_, config| {
+            output_mut(config, display)?.vrr = on;
+            Ok(())
+        })
+    }
+
+    /// Show the display `display` in `profile`, where it offers it.
+    fn set_colour_profile(&self, display: &str, profile: Option<String>) -> Result<(), ApiError> {
+        self.stage(|observed, config| {
+            let offered = offered(observed, display)?;
+            if let Some(profile) = &profile
+                && !offered.descriptor.color_profiles.contains(profile)
+            {
+                return Err(ApiError::InvalidArguments(format!(
+                    "`{profile}` is not a colour profile of `{display}`"
+                )));
+            }
+            output_mut(config, display)?.color_profile = profile;
+            Ok(())
+        })
+    }
+
     /// Queue `command` for the loop, which is the only one reaching the compositor.
     fn command(&self, command: SessionCommand) {
         self.inner.borrow().commands.borrow_mut().push(command);
@@ -1473,7 +1505,9 @@ mod tests {
                 name: (*name).into(),
                 colour: DisplayCapabilities::sdr_default(),
                 rect: (
-                    i32::try_from(index).unwrap_or_default() * 1280,
+                    i32::try_from(index)
+                        .unwrap_or_default()
+                        .saturating_mul(1280),
                     0,
                     1280,
                     800,

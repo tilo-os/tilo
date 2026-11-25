@@ -27,13 +27,11 @@ use crate::{
 };
 
 impl Shared {
-    /// Carry out what the desktop asked since the last frame.
-    pub(crate) fn follow_asks(&self, look: &mut tilo_session_core::surfaces::Look<'_>) {
-        // A press on one of the person's devices is one of the session's own verbs: the queue it
-        // lands in is carried out here, with the asks.
-        self.carry_out_presses();
-        // What a person's card asked of the session: Chat's conversation with them. The roster's
-        // own resource asks through the same queue.
+    /// Carry out what the person's cards asked of the session: Chat's conversation with them,
+    /// their following, the device they pair, and their own card's words. The roster's own
+    /// resource asks through the same queue.
+    fn follow_people_asks(&self) {
+        // What a person's card asked of the session.
         for ask in self.people_asks.borrow_mut().drain(..) {
             match ask {
                 people::PeopleAsk::Message { key } => self.message_person(&key),
@@ -84,6 +82,14 @@ impl Shared {
                 }
             }
         }
+    }
+
+    /// Carry out what the desktop asked since the last frame.
+    pub(crate) fn follow_asks(&self, look: &mut tilo_session_core::surfaces::Look<'_>) {
+        // A press on one of the person's devices is one of the session's own verbs: the queue it
+        // lands in is carried out here, with the asks.
+        self.carry_out_presses();
+        self.follow_people_asks();
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
         for ask in asks {
             match ask {
@@ -443,12 +449,13 @@ impl Shared {
     /// root revokes it and the record of their keys marks it.
     /// It goes through the one dispatch as the person, to the provider of their keys, the way
     /// `tilo device revoke` does: the action asks them once before it runs.
-    fn revoke_agent_grant(&self, grant: String) {
+    fn revoke_agent_grant(&self, grant: &str) {
         use tilo_actions::remote::device_tickets;
         let tilo_actions::remote::InvokeArgument::Json(arguments) =
-            device_tickets::Revoke::retired(&grant).argument()
+            device_tickets::Revoke::retired(grant).argument()
         else {
-            unreachable!("a revocation is asked with an object");
+            tracing::error!("a revocation is asked with an object");
+            return;
         };
         self.invoke_app_action(LaunchpadAppAction {
             // The app the person's keys are published under.
@@ -513,7 +520,7 @@ impl Shared {
                     .as_mut()
                     .and_then(|server| server.revoke(&working.program));
                 if let Some(key) = key {
-                    self.revoke_agent_grant(key);
+                    self.revoke_agent_grant(&key);
                 }
                 self.agent_sessions.stop_program(&working.program);
             }

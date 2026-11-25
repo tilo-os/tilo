@@ -188,6 +188,29 @@ pub fn owner_decision(
 /// actions go through, the layout, what stands over it, the workspaces this computer holds, whether
 /// the person locked the screen, whether the lock screen's own frame is on it, and the agents admitted
 /// at the person's API.
+/// How the person's screen lock stands on this device.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub(crate) enum Locked {
+    /// The screen is unlocked.
+    No,
+    /// The screen is locked.
+    Yes,
+    /// The screen is locked, and this session draws the lock screen over it.
+    Drawn,
+}
+
+impl Locked {
+    /// Whether the screen is locked at all.
+    pub(crate) fn yes(self) -> bool {
+        !matches!(self, Self::No)
+    }
+
+    /// Whether the lock screen's own frame is on it.
+    pub(crate) fn drawn(self) -> bool {
+        matches!(self, Self::Drawn)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Session<'a> {
     pub(crate) published: &'a Surfaces,
@@ -209,8 +232,7 @@ pub(crate) struct Session<'a> {
     /// The windows this session shares and the ones of other devices it shows: what its
     /// window-share resource reads.
     pub(crate) shares: &'a std::cell::RefCell<crate::window_share::WindowShares>,
-    pub(crate) locked: bool,
-    pub(crate) lock_screen_drawn: bool,
+    pub(crate) locked: Locked,
     /// The lock's own state: what unlocking it is, the same one an accepted password sets, so a
     /// tool that unlocks asks the session to come down the one way it does — the screen dissolves
     /// and the compositor lifts the lock once it has.
@@ -621,7 +643,7 @@ impl Control {
                 tree.active_workspace()
                     .map(|workspace| workspace.id().to_string())
             }));
-        self.shared.actions.set_locked(session.locked);
+        self.shared.actions.set_locked(session.locked.yes());
         self.take();
         let mut waiting = self.waiting.borrow_mut();
         let mut later = Vec::new();
@@ -663,7 +685,7 @@ impl Control {
                 tree.active_workspace()
                     .map(|workspace| workspace.id().to_string())
             }));
-        self.shared.actions.set_locked(session.locked);
+        self.shared.actions.set_locked(session.locked.yes());
         self.take();
         let ready: Vec<Asked> = self.waiting.borrow_mut().drain(..).collect();
         for Asked {
@@ -1052,7 +1074,7 @@ fn loop_answer(
 /// The windows a tool reads: where each is drawn, how many frames it drew, and the resource it
 /// shows. Nothing shows a window while the screen is locked, to anyone but the developer.
 fn windows_answer(ctx: &Context, compositor: &Compositor, session: &Session<'_>) -> Json {
-    let rows = if ctx.who != Audience::Dev && session.locked {
+    let rows = if ctx.who != Audience::Dev && session.locked.yes() {
         Vec::new()
     } else {
         // Where each window is drawn, read off the frame's own layout: a row says what a tool
@@ -1084,6 +1106,29 @@ fn windows_answer(ctx: &Context, compositor: &Compositor, session: &Session<'_>)
     json!({"answer": {"windows": rows}})
 }
 
+/// What the search shows now: the query, its rows, and whether it still owes more.
+fn search_rows(session: &Session<'_>) -> Json {
+    let (query, rows) = session.handle.search_rows();
+    let rows: Vec<Json> = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "title": row.title,
+                "subtitle": row.subtitle,
+                "kind": row.kind,
+                "facts": row.facts,
+            })
+        })
+        .collect();
+    // Whether the search still owes rows: a tool timing what a person waits for stops on the
+    // rows being final, not on rows that are about to change under the same query.
+    json!({"answer": {
+        "query": query,
+        "rows": rows,
+        "searching": session.handle.search_searching(),
+    }})
+}
+
 fn asked_of_shell(
     ctx: &Context,
     op: Op,
@@ -1095,7 +1140,7 @@ fn asked_of_shell(
         // No picture leaves a locked session, to anyone: a socket client that reads the screen
         // could otherwise watch whatever the lock hides the moment it lifts or flickers, and a
         // caller that cannot see the display learns it is locked from the refusal.
-        Op::Snapshot if session.locked => refusal(
+        Op::Snapshot if session.locked.yes() => refusal(
             "session_locked",
             "the session is locked; unlock it at the device, then take the picture again",
         ),
@@ -1112,7 +1157,7 @@ fn asked_of_shell(
         // The session's lock comes down as it does for a password that unlocks: the screen
         // dissolves, and the compositor lifts the lock once it has.
         Op::Unlock => {
-            let was_locked = session.locked;
+            let was_locked = session.locked.yes();
             if was_locked {
                 session.lock.unlocked();
             }
@@ -1145,27 +1190,7 @@ fn asked_of_shell(
                 refusal("input_failed", "could not set the clipboard")
             }
         }
-        Op::SearchRows => {
-            let (query, rows) = session.handle.search_rows();
-            let rows: Vec<Json> = rows
-                .iter()
-                .map(|row| {
-                    json!({
-                        "title": row.title,
-                        "subtitle": row.subtitle,
-                        "kind": row.kind,
-                        "facts": row.facts,
-                    })
-                })
-                .collect();
-            // Whether the search still owes rows: a tool timing what a person waits for stops on
-            // the rows being final, not on rows that are about to change under the same query.
-            json!({"answer": {
-                "query": query,
-                "rows": rows,
-                "searching": session.handle.search_searching(),
-            }})
-        }
+        Op::SearchRows => search_rows(session),
         Op::ProcessMemory => json!({"answer": tilo_compositor::memory_report::report()}),
         Op::ProfileStart => profile_start(request),
         Op::ProfileStatus => json!({"answer": crate::diagnostics::reading()}),

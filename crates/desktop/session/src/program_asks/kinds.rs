@@ -58,7 +58,7 @@ pub(crate) struct Raised {
 /// What a program's question becomes for the person.
 pub(crate) enum Put {
     /// A question they answer.
-    Ask(Raised),
+    Ask(Box<Raised>),
     /// Something they only read, which they may stop the program from: a code to type on another
     /// device.
     Shown(Shown),
@@ -146,6 +146,51 @@ pub(crate) struct Binding {
 /// Why an answer reached nothing: what the next asking of the same question says at its fields.
 pub(crate) type Retry = String;
 
+/// The next take of what the program asked, or nothing where the person typed none.
+fn first(typed: &mut Vec<Zeroizing<String>>) -> Zeroizing<String> {
+    if typed.is_empty() {
+        Zeroizing::new(String::new())
+    } else {
+        typed.remove(0)
+    }
+}
+
+/// A launcher's answer: its name from the first take where it may be edited, and its icon from
+/// the choice.
+fn launcher_answer(
+    name: bool,
+    icons: usize,
+    choice: Option<usize>,
+    typed: &mut Vec<Zeroizing<String>>,
+) -> Result<Answer, Retry> {
+    let mut values = Vec::new();
+    if name {
+        let typed = first(typed);
+        if !valid_name(&typed) {
+            return Err(word("portal-launcher-bad-name"));
+        }
+        values.push(typed);
+    }
+    Ok(Answer {
+        choice: (icons > 0).then(|| choice.unwrap_or(0)),
+        values,
+        ..Answer::default()
+    })
+}
+
+/// What was typed into the one take, agreeing with it.
+fn entry_answer(typed: &mut Vec<Zeroizing<String>>) -> Result<Answer, Retry> {
+    let typed = first(typed);
+    if typed.trim().is_empty() {
+        return Err(word("portal-secret-incomplete"));
+    }
+    Ok(Answer {
+        choice: Some(0),
+        values: vec![Zeroizing::new(typed.trim().to_owned())],
+        ..Answer::default()
+    })
+}
+
 impl Reply {
     /// The program's answer from the person's.
     pub(crate) fn answer(&self, answered: Answered) -> Result<Answer, Retry> {
@@ -155,13 +200,6 @@ impl Reply {
             files,
             mut typed,
         } = answered;
-        let first = |typed: &mut Vec<Zeroizing<String>>| {
-            if typed.is_empty() {
-                Zeroizing::new(String::new())
-            } else {
-                typed.remove(0)
-            }
-        };
         Ok(match self {
             Self::Confirm => Answer::default(),
             Self::Agree => Answer {
@@ -193,32 +231,8 @@ impl Reply {
                 ..Answer::default()
             },
             Self::Bind(bindings) => bindings_answer(bindings, &typed),
-            Self::Launcher { name, icons } => {
-                let mut values = Vec::new();
-                if *name {
-                    let typed = first(&mut typed);
-                    if !valid_name(&typed) {
-                        return Err(word("portal-launcher-bad-name"));
-                    }
-                    values.push(typed);
-                }
-                Answer {
-                    choice: (*icons > 0).then(|| choice.unwrap_or(0)),
-                    values,
-                    ..Answer::default()
-                }
-            }
-            Self::Entry => {
-                let typed = first(&mut typed);
-                if typed.trim().is_empty() {
-                    return Err(word("portal-secret-incomplete"));
-                }
-                Answer {
-                    choice: Some(0),
-                    values: vec![Zeroizing::new(typed.trim().to_owned())],
-                    ..Answer::default()
-                }
-            }
+            Self::Launcher { name, icons } => launcher_answer(*name, *icons, choice, &mut typed)?,
+            Self::Entry => entry_answer(&mut typed)?,
             Self::Fingerprint(certificate) => {
                 if !first(&mut typed).trim().eq_ignore_ascii_case(certificate) {
                     return Err(crate::i18n::t("airdrop-error-verification"));
@@ -357,11 +371,11 @@ pub(crate) fn put(question: &Question, retry: Option<Retry>) -> Option<Put> {
     if retry.is_some() {
         facts.retry = retry;
     }
-    Some(Put::Ask(Raised {
+    Some(Put::Ask(Box::new(Raised {
         facts,
         reply,
         grant: grant_of(question),
-    }))
+    })))
 }
 
 /// The allowance `question` leaves when the person may keep their answer.
@@ -1059,8 +1073,7 @@ fn network_secrets(details: Value) -> Kind {
                 asked
                     .fields
                     .first()
-                    .map(|field| say(&field.label))
-                    .unwrap_or_else(|| word("portal-network-sim-pin")),
+                    .map_or_else(|| word("portal-network-sim-pin"), |field| say(&field.label)),
                 true,
             )];
             facts.retry = refused.or_else(|| retried.then(|| word("portal-sim-pin-wrong")));

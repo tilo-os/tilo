@@ -390,9 +390,13 @@ pub type Source = std::rc::Rc<dyn Records>;
 pub(crate) struct Memory {
     /// Each record by its app, workspace and route; the empty route is the app's own record of
     /// the workspace, its index.
-    held: Arc<Mutex<BTreeMap<(String, String, String), Vec<u8>>>>,
+    held: HeldRecords,
     changes: Changes,
 }
+
+/// Records by their app, workspace and route, as a test's daemon holds them.
+#[cfg(test)]
+type HeldRecords = Arc<Mutex<BTreeMap<(String, String, String), Vec<u8>>>>;
 
 #[cfg(test)]
 impl Memory {
@@ -433,8 +437,11 @@ impl Records for Memory {
 
     fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
         let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        let bytes = held.get(&(app.to_owned(), workspace.to_owned(), own_route(route)))?;
-        AutoCommit::load(bytes).ok()
+        let document = held
+            .get(&(app.to_owned(), workspace.to_owned(), own_route(route)))
+            .and_then(|bytes| AutoCommit::load(bytes).ok());
+        drop(held);
+        document
     }
 
     fn held(&self, workspace: &str) -> Vec<tilo_actions::remote::ListedResource> {
@@ -459,6 +466,7 @@ impl Records for Memory {
             .keys()
             .map(|(_, workspace, _)| workspace.clone())
             .collect();
+        drop(held);
         workspaces.sort();
         workspaces.dedup();
         workspaces

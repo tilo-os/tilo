@@ -126,6 +126,12 @@ enum Written {
 /// A write of the person's list.
 pub(crate) type ListWrite = Invoke<WorkspaceList>;
 
+/// The writes a pass sent to the list, by action and arguments, while the daemon makes them.
+type Writing = Option<(
+    Vec<(&'static str, serde_json::Map<String, serde_json::Value>)>,
+    Sending,
+)>;
+
 /// The person's list of their own workspaces as this session follows it, and what this session
 /// did with it.
 pub(crate) struct Personal {
@@ -166,12 +172,7 @@ pub(crate) struct Personal {
     /// The writes a pass sent to the list, by action and arguments, while the daemon makes them:
     /// the session never waits on its store. A later pass that would make the same writes takes
     /// them as made once they went.
-    writing: RefCell<
-        Option<(
-            Vec<(&'static str, serde_json::Map<String, serde_json::Value>)>,
-            Sending,
-        )>,
-    >,
+    writing: RefCell<Writing>,
     /// Where a workspace shows, as the person chose it, on its way to the list.
     choosing: RefCell<Vec<Sending>>,
     /// The workspaces placed on a host whose roster, as the device's daemon reads it, named this
@@ -384,23 +385,18 @@ impl Personal {
         let mut refused = Vec::new();
         for workspace in &mut tree.workspaces {
             let id = workspace.id();
-            match list.get(id) {
-                Some(listed) => {
-                    if !listed.name.trim().is_empty() && listed.name != workspace.name {
-                        workspace.name.clone_from(&listed.name);
-                        changed = true;
-                    }
+            if let Some(listed) = list.get(id) {
+                if !listed.name.trim().is_empty() && listed.name != workspace.name {
+                    workspace.name.clone_from(&listed.name);
+                    changed = true;
                 }
-                None => {
-                    if !id.is_nil()
-                        && !self.borrowed.contains(&id)
-                        && self.seed != Some(id)
-                        && !self.is_own(id)
-                        && !list.went(id)
-                    {
-                        refused.push(id);
-                    }
-                }
+            } else if !id.is_nil()
+                && !self.borrowed.contains(&id)
+                && self.seed != Some(id)
+                && !self.is_own(id)
+                && !list.went(id)
+            {
+                refused.push(id);
             }
         }
         let keeper = tree
@@ -408,28 +404,31 @@ impl Personal {
             .iter()
             .position(|workspace| list.get(workspace.id()).is_some());
         let mut moved_to = None;
-        match keeper {
-            Some(keeper) => {
-                for id in &refused {
-                    let Some(at) = tree.workspaces.iter().position(|held| held.id() == *id) else {
+        if let Some(keeper) = keeper {
+            for id in &refused {
+                let Some(at) = tree.workspaces.iter().position(|held| held.id() == *id) else {
+                    continue;
+                };
+                let Some(held) = tree.workspaces.get_mut(at) else {
+                    continue;
+                };
+                let strips = std::mem::take(&mut held.strips);
+                if !strips.is_empty() {
+                    let Some(staying_workspace) = tree.workspaces.get_mut(keeper) else {
                         continue;
                     };
-                    let strips = std::mem::take(&mut tree.workspaces[at].strips);
-                    if !strips.is_empty() {
-                        tree.workspaces[keeper].strips.extend(strips);
-                        moved_to = Some(tree.workspaces[keeper].name.clone());
-                        changed = true;
-                    }
+                    staying_workspace.strips.extend(strips);
+                    moved_to = Some(staying_workspace.name.clone());
+                    changed = true;
                 }
             }
+        } else {
             // The shell keeps the person one workspace: the only one it has waits, as the one a
             // fresh device starts with does, until the person's workspaces are known.
-            None => {
-                if let [only] = refused.as_slice() {
-                    self.hold_seed(*only);
-                }
-                refused.clear();
+            if let [only] = refused.as_slice() {
+                self.hold_seed(*only);
             }
+            refused.clear();
         }
         if changed {
             handle.replace_tree(tree);
@@ -585,34 +584,31 @@ impl Personal {
                 continue;
             }
             let held_host = self.hosts.get(&id).copied();
-            match list.get(id) {
-                Some(listed) => {
-                    if !name.trim().is_empty() && listed.name != *name {
-                        writes.extend(person_list::listing(&id.to_string(), name, None));
-                    }
-                    if let Some(host) = held_host
-                        && listed.host() != Some(host)
-                    {
-                        writes.push(person_list::hosting(&id.to_string(), host));
-                    }
+            if let Some(listed) = list.get(id) {
+                if !name.trim().is_empty() && listed.name != *name {
+                    writes.extend(person_list::listing(&id.to_string(), name, None));
                 }
-                None => {
-                    let new_here = !before.iter().any(|(was, _)| *was == id);
-                    let gone_elsewhere = list.went(id) && !new_here;
-                    let made_here = held_host.is_none_or(|host| host == self.device);
-                    if gone_elsewhere || !(new_here || made_here) {
-                        continue;
-                    }
-                    let host = held_host.unwrap_or(self.device);
-                    writes.extend(person_list::listing(
-                        &id.to_string(),
-                        name,
-                        Some(&person_list::KeptAt {
-                            device: host,
-                            hint: None,
-                        }),
-                    ));
+                if let Some(host) = held_host
+                    && listed.host() != Some(host)
+                {
+                    writes.push(person_list::hosting(&id.to_string(), host));
                 }
+            } else {
+                let new_here = !before.iter().any(|(was, _)| *was == id);
+                let gone_elsewhere = list.went(id) && !new_here;
+                let made_here = held_host.is_none_or(|host| host == self.device);
+                if gone_elsewhere || !(new_here || made_here) {
+                    continue;
+                }
+                let host = held_host.unwrap_or(self.device);
+                writes.extend(person_list::listing(
+                    &id.to_string(),
+                    name,
+                    Some(&person_list::KeptAt {
+                        device: host,
+                        hint: None,
+                    }),
+                ));
             }
         }
         // A listed workspace this shell showed and shows no more was taken off it here.
@@ -1559,7 +1555,9 @@ impl crate::Shared {
         if personal.seed().is_none() {
             return;
         }
-        let held = view.map(|view| view.workspaces()).unwrap_or_default();
+        let held = view
+            .map(tilo_session_client::workspace_view::WorkspaceView::workspaces)
+            .unwrap_or_default();
         let joining = self.directory_store.joining().is_some() || self.directory_store.settling();
         let listed = if joining {
             None
@@ -1761,7 +1759,7 @@ mod tests {
     fn pass(personal: &mut Personal, session: &DesktopHandle) -> Adoption {
         // A pass that writes sends its writes and goes on; the pass after, once they went, reads
         // the list they changed.
-        let mut sent = 0;
+        let mut sent: u32 = 0;
         let (_, adoption) = loop {
             personal
                 .list
@@ -1772,7 +1770,7 @@ mod tests {
             if let Some(passed) = personal.reconcile(session, list, Vec::new()) {
                 break passed;
             }
-            sent += 1;
+            sent = sent.saturating_add(1);
             assert!(sent < 4, "the daemon takes the pass's writes");
             personal.written();
         };
@@ -1856,6 +1854,10 @@ mod tests {
     /// laptop and shows in the person's order; and a workspace kept off the desktop leaves it while
     /// it stays theirs.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one test's whole flow, from its setup to what it proves"
+    )]
     fn the_persons_list_carries_what_one_device_does_to_the_others() {
         let person = Person::start();
         let laptop_shell = session();

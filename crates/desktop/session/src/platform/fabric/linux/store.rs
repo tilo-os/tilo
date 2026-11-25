@@ -49,8 +49,9 @@ pub(crate) fn kept(resources: &PersonResources, person: &[u8; 32]) -> Vec<Person
                         tilo_user_identity::device_name(&cert.device_label).unwrap_or_default(),
                     )
                 });
-            let mut person_device = PersonDevice::new(device.clone(), about);
-            person_device.unlock = crate::network::kept_unlock(&state, kept, &cert.device_public_key);
+            let mut person_device = PersonDevice::new(device, about);
+            person_device.unlock =
+                crate::network::kept_unlock(&state, kept, &cert.device_public_key);
             Some(person_device)
         })
         .collect()

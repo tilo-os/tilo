@@ -575,65 +575,12 @@ impl Shell {
         if !moved_on && wanted.is_empty() {
             return;
         }
-        let mut fresh: Vec<(String, String)> = Vec::new();
         // The apps whose views this process links as Rust apps, which draw their resources
         // without a package of their own.
         let rust_views = tilolang_tilo::views::declared_apps();
+        let mut fresh = Vec::new();
         if asked || live_moved || self.followed.as_ref().map(|(_, was)| was) != Some(layout) {
-            // Every app a place shows is published with this pass, however this pass was asked for:
-            // a package a view asked for arrives beside them, and none of them goes with it.
-            let resources = services.resources();
-            let placed = tilolang_service::placed_documents(
-                layout
-                    .places
-                    .iter()
-                    .map(|place| place.resource.as_str())
-                    .chain(live.iter().map(String::as_str)),
-                &resources,
-            );
-            let mut packages = std::collections::BTreeMap::new();
-            let app_of = tilolang_tilo::readings::app_of;
-            let mut apps: std::collections::BTreeSet<&str> =
-                self.needed.iter().map(String::as_str).collect();
-            apps.extend(placed.values().filter_map(|ty| app_of(ty)));
-            for app in apps {
-                if let Some(module) = services
-                    .module(app)
-                    .or_else(|| crate::styles::module_from_store(app))
-                {
-                    packages.insert(app.to_owned(), module);
-                }
-            }
-            // A placed app's views call the `fn`s of the apps it uses (`discussion.said_about`):
-            // those run as their own app's code here, so their packages are loaded with it, as
-            // an app's own window loads them (`ResourceService::service_document`).
-            let packages = crate::shell::part::readings::with_uses(packages, |app| {
-                services
-                    .module(app)
-                    .or_else(|| crate::styles::module_from_store(app))
-            });
-            // A resource of an app no package is published of any more is followed no more, and
-            // neither is one of an app whose views draw it as a Rust app when none of its views is
-            // linked here any more.
-            self.reading.retain(|_, ty| {
-                app_of(ty)
-                    .is_some_and(|app| packages.contains_key(app) || rust_views.contains(&app))
-            });
-            self.link.publish_packages(packages);
-            // The verbs of the apps the shell's runtime does not load — Chat's channel and its
-            // `send`, which the session's own service answers — so a place's view sends its
-            // action to the app publishing it, as it sends any package's to that package's API.
-            self.link
-                .publish_published_actions(tilolang_tilo::published::from_resources(
-                    &resources,
-                    &self.link.packages_loaded(),
-                ));
-            for (id, ty) in placed {
-                if !self.reading.contains_key(&id) {
-                    fresh.push((id.clone(), ty.clone()));
-                }
-                self.reading.insert(id, ty);
-            }
+            fresh = self.publish_place_packages(layout, services, &live, &rust_views);
         }
         for (id, ty) in wanted {
             let app = tilolang_tilo::readings::app_of(&ty);
@@ -671,6 +618,74 @@ impl Shell {
         }
         self.followed = Some(key);
         self.live = live;
+    }
+
+    /// Publish the package of every app a place shows a resource of, and follow each resource's
+    /// type: what a place draws through its app's own views. What was read here afresh, for the
+    /// readings this pass reads.
+    fn publish_place_packages(
+        &mut self,
+        layout: &LayoutReading,
+        services: &Services,
+        live: &[String],
+        rust_views: &[&str],
+    ) -> Vec<(String, String)> {
+        let mut fresh: Vec<(String, String)> = Vec::new();
+        // Every app a place shows is published with this pass, however this pass was asked for:
+        // a package a view asked for arrives beside them, and none of them goes with it.
+        let resources = services.resources();
+        let placed = tilolang_service::placed_documents(
+            layout
+                .places
+                .iter()
+                .map(|place| place.resource.as_str())
+                .chain(live.iter().map(String::as_str)),
+            &resources,
+        );
+        let mut packages = std::collections::BTreeMap::new();
+        let app_of = tilolang_tilo::readings::app_of;
+        let mut apps: std::collections::BTreeSet<&str> =
+            self.needed.iter().map(String::as_str).collect();
+        apps.extend(placed.values().filter_map(|ty| app_of(ty)));
+        for app in apps {
+            if let Some(module) = services
+                .module(app)
+                .or_else(|| crate::styles::module_from_store(app))
+            {
+                packages.insert(app.to_owned(), module);
+            }
+        }
+        // A placed app's views call the `fn`s of the apps it uses (`discussion.said_about`):
+        // those run as their own app's code here, so their packages are loaded with it, as
+        // an app's own window loads them (`ResourceService::service_document`).
+        let packages = crate::shell::part::readings::with_uses(packages, |app| {
+            services
+                .module(app)
+                .or_else(|| crate::styles::module_from_store(app))
+        });
+        // A resource of an app no package is published of any more is followed no more, and
+        // neither is one of an app whose views draw it as a Rust app when none of its views is
+        // linked here any more.
+        self.reading.retain(|_, ty| {
+            app_of(ty).is_some_and(|app| packages.contains_key(app) || rust_views.contains(&app))
+        });
+        self.link.publish_packages(packages);
+        // The verbs of the apps the shell's runtime does not load — Chat's channel and its
+        // `send`, which the session's own service answers — so a place's view sends its
+        // action to the app publishing it, as it sends any package's to that package's API.
+        self.link
+            .publish_published_actions(tilolang_tilo::published::from_resources(
+                &resources,
+                &self.link.packages_loaded(),
+            ));
+        for (id, ty) in placed {
+            if !self.reading.contains_key(&id) {
+                fresh.push((id.clone(), ty.clone()));
+            }
+            self.reading.insert(id, ty);
+        }
+
+        fresh
     }
 
     /// How often the shell read each resource its places show, by id, since it started: what a test
@@ -1079,12 +1094,13 @@ impl Shell {
         daemon: &tilo_session_client::daemon_documents::DaemonShell,
         workspace: &str,
     ) {
-        for why in std::mem::take(
+        let refused = std::mem::take(
             &mut *self
                 .dispatch_refusals
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
-        ) {
+        );
+        for why in refused {
             self.link.refuse(why);
         }
         for (address, arguments) in self.link.take_own_calls() {
@@ -1770,6 +1786,109 @@ impl tilo_session_core::surfaces::Published for ShellLists {
     }
 }
 
+/// Answer what the shell asks of the session: the actions its views press, over the device's
+/// dispatch where one waits for the person, and the apps an app's own `open` starts.
+fn serve_shell(shared: &crate::Shared, shell: &Shell, workspace: &str) {
+    let (published, search) = (&shared.published, &shared.search);
+    let resources = published.resources();
+    // Where a press that waits for the person reaches the device's dispatch: it keeps the call
+    // as their asked record, which the shell draws.
+    let daemon = shared.daemon.clone();
+    // The services that answer it over the same link: a press made before they are offered
+    // waits for them, and one the dispatch refuses is said on the shell.
+    let served = std::sync::Arc::clone(&shared.served_services);
+    shell.serve(
+        |resource, action, name| {
+            tilo_actions::api::resolve(&resources, &ActionAddress::new(resource, action))
+                .and_then(|spec| spec.params().iter().find(|param| param.name == name))
+                .map(|param| param.ty)
+        },
+        |resource, action, arguments| {
+            // An app's own `open` (`session.open(app)`) starts it in the workspace in front, as
+            // the launcher's row of it does.
+            if let Some(app) = resource
+                .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+                .filter(|_| action == tilo_actions::remote::APPLICATION_OPEN_ACTION)
+            {
+                return search
+                    .perform(
+                        workspace,
+                        tilo_desktop_search::Target::Launch {
+                            app: app.to_owned(),
+                            place: tilo_desktop_search::LaunchPlace::Focus,
+                        },
+                        &mut |own| {
+                            published
+                                .invoke(
+                                    &own.address,
+                                    &own.arguments,
+                                    &mut tilo_session_core::surfaces::Look::none(),
+                                )
+                                .map(drop)
+                        },
+                    )
+                    .map_err(|error| error.to_string());
+            }
+            let address = ActionAddress::new(resource, action);
+            // An action whose contract waits for the person's yes is their asked record: the
+            // call goes to the device's dispatch, which keeps it and says what it asks, and
+            // the shell draws the question. Their yes sends the same call back here, which
+            // runs it confirmed; anything else runs nothing. Shift skips a question only where
+            // Undo takes the action back, as it does everywhere. A question asks a yes; one
+            // whose contract wants a typed phrase keeps its own flow.
+            if !workspace.is_empty()
+                && daemon.link().is_ok()
+                && let Some((_, spec)) = tilo_actions::api::locate(&resources, &address)
+                && matches!(
+                    spec.confirmation_for_json(arguments),
+                    tilo_actions::ConfirmationPolicy::Confirm
+                )
+                && !ui::widget::shift_skips_confirmation(spec.contract.can_be_undone())
+            {
+                let request = tilo_actions::remote::InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: crate::services::app_wire::SERVICES_PROVIDER.to_owned(),
+                        address: address.clone(),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    on_behalf_of: None,
+                    wait_ms: None,
+                    appearance: None,
+                    signed: None,
+                };
+                let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+                let workspace = workspace.to_owned();
+                let waiting = daemon.clone();
+                let served = std::sync::Arc::clone(&served);
+                daemon.runtime().spawn(async move {
+                    // The dispatch may not serve the session's services yet: the link opens
+                    // while the shell is already drawing. The press waits for them rather than
+                    // being dropped, and goes through once they are there; what the dispatch
+                    // refuses is the person's to see on the shell, not a log line.
+                    served
+                        .deliver_press(|| async move {
+                            waiting.dispatch(Some(&workspace), &message).await.map(drop)
+                        })
+                        .await;
+                });
+                return Ok(());
+            }
+            published
+                .invoke(
+                    &address,
+                    arguments,
+                    &mut tilo_session_core::surfaces::Look::none(),
+                )
+                .map(drop)
+                .map_err(|error| error.to_string())
+        },
+    );
+}
+
 impl crate::Session {
     /// What the shell's views could not show, and what came back: a style that failed is marked
     /// not loading, with the notice naming it, and one that came back loads again — the shell
@@ -1909,104 +2028,7 @@ impl crate::Session {
         if !shell.has_asks() {
             return Ok(());
         }
-        let (published, search) = (&self.shared.published, &self.shared.search);
-        let resources = published.resources();
-        // Where a press that waits for the person reaches the device's dispatch: it keeps the call
-        // as their asked record, which the shell draws.
-        let daemon = self.shared.daemon.clone();
-        // The services that answer it over the same link: a press made before they are offered
-        // waits for them, and one the dispatch refuses is said on the shell.
-        let served = std::sync::Arc::clone(&self.shared.served_services);
-        shell.serve(
-            |resource, action, name| {
-                tilo_actions::api::resolve(&resources, &ActionAddress::new(resource, action))
-                    .and_then(|spec| spec.params().iter().find(|param| param.name == name))
-                    .map(|param| param.ty)
-            },
-            |resource, action, arguments| {
-                // An app's own `open` (`session.open(app)`) starts it in the workspace in front, as
-                // the launcher's row of it does.
-                if let Some(app) = resource
-                    .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
-                    .filter(|_| action == tilo_actions::remote::APPLICATION_OPEN_ACTION)
-                {
-                    return search
-                        .perform(
-                            &workspace,
-                            tilo_desktop_search::Target::Launch {
-                                app: app.to_owned(),
-                                place: tilo_desktop_search::LaunchPlace::Focus,
-                            },
-                            &mut |own| {
-                                published
-                                    .invoke(
-                                        &own.address,
-                                        &own.arguments,
-                                        &mut tilo_session_core::surfaces::Look::none(),
-                                    )
-                                    .map(drop)
-                            },
-                        )
-                        .map_err(|error| error.to_string());
-                }
-                let address = ActionAddress::new(resource, action);
-                // An action whose contract waits for the person's yes is their asked record: the
-                // call goes to the device's dispatch, which keeps it and says what it asks, and
-                // the shell draws the question. Their yes sends the same call back here, which
-                // runs it confirmed; anything else runs nothing. Shift skips a question only where
-                // Undo takes the action back, as it does everywhere. A question asks a yes; one
-                // whose contract wants a typed phrase keeps its own flow.
-                if !workspace.is_empty()
-                    && daemon.link().is_ok()
-                    && let Some((_, spec)) = tilo_actions::api::locate(&resources, &address)
-                    && matches!(
-                        spec.confirmation_for_json(arguments),
-                        tilo_actions::ConfirmationPolicy::Confirm
-                    )
-                    && !ui::widget::shift_skips_confirmation(spec.contract.can_be_undone())
-                {
-                    let request = tilo_actions::remote::InvokeRequest {
-                        invocation: tilo_actions::InvocationId::new(),
-                        target: tilo_actions::remote::RemoteActionTarget {
-                            provider: crate::services::app_wire::SERVICES_PROVIDER.to_owned(),
-                            address: address.clone(),
-                        },
-                        argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
-                        context: None,
-                        confirmation: None,
-                        revision: None,
-                        on_behalf_of: None,
-                        wait_ms: None,
-                        appearance: None,
-                        signed: None,
-                    };
-                    let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
-                    let workspace = workspace.clone();
-                    let waiting = daemon.clone();
-                    let served = std::sync::Arc::clone(&served);
-                    daemon.runtime().spawn(async move {
-                        // The dispatch may not serve the session's services yet: the link opens
-                        // while the shell is already drawing. The press waits for them rather than
-                        // being dropped, and goes through once they are there; what the dispatch
-                        // refuses is the person's to see on the shell, not a log line.
-                        served
-                            .deliver_press(|| async move {
-                                waiting.dispatch(Some(&workspace), &message).await.map(drop)
-                            })
-                            .await;
-                    });
-                    return Ok(());
-                }
-                published
-                    .invoke(
-                        &address,
-                        arguments,
-                        &mut tilo_session_core::surfaces::Look::none(),
-                    )
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            },
-        );
+        serve_shell(&self.shared, shell, &workspace);
         // What ran may have asked the session in turn (a menu, a sheet).
         self.settle()?;
         if let Some(shell) = self.shell.as_mut() {

@@ -628,10 +628,6 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
 /// What the person changed of a workspace's layout and of their view of it that a look could not
 /// write is kept on the device, and the session after writes both as their steps.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one session that cannot write, the one after it, and what each of them holds"
-)]
 fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
@@ -1872,6 +1868,7 @@ impl Busy {
         while *busy {
             busy = eased.wait(busy).expect("the daemon's load");
         }
+        drop(busy);
     }
 }
 

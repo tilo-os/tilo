@@ -488,7 +488,7 @@ impl Session {
             Ok(key) => tilo_server_protocol::servers::person_workspace_id(&key),
             Err(error) => {
                 tracing::warn!(%error, "the person's key does not read: the device's own folders are followed nowhere");
-                Default::default()
+                String::default()
             }
         };
         let folders = crate::followed_resource::FollowedReading::follow(
@@ -826,7 +826,7 @@ impl Session {
             daemon.clone(),
             std::sync::Arc::clone(&record_content),
             handle.clone(),
-            continuity.clone(),
+            continuity,
             Box::new(move |resource: &str| {
                 sharing.borrow_mut().push(resource.to_owned());
                 Ok(())
@@ -1008,11 +1008,11 @@ impl Session {
             person: options.person.clone(),
             live: Rc::clone(&live),
             surfaces: surfaces.clone(),
-            tray: tray.clone(),
+            tray,
             view: view.clone(),
             // The invite sheet is the session's own surface: the shell asks for it here.
             asks: Rc::clone(&asks),
-            folders: folders.clone(),
+            folders,
             styles,
             lists: options.lists.clone(),
             wallpapers: std::sync::Arc::clone(&wallpapers),
@@ -1059,7 +1059,7 @@ impl Session {
             &mut crate::platform::surfaces::Hosted::new(
                 &mut compositor,
                 &mut published,
-                presentation.theme.clone(),
+                presentation.theme,
             ),
             crate::people::Given {
                 scale: options.scale,
@@ -1168,7 +1168,7 @@ impl Session {
                 },
                 overlays: overlays.clone(),
                 launcher: Some(handle.clone()),
-                surfaces: Some(surfaces.clone()),
+                surfaces: Some(surfaces),
             },
         );
 
@@ -1224,7 +1224,7 @@ impl Session {
             &options,
             &live_activities,
             &activity,
-            crate::services::app_wire::Knitted {
+            &crate::services::app_wire::Knitted {
                 agents: Some(agents.roster()),
                 agent_sessions: Some(std::sync::Arc::clone(&agent_sessions)),
             },
@@ -1278,7 +1278,7 @@ impl Session {
         let program_asks = {
             let wake = options.wake.handle();
             crate::program_asks::ProgramAsks::over(
-                received,
+                &received,
                 tilo_rt::app().handle().clone(),
                 move || wake(),
             )
@@ -1306,7 +1306,7 @@ impl Session {
         // Every service this session serves, from the one table that says who serves each: the
         // identity an app signs in through, the machine's readings, the data this device used and
         // Windows programs. They start here, before any app does.
-        let mut table = crate::services::start(crate::services::Serving {
+        let table = crate::services::start(crate::services::Serving {
             handle: handle.clone(),
             serves_apps: app_wire.is_some(),
             person: options.person.clone(),
@@ -1361,7 +1361,7 @@ impl Session {
         tilo_startup_metrics::mark("control-socket-open");
         let server = crate::mcp_server::mount_named(
             &options,
-            questions.clone(),
+            questions,
             std::sync::Arc::clone(&session_services),
             control.shared(),
             std::sync::Arc::clone(&agent_sessions),
@@ -1705,7 +1705,7 @@ impl Session {
             catalogue_host;
         search.serve_catalogue(catalogue);
         let program_notices =
-            crate::program_asks::ProgramNotices::new(program_asks.clone(), Rc::clone(&services));
+            crate::program_asks::ProgramNotices::new(program_asks, Rc::clone(&services));
         let workspace_tabs = crate::workspace_settings::WorkspaceTabs::new(
             &daemon,
             service_root,
@@ -1854,7 +1854,7 @@ impl Session {
             owner_session: crate::owner_session::SessionFollow::default(),
             owner_devices,
             display_confirm,
-            notices: notices.clone(),
+            notices,
             moves: crate::window_move::Moves::new(
                 crate::notifications::RoleNotices::of(&notifications),
                 options.wake.handle(),
@@ -2011,19 +2011,21 @@ impl Session {
                 .services
                 .borrow_mut()
                 .add(Box::new(crate::devices::Served::new(
-                    fabric,
-                    shared
-                        .owner_devices
-                        .as_ref()
-                        .map(|devices| devices.record().0),
-                    shared.handle.clone(),
-                    Rc::clone(&shared.readings),
-                    Rc::clone(&shared.devices.chosen),
-                    Rc::clone(&shared.handoff),
-                    Rc::clone(&shared.devices.pressed),
-                    Rc::clone(&shared.devices.handed),
-                    std::sync::Arc::new(std::sync::Mutex::default()),
-                    backup_tools.clone(),
+                    crate::devices::Parts {
+                        fabric,
+                        record: shared
+                            .owner_devices
+                            .as_ref()
+                            .map(|devices| devices.record().0),
+                        handle: shared.handle.clone(),
+                        readings: Rc::clone(&shared.readings),
+                        chosen: Rc::clone(&shared.devices.chosen),
+                        handoff: Rc::clone(&shared.handoff),
+                        pressed: Rc::clone(&shared.devices.pressed),
+                        handed: Rc::clone(&shared.devices.handed),
+                        refused: std::sync::Arc::new(std::sync::Mutex::default()),
+                        tools: backup_tools,
+                    },
                 )));
         }
         // What the portal brings comes from any thread, and wakes the loop
@@ -2154,8 +2156,7 @@ impl Session {
             input_method: crate::input_method::InputMethod::default(),
             shell: Some(shell),
             a11y,
-            ended: false,
-            first_frame: false,
+            life: crate::assembly::Life::Starting,
             active_workspace: None,
             published_workspace: crate::published_workspace::Published::none(),
             published_steps: Some(std::sync::Arc::clone(&session_actions)),
@@ -2173,7 +2174,7 @@ impl Session {
                 .take()
                 .map(crate::controllers::Controllers::mount),
             controller_wakes: std::collections::BTreeMap::new(),
-            shell_daemon,
+            _shell_daemon: shell_daemon,
             origins: crate::connectors::Reached::default(),
         };
         session.watch_sockets()?;
@@ -2807,7 +2808,7 @@ impl Session {
     /// Whether the person logged out, which ends the session's loop.
     #[must_use]
     pub const fn ended(&self) -> bool {
-        self.ended
+        matches!(self.life, crate::assembly::Life::Ended)
     }
 
     /// What stands before the shell runs its own pass: the wait for the clock

@@ -121,10 +121,10 @@ impl crate::Session {
     /// their settings (see [`Language`]). Every tilolang host running the person's apps is told
     /// too, so the windows it draws relabel where they stand.
     pub(crate) fn follow_language(&self) {
-        if self.language.follow() {
-            if let Some(apps) = self.shared.launch.clone() {
-                apps.locale_changed();
-            }
+        if self.language.follow()
+            && let Some(apps) = self.shared.launch.clone()
+        {
+            apps.locale_changed();
         }
     }
 }

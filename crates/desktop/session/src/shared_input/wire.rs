@@ -31,8 +31,12 @@ pub(crate) enum Drive {
 }
 
 impl Driven {
-    pub(crate) fn encode(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).expect("a message to a driven device encodes")
+    pub(crate) fn encode(&self) -> Option<Vec<u8>> {
+        postcard::to_allocvec(self)
+            .inspect_err(|error| {
+                tracing::warn!(%error, "a message to a driven device does not encode");
+            })
+            .ok()
     }
 
     /// The message `body` says, when it is a well-formed one.
@@ -69,7 +73,7 @@ impl InputLease {
     pub(crate) fn holds_at(&self, now_unix_ms: u64) -> bool {
         self.controller != self.target
             && self.expires_unix_ms > self.issued_unix_ms
-            && self.expires_unix_ms - self.issued_unix_ms <= MAX_INPUT_LEASE_MS
+            && self.expires_unix_ms.saturating_sub(self.issued_unix_ms) <= MAX_INPUT_LEASE_MS
             && (self.allow_keyboard || self.allow_pointer)
             && now_unix_ms <= self.expires_unix_ms
     }
@@ -253,6 +257,7 @@ mod tests {
                 what,
             }
             .encode()
+            .expect("the message encodes")
         };
         let step = Drive::Input(RemoteInput::PointerMotion { x: 3, y: -4 });
         assert_eq!(

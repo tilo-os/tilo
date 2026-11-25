@@ -225,7 +225,7 @@ async fn accept(
     shell: runtime_collab::ShellClient,
     mut stopped: tokio::sync::oneshot::Receiver<()>,
 ) {
-    let launcher: Arc<dyn tilo_broker_core::services::LauncherServices> = launches;
+    let services: Arc<dyn tilo_broker_core::services::LauncherServices> = launches;
     loop {
         let stream = tokio::select! {
             _ = &mut stopped => return,
@@ -237,9 +237,9 @@ async fn accept(
                 }
             },
         };
-        let (launcher, shell) = (Arc::clone(&launcher), shell.clone());
+        let (services, shell) = (Arc::clone(&services), shell.clone());
         tokio::task::spawn_local(async move {
-            let handed = match seat::attest(stream, launcher).await {
+            let handed = match seat::attest(stream, services).await {
                 seat::Attested::App {
                     connection,
                     app,

@@ -126,11 +126,9 @@ impl Sources for ThisMachine {
                     .lock_recover()
                     .live()
                     .into_iter()
-                    .filter_map(|live| {
-                        Some(Capture {
-                            app: live.app_id,
-                            capability: capability_of_capture(live.kind)?,
-                        })
+                    .map(|live| Capture {
+                        app: live.app_id,
+                        capability: capability_of_capture(live.kind),
                     })
                     .collect()
             })
@@ -289,6 +287,44 @@ impl Service for Privacy {
     }
 }
 
+/// The answers the person gave, as the reading lists them.
+fn answers_of(sources: &dyn Sources) -> Vec<Answer> {
+    let mut answers: Vec<Answer> = sources
+        .answers()
+        .into_iter()
+        .filter_map(|kept| {
+            let capability = capability_of_device(kept.answer.cap)?;
+            let (standing, until_unix_ms) = standing_of(kept.answer.lifetime);
+            Some(Answer {
+                // The answer as the resource it is: the consent this session's portal publishes
+                // for it, whose `forget` takes it back from any of the person's devices.
+                address: tilo_resource::Handle::new(tilo_portal::consent_resource(&kept.answer)),
+                app: kept.answer.app.clone(),
+                name: sources.app_name(&kept.answer.app),
+                capability,
+                allowed: kept.answer.answer == tilo_action_policy::Answer::Allow,
+                standing,
+                until_unix_ms,
+                device: kept.device_label,
+                this_device: kept.this_device,
+            })
+        })
+        .collect();
+    answers.sort_by(|a, b| {
+        (
+            a.device.as_str(),
+            a.name.as_str(),
+            capability_name(a.capability),
+        )
+            .cmp(&(
+                b.device.as_str(),
+                b.name.as_str(),
+                capability_name(b.capability),
+            ))
+    });
+    answers
+}
+
 /// The reading `sources` gives now: the four devices, and the answers the person gave.
 fn reading_of(sources: &dyn Sources) -> Reading {
     let status = sources.status();
@@ -370,39 +406,7 @@ fn reading_of(sources: &dyn Sources) -> Reading {
             (false, false),
         ),
     ];
-    let mut answers: Vec<Answer> = sources
-        .answers()
-        .into_iter()
-        .filter_map(|kept| {
-            let capability = capability_of_device(kept.answer.cap)?;
-            let (standing, until_unix_ms) = standing_of(kept.answer.lifetime);
-            Some(Answer {
-                // The answer as the resource it is: the consent this session's portal publishes
-                // for it, whose `forget` takes it back from any of the person's devices.
-                address: tilo_resource::Handle::new(tilo_portal::consent_resource(&kept.answer)),
-                app: kept.answer.app.clone(),
-                name: sources.app_name(&kept.answer.app),
-                capability,
-                allowed: kept.answer.answer == tilo_action_policy::Answer::Allow,
-                standing,
-                until_unix_ms,
-                device: kept.device_label,
-                this_device: kept.this_device,
-            })
-        })
-        .collect();
-    answers.sort_by(|a, b| {
-        (
-            a.device.as_str(),
-            a.name.as_str(),
-            capability_name(a.capability),
-        )
-            .cmp(&(
-                b.device.as_str(),
-                b.name.as_str(),
-                capability_name(b.capability),
-            ))
-    });
+    let answers = answers_of(sources);
     Reading {
         capabilities,
         answers,
@@ -610,13 +614,13 @@ fn switch_of(state: os_actions::KillState) -> SwitchState {
 }
 
 /// The capability a portal capture is of.
-fn capability_of_capture(kind: tilo_portal::capture_broker::CaptureKind) -> Option<Capability> {
+fn capability_of_capture(kind: tilo_portal::capture_broker::CaptureKind) -> Capability {
     use tilo_portal::capture_broker::CaptureKind;
     match kind {
-        CaptureKind::Camera => Some(Capability::Camera),
-        CaptureKind::Microphone => Some(Capability::Microphone),
-        CaptureKind::Screen => Some(Capability::Screen),
-        CaptureKind::SystemAudio => Some(Capability::SystemAudio),
+        CaptureKind::Camera => Capability::Camera,
+        CaptureKind::Microphone => Capability::Microphone,
+        CaptureKind::Screen => Capability::Screen,
+        CaptureKind::SystemAudio => Capability::SystemAudio,
     }
 }
 

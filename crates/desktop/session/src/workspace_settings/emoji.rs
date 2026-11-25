@@ -430,7 +430,7 @@ impl Emoji {
             name,
             image: EmojiImage(png.clone()).to_base64(),
         }));
-        added.map_err(|error| emoji_pane::EmojiNotice::not_added(file, error.to_string()))
+        added.map_err(|error| emoji_pane::EmojiNotice::not_added(file, error))
     }
 
     /// Say why the last emoji was not added or removed, or nothing.

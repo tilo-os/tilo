@@ -342,7 +342,7 @@ impl Clipboard {
 
     /// Whether the device keeps what the person copies, to paste again later.
     #[must_use]
-    pub(crate) fn keeping(&self) -> bool {
+    pub(crate) fn keeping() -> bool {
         ENABLED.get()
     }
 
@@ -768,7 +768,7 @@ impl Service for Served {
         (resource == CLIPBOARD_RESOURCE).then(|| {
             reading(&ClipboardView {
                 copies: self.clipboard.copies(),
-                keeping: self.clipboard.keeping(),
+                keeping: Clipboard::keeping(),
             })
         })
     }

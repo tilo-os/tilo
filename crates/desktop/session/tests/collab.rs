@@ -712,36 +712,6 @@ fn press(session: &mut Session, (x, y, width, height): (f64, f64, f64, f64)) {
     }
 }
 
-/// Ada is here on two devices, working in Notes on the first and focusing on the second, each
-/// saying whose device it is.
-fn ada_here_on_two_devices(sync: &Client) {
-    sync.hear(hello_of(0xaa, 0xaa, "Framework 16"));
-    arrived_as(sync, 0xaa, "Ada");
-    presence(
-        sync,
-        0xaa,
-        collab_types::PeerPresencePayload::Availability {
-            state: "available".to_owned(),
-            call: None,
-            camera: false,
-            screen: false,
-        },
-    );
-    pointer(sync, 0xaa, 12.0, 34.0);
-    sync.hear(hello_of(0xaa, 0xac, "ThinkPad"));
-    arrived_as(sync, 0xac, "Ada");
-    presence(
-        sync,
-        0xac,
-        collab_types::PeerPresencePayload::Availability {
-            state: "focusing".to_owned(),
-            call: None,
-            camera: false,
-            screen: false,
-        },
-    );
-}
-
 /// Ada is here on two of her devices, heard once the shell is up: presence written before the
 /// session has read its workspace is what its own start replaces, and her face in the bar is what
 /// says it landed.

@@ -81,7 +81,6 @@ impl Served {
         };
         let source = device
             .keyboard_preview
-            .clone()
             .unwrap_or_else(|| current.keyboard_layout.clone());
         (
             source,

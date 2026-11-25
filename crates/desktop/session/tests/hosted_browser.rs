@@ -71,7 +71,7 @@ fn daemon(workspace: &str) -> Arc<TestProvider> {
             .completing(move |request: &InvokeRequest| {
                 let first = request.target.address.action == wire::NEXT_LAUNCH
                     && !std::mem::replace(&mut *launched.lock().unwrap(), true);
-                let launches = if first {
+                let requested = if first {
                     vec![Launch {
                         workspace: workspace.clone(),
                         holds: Holds::Browser,
@@ -82,7 +82,7 @@ fn daemon(workspace: &str) -> Arc<TestProvider> {
                     Vec::new()
                 };
                 tilo_actions::ActionOutput {
-                    value: Some(serde_json::to_value(launches).unwrap()),
+                    value: Some(serde_json::to_value(requested).unwrap()),
                     ..tilo_actions::ActionOutput::default()
                 }
             }),

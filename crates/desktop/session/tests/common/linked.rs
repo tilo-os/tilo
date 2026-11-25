@@ -134,7 +134,7 @@ impl Builder {
             Some(wake.handle()),
             launcher,
         ));
-        let launches = Arc::new(Launches::default());
+        let launch_record = Arc::new(Launches::default());
         let lists = Lists::fixed(AppLists::read());
         // This computer's person is founded by its daemon, as the first set-up on a machine does,
         // by the name the fixture's builder gave them.
@@ -167,7 +167,7 @@ impl Builder {
                     app_socket: AppSocket::Launcher,
                     apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
                     launch: Some(Rc::clone(&apps)),
-                    launches: Arc::clone(&launches),
+                    launches: Arc::clone(&launch_record),
                     lists,
                     services: self.services,
                     shell_link: Some(session_link),
@@ -202,7 +202,7 @@ impl Builder {
         let mut fixture = Fixture {
             session,
             apps,
-            launches,
+            launches: launch_record,
             shell,
             workspace,
             app: self.app,
@@ -296,10 +296,9 @@ impl Fixture {
                     return Err("the device's daemon stopped before it answered".to_owned());
                 }
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the device's daemon did not answer"
-            );
+            if std::time::Instant::now() >= deadline {
+                return Err("the device's daemon did not answer".to_owned());
+            }
         }
     }
 
@@ -565,7 +564,7 @@ impl Fixture {
     /// The resource `app` publishes under the kind ending in `kind` (`Conversations`, `Direct`),
     /// once it does; `None` while it publishes none.
     #[must_use]
-    pub fn resource_of_kind(&mut self, app: &str, kind: &str) -> Option<String> {
+    pub fn resource_of_kind(&self, app: &str, kind: &str) -> Option<String> {
         self.published(app)
             .into_iter()
             .find(|descriptor| descriptor.resource_kind.ends_with(kind))

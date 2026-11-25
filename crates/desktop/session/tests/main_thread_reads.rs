@@ -34,6 +34,90 @@ fn main() {
     drive();
 }
 
+/// An app's notification arrives: its banner asks for the app's artwork.
+#[cfg(target_os = "linux")]
+fn notification(
+    desktop: &tilo_session::desktop_services::DesktopServices,
+    session: &mut tilo_session::Session,
+) {
+    use std::time::Duration;
+
+    // An app's notification arrives: its banner asks for the app's artwork.
+    let mut sent = tilo_notifications_service::Notification::new(1);
+    "Build finished".clone_into(&mut sent.summary);
+    "All tests passed".clone_into(&mut sent.body);
+    sent.caller = Some(tilo_notifications_service::Caller {
+        app_id: "org.example.Probe".to_owned(),
+        workspace: None,
+    });
+    sent.desktop_entry = Some("org.example.Probe.desktop".to_owned());
+    sent.app_icon = Some("org.example.Probe".to_owned());
+    desktop.notifications().push(sent);
+    for _ in 0..8 {
+        session.step(Duration::from_millis(1)).expect("a turn");
+    }
+}
+
+/// Change a setting the way a setter does: the session keeps it for the workspace it does not hold
+/// yet, and leaves it for the processes outside itself, each from workers of their own.
+#[cfg(target_os = "linux")]
+fn changed_setting(session: &mut tilo_session::Session) {
+    use std::time::Duration;
+
+    // A setting the person changes: the session keeps it for the workspace it does not hold yet,
+    // and leaves the settings for the processes outside the session, both from workers of their
+    // own. A setter writes a section this way, and the change is made on the loop because that is
+    // where the model a press runs in does.
+    let mut learned = serde_json::Map::new();
+    learned.insert("enabled".to_owned(), serde_json::Value::Bool(false));
+    let mut hints = serde_json::Map::new();
+    hints.insert("learned".to_owned(), serde_json::Value::Object(learned));
+    settings_store::update_section("control_hints", hints).expect("the setting is kept");
+    for _ in 0..8 {
+        session.step(Duration::from_millis(1)).expect("a turn");
+    }
+    // What waits for the workspace is kept by now; the settings the processes outside read are
+    // the worker's to leave.
+    settings_store::flush_pending_writes();
+    // Both files hold the change once the workers wrote them, and they are read on a thread of
+    // their own: the loop walks neither.
+    let kept = settings_store::config_path(std::path::Path::new(settings_store::outside::WAITING));
+    let left = settings_store::outside::path();
+    let held = std::thread::spawn(move || {
+        // What waits is a map of sections; what the session leaves holds them under `settings`.
+        let shows = |path: &Option<std::path::PathBuf>, bare: bool| {
+            (0..200).any(|_| {
+                let shows = path
+                    .as_ref()
+                    .and_then(|path| std::fs::read(path).ok())
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .is_some_and(|held| {
+                        let held = if bare { &held } else { &held["settings"] };
+                        held.get("control_hints")
+                            .and_then(|hints| hints.get("learned"))
+                            .and_then(|learned| learned.get("enabled"))
+                            == Some(&serde_json::Value::Bool(false))
+                    });
+                if !shows {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                shows
+            })
+        };
+        (shows(&kept, true), shows(&left, false))
+    })
+    .join()
+    .expect("the reader runs");
+    assert!(
+        held.0,
+        "the session kept the change for the workspace it does not hold yet"
+    );
+    assert!(
+        held.1,
+        "the session left the change for the processes outside it"
+    );
+}
+
 /// A session driven the way the binary is built and the person uses it, from before its loop runs
 /// to the audit's report.
 #[cfg(target_os = "linux")]
@@ -91,20 +175,7 @@ fn drive() {
     let _ = fonts.map(std::thread::JoinHandle::join);
     tilo_liveness::main_thread_files::arm().expect("the audit arms on the main thread");
 
-    // An app's notification arrives: its banner asks for the app's artwork.
-    let mut sent = tilo_notifications_service::Notification::new(1);
-    "Build finished".clone_into(&mut sent.summary);
-    "All tests passed".clone_into(&mut sent.body);
-    sent.caller = Some(tilo_notifications_service::Caller {
-        app_id: "org.example.Probe".to_owned(),
-        workspace: None,
-    });
-    sent.desktop_entry = Some("org.example.Probe.desktop".to_owned());
-    sent.app_icon = Some("org.example.Probe".to_owned());
-    desktop.notifications().push(sent);
-    for _ in 0..8 {
-        session.step(Duration::from_millis(1)).expect("a turn");
-    }
+    notification(&desktop, &mut session);
 
     // Search opens over the shell and takes a query, its rows found in the lists a worker keeps
     // current.
@@ -144,58 +215,7 @@ fn drive() {
         let _ = store.load_reconciled_cached();
     }
 
-    // A setting the person changes: the session keeps it for the workspace it does not hold yet,
-    // and leaves the settings for the processes outside the session, both from workers of their
-    // own. A setter writes a section this way, and the change is made on the loop because that is
-    // where the model a press runs in does.
-    let mut learned = serde_json::Map::new();
-    learned.insert("enabled".to_owned(), serde_json::Value::Bool(false));
-    let mut hints = serde_json::Map::new();
-    hints.insert("learned".to_owned(), serde_json::Value::Object(learned));
-    settings_store::update_section("control_hints", hints).expect("the setting is kept");
-    for _ in 0..8 {
-        session.step(Duration::from_millis(1)).expect("a turn");
-    }
-    // What waits for the workspace is kept by now; the settings the processes outside read are
-    // the worker's to leave.
-    settings_store::flush_pending_writes();
-    // Both files hold the change once the workers wrote them, and they are read on a thread of
-    // their own: the loop walks neither.
-    let kept = settings_store::config_path(std::path::Path::new(settings_store::outside::WAITING));
-    let left = settings_store::outside::path();
-    let held = std::thread::spawn(move || {
-        // What waits is a map of sections; what the session leaves holds them under `settings`.
-        let shows = |path: &Option<std::path::PathBuf>, bare: bool| {
-            (0..200).any(|_| {
-                let shows = path
-                    .as_ref()
-                    .and_then(|path| std::fs::read(path).ok())
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .is_some_and(|held| {
-                        let held = if bare { &held } else { &held["settings"] };
-                        held.get("control_hints")
-                            .and_then(|hints| hints.get("learned"))
-                            .and_then(|learned| learned.get("enabled"))
-                            == Some(&serde_json::Value::Bool(false))
-                    });
-                if !shows {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                shows
-            })
-        };
-        (shows(&kept, true), shows(&left, false))
-    })
-    .join()
-    .expect("the reader runs");
-    assert!(
-        held.0,
-        "the session kept the change for the workspace it does not hold yet"
-    );
-    assert!(
-        held.1,
-        "the session left the change for the processes outside it"
-    );
+    changed_setting(&mut session);
 
     let walks = tilo_liveness::main_thread_files::report().expect("the audit's report");
     let mut listed = String::new();

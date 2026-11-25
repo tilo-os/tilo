@@ -177,10 +177,10 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
         "apps_kept_in_workspace": session.apps_kept,
         "agents": agents,
         "chrome": {
-            "session_locked": session.locked,
+            "session_locked": session.locked.yes(),
             // The lock screen's own frame is what the outputs show, not the
             // session's last one: the lock is up and covering the session.
-            "lock_screen_drawn": session.lock_screen_drawn,
+            "lock_screen_drawn": session.locked.drawn(),
             "in_transition": false,
             "overlays": open,
             // Where the person types, which a surface a key opens stands beside, and where the
@@ -235,7 +235,7 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
 /// waits for the host. A socket sees what [`shown`] lets it see of the session: an app its own
 /// workspace, and nothing of a locked session but through a development socket.
 pub(super) fn keeping_devices(tree: &Layout, session: &Session<'_>, ctx: &Context) -> Json {
-    let rows: Vec<Json> = if ctx.who != Audience::Dev && session.locked {
+    let rows: Vec<Json> = if ctx.who != Audience::Dev && session.locked.yes() {
         Vec::new()
     } else {
         tree.workspaces

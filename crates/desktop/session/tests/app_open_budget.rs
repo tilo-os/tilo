@@ -127,13 +127,12 @@ fn budget_ms(device: &Device, app: &str, kind: Kind) -> u32 {
             manifest_path.display()
         )
     });
-    if kind == Kind::Tl && !declares_splash_budget(&text) {
-        panic!(
-            "{app} declares no splash budget: add `splash_budget: <milliseconds>` to its `app` \
-             header, in `apps/tl`, as every seeded tilolang app does, so its manifest promises a \
-             person how long its open may take"
-        );
-    }
+    assert!(
+        kind != Kind::Tl || declares_splash_budget(&text),
+        "{app} declares no splash budget: add `splash_budget: <milliseconds>` to its `app` \
+         header, in `apps/tl`, as every seeded tilolang app does, so its manifest promises a \
+         person how long its open may take"
+    );
     Manifest::from_toml_str(&text)
         .unwrap_or_else(|error| panic!("{app}'s installed manifest: {error}"))
         .entrypoint

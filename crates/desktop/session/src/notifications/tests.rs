@@ -1233,7 +1233,9 @@ impl tilo_workspace_service::workspaces::PersonStore for AsDevice {
                 }
             }
             let doc = docs.get_mut(&key).expect("founded above");
-            (authoring.edit)(doc)
+            let made = (authoring.edit)(doc);
+            drop(docs);
+            made
         };
         if made.is_ok() {
             self.workspace.told.lock().unwrap().retain(|told| {
@@ -1380,13 +1382,16 @@ impl TwoDevices {
     /// The notifications the record of the person's devices shows now.
     fn in_record(&self) -> usize {
         let docs = self.workspace.docs.lock().unwrap();
-        let Some(doc) = docs.get(&(DEVICES.0.to_owned(), DEVICES.1.to_owned())) else {
-            return 0;
-        };
-        tilo_resource::Replica::<Devices>::from_doc(doc.clone())
-            .in_app("so.tilo.model", "Model")
-            .state()
-            .map_or(0, |devices| devices.notices.len())
+        let count = docs
+            .get(&(DEVICES.0.to_owned(), DEVICES.1.to_owned()))
+            .map_or(0, |doc| {
+                tilo_resource::Replica::<Devices>::from_doc(doc.clone())
+                    .in_app("so.tilo.model", "Model")
+                    .state()
+                    .map_or(0, |devices| devices.notices.len())
+            });
+        drop(docs);
+        count
     }
 }
 

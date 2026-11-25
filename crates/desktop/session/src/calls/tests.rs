@@ -839,6 +839,10 @@ async fn receive_pictures(
 /// nothing else, so what arrives is the size of that layer and its bitrate, not the camera's 720p
 /// source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one test's whole flow, from its setup to what it proves"
+)]
 async fn a_device_shows_anothers_camera_at_the_one_layer_it_shows() {
     let root = person_key();
     let ana = device(&root, 0x11, "Laptop");
@@ -1503,7 +1507,7 @@ fn published_row(
     label: &str,
 ) -> tilo_actions::remote::CatalogueRow {
     tilo_actions::remote::CatalogueRow::for_action(
-        &tilo_actions::remote::application_provider_token(workspace, app),
+        tilo_actions::remote::application_provider_token(workspace, app),
         app,
         tilo_actions::ActionDescriptor {
             did: None,

@@ -186,7 +186,7 @@ impl Wallpapers {
                 .inspect_err(|error| tracing::warn!(%error, "the wallpapers are not followed"))
                 .unwrap_or(record)
         });
-        Self { state, kept, wake }
+        Self { kept, wake, state }
     }
 
     /// Write `choices` as this device's, replacing the ones before.

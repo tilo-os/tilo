@@ -41,7 +41,7 @@ impl Wake {
     ///
     /// # Errors
     /// Why it cannot be woken, in the person's words.
-    pub(crate) fn request(&self, shared: &Shared, name: &str) -> Result<(), String> {
+    pub(crate) fn request(shared: &Shared, name: &str) -> Result<(), String> {
         shared
             .owner_devices
             .as_ref()
@@ -78,9 +78,9 @@ impl Wake {
                 shared.notifications.borrow().tell(&notice);
             }
         }
-        self.deadline.set(next.map(|at| {
+        self.deadline.set(next.and_then(|at| {
             let wait = u64::try_from(at.saturating_sub(now)).unwrap_or(0);
-            Instant::now() + Duration::from_nanos(wait)
+            Instant::now().checked_add(Duration::from_nanos(wait))
         }));
     }
 

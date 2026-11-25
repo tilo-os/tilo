@@ -626,7 +626,7 @@ pub struct ShellPart {
     /// A menu the part opened, or a surface of the shell's (its overview, the switcher, the
     /// launcher, the notifications), is up: the part stands over its output even where a
     /// fullscreen window owns it, so what the person opened shows.
-    cover: bool,
+    cover: Cover,
     /// The previews the part's views name ([`ui::widget::WindowPreview`]), and which of the
     /// compositor's windows each is: the part hands the compositor every window's live picture
     /// where its view would draw it, and none for a window `windows` leaves out (one that may
@@ -654,6 +654,28 @@ pub struct ShellPart {
 
 /// Which of the compositor's windows a view's window key names, if it may be pictured.
 type WindowLookup = Rc<dyn Fn(&str) -> Option<u64>>;
+
+/// Whether the part stands over its output, so a menu or a surface it shows covers it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Cover {
+    /// The part stands below the windows on its output.
+    #[default]
+    Below,
+    /// A menu or a surface the part shows stands over the output.
+    Over,
+}
+
+impl Cover {
+    /// How the part stands, over its output for `over`.
+    fn of(over: bool) -> Self {
+        if over { Self::Over } else { Self::Below }
+    }
+
+    /// Whether the part stands over its output.
+    fn over(self) -> bool {
+        matches!(self, Self::Over)
+    }
+}
 
 /// A shell part's identity: the package it runs, the person it is for, and the record the
 /// shell's parts share.
@@ -774,7 +796,7 @@ impl ShellPart {
             output_scale: scale,
             gone: None,
             fullscreen: Vec::new(),
-            cover: false,
+            cover: Cover::Below,
             previews: None,
             deadline: None,
             content: None,
@@ -839,7 +861,7 @@ impl ShellPart {
             return;
         };
         let scale = self.output_scale;
-        if self.fullscreen.contains(&name) && !self.cover {
+        if self.fullscreen.contains(&name) && !self.cover.over() {
             // Nothing of the part stands there: the smallest placement keeps its layout cheap,
             // and `hidden` hands the compositor no layer and takes no pointer, so not a row of
             // it lies over the window.
@@ -874,8 +896,8 @@ impl ShellPart {
             .any(|(_, node)| node.role() == ui::accesskit::Role::Menu && !node.is_hidden());
         let surface = !matches!(self.origin.borrow().link.surface().as_str(), "" | "none");
         let cover = menu || surface;
-        if cover != self.cover {
-            self.cover = cover;
+        if cover != self.cover.over() {
+            self.cover = Cover::of(cover);
             self.place();
         }
     }
@@ -1099,7 +1121,7 @@ impl ShellPart {
         } else {
             // What it drew goes with its display: nothing of it stands anywhere now.
             self.gone = self.output.take().map(|(name, _)| name);
-            self.cover = false;
+            self.cover = Cover::Below;
         }
         self.output = output;
         self.output_scale = scale;
@@ -1207,7 +1229,7 @@ impl ShellPart {
     #[must_use]
     pub fn aside(&self) -> bool {
         self.output.as_ref().is_some_and(|(name, _)| {
-            !self.cover && self.fullscreen.iter().any(|covered| covered == name)
+            !self.cover.over() && self.fullscreen.iter().any(|covered| covered == name)
         })
     }
 

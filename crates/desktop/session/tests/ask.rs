@@ -255,7 +255,7 @@ fn an_ask_that_does_not_fit_the_bar_opens_clear_of_the_person_face() {
         }),
         "the question is read in the shell's window"
     );
-    let (_, (face_x0, face_y0, face_x1, face_y1)) = avatar(&tree);
+    let (_, (face_left, face_top, face_right, face_bottom)) = avatar(&tree);
     let (_, answer) = button(&tree, "Keep with passkey");
     let (x0, y0, x1, y1) = place(&answer);
     assert!(
@@ -263,9 +263,9 @@ fn an_ask_that_does_not_fit_the_bar_opens_clear_of_the_person_face() {
         "the ask's answer stands on the display where the person sees it: {x0}..{x1}, {y0}..{y1}"
     );
     assert!(
-        x1 <= face_x0 || x0 >= face_x1 || y1 <= face_y0 || y0 >= face_y1,
+        x1 <= face_left || x0 >= face_right || y1 <= face_top || y0 >= face_bottom,
         "the ask's answer stands clear of the person's own face, which stands at \
-         {face_x0}..{face_x1}, {face_y0}..{face_y1}: {x0}..{x1}, {y0}..{y1}"
+         {face_left}..{face_right}, {face_top}..{face_bottom}: {x0}..{x1}, {y0}..{y1}"
     );
     crate::common::shot(&mut session, "ask-narrow-420");
 

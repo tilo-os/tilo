@@ -172,7 +172,10 @@ impl WifiContinuity {
     /// The password of `ssid` the person's devices share, which the daemon opened.
     fn lookup(&self, ssid: &str, security: Security) -> Result<Option<String>, String> {
         let answer = self.ask(LOOKUP, lookup_arguments(ssid, security))?;
-        Ok(answer["password"].as_str().map(str::to_owned))
+        Ok(answer
+            .get("password")
+            .and_then(Value::as_str)
+            .map(str::to_owned))
     }
 
     /// Share `password` of `ssid` with the person's devices: the daemon seals it to each of theirs.

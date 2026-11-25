@@ -1157,7 +1157,7 @@ impl CaptureStudio {
         let devices: Vec<ScreenshotSendDevice> = self
             .nearby
             .as_ref()
-            .map_or_else(Vec::new, |nearby| nearby.devices());
+            .map_or_else(Vec::new, super::nearby_send::Served::devices);
         let audio = self.audio_availability();
         let scene = Scene {
             windows: windows(compositor, self.presentation().place()),

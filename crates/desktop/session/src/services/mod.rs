@@ -404,7 +404,7 @@ impl Served {
     }
 
     /// Serve the media controls over the Playbacks the apps here play.
-    pub(crate) fn serve_media(&mut self, media: crate::media_controls::Serving) {
+    pub(crate) fn serve_media(&self, media: crate::media_controls::Serving) {
         *self.media.borrow_mut() = Some(media);
     }
 

@@ -18,7 +18,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use crate::platform::fabric::{
     Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS, MergedUnlock, UnlockDecision,
@@ -30,12 +29,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tilo_service::{AskSender, Asked, Question};
 use tilo_unlock_protocol::{
-    APPROVAL_TIMEOUT_NS, CHALLENGE_LIFETIME_NS, ClientFrame, RefusalReason, SiblingFrame, SlotId, UnlockHello,
-    UnlockRequest, decode_frame, encode_frame, frame_len,
+    APPROVAL_TIMEOUT_NS, CHALLENGE_LIFETIME_NS, ClientFrame, RefusalReason, SiblingFrame, SlotId,
+    UnlockHello, UnlockRequest, decode_frame, encode_frame, frame_len,
 };
-use tilo_user_identity::{
-    CertifiedFleet, DeviceCert, device_cert_signing_digest,
-};
+use tilo_user_identity::{CertifiedFleet, DeviceCert, device_cert_signing_digest};
 use tilo_workspace_service::workspaces::person_workspace::devices::{
     DEVICES, Device, Devices, UnlockAnswer,
 };
@@ -378,7 +375,6 @@ impl Unlock {
         let answer = answer_of(record);
         resources.apply(DEVICES, move || Devices::answering(&answer));
     }
-
 }
 
 /// What the sibling state machine reads: the fleet this device trusts and the person's fabric as it

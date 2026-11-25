@@ -37,6 +37,9 @@ use crate::record_content::RecordContent;
 use tilo_runtime::device::nearby as wire;
 
 /// The session's Nearby Send resource: what the daemon shows, and the actions that change it.
+/// What the session does with a resource it shares: opens the invitation sheet for it.
+pub(crate) type Share = Box<dyn Fn(&str) -> Result<(), String>>;
+
 #[derive(Clone)]
 pub(crate) struct Served {
     inner: Rc<Inner>,
@@ -56,7 +59,7 @@ struct Inner {
     /// files a send hands over.
     grants: Arc<FilesGrants>,
     /// How a resource is shared: the session opens its invitation sheet.
-    share: Box<dyn Fn(&str) -> Result<(), String>>,
+    share: Share,
     /// The receiver no device of the person's is, and the question its certificate puts to them.
     air_drop: Arc<AirDrops>,
     /// Whether the person lets files move to their other devices.
@@ -98,7 +101,7 @@ impl Served {
         content: Arc<RecordContent>,
         handle: DesktopHandle,
         continuity: Continuity,
-        share: Box<dyn Fn(&str) -> Result<(), String>>,
+        share: Share,
         wake: Wake,
     ) -> Self {
         Self {
@@ -149,7 +152,7 @@ impl Inner {
         content: Arc<RecordContent>,
         handle: DesktopHandle,
         continuity: Continuity,
-        share: Box<dyn Fn(&str) -> Result<(), String>>,
+        share: Share,
         wake: Wake,
     ) -> Self {
         let grants = Arc::new(FilesGrants {
@@ -157,7 +160,7 @@ impl Inner {
             wake: wake.clone(),
         });
         let air_drop = air_drops(&content, &grants, &continuity, &wake);
-        let permitting = continuity.clone();
+        let permitting = continuity;
         Self {
             daemon,
             content,
@@ -212,7 +215,7 @@ impl Inner {
     }
 
     /// What the daemon shows now, with the receivers no device of the person's is added: an
-    /// AirDrop attempt is one of this session's sends.
+    /// `AirDrop` attempt is one of this session's sends.
     fn now(&self) -> Reading {
         let Some(workspace) = self.workspace() else {
             *self.last.borrow_mut() = Reading::default();
@@ -283,7 +286,10 @@ impl Inner {
                 read.after.clone_from(&after);
                 match daemon.read(read).await {
                     Ok(answered) => {
-                        after = answered["revision"].as_str().map(str::to_owned);
+                        after = answered
+                            .get("revision")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned);
                         *kept.lock_recover() = reading_of(&answered);
                         wake();
                     }
@@ -409,9 +415,7 @@ impl Inner {
                     "items": [{"hash": hash, "name": name, "size": size}],
                     "device": id,
                 });
-                daemon
-                    .invoke_receipt_blocking(Some(&workspace), request(wire::SEND, arguments))
-                    .map_err(|error| error.to_string())?;
+                daemon.invoke_receipt_blocking(Some(&workspace), request(wire::SEND, arguments))?;
                 Ok::<(), String>(())
             })();
             reply(match outcome {
@@ -673,7 +677,7 @@ fn folders_in(sandbox: &[CapOverride], access: Access) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The AirDrop receivers this device hands files to, with the question their certificate puts to
+/// The `AirDrop` receivers this device hands files to, with the question their certificate puts to
 /// the person: the seat's own, since it needs a sheet and an address no fabric reaches.
 fn air_drops(
     content: &Arc<RecordContent>,
@@ -754,8 +758,10 @@ mod tests {
                 Access::Read,
             )
         }];
-        let mut tree = tilo_desktop_model::Layout::default();
-        tree.active = id;
+        let mut tree = tilo_desktop_model::Layout {
+            active: id,
+            ..tilo_desktop_model::Layout::default()
+        };
         tree.workspaces.push(workspace);
         let handle = DesktopHandle::new(tree, 1);
         let workspace = id.to_string();

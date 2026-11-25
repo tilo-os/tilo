@@ -111,7 +111,7 @@ impl References {
         self.write(
             here,
             &named.id(),
-            Command::Put {
+            &Command::Put {
                 kind: reference::KIND.to_owned(),
                 id: named.id(),
                 resource: collab_types::store::Resource {
@@ -135,7 +135,7 @@ impl References {
         self.write(
             here,
             id,
-            Command::Remove {
+            &Command::Remove {
                 kind: reference::KIND.to_owned(),
                 id: id.to_owned(),
                 stamp: stamp(reference::REMOVE),
@@ -145,8 +145,8 @@ impl References {
 
     /// Run `command` on the reference `id` of the workspace `here`, and tell the roles following
     /// the records of the write the workspace took.
-    fn write(&self, here: &str, id: &str, command: Command) -> Result<(), String> {
-        (self.store)(here, REFERENCES_APP, &command)?;
+    fn write(&self, here: &str, id: &str, command: &Command) -> Result<(), String> {
+        (self.store)(here, REFERENCES_APP, command)?;
         self.changes.note(here, REFERENCES_APP, id, false);
         Ok(())
     }
@@ -420,7 +420,7 @@ mod tests {
             NOTES,
             Command::Get {
                 kind: note.kind.clone(),
-                id: note.record.clone(),
+                id: note.record,
             },
         );
         let Ok(Reply::Resource(Some(kept))) = kept else {

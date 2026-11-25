@@ -118,9 +118,10 @@ impl LiveState {
 fn state_of(row: &SessionRow) -> LiveState {
     let relayer = || Relayer {
         device: match hex::decode(&row.relay) {
-            Ok(bytes) => match bytes.try_into() {
-                Ok(device) => device,
-                Err(_) => {
+            Ok(bytes) => {
+                if let Ok(device) = bytes.try_into() {
+                    device
+                } else {
                     tilo_failure::ignored!(
                         "a relay the reading names by no device key shows as none, as a workspace \
                          without a relay shows",
@@ -129,7 +130,7 @@ fn state_of(row: &SessionRow) -> LiveState {
                     );
                     [0; 32]
                 }
-            },
+            }
             Err(error) => {
                 tilo_failure::ignored!(
                     "a relay the reading names by no device key shows as none, as a workspace \
@@ -493,7 +494,6 @@ impl Shared {
             Vec::new(),
         )
         .map(|grant| grant.encode())
-        .map_err(|error| error.to_string())
     }
 }
 

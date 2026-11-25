@@ -42,7 +42,7 @@ fn busy_link(daemon: &TestDaemon, load: &Load) -> std::os::fd::OwnedFd {
     });
     let (mut answers, mut answered, load) = (to_daemon, relay, Arc::clone(load));
     std::thread::spawn(move || {
-        let mut buffer = [0_u8; 64 * 1024];
+        let mut buffer = vec![0_u8; 64 * 1024];
         loop {
             let Ok(read) = answers.read(&mut buffer) else {
                 return;
@@ -56,6 +56,7 @@ fn busy_link(daemon: &TestDaemon, load: &Load) -> std::os::fd::OwnedFd {
                 while *held {
                     held = eased.wait(held).unwrap();
                 }
+                drop(held);
             }
             if answered
                 .write_all(buffer.get(..read).unwrap_or_default())

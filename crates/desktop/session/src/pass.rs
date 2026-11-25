@@ -132,13 +132,13 @@ impl Session {
     /// The person's login is over once a frame reaches the display: the startup is measured and
     /// closed, and the heap it left is reported.
     pub(super) fn first_frame_presented(&mut self) {
-        if self.first_frame || self.compositor.frames_presented() == 0 {
+        if !self.life.starting() || self.compositor.frames_presented() == 0 {
             return;
         }
         tilo_startup_metrics::mark("first-frame-presented");
         tilo_compositor::heap_trim::log_milestone("first-frame");
         tilo_startup_metrics::close_startup();
-        self.first_frame = true;
+        self.life = crate::assembly::Life::Running;
     }
 
     /// The desktop is usable, and says so once: every enabled output has shown its first frame —
@@ -195,43 +195,7 @@ impl Session {
         let timeout = self.wait(timeout);
         tilo_frame_metrics::profile::expire(Instant::now());
         self.compositor.dispatch(timeout)?;
-        // A launch asked since the last pass starts before this one waits for its frame, and
-        // again each time that wait is woken: the app's own start then runs beside the frame the
-        // session draws rather than after it, and whoever is waiting on the launch hears back at
-        // once.
-        let launch = self.shared.launch.clone();
-        if let Some(launch) = &launch {
-            launch.follow_render_node(|| self.compositor.render_node(), self.first_frame);
-            launch.start_asked_now();
-            self.follow_windows_identities(launch);
-        }
-        // What a tool handed the session's input is taken where a device's own input reaches the session:
-        // here, and each time the wait for the frame below is woken, so the frame carries it as it
-        // carries a key the person pressed.
-        let mut tool_input = serve_tool_input(
-            &self.control,
-            &self.shared,
-            self.shell.as_ref(),
-            &mut self.compositor,
-        );
-        // So is what the keyboard and pointer of another of the person's devices sent this one.
-        serve_driven_input(&self.shared, &mut self.compositor);
-        // A frame that is owed is shown at the display's next blank: what arrives before that blank
-        // joins the frame it is shown in, so the session below is laid out once per refresh however
-        // fast events come.
-        self.compositor.await_frame_arrivals(|compositor| {
-            if let Some(launch) = &launch {
-                launch.start_waiting();
-            }
-            tool_input = tool_input.saturating_add(serve_tool_input(
-                &self.control,
-                &self.shared,
-                self.shell.as_ref(),
-                compositor,
-            ));
-            serve_driven_input(&self.shared, compositor);
-        })?;
-        self.tool_input = tool_input;
+        self.take_input()?;
         self.follow_logout_request();
         // What the session itself does before the frame: the session, the apps and the overlays this
         // pass lays out.
@@ -346,6 +310,47 @@ impl Session {
         self.compositor
             .mark_after(after.elapsed().saturating_sub(answering));
         self.compositor.end_tick();
+        Ok(())
+    }
+
+    /// Take the input this pass carries: a tool's, and the keyboard and pointer of another of the
+    /// person's devices, where a device's own input reaches the session. A launch asked since the
+    /// last pass starts before the wait for the frame, and again each time that wait is woken, so
+    /// the app's own start runs beside the frame the session draws rather than after it.
+    fn take_input(&mut self) -> Result<(), Error> {
+        let launch = self.shared.launch.clone();
+        if let Some(launch) = &launch {
+            launch.follow_render_node(|| self.compositor.render_node(), !self.life.starting());
+            launch.start_asked_now();
+            self.follow_windows_identities(launch);
+        }
+        // What a tool handed the session's input is taken where a device's own input reaches the session:
+        // here, and each time the wait for the frame below is woken, so the frame carries it as it
+        // carries a key the person pressed.
+        let mut tool_input = serve_tool_input(
+            &self.control,
+            &self.shared,
+            self.shell.as_ref(),
+            &mut self.compositor,
+        );
+        // So is what the keyboard and pointer of another of the person's devices sent this one.
+        serve_driven_input(&self.shared, &mut self.compositor);
+        // A frame that is owed is shown at the display's next blank: what arrives before that blank
+        // joins the frame it is shown in, so the session below is laid out once per refresh however
+        // fast events come.
+        self.compositor.await_frame_arrivals(|compositor| {
+            if let Some(launch) = &launch {
+                launch.start_waiting();
+            }
+            tool_input = tool_input.saturating_add(serve_tool_input(
+                &self.control,
+                &self.shared,
+                self.shell.as_ref(),
+                compositor,
+            ));
+            serve_driven_input(&self.shared, compositor);
+        })?;
+        self.tool_input = tool_input;
         Ok(())
     }
 
@@ -607,7 +612,7 @@ impl Session {
         let measured = tilo_frame_metrics::run_seconds_from_env()
             .and_then(|seconds| std::time::Instant::now().checked_add(seconds));
         let measured_over = || measured.is_some_and(|over| std::time::Instant::now() >= over);
-        while !self.ended
+        while self.life != crate::assembly::Life::Ended
             && !self.compositor.closed()
             && !measured_over()
             && !stop(&self.compositor)
@@ -673,12 +678,12 @@ impl Session {
     /// this session, ends it in order: the wrapper tears the login down once this process is gone.
     /// The request file already says the logout was asked for, so none is written again.
     fn follow_logout_request(&mut self) {
-        if os_actions::take_logout_request() && !self.ended {
+        if os_actions::take_logout_request() && self.life != crate::assembly::Life::Ended {
             tracing::info!("the logout asked for through the login wrapper ends this session");
             if let Some(desktop) = &self.desktop {
                 desktop.end();
             }
-            self.ended = true;
+            self.life = crate::assembly::Life::Ended;
         }
     }
 
@@ -934,8 +939,11 @@ fn session<'a>(
         agent_sessions: &shared.agent_sessions,
         sync: shared.sync.as_deref(),
         shares: &shared.window_shares,
-        locked: compositor.locked(),
-        lock_screen_drawn: compositor.lock_drawn(),
+        locked: match (compositor.locked(), compositor.lock_drawn()) {
+            (true, true) => crate::test_control::Locked::Drawn,
+            (true, false) => crate::test_control::Locked::Yes,
+            _ => crate::test_control::Locked::No,
+        },
         lock: &shared.lock,
         pointer: compositor.pointer_location(),
         pointer_shown: compositor.pointer_shown(),

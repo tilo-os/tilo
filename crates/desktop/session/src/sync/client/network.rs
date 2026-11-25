@@ -394,7 +394,7 @@ async fn listening(
     // The workspaces this device keeps are its daemon's, which serves them on its own endpoint:
     // this one serves none.
     let (actor, actor_task) = tilo_network_actor::Actor::spawn_serving(
-        endpoint.clone(),
+        endpoint,
         lookup,
         identity.cloned(),
         Arc::new(std::sync::Mutex::new(Vec::new())),

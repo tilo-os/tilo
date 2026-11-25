@@ -95,12 +95,12 @@ impl ServiceSessions {
 
 impl ServiceSessions {
     /// [`BrowserServiceSessionServices::command`], on this thread.
-    fn command_now(&self, context: &Context, command: Command) -> Result<Reply, String> {
-        self.authorize_command(context, &command)?;
+    fn command_now(&self, context: &Context, command: &Command) -> Result<Reply, String> {
+        self.authorize_command(context, command)?;
         if !command.valid() {
             return Err("Invalid account credentials request".into());
         }
-        if command == (Command::LendsItems {}) {
+        if *command == (Command::LendsItems {}) {
             // Answered by what this session is: it says so before its server can be asked.
             return Ok(Reply::ItemsLent {
                 lent: self.items.lends(context.workspace_id()),
@@ -131,7 +131,7 @@ impl BrowserServiceSessionServices for ServiceSessions {
     fn command(self: Arc<Self>, context: &Context, command: Command) -> ItemAnswering {
         let context = context.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || self.command_now(&context, command))
+            tokio::task::spawn_blocking(move || self.command_now(&context, &command))
                 .await
                 .map_err(|error| error.to_string())?
         })

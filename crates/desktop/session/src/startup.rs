@@ -382,7 +382,7 @@ fn certify_this_computers_key(identity_path: &Path) {
         Ok(true) => tracing::info!("this account acts on this computer as its own certified key"),
         Ok(false) => {}
         Err(error) => {
-            tracing::warn!(%error, "this account's key on this computer is not certified")
+            tracing::warn!(%error, "this account's key on this computer is not certified");
         }
     }
 }
@@ -401,7 +401,7 @@ fn found_here(identity_dir: &Path) {
         }
         Ok(false) => {}
         Err(error) => {
-            tracing::warn!(%error, "this account's identity was not made on this computer")
+            tracing::warn!(%error, "this account's identity was not made on this computer");
         }
     }
 }
@@ -447,7 +447,7 @@ pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
     // the root it keeps for that account.
     let held = tilo_identity::store::resolve_active_identity(identity_dir)
         .and_then(|path| tilo_identity::store::load_from_path(path).ok())
-        .filter(|identity| identity.is_single_device());
+        .filter(tilo_identity::store::SigningIdentity::is_single_device);
     match held {
         Some(signer) => {
             tilo_api::daemon::who::certify_my_key(&signer)?;

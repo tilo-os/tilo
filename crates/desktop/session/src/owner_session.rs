@@ -126,7 +126,7 @@ impl SessionFollow {
 
     /// What this device has to say now, when it differs from what it said last in anything but the
     /// time of the last input: that moves with every key and is said only with the rest.
-    pub fn to_say(
+    pub fn saying(
         &mut self,
         locked: bool,
         input_unix_ms: u64,
@@ -230,11 +230,15 @@ pub fn latest_use_nearby(now_unix_ms: u64, others: &[Other]) -> Option<u64> {
 
 /// The record of the person's devices in their own workspace, followed through the device's daemon:
 /// where this device reads how the person's session stands on their others, and says its own.
+/// The other devices' sessions as the record last read them, by device, and the reading they are
+/// of.
+type Others = Option<(u64, Vec<(DeviceId, OwnerSession, Vec<wake::WakeRoute>)>)>;
+
 pub(crate) struct OwnerDevices {
     record: FollowedResource<Devices>,
     cert: DeviceCert,
     /// The other devices' sessions as the record last read, by device, and the reading they are of.
-    others: RefCell<Option<(u64, Vec<(DeviceId, OwnerSession, Vec<wake::WakeRoute>)>)>>,
+    others: RefCell<Others>,
     /// When this device may say its session again, after its daemon did not take it.
     quiet_until: Cell<Option<Instant>>,
     /// The daemon did not take what this device last said of its session: said off the loop, so
@@ -518,7 +522,7 @@ impl Session {
         {
             self.shared.owner_session.unsaid();
         }
-        if let Some(said) = self.shared.owner_session.to_say(locked, input_ms, using)
+        if let Some(said) = self.shared.owner_session.saying(locked, input_ms, using)
             && let Some(devices) = self.shared.owner_devices.as_ref()
             && !devices.say(said)
         {
@@ -698,27 +702,27 @@ mod tests {
     fn a_device_says_its_session_only_when_it_changed() {
         let mut follow = SessionFollow::default();
         let first = follow
-            .to_say(false, 20_001, true)
+            .saying(false, 20_001, true)
             .expect("the first pass says it");
         assert_eq!(first.active_ms, 20_001);
         assert_eq!(
-            follow.to_say(false, 29_999, true),
+            follow.saying(false, 29_999, true),
             None,
             "typing on moves no record"
         );
         let idle = follow
-            .to_say(false, 29_999, false)
+            .saying(false, 29_999, false)
             .expect("leaving the device is said");
         assert!(!idle.using);
         assert_eq!(idle.active_ms, 29_999, "with the last input it had");
         follow.changed_by_person(40_000);
         assert!(
-            follow.to_say(true, 29_999, false).is_some(),
+            follow.saying(true, 29_999, false).is_some(),
             "the person's lock is said"
         );
         follow.unsaid();
         assert!(
-            follow.to_say(true, 29_999, false).is_some(),
+            follow.saying(true, 29_999, false).is_some(),
             "what did not reach the record is said again"
         );
     }

@@ -131,6 +131,10 @@ impl TestDaemon {
     /// Start the daemon of the device `(key, cert)`, holding the group keys `keys` when the
     /// test's devices share them, and admitting an app's connection as the launch `launcher`
     /// recorded, and open the session's link to it.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one test's whole flow, from its setup to what it proves"
+    )]
     fn start_as(
         (key, cert): (ed25519_dalek::SigningKey, DeviceCert),
         keys: Option<Arc<TestGroupKeys>>,
@@ -162,7 +166,7 @@ impl TestDaemon {
         runtime
             .block_on(async { tilo_workspace_service::resource_actions::register(&workspaces) })
             .expect("the runtime runs");
-        let launched = launcher.is_some();
+        let launcher_present = launcher.is_some();
         // The launcher this test starts its apps through execs them without a launcher's launch
         // hold, so an app can reach the daemon before the session has recorded its launch.
         let launcher =
@@ -204,7 +208,7 @@ impl TestDaemon {
             providers: Some(workspaces.providers()),
             // The apps it admits act as the device's person, as the device's certificate
             // authority answers for each workspace.
-            native_certificates: launched.then(|| {
+            native_certificates: launcher_present.then(|| {
                 Arc::new(ThisDevice(cert.clone()))
                     as Arc<dyn tilo_workspace_service::apps::certificate_authority::CertificateAuthority>
             }),
@@ -213,7 +217,7 @@ impl TestDaemon {
         };
         // The apps it admits are checked against the workspaces it holds, as a device's daemon
         // checks them.
-        let membership = launched.then(|| {
+        let membership = launcher_present.then(|| {
             Arc::new(workspaces.clone())
                 as tilo_workspace_service::apps::services::WorkspaceAuthorityHandle
         });
@@ -553,7 +557,9 @@ impl LauncherServices for Held {
         workspace: &str,
         window_instance: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
-        let deadline = std::time::Instant::now() + WAITING_FOR_LAUNCH;
+        let deadline = std::time::Instant::now()
+            .checked_add(WAITING_FOR_LAUNCH)
+            .unwrap_or_else(std::time::Instant::now);
         loop {
             if let Some(launch) =
                 self.0
@@ -587,9 +593,7 @@ impl ShellActions for Governance {
         let shell = *caller;
         Box::pin(std::future::ready({
             let cert = workspaces.device_cert();
-            if shell.person != cert.user_public_key {
-                Err("this device acts for its own person only".to_owned())
-            } else {
+            if shell.person == cert.user_public_key {
                 let person = tilo_actions::remote::Caller::authenticated(
                     cert.user_public_key,
                     cert.device_public_key,
@@ -601,6 +605,8 @@ impl ShellActions for Governance {
                 let provider: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> =
                     Arc::new(GovernanceCall { workspaces });
                 Ok((provider, caller))
+            } else {
+                Err("this device acts for its own person only".to_owned())
             }
         }))
     }

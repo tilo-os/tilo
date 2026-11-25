@@ -1317,7 +1317,8 @@ impl SessionServices {
         }
         *at = revision;
         drop(at);
-        for wake in std::mem::take(&mut *self.readings_woken.lock_recover()) {
+        let woken = std::mem::take(&mut *self.readings_woken.lock_recover());
+        for wake in woken {
             wake.wake();
         }
     }
@@ -1585,11 +1586,6 @@ impl SessionServices {
     /// The session's own actions these services hand a connection, once the session has them.
     pub(crate) fn keep_actions(&self, actions: Arc<crate::session_actions::SessionActions>) {
         let _ = self.actions.set(actions);
-    }
-
-    /// The shell's workspaces, as of the loop's last pass: each one's id and name.
-    pub(crate) fn workspaces(&self) -> Vec<[String; 2]> {
-        self.workspaces.lock_recover().clone()
     }
 
     /// The session's own actions, once they are made.
@@ -2174,7 +2170,7 @@ impl ActionProvider for Host {
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {
         self.state
             .as_ref()
-            .and_then(|dispatch| dispatch.content_puts())
+            .and_then(tilo_actions::remote::ActionProvider::content_puts)
     }
 
     fn content_puts_for(

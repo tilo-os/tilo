@@ -41,6 +41,7 @@ use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_speaker_service::remote_audio::{self, RemoteAudioPhase};
 use tilo_user_identity::AgentScope;
+use tilo_workspace_service::workspaces::person_workspace::devices::Device as DeviceRecord;
 use tilo_workspace_service::workspaces::person_workspace::devices::Devices as DevicesRecord;
 use tilo_workspace_service::workspaces::person_workspace::devices::KeyKind as RecordKey;
 use tilo_workspace_service::workspaces::person_workspace::wake;
@@ -187,7 +188,7 @@ fn read(
                     .map(display_view)
                     .collect(),
                 seen_ms: entry
-                    .and_then(|kept| kept.seen_ms())
+                    .and_then(DeviceRecord::seen_ms)
                     .and_then(|ms| u64::try_from(ms).ok())
                     .unwrap_or(0),
                 storage: entry
@@ -337,22 +338,37 @@ pub(crate) struct HandOff {
     pub(crate) device: String,
 }
 
+/// What [`Served::new`] keeps, as the session hands it.
+pub(crate) struct Parts {
+    pub(crate) fabric: SharedLink,
+    pub(crate) record: Option<FollowedResource<DevicesRecord>>,
+    pub(crate) handle: DesktopHandle,
+    pub(crate) readings: crate::status::Shared,
+    pub(crate) chosen: Rc<RefCell<Option<u64>>>,
+    pub(crate) handoff: Rc<RefCell<Option<MediaOffer>>>,
+    pub(crate) pressed: Rc<RefCell<Vec<Press>>>,
+    pub(crate) handed: Rc<RefCell<Vec<HandOff>>>,
+    pub(crate) refused: Arc<Mutex<String>>,
+    pub(crate) tools: crate::tools::Handle,
+}
+
 impl Served {
     /// The service publishing what `fabric` , `handle` , `readings` , `chosen` and `handoff` read,
     /// whose presses `pressed` carries to the loop, and whose identity backup `tools` asks the
     /// loop to raise.
-    pub(crate) fn new(
-        fabric: SharedLink,
-        record: Option<FollowedResource<DevicesRecord>>,
-        handle: DesktopHandle,
-        readings: crate::status::Shared,
-        chosen: Rc<RefCell<Option<u64>>>,
-        handoff: Rc<RefCell<Option<MediaOffer>>>,
-        pressed: Rc<RefCell<Vec<Press>>>,
-        handed: Rc<RefCell<Vec<HandOff>>>,
-        refused: Arc<Mutex<String>>,
-        tools: crate::tools::Handle,
-    ) -> Self {
+    pub(crate) fn new(parts: Parts) -> Self {
+        let Parts {
+            fabric,
+            record,
+            handle,
+            readings,
+            chosen,
+            handoff,
+            pressed,
+            handed,
+            refused,
+            tools,
+        } = parts;
         Self {
             fabric,
             record,
@@ -596,8 +612,13 @@ async fn revoke_with(device: &str, reason: Option<&str>) -> Result<(), String> {
         .map_err(said)?;
     let workspace = calls.founded_workspace().await.map_err(said)?;
     let mut arguments = serde_json::json!({"device": device.trim()});
-    if let Some(reason) = reason.map(str::trim).filter(|reason| !reason.is_empty()) {
-        arguments["reason"] = serde_json::Value::String(reason.to_owned());
+    if let Some(reason) = reason.map(str::trim).filter(|reason| !reason.is_empty())
+        && let Some(map) = arguments.as_object_mut()
+    {
+        map.insert(
+            "reason".to_owned(),
+            serde_json::Value::String(reason.to_owned()),
+        );
     }
     calls
         .act(
@@ -782,6 +803,10 @@ mod surface_tests {
     /// What the `devices` surface declares: the fields a view reads and the verbs that make this
     /// device the person's and take another of theirs back.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one test's whole flow, from its setup to what it proves"
+    )]
     fn the_surface_publishes_the_login_the_revocation_and_the_workspaces() {
         let published = tilo_device_surfaces::device_surfaces()
             .into_iter()

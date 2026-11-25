@@ -827,7 +827,10 @@ fn report_target(
     )
     .with_argument("body", message_body(text, attached)?);
     if let Some(at) = recording {
-        target = target.with_argument("recording", file_json(&files[at])?);
+        let file = files
+            .get(at)
+            .ok_or("the recording is not among the files")?;
+        target = target.with_argument("recording", file_json(file)?);
     }
     let rest: Vec<FileValue> = files
         .iter()

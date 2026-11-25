@@ -371,7 +371,9 @@ impl SeatProvider {
                 };
                 let asked = field::<String>(&arguments, "workspace").and_then(|workspace| {
                     let node = field::<String>(&arguments, "node")?;
-                    let ask = seat::workspace_node_ask(&arguments["ask"])?;
+                    let ask = seat::workspace_node_ask(
+                        arguments.get("ask").ok_or("the call names no ask")?,
+                    )?;
                     nodes.ask(&workspace, &node, ask)
                 });
                 match asked {
@@ -420,9 +422,11 @@ impl SeatProvider {
                         answered(view)
                     }),
                     calls::UPDATE => blocking(move || {
-                        let values = serde_json::to_vec(&arguments["values"])
-                            .map_err(|error| error.to_string())?;
-                        let action = arguments["action"].as_str();
+                        let values = serde_json::to_vec(
+                            arguments.get("values").ok_or("the call names no values")?,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        let action = arguments.get("action").and_then(Value::as_str);
                         // Model Providers' writes are held to the providers' own rules.
                         let check: Option<runtime_collab::settings::host::Check> =
                             providers.then(|| {
@@ -454,7 +458,7 @@ impl SeatProvider {
                 let board = Arc::clone(&parts.live_activities);
                 Box::pin(std::future::ready(field::<String>(&arguments, "app").map(
                     |app| {
-                        let activity = Some(arguments["activity"].clone()).filter(Value::is_object);
+                        let activity = arguments.get("activity").cloned().filter(Value::is_object);
                         board.show(&app, activity);
                         Value::Null
                     },
@@ -482,12 +486,14 @@ impl SeatProvider {
                     let app = field::<String>(&arguments, "app")?;
                     let workspace = field::<String>(&arguments, "workspace")?;
                     let record = field::<Option<String>>(&arguments, "record")?;
-                    let place = seat::launch_place(&arguments["place"])?;
-                    let launched = launches.launch_in(&app, &workspace, record.as_deref(), &place);
-                    if let Err(error) = &launched {
+                    let place = seat::launch_place(
+                        arguments.get("place").ok_or("the call names no place")?,
+                    )?;
+                    let started = launches.launch_in(&app, &workspace, record.as_deref(), &place);
+                    if let Err(error) = &started {
                         tracing::warn!(%app, %error, "an app's launch did not start");
                     }
-                    launched
+                    started
                 })
             }
             (calls::KEYBOARD_SHORTCUTS, calls::READ) => {
@@ -498,7 +504,7 @@ impl SeatProvider {
                     answered(shortcut_table(shortcuts, settings, after).await?)
                 })
             }
-            (calls::BROWSER_SERVICE_SESSIONS, call) => self.service_sessions(call, arguments),
+            (calls::BROWSER_SERVICE_SESSIONS, call) => self.service_sessions(call, &arguments),
             (calls::FILE_CLIPBOARD, calls::COMMAND) => {
                 // Every file the call names is taken now, so none outlives it.
                 let selected = seat::handed_files(&self.shell.handed(), &arguments);
@@ -563,20 +569,20 @@ impl SeatProvider {
     /// A call of the person's account credentials, for the connection the daemon's broker admitted
     /// and checked: this session decides the rest against the workspace it keeps, then opens the
     /// vault.
-    fn service_sessions(&self, call: &str, arguments: Value) -> Answer {
+    fn service_sessions(&self, call: &str, arguments: &Value) -> Answer {
         let failed = |why: String| -> Answer { Box::pin(std::future::ready(Err(why))) };
         let Some(sessions) = self.parts.service_sessions.clone() else {
             return failed("this session keeps no account credentials".to_owned());
         };
         if call == calls::DISCONNECT {
-            if let Ok(peer) = field::<u64>(&arguments, "peer") {
+            if let Ok(peer) = field::<u64>(arguments, "peer") {
                 sessions.disconnect(peer);
             }
             return Box::pin(std::future::ready(Ok(Value::Null)));
         }
         let (context, command) = match (
-            field::<seat::ServiceSessionFacts>(&arguments, "context"),
-            field::<runtime_collab::BrowserServiceSessionCommand>(&arguments, "command"),
+            field::<seat::ServiceSessionFacts>(arguments, "context"),
+            field::<runtime_collab::BrowserServiceSessionCommand>(arguments, "command"),
         ) {
             (Ok(facts), Ok(command)) => (facts.context(), command),
             (Err(why), _) | (_, Err(why)) => return failed(why),
@@ -609,9 +615,14 @@ impl SeatProvider {
     /// A call of what the session's services publish.
     fn published(&self, call: &str, arguments: &Value) -> Answer {
         let published = Arc::clone(&self.parts.published);
+        let caller = arguments.get("caller");
         let caller = match (
-            arguments["caller"]["app_id"].as_str(),
-            arguments["caller"]["workspace"].as_str(),
+            caller
+                .and_then(|caller| caller.get("app_id"))
+                .and_then(Value::as_str),
+            caller
+                .and_then(|caller| caller.get("workspace"))
+                .and_then(Value::as_str),
         ) {
             (Some(app_id), Some(workspace)) => tilo_workspace_service::apps::services::Caller {
                 app_id: app_id.to_owned(),
@@ -846,15 +857,15 @@ mod tests {
             },
         )
         .expect("the note is retitled");
-        let changed = tilo_test_env::wait_for("the session hears of the note changing", || {
+        let heard = tilo_test_env::wait_for("the session hears of the note changing", || {
             followed.try_iter().find(|changed| {
                 changed.app == NOTES
                     && tilo_resource_store::content_resource(&changed.record)
                         == Some((note.kind.as_str(), note.record.as_str()))
             })
         });
-        assert_eq!(changed.workspace, KITCHEN);
-        assert!(!changed.replayed, "a change made now is news");
+        assert_eq!(heard.workspace, KITCHEN);
+        assert!(!heard.replayed, "a change made now is news");
         drop(shell);
     }
 

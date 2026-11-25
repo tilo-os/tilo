@@ -660,8 +660,10 @@ fn window_at(session: &mut Session, (x, y): (f64, f64)) -> (u64, Option<u32>) {
                 && y >= f64::from(*wy)
                 && y < f64::from(wy + h)
         })
-        .map(|(info, _)| info.id)
-        .unwrap_or_else(|| panic!("an app window stands at {x}, {y}"));
+        .map_or_else(
+            || panic!("an app window stands at {x}, {y}"),
+            |(info, _)| info.id,
+        );
     (id, compositor.last_input_serial(id))
 }
 
@@ -678,7 +680,10 @@ fn bar_over_a_window(session: &mut Session, over: ui::kurbo::Rect) -> (f64, f64)
             })
         };
         let mut x = over.x0 + 24.0;
-        while x < over.x1 - 24.0 {
+        loop {
+            if x >= over.x1 - 24.0 {
+                break;
+            }
             for y in [over.y0 + 12.0, over.y0 + 22.0] {
                 if under(x, y) {
                     return Some((x, y));

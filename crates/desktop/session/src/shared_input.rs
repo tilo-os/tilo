@@ -669,9 +669,11 @@ impl SharedInput {
             issued_ms: tilo_clock::unix_now_ms(),
             what,
         };
-        self.carrier
-            .as_ref()
-            .is_some_and(|carrier| carrier.send(device, driven.encode()))
+        self.carrier.as_ref().is_some_and(|carrier| {
+            driven
+                .encode()
+                .is_some_and(|body| carrier.send(device, body))
+        })
     }
 
     /// Ask `device` for a lease, unless an ask is on its way.
@@ -685,7 +687,7 @@ impl SharedInput {
             return;
         }
         state.asked.insert(device.clone(), now);
-        let (Some(resources), Some(driven), Some(driver)) = (
+        let (Some(resources), Some(target), Some(controller)) = (
             &self.hands,
             key_of(device),
             state.local.as_ref().and_then(key_of),
@@ -694,7 +696,7 @@ impl SharedInput {
         };
         let asked_ms = unix_ms(tilo_clock::unix_now_ms());
         resources.apply(DEVICES, move || {
-            Devices::asking_input(&driven, &driver, asked_ms)
+            Devices::asking_input(&target, &controller, asked_ms)
         });
     }
 
@@ -814,24 +816,24 @@ impl SharedInput {
         let mut granted = BTreeMap::new();
         let mut asked_here = Vec::new();
         let mut kept_here = BTreeSet::new();
-        for (driven, hand) in devices.inputs.iter() {
-            let Ok(driven) = DeviceId::new(driven.as_str()) else {
+        for (target, hand) in devices.inputs.iter() {
+            let Ok(target) = DeviceId::new(target.as_str()) else {
                 continue;
             };
-            let Ok(driver) = DeviceId::new(hand.driver.as_str()) else {
+            let Ok(controller) = DeviceId::new(hand.driver.as_str()) else {
                 continue;
             };
-            if driven == local {
+            if target == local {
                 match nonce_of(hand) {
                     Some(nonce) => {
                         kept_here.insert(nonce);
                     }
-                    None => asked_here.push((driver, hand.asked_ms)),
+                    None => asked_here.push((controller, hand.asked_ms)),
                 }
-            } else if driver == local
-                && let Some(lease) = lease_of(hand, &local, &driven)
+            } else if controller == local
+                && let Some(lease) = lease_of(hand, &local, &target)
             {
-                granted.insert(driven, lease);
+                granted.insert(target, lease);
             }
         }
         for (device, lease) in &granted {
@@ -1247,14 +1249,14 @@ impl SharedInput {
     /// The person turned Display & input off here: every lease this device granted ends.
     fn revoke(&self, state: &mut State) {
         for (nonce, lease) in std::mem::take(&mut state.issued) {
-            if let (Some(resources), Some(driven), Some(driver)) = (
+            if let (Some(resources), Some(target), Some(controller)) = (
                 &self.hands,
                 key_of(&lease.target),
                 key_of(&lease.controller),
             ) {
                 let nonce = hex::encode(nonce);
                 resources.apply(DEVICES, move || {
-                    Devices::ending_input(&driven, &driver, &nonce)
+                    Devices::ending_input(&target, &controller, &nonce)
                 });
             }
         }

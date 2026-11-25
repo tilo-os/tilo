@@ -189,15 +189,11 @@ pub(crate) struct Knitted {
 /// and the link the loop answers their calls through. What only this seat answers is served to
 /// the daemon on the shell's link. A session the daemon handed no shell link serves its apps
 /// nothing, and says why.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the app wire's services are all decided in one place, so a service added is not missed"
-)]
 pub(crate) fn start_app_wire(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
     activity: &activity::Activity,
-    services: Knitted,
+    services: &Knitted,
     collaboration: Collaboration<'_>,
 ) -> Result<Option<AppWire>, Error> {
     let Collaboration {
@@ -282,11 +278,7 @@ pub(crate) fn start_app_wire(
     if let Some(actions) = &session_actions {
         actions.serve_on(shell.clone());
     }
-    let socket = crate::app_socket::serve(
-        &path,
-        std::sync::Arc::clone(&options.launches),
-        shell.clone(),
-    )?;
+    let socket = crate::app_socket::serve(&path, std::sync::Arc::clone(&options.launches), shell)?;
     // The person's other devices are dialled as this session's siblings, and the session's pass
     // wakes when their own workspace moves: the session between two of theirs is where they tell
     // each other what they hold, and what their device fabric says.
@@ -649,7 +641,7 @@ impl ServedServices {
     ) -> tilo_actions::remote::asked::AskedFacts {
         let mut facts = tilo_actions::remote::asked::AskedFacts::by(self.by.clone());
         if let Some((owner, spec)) = tilo_actions::api::locate(resources, address) {
-            facts.verb = spec.label.clone();
+            facts.verb.clone_from(&spec.label);
             facts.on = Some(owner.label.trim().to_owned()).filter(|label| !label.is_empty());
             facts.destructive = !spec.contract.can_be_undone();
         }

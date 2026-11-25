@@ -235,9 +235,6 @@ struct Shown {
 }
 
 impl Shown {
-    /// Close the roster, for the next opening to find empty.
-    fn close(&mut self) {}
-
     /// Whether the roster stands kept at an edge of the shell, drawn and pressed where it waits: a
     /// pin waiting away with nobody else here does not.
     fn is_kept(&self) -> bool {
@@ -284,7 +281,6 @@ fn pin_roster(shown: &mut Shown, open: &Cell<bool>) {
     }
     let edge = PEOPLE_OVERLAY.get().edge;
     shown.pinned = Some(Pinned::new(edge, false));
-    shown.close();
     open.set(false);
     keep_pinned(true, edge);
 }
@@ -319,10 +315,6 @@ impl People {
         if !dismissed {
             let open = !self.open.get();
             self.open.set(open);
-            let mut shown = self.shown.borrow_mut();
-            if !open {
-                shown.close();
-            }
         }
         self.redraw();
     }
@@ -339,7 +331,6 @@ impl People {
         }
         // What the roster shows is cleared before it draws again: the draw holds what it shows
         // while it draws it.
-        self.shown.borrow_mut().close();
         self.dismissed.set(Some(ui::time::now()));
         self.redraw();
     }
@@ -674,10 +665,9 @@ impl Panel {
     }
 
     /// Act on what a press or a key on the roster meant.
-    fn follow(&mut self, hit: PeopleHit, shown: &mut Shown) {
+    fn follow(&self, hit: PeopleHit, shown: &mut Shown) {
         match hit {
             PeopleHit::Dismiss => {
-                shown.close();
                 self.open.set(false);
             }
             PeopleHit::Follow(index) => {
@@ -771,6 +761,7 @@ impl Panel {
             .collect();
         let mut labels: HashMap<u64, String> = HashMap::new();
         let mut pointers = tilo_session_core::presence::Pointers::default();
+        let no_presence = ui::presence::PresenceCtx::default();
         if let Some(sync) = &self.sync
             && let Some((workspace_id, named)) = self.handle.read(|tree| {
                 let workspace = tree.active_workspace()?;
@@ -792,8 +783,7 @@ impl Panel {
                     &sync.here().borrow().faces(),
                     &tiles,
                     &mut self.chats.borrow_mut(),
-                    env.presence
-                        .unwrap_or(&ui::presence::PresenceCtx::default()),
+                    env.presence.unwrap_or(&no_presence),
                     ui::time::now(),
                     Self::presence_ms(),
                     theme.motion(),
@@ -830,7 +820,7 @@ impl Panel {
 
     /// The roster, drawn where it stands: under the bar as the faces open it, or kept on screen at
     /// an edge with a mirror of each person's screen. One painting for both.
-    fn draw_roster(&mut self, ctx: &mut ui::DrawCtx<'_>, shown: &mut Shown) {
+    fn draw_roster(&self, ctx: &mut ui::DrawCtx<'_>, shown: &mut Shown) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -937,12 +927,7 @@ impl Panel {
     }
 
     /// The roster's one painting, with the model this session builds of who is here.
-    fn draw_one_roster(
-        &mut self,
-        ctx: &mut ui::DrawCtx<'_>,
-        shown: &mut Shown,
-        panel: Option<Rect>,
-    ) {
+    fn draw_one_roster(&self, ctx: &mut ui::DrawCtx<'_>, shown: &mut Shown, panel: Option<Rect>) {
         #[allow(
             unused_variables,
             unused_mut,

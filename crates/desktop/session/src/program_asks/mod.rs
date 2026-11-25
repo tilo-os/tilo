@@ -100,7 +100,7 @@ impl ProgramAsks {
     /// Raise every question `questions` receives, as it arrives, once the dispatch is reached
     /// ([`Self::serve_on`]); `wake` wakes the session's loop when a notice is due.
     pub(crate) fn over(
-        questions: AskReceiver,
+        questions: &AskReceiver,
         runtime: tokio::runtime::Handle,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
@@ -182,6 +182,8 @@ impl ProgramAsks {
                 .filter(|handle| !pending.iter().any(|question| &question.handle == *handle))
                 .cloned()
                 .collect();
+            drop(raised);
+            drop(shown);
             (raise, gone)
         };
         for handle in gone {
@@ -220,7 +222,7 @@ impl ProgramAsks {
             facts,
             reply,
             grant,
-        } = raised;
+        } = *raised;
         let invocation = InvocationId::new();
         self.inner.raised.lock_recover().insert(
             handle.clone(),
@@ -358,7 +360,9 @@ impl ProgramAsks {
                 .get(handle)
                 .filter(|was| was.invocation == invocation)
                 .ok_or_else(gone)?;
-            (was.reply.answer(answered), was.grant.clone())
+            let answered = (was.reply.answer(answered), was.grant.clone());
+            drop(raised);
+            answered
         };
         match answer {
             Ok(answer) => {

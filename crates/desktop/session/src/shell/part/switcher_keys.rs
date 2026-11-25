@@ -223,7 +223,12 @@ fn a_key_is_the_shells_only_where_a_surface_answers_it() {
                 Answer::Asks(action, arguments) => {
                     assert_eq!(claim, KeyClaim::Take, "{name}: key {at} is the shell's");
                     part.key(&offered.key);
-                    let asked: Vec<Ask> = link.asked.borrow_mut().drain(..).map(|(ask, _)| ask).collect();
+                    let asked: Vec<Ask> = link
+                        .asked
+                        .borrow_mut()
+                        .drain(..)
+                        .map(|(ask, _)| ask)
+                        .collect();
                     let expected = Ask {
                         resource: OVERLAYS.to_owned(),
                         action: (*action).to_owned(),

@@ -1559,7 +1559,7 @@ fn someone_here(
     app: &str,
 ) -> tilo_session_core::desktop::here::LiveMember {
     tilo_session_core::desktop::here::LiveMember {
-        publisher: format!("{:064x}", at),
+        publisher: format!("{at:064x}"),
         kind: if member.is_some() {
             "agent".to_owned()
         } else {
@@ -1792,8 +1792,9 @@ fn the_people_list_header_says_the_workspace_and_groups_people_ahead_of_software
     let mia = people_place(&session, "Mia Clayton");
     let sam = people_place(&session, "Sam Okafor");
     let fieldwork = people_place(&session, "Fieldwork");
+    let people_before_software = sam.3 <= agents_heading.1;
     assert!(
-        people_heading.1 < mia.1 && mia.1 < sam.1 && sam.3 <= agents_heading.1,
+        people_heading.1 < mia.1 && mia.1 < sam.1 && people_before_software,
         "people stand under their heading, before software's: {people_heading:?} {mia:?} {sam:?} {agents_heading:?}"
     );
     assert!(

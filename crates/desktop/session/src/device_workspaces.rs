@@ -201,7 +201,6 @@ impl DeviceWorkspaces {
 type DocumentKey = (String, String, String);
 
 /// A document a service of the session keeps in a workspace: one other threads write too.
-
 impl DeviceWorkspaces {
     /// The workspaces `view` says the daemon holds, read through `reads` and written through
     /// `writes`; a write the workspace took is noted on `changes`.

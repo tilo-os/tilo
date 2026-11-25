@@ -255,7 +255,8 @@ impl SessionFabric {
     ) {
         match payload {
             PersonalFabricPayload::Here => {
-                if let Err(error) = self.live.lock_recover().here(peer) {
+                let proved = self.live.lock_recover().here(peer);
+                if let Err(error) = proved {
                     tracing::warn!(%error, %peer, "an endpoint said it is there that proved no device of the person's");
                 }
             }
@@ -449,7 +450,7 @@ impl crate::Session {
         fabric: &SharedLink,
         envelope: &PersonalFabricActionEnvelope,
     ) {
-        if self.service_took(fabric, envelope) {
+        if Self::service_took(fabric, envelope) {
             return;
         }
         match &envelope.action {
@@ -488,7 +489,7 @@ impl crate::Session {
 
     /// Whether one of this session's services took `envelope` 's action: a speaker service's.
     /// What they did not take is the session's own.
-    fn service_took(&self, fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) -> bool {
+    fn service_took(fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) -> bool {
         tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
             || tilo_speaker_service::groups::handle_action(fabric.as_ref(), envelope)
     }

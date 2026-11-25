@@ -63,7 +63,7 @@ fn wait_for_open_seats(device: &Device, wanted: usize) {
 #[test]
 fn a_seat_taken_on_either_device_is_taken_in_the_others_open_window() {
     let (site, _ada, _bob, first, second) =
-        two_people_at_a_site_carrying(&[], |device| device.install_poker());
+        two_people_at_a_site_carrying(&[], super::common::people::Device::install_poker);
     show(&first, &site);
     show(&second, &site);
     // Both devices read the workspace they joined as their person: a refused read is why the

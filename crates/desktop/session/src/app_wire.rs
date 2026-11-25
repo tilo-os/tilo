@@ -199,7 +199,7 @@ impl Link {
                     caller,
                     resource,
                     reply,
-                } => self.answer_snapshot(services, caller, resource, reply),
+                } => self.answer_snapshot(services, &caller, &resource, reply),
                 Ask::Invoke {
                     caller,
                     resource,
@@ -322,15 +322,15 @@ impl Link {
     fn answer_snapshot(
         &self,
         services: &Services,
-        caller: Caller,
-        resource: String,
+        caller: &Caller,
+        resource: &str,
         reply: oneshot::Sender<Result<Reading, String>>,
     ) {
-        match self.reading_granted(&caller, &resource) {
+        match self.reading_granted(caller, resource) {
             Err(reason) => {
                 let _ = reply.send(Err(reason));
             }
-            Ok(()) => match services.read_for(&caller.app_id, &caller.workspace, &resource) {
+            Ok(()) => match services.read_for(&caller.app_id, &caller.workspace, resource) {
                 Some(value) => {
                     let _ = reply.send(Ok((services.revision(), Some(encoded(&value)))));
                 }

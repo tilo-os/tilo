@@ -165,7 +165,7 @@ impl Reads {
                         Answer::Whole(..) | Answer::Waiting => true,
                         Answer::Nothing | Answer::Failed(_) => {
                             let workspace = key.0.to_string();
-                            reads.workspaces().iter().any(|held| *held == workspace)
+                            reads.workspaces().contains(&workspace)
                         }
                     };
                     let mut state = reading.lock();
@@ -232,9 +232,11 @@ impl Reads {
             Answer::Whole(..) | Answer::Waiting => true,
             Answer::Nothing | Answer::Failed(_) => false,
         };
+        let workspace = asked.workspace_held;
+        drop(state);
         Some(Holding {
             resource,
-            workspace: asked.workspace_held,
+            workspace,
         })
     }
 

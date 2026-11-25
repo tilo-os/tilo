@@ -174,7 +174,7 @@ impl Handle {
         let inner = Arc::clone(&self.inner);
         std::thread::Builder::new()
             .name("tilo-tools-app".into())
-            .spawn(move || serve_lines(&inner, ours, Some(caller)))
+            .spawn(move || serve_lines(&inner, ours, Some(&caller)))
             .map_err(|error| format!("start the tools connection: {error}"))?;
         Ok(theirs.into())
     }
@@ -254,12 +254,12 @@ struct Caller {
 fn serve(handle: &Handle, stream: UnixStream) {
     let inner = Arc::clone(&handle.inner);
     let caller = caller_of(&inner, &stream);
-    serve_lines(&inner, stream, caller);
+    serve_lines(&inner, stream, caller.as_ref());
 }
 
 /// Serve `stream` as `caller`, one request per line: the connection a launched app made
 /// (`caller` read from its credentials) or one the session made for an app's process.
-fn serve_lines(inner: &Arc<Inner>, stream: UnixStream, caller: Option<Caller>) {
+fn serve_lines(inner: &Arc<Inner>, stream: UnixStream, caller: Option<&Caller>) {
     let Ok(mut writing) = stream.try_clone() else {
         return;
     };
@@ -280,7 +280,7 @@ fn serve_lines(inner: &Arc<Inner>, stream: UnixStream, caller: Option<Caller>) {
                 }
             }
             Line::Request(request) => {
-                let reply = answer(inner, caller.as_ref(), &request);
+                let reply = answer(inner, caller, &request);
                 if !say(&mut writing, &reply) {
                     return;
                 }

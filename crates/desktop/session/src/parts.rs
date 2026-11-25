@@ -221,9 +221,7 @@ fn compiled_shell(binding: &Binding) -> Option<View> {
     }
     let compiled = crate::shell::part::compile_shell().ok()?;
     let shell = compiled.last()?;
-    let root = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    let root = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
     let dir = root.join(format!("tilo-shell-package-{}", std::process::id()));
     tilolang_tilo::bundle::Bundle::new(
         shell,

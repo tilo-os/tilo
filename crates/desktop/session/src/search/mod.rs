@@ -1082,6 +1082,55 @@ impl SessionSearch {
         *self.pending.borrow_mut() = kept;
     }
 
+    /// The app a resource belongs to, by its id in the app's own address (`tl:so.tilo.tube:…` →
+    /// `so.tilo.tube`).
+    fn app_of(resource: &str) -> Option<String> {
+        resource
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(app, _)| app.to_owned())
+    }
+
+    /// The apps that answer a query from a service: those that ask an outside origin
+    /// (`outside:<origin>.search`), and those that declare the action themselves (`search: Found`),
+    /// whose answers are of the kind their tag names; and the kind each app's declared search
+    /// answers with, where it declares one.
+    fn origin_searchers(
+        own: &[tilo_actions::ActionDescriptor],
+    ) -> (
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeMap<String, String>,
+    ) {
+        let searchers = own
+            .iter()
+            .filter(|action| {
+                action
+                    .contract
+                    .outside_capabilities()
+                    .any(|capability| capability.ends_with(".search"))
+                    || action
+                        .contract
+                        .tags
+                        .iter()
+                        .any(|tag| tag == tilo_actions::SEARCH_TAG)
+            })
+            .filter_map(|action| Self::app_of(action.address.resource.as_str()))
+            .collect();
+        let declared = own
+            .iter()
+            .filter_map(|action| {
+                let app = Self::app_of(action.address.resource.as_str())?;
+                let kind = action
+                    .contract
+                    .tags
+                    .iter()
+                    .find_map(|tag| tag.strip_prefix(tilo_actions::SEARCH_KIND_PREFIX))?;
+                Some((app, kind.to_owned()))
+            })
+            .collect();
+        (searchers, declared)
+    }
+
     /// The app and the resource kind `needle` names, when it names a type of an app whose origin
     /// the query could ask for what it says (`outside:<origin>.search`, shell.md §8, search.md
     /// §7): the words of the query that are a type's noun or plural, or its app's name, choose the
@@ -1101,20 +1150,12 @@ impl SessionSearch {
         // alike, which is where an app's search action and its types are (the palette's `own`).
         let own = self.own.borrow();
         let types = self.own_types.borrow();
-        // The app each of the session's resources belongs to, by its id in the app's own address
-        // (`tl:so.tilo.tube:…` → `so.tilo.tube`).
-        let app_of = |resource: &str| {
-            resource
-                .strip_prefix("tl:")
-                .and_then(|rest| rest.split_once(':'))
-                .map(|(app, _)| app.to_owned())
-        };
         // The nouns of every type each app publishes, by app: a word naming one is about that
         // app's things, so "youtube videos of <name>" is its `Channel` and not its `Video`.
         let mut kin: std::collections::BTreeMap<String, Vec<&tilo_actions::Noun>> =
             std::collections::BTreeMap::new();
         for (resource, named) in types.iter() {
-            let Some(app) = app_of(resource) else {
+            let Some(app) = Self::app_of(resource) else {
                 continue;
             };
             let nouns = kin.entry(app).or_default();
@@ -1122,44 +1163,14 @@ impl SessionSearch {
                 nouns.push(&named.noun);
             }
         }
-        // The apps that answer a query from a service: those that ask an outside origin
-        // (`outside:<origin>.search`), and those that declare the action themselves
-        // (`search: Found`), whose answers are of the kind their tag names.
-        let searchers: std::collections::BTreeSet<String> = own
-            .iter()
-            .filter(|action| {
-                action
-                    .contract
-                    .outside_capabilities()
-                    .any(|capability| capability.ends_with(".search"))
-                    || action
-                        .contract
-                        .tags
-                        .iter()
-                        .any(|tag| tag == tilo_actions::SEARCH_TAG)
-            })
-            .filter_map(|action| app_of(action.address.resource.as_str()))
-            .collect();
-        // The kind each app's declared search answers with, where it declares one.
-        let declared: std::collections::BTreeMap<String, String> = own
-            .iter()
-            .filter_map(|action| {
-                let app = app_of(action.address.resource.as_str())?;
-                let kind = action
-                    .contract
-                    .tags
-                    .iter()
-                    .find_map(|tag| tag.strip_prefix(tilo_actions::SEARCH_KIND_PREFIX))?;
-                Some((app, kind.to_owned()))
-            })
-            .collect();
+        let (searchers, declared) = Self::origin_searchers(&own);
         let mut found: Vec<(usize, (String, String, String, bool))> = Vec::new();
         for (resource, named) in types.iter() {
             if named.root {
                 // A root names the app rather than a type of its own.
                 continue;
             }
-            let Some(app) = app_of(resource) else {
+            let Some(app) = Self::app_of(resource) else {
                 continue;
             };
             if !searchers.contains(&app) {
@@ -2199,15 +2210,18 @@ mod tests {
         says: &str,
     ) -> Result<(), ApiError> {
         let Target::Invoke(invoke) = &row.target else {
-            panic!("the row runs an action: {row:?}");
+            return Err(ApiError::InvalidArguments(format!(
+                "the row runs an action: {row:?}"
+            )));
         };
-        assert!(
-            invoke.alternates.iter().any(|(alternate, _)| {
-                alternate.modifier == reference_rows::BRING_MODIFIER && alternate.label == says
-            }),
-            "the row offers {says:?}: {:?}",
-            invoke.alternates
-        );
+        if !invoke.alternates.iter().any(|(alternate, _)| {
+            alternate.modifier == reference_rows::BRING_MODIFIER && alternate.label == says
+        }) {
+            return Err(ApiError::InvalidArguments(format!(
+                "the row offers {says:?}: {:?}",
+                invoke.alternates
+            )));
+        }
         let mut target = row.target.clone();
         target.place_by(Some(reference_rows::BRING_MODIFIER));
         search.perform(here, target, &mut |_| Ok(()))
@@ -2316,7 +2330,7 @@ mod tests {
                 KITCHEN,
                 &crate::platform::notice::Place {
                     app: note.app.clone(),
-                    record: note.record.clone(),
+                    record: note.record,
                     ..Default::default()
                 },
             )

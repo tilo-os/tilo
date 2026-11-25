@@ -1025,7 +1025,7 @@ fn a_search_for_the_workspaces_grants_opens_workspace_settings() {
     session.step(Duration::from_millis(1)).unwrap();
     for query in ["permissions", "grants"] {
         search_for(&mut session, query);
-        let Some(hit) = row(&mut session, "Open the workspace's settings") else {
+        let Some(hit) = row(&session, "Open the workspace's settings") else {
             panic!(
                 "{query:?} finds the workspace's grants: {:?}",
                 rows(&session)

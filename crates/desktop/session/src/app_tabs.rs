@@ -2270,6 +2270,57 @@ fn write_message(
     writer.write_all(&frame).and_then(|()| writer.flush())
 }
 
+/// A report's box to `to` in the window of connection `about`, with what it carries by default
+/// being made: the picture of `window`, the window it is about, now, and the last moments the
+/// system's capture kept, written out to be carried when it keeps them. A window held back from
+/// captures is pictured as captures picture it.
+fn prepare_report(
+    to: Recipient,
+    about: Option<u64>,
+    window: Option<u64>,
+    carried: &crate::carried::Carried,
+    compositor: &mut Compositor,
+    studio: Option<&CaptureStudio>,
+) -> Preparing {
+    static MADE: AtomicU64 = AtomicU64::new(0);
+    let folder = crate::carried::folder();
+    if let Err(error) = std::fs::create_dir_all(&folder) {
+        tracing::warn!(%error, "a report's files have nowhere to be written");
+    }
+    let made = MADE.fetch_add(1, Ordering::Relaxed);
+    let mut files = Vec::new();
+    if let Some(identifier) = window.and_then(|window| compositor.capture_identifier(window)) {
+        let pictured = compositor
+            .read_back(&tilo_compositor::capture::Target::window(identifier))
+            .map_err(|error| error.to_string())
+            .and_then(|shot| {
+                let png = ui::png::encode_rgba8(shot.width, shot.height, &shot.rgba)
+                    .map_err(|error| error.to_string())?;
+                let path = folder.join(format!("{made}-picture.png"));
+                std::fs::write(&path, png).map_err(|error| error.to_string())?;
+                let name = format!("{}.png", crate::i18n::t("session-report-picture"));
+                carried.offer(&path, &name, "image/png", (shot.width, shot.height))
+            });
+        match pictured {
+            Ok(file) => files.push(file),
+            Err(error) => tracing::warn!(%error, "a report's picture of its window was not taken"),
+        }
+    }
+    let clip = studio.and_then(|studio| {
+        let path = folder.join(format!("{made}-recording.mp4"));
+        studio
+            .clip_for_report(path.clone())
+            .map(|written| (path, written))
+    });
+    Preparing {
+        to: vec![to],
+        about,
+        carried: files,
+        clip,
+        since: std::time::Instant::now(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2499,56 +2550,5 @@ mod tests {
             );
             assert_eq!(hello_version(b"{\"type\":\"other\"}"), None);
         }
-    }
-}
-
-/// A report's box to `to` in the window of connection `about`, with what it carries by default
-/// being made: the picture of `window`, the window it is about, now, and the last moments the
-/// system's capture kept, written out to be carried when it keeps them. A window held back from
-/// captures is pictured as captures picture it.
-fn prepare_report(
-    to: Recipient,
-    about: Option<u64>,
-    window: Option<u64>,
-    carried: &crate::carried::Carried,
-    compositor: &mut Compositor,
-    studio: Option<&CaptureStudio>,
-) -> Preparing {
-    static MADE: AtomicU64 = AtomicU64::new(0);
-    let folder = crate::carried::folder();
-    if let Err(error) = std::fs::create_dir_all(&folder) {
-        tracing::warn!(%error, "a report's files have nowhere to be written");
-    }
-    let made = MADE.fetch_add(1, Ordering::Relaxed);
-    let mut files = Vec::new();
-    if let Some(identifier) = window.and_then(|window| compositor.capture_identifier(window)) {
-        let pictured = compositor
-            .read_back(&tilo_compositor::capture::Target::window(identifier))
-            .map_err(|error| error.to_string())
-            .and_then(|shot| {
-                let png = ui::png::encode_rgba8(shot.width, shot.height, &shot.rgba)
-                    .map_err(|error| error.to_string())?;
-                let path = folder.join(format!("{made}-picture.png"));
-                std::fs::write(&path, png).map_err(|error| error.to_string())?;
-                let name = format!("{}.png", crate::i18n::t("session-report-picture"));
-                carried.offer(&path, &name, "image/png", (shot.width, shot.height))
-            });
-        match pictured {
-            Ok(file) => files.push(file),
-            Err(error) => tracing::warn!(%error, "a report's picture of its window was not taken"),
-        }
-    }
-    let clip = studio.and_then(|studio| {
-        let path = folder.join(format!("{made}-recording.mp4"));
-        studio
-            .clip_for_report(path.clone())
-            .map(|written| (path, written))
-    });
-    Preparing {
-        to: vec![to],
-        about,
-        carried: files,
-        clip,
-        since: std::time::Instant::now(),
     }
 }

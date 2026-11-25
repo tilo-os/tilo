@@ -800,6 +800,10 @@ fn plain_desktop(
     dir: &std::path::Path,
     failures: &mut Vec<String>,
 ) {
+    // The bar's band ends above this, and the page's own content begins under it: what stands
+    // between is the wallpaper, whatever theme it is drawn in.
+    const FROM: u32 = 40;
+    const TO: u32 = 67;
     let mut session = Session::headless(
         Options {
             presentation,
@@ -817,10 +821,6 @@ fn plain_desktop(
         .expect("screenshot");
     let across = usize::try_from(shot.width).expect("a display with columns");
     let centre = across / 2;
-    // The bar's band ends above this, and the page's own content begins under it: what stands
-    // between is the wallpaper, whatever theme it is drawn in.
-    const FROM: u32 = 40;
-    const TO: u32 = 67;
     let pixel = |x: usize, row: u32| {
         let at = (usize::try_from(row).expect("a row") * across + x) * 4;
         [
@@ -833,8 +833,9 @@ fn plain_desktop(
         let left = pixel(centre - 100, row);
         let right = pixel(centre + 100, row);
         let middle = pixel(centre, row);
-        if (0..3).any(|channel| (middle[channel] - (left[channel] + right[channel]) / 2).abs() > 4)
-        {
+        if (0..3).any(|channel| {
+            (middle[channel] - i32::midpoint(left[channel], right[channel])).abs() > 4
+        }) {
             failures.push(format!(
                 "{name}: something stands under the bar at row {row}: {middle:?} between \
                  {left:?} and {right:?}, where the wallpaper runs unbroken"
@@ -958,7 +959,6 @@ fn two_strips(
         .screenshot("HEADLESS-1")
         .expect("screenshot");
     let scale = f64::from(shot.width) / f64::from(width);
-    let size = (shot.width, shot.height);
     // Whether something is drawn in `rect`: its pixels are not one flat colour.
     let drawn = |(x, y, w, h): (f64, f64, f64, f64)| {
         let across = shot.width as usize;

@@ -596,7 +596,9 @@ fn move_to_display(session: &mut Session, steps: i64) {
 
 /// Whether the desktop lays the device out across several displays, each showing its own strip.
 fn partitioned(session: &Session) -> bool {
-    session.handle().read(|tree| tree.is_partitioned())
+    session
+        .handle()
+        .read(tilo_desktop_model::Layout::is_partitioned)
 }
 
 /// The window group holding the place `place`, as this device's model holds it.
@@ -1087,8 +1089,10 @@ fn identifying_the_displays_says_each_one_its_own_number() {
         shown
             .iter()
             .find(|(connector, _, _)| connector == output)
-            .map(|(_, number, name)| (number.clone(), name.clone()))
-            .unwrap_or_else(|| panic!("Settings numbers {output}: {shown:?}"))
+            .map_or_else(
+                || panic!("Settings numbers {output}: {shown:?}"),
+                |(_, number, name)| (number.clone(), name.clone()),
+            )
     };
     let (first_number, first_name) = card(&first_output);
     let (second_number, second_name) = card(&second_output);

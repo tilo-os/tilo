@@ -338,7 +338,10 @@ fn the_bars_status_reads_the_devices_published_resources() {
     for name in ["Volume, 42%", "Wi-Fi, Station", "71%, charging"] {
         click(&mut part, name);
         assert_eq!(
-            link.asked.borrow_mut().pop_front().map(|(ask, _)| ask.action),
+            link.asked
+                .borrow_mut()
+                .pop_front()
+                .map(|(ask, _)| ask.action),
             Some("show-surface".to_owned()),
             "a press on {name} opens the quick settings: refusals {:?}",
             part.refusals()
@@ -606,7 +609,12 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
         "the dock shows Sheets: {labels:?}"
     );
     click(&mut part, "Sheets");
-    let asked: Vec<Ask> = link.asked.borrow().iter().map(|(ask, _)| ask.clone()).collect();
+    let asked: Vec<Ask> = link
+        .asked
+        .borrow()
+        .iter()
+        .map(|(ask, _)| ask.clone())
+        .collect();
     assert_eq!(
         asked,
         vec![Ask {
@@ -1933,7 +1941,7 @@ fn a_choice_of_a_shell_kept_in_the_workspace_is_a_call_of_its_action_there() {
         .map(|(address, arguments)| {
             (
                 address.resource.clone(),
-                address.action.clone(),
+                address.action,
                 serde_json::Value::Object(arguments),
             )
         })

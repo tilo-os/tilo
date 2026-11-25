@@ -1456,7 +1456,7 @@ tilo_test_env::scenario! {
         let _settled = ui::motion::testing::settled();
         let (sync, _said) = session("Quinten", Some(0x04));
         let (handle, _tab) = desktop_running("so.tilo.notes");
-        sync.attach_shell(handle.clone());
+        sync.attach_shell(handle);
         // The agent, run by this device for its own person, working in the notes window.
         let run = "agent-session:7";
         let face = tilo_session_client::presence::view(

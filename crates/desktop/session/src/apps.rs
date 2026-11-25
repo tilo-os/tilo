@@ -2075,21 +2075,14 @@ impl Apps {
             ApiError::Failed(error)
         };
         // A file of the person's is content to a hosted app, which has no path of theirs to read.
-        #[cfg(target_os = "linux")]
-        let launch = if hosted {
-            self.hosted_launch(launch, &workspace.id)
-                .map_err(|error| failed(error.to_string()))?
-        } else {
-            std::borrow::Cow::Borrowed(launch)
-        };
-        #[cfg(not(target_os = "linux"))]
-        let launch = std::borrow::Cow::Borrowed(launch);
+        let launch = self
+            .hosted_or_borrowed(launch, hosted, workspace)
+            .map_err(failed)?;
         let launch = launch.as_ref();
-        if instance.is_none() {
-            window_opens(launch, reveal, hosted).map_err(ApiError::Failed)?;
-            if self.ask_shell(launch, workspace, new_window, reveal, None)? {
-                return Ok(true);
-            }
+        if instance.is_none()
+            && self.ask_shell_window(launch, workspace, new_window, reveal, hosted)?
+        {
+            return Ok(true);
         }
         let chosen = self.state.borrow().chosen.clone();
         let launch = handed(launch, workspace, chosen.as_ref())
@@ -2102,10 +2095,7 @@ impl Apps {
         // A window of a hosted app whose tab this session named itself, which happens only in a
         // session with no shell behind it: the tab is the window's instance, and it is the only
         // name the window has.
-        let instance = match (&links, hosted) {
-            (Some(links), true) => instance.or_else(|| Some(links.next_instance())),
-            _ => instance,
-        };
+        let instance = Self::hosted_instance(instance, links.as_deref(), hosted);
         let mut planned =
             self.planned_or_failed(planned_launch, workspace, new_window, instance, timed)?;
         tilo_startup_metrics::launch_phase(app, "planned");
@@ -2187,6 +2177,45 @@ impl Apps {
             tracing::error!(%error, app = %planned.app, "a hosted window's instance runs nowhere");
         }
         started.map(|_| true)
+    }
+
+    /// `launch` as a hosted window takes it: a file of the person's becomes the content it is
+    /// where the app runs in its host, and every other launch is left as it is.
+    fn hosted_or_borrowed<'a>(
+        &self,
+        launch: &'a Launch,
+        hosted: bool,
+        workspace: &Workspace,
+    ) -> Result<std::borrow::Cow<'a, Launch>, String> {
+        #[cfg(target_os = "linux")]
+        if hosted {
+            return self
+                .hosted_launch(launch, &workspace.id)
+                .map_err(|error| error.to_string());
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (hosted, workspace);
+        Ok(std::borrow::Cow::Borrowed(launch))
+    }
+
+    /// Ask the shell for `launch`'s window where this session has one: whether the shell took it
+    /// and the window opens there rather than here.
+    fn ask_shell_window(
+        &self,
+        launch: &Launch,
+        workspace: &Workspace,
+        new_window: bool,
+        reveal: Option<&str>,
+        hosted: bool,
+    ) -> Result<bool, ApiError> {
+        window_opens(launch, reveal, hosted).map_err(ApiError::Failed)?;
+        self.ask_shell(launch, workspace, new_window, reveal, None)
+    }
+
+    /// The instance a hosted app's window opens in: the one the shell named, else the next this
+    /// session names for itself.
+    fn hosted_instance(instance: Option<u64>, links: Option<&Links>, hosted: bool) -> Option<u64> {
+        instance.or_else(|| hosted.then(|| links.map(Links::next_instance)).flatten())
     }
 
     /// `launch` as a hosted window takes it: a file of the person's becomes the content it is,

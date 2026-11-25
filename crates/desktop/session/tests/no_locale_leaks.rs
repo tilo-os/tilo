@@ -68,8 +68,10 @@ fn package_source(package: &str) -> String {
                 .into_iter()
                 .find(|(locale, _)| locale == "en-US")
         })
-        .map(|(_, text)| text)
-        .unwrap_or_else(|| panic!("apps/tl/{package} writes its source catalogue"))
+        .map_or_else(
+            || panic!("apps/tl/{package} writes its source catalogue"),
+            |(_, text)| text,
+        )
 }
 
 /// The windows the person works in day to day.

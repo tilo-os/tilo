@@ -2690,7 +2690,7 @@ fn switcher_dialog(session: &Session) -> Option<(String, String)> {
 
 /// The switcher is a dialog a screen reader hears: named for what the walk crosses, with the keys
 /// it answers to said after that name — the workspace's walk with Tab and the arrow keys, the app's
-/// with ` — never an unnamed panel over the windows.
+/// with — never an unnamed panel over the windows.
 #[test]
 fn the_switcher_is_a_named_dialog_a_screen_reader_hears() {
     let _settled = ui::motion::testing::settled();

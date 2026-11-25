@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock;
 
 use crate::common::publisher;
 use tilo_compositor::OutputConfig;
@@ -395,7 +396,6 @@ fn run_session(machine: &mut Machine, flags: &[&str]) -> std::process::Output {
     machine.let_go_of_the_key();
     // Started under the environment lock, which closes this test's scope while the child copies the
     // environment.
-    use tilo_test_env::SpawnUnderEnvLock;
     std::process::Command::new(tilo_test_env::package_binary!("tilo-session"))
         .args(flags)
         .env_clear()

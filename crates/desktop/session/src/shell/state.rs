@@ -646,8 +646,11 @@ impl Service for ShellService {
                     PowerMenuEffect::Open => self.surfaces.open(crate::device_lists::POWER),
                     PowerMenuEffect::Close => self.surfaces.close(crate::device_lists::POWER),
                     choice => {
-                        let effect =
-                            power_menu_choice(&choice).expect("a row of the menu has its effect");
+                        let Some(effect) = power_menu_choice(&choice) else {
+                            return Err(ApiError::InvalidArguments(
+                                "a menu row names no effect".to_owned(),
+                            ));
+                        };
                         if !self.power_offers.offers(effect) {
                             return Err(ApiError::Unavailable {
                                 code: "not-offered".into(),

@@ -443,10 +443,10 @@ pub fn runtimes() -> &'static Runtimes {
             "tilolang-process",
         )];
         let version = |runtime: &'static str| {
-            runtime
-                .split_once('/')
-                .map(|(_, version)| version)
-                .unwrap_or_else(|| panic!("{runtime} names its version"))
+            runtime.split_once('/').map_or_else(
+                || panic!("{runtime} names its version"),
+                |(_, version)| version,
+            )
         };
         // It carries the standard library the apps are built against, which none of them does.
         let tilolang = package::default_tilolang_runtime();

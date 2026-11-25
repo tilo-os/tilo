@@ -515,11 +515,11 @@ impl crate::Session {
                 if let Some(desktop) = &self.desktop {
                     desktop.end();
                 }
-                self.ended = true;
+                self.life = crate::assembly::Life::Ended;
                 Ok(())
             }
             SessionCommand::End => {
-                self.ended = true;
+                self.life = crate::assembly::Life::Ended;
                 Ok(())
             }
             SessionCommand::NightLight { on } => self.set_night_light(on),

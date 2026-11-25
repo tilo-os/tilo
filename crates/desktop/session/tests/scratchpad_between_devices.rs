@@ -383,7 +383,7 @@ fn changed_in(a: &image::RgbaImage, b: &image::RgbaImage, rect: [f64; 4]) -> usi
 #[test]
 fn an_edit_on_one_members_note_reaches_the_other_with_its_caret_and_history() {
     let (site, _ada, _bob, first, second) =
-        two_people_at_a_site_carrying(&[], |device| device.install_scratchpad());
+        two_people_at_a_site_carrying(&[], super::common::people::Device::install_scratchpad);
     show(&first, &site);
     show(&second, &site);
     open_the_note(&first, &second);

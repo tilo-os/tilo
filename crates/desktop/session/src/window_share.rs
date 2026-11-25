@@ -1383,7 +1383,7 @@ impl WindowShares {
                     );
                 }
                 Control::Input { tab, event } => {
-                    self.apply_input(compositor, from, tab, event);
+                    self.apply_input(compositor, from, tab, &event);
                 }
                 Control::Keyframe { tab, seq } => {
                     if let Some(hosted) = self.hosted.get(&tab) {
@@ -1820,7 +1820,7 @@ impl WindowShares {
         compositor: &mut Compositor,
         peer: PeerId,
         surface: SurfaceId,
-        event: SharedInput,
+        event: &SharedInput,
     ) {
         // A member acts in the window while it views it: one that stopped viewing is no longer
         // among the viewers this device names, and reaches nothing. A viewer's pointer is in the
@@ -1845,7 +1845,7 @@ impl WindowShares {
         let Some(seat) = self.seat_for(compositor, peer, surface, &window) else {
             return;
         };
-        let delivered = match &event {
+        let delivered = match event {
             SharedInput::PointerMotion { x, y } => {
                 match remote_point(compositor, &window, size, *x, *y) {
                     Some((x, y)) => compositor

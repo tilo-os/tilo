@@ -331,6 +331,9 @@ pub fn description() -> String {
         .map(|spec| entry(spec, false, &described))
         .chain(instances.iter().map(|spec| entry(spec, true, &described)))
         .collect();
-    let file = serde_json::to_value(File { resources }).expect("a description is JSON");
+    let file = serde_json::to_value(File { resources }).unwrap_or_else(|error| {
+        tracing::warn!(%error, "the session package's description does not encode");
+        serde_json::Value::Null
+    });
     tilo_canonical_json::to_string(&file)
 }

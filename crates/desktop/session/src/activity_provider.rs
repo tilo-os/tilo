@@ -81,10 +81,11 @@ fn arguments_of(
 /// `caller`'s member, as the API knows it: an app reaches the activity as the person using it,
 /// confined to the workspace it runs in.
 fn caller_of(caller: &Caller, workspace: &str) -> Caller {
+    use tilo_actions::policy::{Actor, MemberId};
+
     let member = BrokerActor::for_caller(caller);
     // A bot's installation id may carry a `:` of its own: it is software, so
     // it reaches the activity as itself, never through a person's id.
-    use tilo_actions::policy::{Actor, MemberId};
     let caller = match member.actor() {
         Actor::Member(MemberId::Agent { id: agent, person }) => {
             Caller::local_agent(agent.as_str(), person.clone())
@@ -160,7 +161,7 @@ impl tilo_actions::remote::Admits for ActivityWire {
     const APP: &'static str = wire::APP_ID;
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-        top_level(self.descriptors())
+        top_level(Self::descriptors())
     }
 
     /// Carry out an invocation the device's dispatch admitted for `caller`.
@@ -240,7 +241,7 @@ impl tilo_actions::remote::Admits for ActivityWire {
 }
 
 impl ActivityWire {
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
+    fn descriptors() -> Vec<ActionDescriptor> {
         use OperationKind::{Document, View};
         [
             (wire::FEED, "activity-title-explore", View),

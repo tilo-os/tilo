@@ -1369,6 +1369,51 @@ impl Layouts {
         changed
     }
 
+    /// Lay the windows of the person's own on `workspace_id`'s layout in `tree`, over what the
+    /// shell shows here. Whether the layout changed.
+    ///
+    /// The windows of the person's own go on their layout wherever it is shown: the layout a
+    /// workspace shares never holds them, so they come from the view this device keeps of it —
+    /// the changes it made that the workspace does not hold yet, else what it read last. A
+    /// workspace that holds no view of them yet is no different: they are the person's, and the
+    /// session shows them before the workspace has one.
+    fn lay_own(
+        &self,
+        tree: &mut Layout,
+        shown: &HashMap<WorkspaceId, PersonView>,
+        workspace_id: WorkspaceId,
+        key: &Key,
+    ) -> bool {
+        // A window the person closed here since is gone, whatever the kept view still says of it:
+        // until their view rests and is written again, it names the window, and laying it back
+        // would open a window they closed.
+        let kept = self.held(key, |held| {
+            let kept = held
+                .pending_view
+                .last()
+                .map(|step| step.changed.clone())
+                .or_else(|| match &held.written {
+                    Some(Written::View(view)) => Some(view.clone()),
+                    _ => None,
+                })?;
+            Some(match shown.get(&workspace_id) {
+                Some(here) => kept.over(here, held.seen.as_ref()),
+                None => kept,
+            })
+        });
+        let Some(view) = kept else {
+            return false;
+        };
+        let Some(workspace) = tree
+            .workspaces
+            .iter_mut()
+            .find(|held| held.id() == workspace_id)
+        else {
+            return false;
+        };
+        view.place_own(workspace)
+    }
+
     /// Show every workspace in `tree` as the person here last left it. `shown` is the person's view
     /// of each as the shell showed it before this look laid the layouts in.
     fn follow_view(&self, tree: &mut Layout, shown: &HashMap<WorkspaceId, PersonView>) -> bool {
@@ -1389,36 +1434,7 @@ impl Layouts {
             if self.held(&key, |held| held.writing.is_some()) {
                 continue;
             }
-            // The windows of the person's own go on their layout wherever it is shown: the layout
-            // a workspace shares never holds them, so they come from the view this device keeps of
-            // it — the changes it made that the workspace does not hold yet, else what it read
-            // last. A workspace that holds no view of them yet is no different: they are the
-            // person's, and the session shows them before the workspace has one.
-            // A window the person closed here since is gone, whatever the kept view still says of
-            // it: until their view rests and is written again, it names the window, and laying it
-            // back would open a window they closed.
-            let kept = self.held(&key, |held| {
-                let kept = held
-                    .pending_view
-                    .last()
-                    .map(|step| step.changed.clone())
-                    .or_else(|| match &held.written {
-                        Some(Written::View(view)) => Some(view.clone()),
-                        _ => None,
-                    })?;
-                Some(match shown.get(&workspace_id) {
-                    Some(here) => kept.over(here, held.seen.as_ref()),
-                    None => kept,
-                })
-            });
-            if let Some(view) = kept
-                && let Some(workspace) = tree
-                    .workspaces
-                    .iter_mut()
-                    .find(|held| held.id() == workspace_id)
-            {
-                changed |= view.place_own(workspace);
-            }
+            changed |= self.lay_own(tree, shown, workspace_id, &key);
             let known = self.held(&key, |held| held.revision);
             let document = self.document(&key, known);
             self.held(&key, |held| held.read_at = Some(at));
