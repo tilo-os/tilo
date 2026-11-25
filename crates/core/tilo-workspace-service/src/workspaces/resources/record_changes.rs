@@ -658,7 +658,10 @@ impl Workspaces {
                 (doc, heads)
             } else {
                 let mut doc = automerge::AutoCommit::new();
-                if let Some(founding) = store.founding(kind, record) {
+                if let Some(founding) = store
+                    .founding(kind, record)
+                    .map_err(|error| error.to_string())?
+                {
                     tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, [founding])
                         .map_err(|error| error.to_string())?;
                 }
@@ -1543,6 +1546,7 @@ mod tests {
             record,
             &[("items".to_owned(), automerge::ObjType::List)],
         )
+        .expect("a note founds with its list")
     }
 
     /// A device's first item of `record`, written on the derived founding as `writer` types it.
@@ -1597,7 +1601,8 @@ mod tests {
                 TAG,
                 "errands",
                 &[],
-            )])
+            )
+            .unwrap()])
             .unwrap();
             tag
         };

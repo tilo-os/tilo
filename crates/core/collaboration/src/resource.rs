@@ -254,7 +254,8 @@ pub fn content_genesis(
         kind,
         checkout.id.route(),
         founding.unwrap_or_default(),
-    );
+    )
+    .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
     ApplyIncoming::apply_incoming(&mut made, vec![founding])
         .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
     for key in first.keys(ROOT).collect::<Vec<_>>() {
@@ -753,7 +754,8 @@ mod tests {
             LIST,
             "",
             &[("items".to_owned(), ObjType::List)],
-        );
+        )
+        .expect("a list founds with its items");
         let unnamed = found();
         assert_eq!(
             unnamed,
@@ -1033,7 +1035,8 @@ mod tests {
             LIST,
             "",
             &[("items".to_owned(), ObjType::List)],
-        );
+        )
+        .expect("a list founds with its items");
         assert_eq!(made.get_heads(), [derived.hash()]);
     }
 

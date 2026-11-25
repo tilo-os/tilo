@@ -1351,11 +1351,18 @@ impl Store {
     /// The change every holder makes alike to found the content of the resource `id` of `kind`:
     /// the containers its type declares ([`collab_types::document::founding`]), none for a kind
     /// that declares none. `None` for a kind this store declares no type of.
-    #[must_use]
-    pub fn founding(&self, kind: &str, id: &str) -> Option<AmChange> {
+    ///
+    /// # Errors
+    /// When the type's containers cannot be founded ([`collab_types::document::founding::structure`]).
+    pub fn founding(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> Result<Option<AmChange>, automerge::AutomergeError> {
         self.schema
             .get(kind)
             .map(|ty| collab_types::document::founding::structure(kind, id, &ty.founding))
+            .transpose()
     }
 
     /// The content of the resource `id` of `kind`: the document it is in and the map at its
@@ -2465,7 +2472,13 @@ impl Store {
             let derived = std::iter::once(&self.schema)
                 .chain(schema)
                 .find_map(|schema| schema.get(kind))
-                .map(|ty| collab_types::document::founding::structure(kind, id, &ty.founding));
+                .map(|ty| collab_types::document::founding::structure(kind, id, &ty.founding))
+                .transpose()
+                .map_err(|error| {
+                    Refusal::Undeclared(format!(
+                        "the founding `{kind}` derives cannot be made: {error}"
+                    ))
+                })?;
             return if derived.is_some_and(|derived| derived.hash() == received.change.hash()) {
                 Ok(())
             } else {

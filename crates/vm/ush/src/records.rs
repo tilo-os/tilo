@@ -393,7 +393,8 @@ impl Records {
         let containers = collab_types::document::founding::of_kind(&Environment::surface());
         let mut doc = Doc::new();
         let founding =
-            collab_types::document::founding::structure(Environment::KIND, &record, &containers);
+            collab_types::document::founding::structure(Environment::KIND, &record, &containers)
+                .map_err(|e| model(&e))?;
         tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, vec![founding])
             .map_err(|e| model(&e))?;
         Environment::initialize(&mut doc).map_err(|e| model(&e))?;

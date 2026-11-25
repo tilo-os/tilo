@@ -54,21 +54,28 @@ pub fn of_kind(surface: &Surface) -> Vec<(String, ObjType)> {
 /// `containers` named at its root. A kind that keeps none founds with a change that holds nothing:
 /// every record has its founding as its first head, so a record nothing was written to yet is kept
 /// and read back like any other, and what follows the founding names it as its dependency.
-#[must_use]
-pub fn structure(kind: &str, id: &str, containers: &[(String, ObjType)]) -> automerge::Change {
+///
+/// # Errors
+/// When a container cannot be put at the root under its field's name (an empty name).
+pub fn structure(
+    kind: &str,
+    id: &str,
+    containers: &[(String, ObjType)],
+) -> Result<automerge::Change, automerge::AutomergeError> {
     let mut doc = AutoCommit::new().with_actor(tilo_resource::genesis::actor(id, kind, ""));
     for (field, container) in containers {
-        doc.put_object(ROOT, field.as_str(), *container)
-            .expect("a new document takes a container at its root");
+        doc.put_object(ROOT, field.as_str(), *container)?;
     }
-    let options = CommitOptions::default()
-        .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
-        .with_time(0);
-    if containers.is_empty() {
-        doc.empty_change(options);
-    } else {
-        doc.commit_with(options);
-    }
-    doc.get_last_local_change()
-        .expect("the founding was just committed")
+    let options = || {
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
+            .with_time(0)
+    };
+    // A kind keeping no container commits nothing, so its founding is an empty change.
+    let hash = match doc.commit_with(options()) {
+        Some(hash) => hash,
+        None => doc.empty_change(options()),
+    };
+    doc.get_change_by_hash(&hash)
+        .ok_or(automerge::AutomergeError::MissingHash(hash))
 }
