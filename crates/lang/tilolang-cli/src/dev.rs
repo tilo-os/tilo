@@ -405,19 +405,33 @@ pub(crate) fn watch_into(
 /// Develop the package in the session `options.session` names, or in the one the tool starts when
 /// there is none, until interrupted.
 pub fn dev(options: &DevOptions) -> Result<(), String> {
+    // One command does not start a session each time: a session this computer runs is the one
+    // the package is developed in, and one the tool starts is left running for the next `dev`.
     let Some(session) = &options.session else {
-        // No session is named: start one, as `tilolang run` does, and develop in it.
-        return crate::run::run_named(
-            &crate::run::RunOptions {
-                dir: options.dir.clone(),
-                search: options.search.clone(),
-                headless: options.headless,
-                software: options.software,
-                state: options.state.clone(),
-                repo: options.repo.clone(),
-            },
-            "tilolang dev",
+        let repo = session::repo_root(options.repo.as_deref(), &options.dir, "tilolang dev")?;
+        let state = options
+            .state
+            .clone()
+            .unwrap_or_else(|| crate::state_dir().join("sessions").join("dev"));
+        let ready = state.join("ready.json");
+        let (sender, wakes) = mpsc::channel();
+        if ready.is_file() && Peer::attach(&ready, &repo).is_ok() {
+            eprintln!("==> attaching to the session at {}", state.display());
+            return dev_in_session(options, &repo, &ready, &sender, &wakes);
+        }
+        if let Some(running) = session::newest_running() {
+            eprintln!(
+                "==> attaching to the running session at {}",
+                running.state.display()
+            );
+            return dev_in_session(options, &repo, &running.state, &sender, &wakes);
+        }
+        eprintln!(
+            "==> starting a session at {} (it stays, and the next dev attaches to it)",
+            state.display()
         );
+        session::start_detached(&repo, &state, &ready, options.headless, options.software)?;
+        return dev_in_session(options, &repo, &ready, &sender, &wakes);
     };
     let repo = session::repo_root(
         options.repo.as_deref(),

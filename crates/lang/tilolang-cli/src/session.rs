@@ -222,6 +222,75 @@ impl Running {
     }
 }
 
+/// The newest session this login runs, if one does: what `tilolang dev` attaches to instead of
+/// starting a session of its own.
+#[must_use]
+pub(crate) fn newest_running() -> Option<Running> {
+    Running::all().into_iter().max_by_key(|running| {
+        std::fs::metadata(&running.socket)
+            .and_then(|meta| meta.modified())
+            .ok()
+    })
+}
+
+/// Start a session on `state` that outlives this tool, and wait until it answers: the session
+/// `tilolang dev` leaves running for the next `dev` to attach to.
+///
+/// # Errors
+/// The session script cannot start, or the session does not answer within [`START_WAIT`].
+pub(crate) fn start_detached(
+    repo: &Path,
+    state: &Path,
+    ready: &Path,
+    headless: bool,
+    software: bool,
+) -> Result<(), String> {
+    std::fs::create_dir_all(state).map_err(|error| format!("{}: {error}", state.display()))?;
+    let _ = std::fs::remove_file(ready);
+    let log = std::fs::File::create(state.join("session.out"))
+        .map_err(|error| format!("{}: {error}", state.display()))?;
+    let mut command = Command::new(repo.join(SESSION_SCRIPT));
+    command
+        .args(["--no-build", "--apps", ""])
+        .arg("--state")
+        .arg(state)
+        .arg("--ready")
+        .arg(ready)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().map_err(|error| error.to_string())?)
+        .stderr(log);
+    if headless {
+        command.arg("--headless");
+    }
+    if software {
+        command.arg("--software");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        // A session of its own, so the tool ending does not end it.
+        command.process_group(0);
+    }
+    command
+        .spawn()
+        .map_err(|error| format!("starting the session: {error}"))?;
+    let deadline = std::time::Instant::now() + START_WAIT;
+    while !ready.is_file() {
+        if std::time::Instant::now() > deadline {
+            return Err(format!(
+                "the session did not answer {} s after it started (see {})",
+                START_WAIT.as_secs(),
+                state.join("session.out").display()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Ok(())
+}
+
+/// How long a session this tool starts may take to answer.
+const START_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+
 impl Peer {
     /// The session whose state is `state`, started by this tool from the checkout `repo`.
     pub(crate) fn new(state: PathBuf, repo: &Path) -> Result<Self, String> {
@@ -357,5 +426,45 @@ mod tests {
                 Path::new("/work/shared/current")
             );
         }
+    }
+
+    /// The session the tool attaches to when a command names none is the newest one running for
+    /// this login, so one `tilolang dev` does not start a session the next would pay for again.
+    #[test]
+    fn the_newest_running_session_is_the_one_to_attach_to() {
+        let scratch = tempfile::tempdir().unwrap();
+        let runtime = std::fs::canonicalize(scratch.path()).unwrap();
+        let mut held = Vec::new();
+        let mut states = Vec::new();
+        for name in ["tilo-nested-a", "tilo-nested-b"] {
+            let dir = runtime.join(name);
+            let login = dir.join(tilo_paths::login::SESSION_DIR);
+            std::fs::create_dir_all(&login).unwrap();
+            held.push(
+                std::os::unix::net::UnixListener::bind(
+                    login.join(tilo_paths::login::API_SOCKET_FILE),
+                )
+                .unwrap(),
+            );
+            held.push(std::os::unix::net::UnixListener::bind(dir.join("control.sock")).unwrap());
+            let state = runtime.join(format!("state-{name}"));
+            std::fs::create_dir_all(&state).unwrap();
+            std::fs::write(
+                dir.join(SESSION_FILE),
+                serde_json::json!({
+                    "control": dir.join("control.sock"),
+                    "runtime": dir,
+                    "state": state,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            states.push(state);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("XDG_RUNTIME_DIR", &runtime);
+        let newest = newest_running().expect("a running session");
+        assert_eq!(newest.state, states[1], "the newest session answers");
     }
 }

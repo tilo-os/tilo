@@ -77,3 +77,85 @@ fn a_saved_build_is_staged_unsigned_for_the_device() {
     let again = package::stage_dev(&options).unwrap().pop().unwrap();
     assert_eq!(again.digest, staged.digest);
 }
+
+/// A `tilolang dev` run again attaches to the session this login already runs: one command does
+/// not mean a new session each time.
+#[cfg(unix)]
+#[test]
+fn a_second_dev_attaches_to_the_running_session() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let repo = scratch.path().join("repo");
+    std::fs::create_dir_all(repo.join("dist/dev")).unwrap();
+    // The session script records that it ran: this dev must not run it.
+    let started = scratch.path().join("started");
+    let script = repo.join("dist/dev/nested-session.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\necho started >> {}\nexit 1\n", started.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // A running session of this login: its state, its control socket, the API socket it
+    // answers on, and the runtimes it baked.
+    let state = scratch.path().join("state");
+    std::fs::create_dir_all(state.join("runtimes")).unwrap();
+    std::fs::write(state.join("runtimes/.version"), "2026.07\n").unwrap();
+    std::fs::write(state.join("runtimes/.tilolang-version"), "0.1.0\n").unwrap();
+    let runtime = scratch.path().join("runtime");
+    let digest = {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(state.as_os_str().as_encoded_bytes())
+    };
+    let session = runtime.join(format!("tilo-nested-{}", &hex::encode(digest)[..12]));
+    let login = session.join(tilo_paths::login::SESSION_DIR);
+    std::fs::create_dir_all(&login).unwrap();
+    let _control = std::os::unix::net::UnixListener::bind(session.join("control.sock")).unwrap();
+    let _api =
+        std::os::unix::net::UnixListener::bind(login.join(tilo_paths::login::API_SOCKET_FILE))
+            .unwrap();
+    std::fs::write(
+        session.join("session.json"),
+        serde_json::json!({
+            "control": session.join("control.sock"),
+            "runtime": session,
+            "state": state,
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // The session's tools: the installer this test lets fail after the attach is seen.
+    let bin = repo.join("target/nested-session/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let install = bin.join("tilo-install");
+    std::fs::write(&install, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&install, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let package = scratch.path().join("counter");
+    copy_package(&packages().join("counter"), &package);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tilolang"))
+        .args(["dev"])
+        .arg(&package)
+        .args(["--search"])
+        .arg(packages())
+        .args(["--repo"])
+        .arg(&repo)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", scratch.path().join("xdg-state"))
+        .env("TILO_REPO", &repo)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("attaching to the running session"),
+        "{stderr}"
+    );
+    assert!(
+        !started.exists(),
+        "no session was started: {}",
+        std::fs::read_to_string(&started).unwrap_or_default()
+    );
+}
