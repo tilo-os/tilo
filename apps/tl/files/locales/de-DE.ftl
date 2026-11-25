@@ -514,9 +514,6 @@ d-z6cheebf = Orte
     .w-this-computer = Dieser Computer
     .w-nearby = In der Nähe
 
-d-jwdlcu14 = Eintragsraster
-    .w-files = Dateien
-
 d-wsk8uwkt = Zuletzt geöffnete Dateien
     .w-no-recent-files-yet = Noch keine zuletzt geöffneten Dateien
     .w-files-you-open-stand-here-one = Dateien, die du öffnest, stehen hier, einen Druck entfernt.
