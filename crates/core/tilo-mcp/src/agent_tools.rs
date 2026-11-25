@@ -207,12 +207,17 @@ impl AgentTools {
             return Arc::clone(server);
         }
         let latest = Arc::new(Latest::new(Arc::clone(&step.provider)));
-        let server = Arc::new(McpServer::for_agent(
-            Arc::clone(&latest),
-            step.workspace.to_owned(),
-            step.agent,
-            step.person,
-        ));
+        // Its calls are the steps this provider already took as invocations of the session's:
+        // each tool call is one of them, recorded once.
+        let server = Arc::new(
+            McpServer::for_agent(
+                Arc::clone(&latest),
+                step.workspace.to_owned(),
+                step.agent,
+                step.person,
+            )
+            .steps_already_recorded(),
+        );
         sessions.insert(key, (latest, Arc::clone(&server)));
         server
     }

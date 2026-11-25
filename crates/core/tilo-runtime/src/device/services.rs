@@ -36,7 +36,7 @@ use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget, device_agent_id, workspace_invocations::Origin,
+    RemoteActionTarget, RunningTool, device_agent_id, workspace_invocations::Origin,
 };
 use tilo_api::daemon::DaemonPlace;
 use tilo_api::grant_key::GrantKey;
@@ -5258,18 +5258,25 @@ impl RuntimeActionProvider {
         let stop = async move {
             let copies = workspaces.copies();
             let mut answer = Ok(receipt);
-            for target in &targets {
-                let written = if stopping {
-                    copies.answer_stop(target, &agent).await
-                } else {
-                    copies.answer_go_on(target, &agent).await
+            if stopping {
+                // What this device recorded of the runs it serves ends first: those are in the
+                // workspace it is bound to, which the listing of held workspaces need not name.
+                let own = workspace.clone();
+                let origin_writes = |caller: &Caller, origin: &Origin| {
+                    broker.state().may_write_origin(caller, &own, origin)
                 };
-                if let Err(reason) = written {
-                    answer = Err(ActionCallError::Refused { reason });
-                    break;
+                for cancelled in
+                    invocations.stop_agent(&person, &workspace, &member, &origin_writes)
+                {
+                    let _ = cancelled.await;
                 }
+            }
+            for target in &targets {
                 if stopping {
-                    // As the dispatch itself cancels a call, the person's own ask.
+                    // What it is running ends first: as the dispatch itself cancels a call, the
+                    // person's own ask, before the answer that refuses the next one. Written the
+                    // other way, the answer's change of who is here woke a running watch, which
+                    // answered what it saw before its cancellation reached it.
                     let origin_writes = |caller: &Caller, origin: &Origin| {
                         broker.state().may_write_origin(caller, target, origin)
                     };
@@ -5278,6 +5285,15 @@ impl RuntimeActionProvider {
                     {
                         let _ = cancelled.await;
                     }
+                }
+                let written = if stopping {
+                    copies.answer_stop(target, &agent).await
+                } else {
+                    copies.answer_go_on(target, &agent).await
+                };
+                if let Err(reason) = written {
+                    answer = Err(ActionCallError::Refused { reason });
+                    break;
                 }
             }
             if answer.is_ok() {
@@ -6190,6 +6206,25 @@ impl ActionProvider for RuntimeActionProvider {
             return self.admitted_session(caller, request, session);
         }
         Pending::ready(Err(ActionCallError::NotPermitted))
+    }
+
+    fn tool_started(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+        tool: &str,
+    ) -> Option<RunningTool> {
+        // Only an agent's session shares its calls this way: a person's own tool call is their
+        // own act, not an agent's to list and stop.
+        let session = self.session.as_ref()?;
+        session.agent.as_ref()?;
+        session.check(caller, &self.workspaces).ok()?;
+        // The call is the agent's, as every call of its session is: its person reads it on
+        // their invocations page and stops it from there.
+        Some(
+            self.invocations
+                .tool_started(session.acting(), &self.workspace, *id, tool),
+        )
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {

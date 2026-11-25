@@ -1857,6 +1857,60 @@ where
     provider.observe(&caller, &invocation)
 }
 
+/// A tool call an agent's session runs, as the host keeps it
+/// ([`ActionProvider::tool_started`]): the invocation its person reads while the
+/// call runs and may stop. The session holds it around the tool's own work and
+/// tells the host how that ended.
+pub struct RunningTool {
+    /// Resolves when the person stops the call.
+    pub stopped: Pending<Result<(), ActionCallError>>,
+    /// The stop their record noted, read by a session whose call answered before it saw
+    /// `stopped`: a call the person stopped ends cancelled all the same.
+    stop_noted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    end: Option<Box<dyn FnOnce(bool) + Send + Sync>>,
+}
+
+impl RunningTool {
+    /// A tool call whose `stopped` resolves when its person stops it, `stop_noted` says
+    /// whether the stop reached its record, and `end` the host runs once the call ended,
+    /// `true` where it was stopped.
+    #[must_use]
+    pub fn new(
+        stopped: Pending<Result<(), ActionCallError>>,
+        stop_noted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        end: impl FnOnce(bool) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            stopped,
+            stop_noted,
+            end: Some(Box::new(end)),
+        }
+    }
+
+    /// Whether its person's stop reached its record.
+    #[must_use]
+    pub fn was_stopped(&self) -> bool {
+        self.stop_noted.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Note that the call ended: run to its end, or stopped by its person.
+    pub fn ended(mut self, stopped: bool) {
+        if let Some(end) = self.end.take() {
+            end(stopped);
+        }
+    }
+}
+
+impl Drop for RunningTool {
+    /// A call nobody waited for any more (its client disconnected) ended unwatched: its record
+    /// says so rather than staying running forever.
+    fn drop(&mut self) {
+        if let Some(end) = self.end.take() {
+            end(false);
+        }
+    }
+}
+
 /// A peer that runs actions on behalf of authenticated remote callers.
 ///
 /// Implementations resolve authority from `caller` alone and must be
@@ -1905,6 +1959,16 @@ pub trait ActionProvider {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>>;
+
+    /// `caller`'s session starts the tool call `tool` under `id`: what a host that
+    /// records its invocations keeps as one of the agent's, so the person reads it
+    /// while it runs and may stop it. The session holds the answer around the
+    /// tool's own work. `None` for a host that keeps no such record, or none for
+    /// this caller.
+    fn tool_started(&self, caller: &Caller, id: &InvocationId, tool: &str) -> Option<RunningTool> {
+        let _ = (caller, id, tool);
+        None
+    }
 
     /// The latest state of an invocation `caller` started, or `None` for an
     /// id this caller does not own.

@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use super::secret_arguments::{SecretAnswers, SecretParameters, secret_arguments, without_secrets};
 use super::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend, UNDO};
 use super::{
-    ActionCallError, ActionProvider, Caller, CatalogueQuery, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionTarget,
-    ResourceWake, pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus,
+    RemoteActionTarget, ResourceWake, RunningTool, pending,
 };
 use crate::InvocationId;
 
@@ -90,6 +90,161 @@ pub struct Recorded {
     /// was asked with nor what it answered, only that it was answered.
     pub secret: bool,
     route: Route,
+}
+
+/// A tool call an agent's session runs, as the device keeps it: how it stands, and
+/// what its person stops.
+struct ToolRun {
+    invocation: InvocationId,
+    inner: Mutex<RunState>,
+    /// The person asked for it to stop, kept apart from the answer they hold: a call that
+    /// answered in the same breath ends cancelled all the same.
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Everything one tool call's record answers, under one lock: its state, the stop the
+/// session holds an answer to, and the readers waiting on it to move.
+struct RunState {
+    /// How it stands: running until the session says how it ended.
+    state: InvocationState,
+    /// Resolves the stop its person asked for, so the session answers the tool cancelled.
+    stop: Option<crate::remote::Completer<Result<(), ActionCallError>>>,
+    /// Readers waiting on it to move: told once it ended.
+    changed: Vec<crate::remote::Completer<()>>,
+}
+
+impl ToolRun {
+    fn started(invocation: InvocationId) -> Self {
+        Self {
+            invocation,
+            inner: Mutex::new(RunState {
+                state: InvocationState::new(
+                    invocation,
+                    crate::InvocationUpdate::Accepted { invocation },
+                ),
+                stop: None,
+                changed: Vec::new(),
+            }),
+            stopped: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// Whether its person asked for it to stop.
+    fn stop_noted(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.stopped)
+    }
+
+    fn inner(&self) -> std::sync::MutexGuard<'_, RunState> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn state(&self) -> InvocationState {
+        self.inner().state.clone()
+    }
+
+    /// The answer to the person's stop: ready at once once the call ended and there is nothing
+    /// to stop.
+    fn stopped(&self) -> Pending<Result<(), ActionCallError>> {
+        let (complete, stopped) = pending();
+        let mut inner = self.inner();
+        if inner.state.update.is_terminal() || inner.stop.is_some() {
+            drop(inner);
+            complete.complete(Ok(()));
+            return stopped;
+        }
+        inner.stop = Some(complete);
+        stopped
+    }
+
+    /// Stop the call: the session answers it cancelled, and it ends.
+    fn stop(&self) -> Pending<Result<(), ActionCallError>> {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        let asked = self.inner().stop.take();
+        if let Some(asked) = asked {
+            asked.complete(Ok(()));
+        }
+        Pending::ready(Ok(()))
+    }
+
+    /// The call ended: `stopped` where its person stopped it. A reader following it is told.
+    fn finish(&self, stopped: bool) {
+        let mut inner = self.inner();
+        if inner.state.update.is_terminal() {
+            return;
+        }
+        let invocation = self.invocation;
+        inner.state = InvocationState::new(
+            invocation,
+            if stopped {
+                crate::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("its person stopped it".to_owned()),
+                }
+            } else {
+                crate::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: crate::ActionOutput::default(),
+                }
+            },
+        );
+        let waiting = std::mem::take(&mut inner.changed);
+        drop(inner);
+        for changed in waiting {
+            changed.complete(());
+        }
+    }
+
+    /// Resolves once the call ends.
+    fn changed(&self) -> Pending<()> {
+        let (complete, changed) = pending();
+        let mut inner = self.inner();
+        if inner.state.update.is_terminal() {
+            drop(inner);
+            complete.complete(());
+            return changed;
+        }
+        inner.changed.push(complete);
+        changed
+    }
+}
+
+/// The provider a tool call's record names: it answers how the call stands and stops it as its
+/// person asks, and runs no action itself.
+struct ToolRoute(std::sync::Arc<ToolRun>);
+
+impl ActionProvider for ToolRoute {
+    fn query(
+        &self,
+        _caller: &Caller,
+        _query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::Unavailable {
+            reason: "a tool call is no action of a provider".to_owned(),
+        }))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &Caller,
+        _request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::Unavailable {
+            reason: "a tool call is no action of a provider".to_owned(),
+        }))
+    }
+
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        Some(self.0.state())
+    }
+
+    fn next_change(&self, _caller: &Caller, _id: &InvocationId) -> Option<Pending<()>> {
+        Some(self.0.changed())
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        self.0.stop()
+    }
 }
 
 /// The invocations one device was asked for.
@@ -269,6 +424,50 @@ impl Invocations {
                 changed.then(move |_| wake.wake());
             }
         }
+    }
+
+    /// `caller`'s session starts the tool `tool` under `id` in `workspace`: kept as a call of
+    /// the agent's tools, so its person reads it while it runs and may stop it. The answer the
+    /// session holds around the tool's own work says how that ended.
+    #[must_use]
+    pub fn tool_started(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        id: InvocationId,
+        tool: &str,
+    ) -> RunningTool {
+        let run = std::sync::Arc::new(ToolRun::started(id));
+        let request = InvokeRequest {
+            invocation: id,
+            target: super::agent_tools::target(super::agent_tools::CALL),
+            argument: InvokeArgument::None,
+            context: Some(crate::ActionContext {
+                group: Some(crate::WorkGroup {
+                    id: tool.to_owned(),
+                    label: Some(tool.to_owned()),
+                    kind: "agent-tool".to_owned(),
+                    declared_id: None,
+                    session: None,
+                }),
+                ..crate::ActionContext::default()
+            }),
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let route: Route = (
+            std::sync::Arc::new(ToolRoute(std::sync::Arc::clone(&run))),
+            caller.clone(),
+        );
+        self.record(caller, caller, &request, Some(workspace), route);
+        let ended = std::sync::Arc::clone(&run);
+        RunningTool::new(run.stopped(), run.stop_noted(), move |stopped| {
+            ended.finish(stopped);
+        })
     }
 
     /// The record of `id`, as `caller` may read it: `None` when the device was not asked for it,
@@ -509,6 +708,13 @@ impl Invocations {
         recorded: &Recorded,
         asked: InvocationId,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // A tool call is the session's, not an action with an address to ask again.
+        if recorded.request.target.provider == super::agent_tools::PROVIDER {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: "a tool call is not run again from its record: its agent asks it again"
+                    .to_owned(),
+            }));
+        }
         if recorded.request.signed.is_some() {
             return Pending::ready(Err(ActionCallError::Refused {
                 reason: "it was asked for from another device: run it again from there".to_owned(),
@@ -574,6 +780,9 @@ impl Invocations {
     ) -> bool {
         caller.continues(&recorded.caller)
             || agent_person_is(caller, &recorded.caller)
+            // A session's call is made by its person's connection and asked as the agent the
+            // session runs: the person it works for may stop it either way.
+            || agent_person_is(caller, &recorded.asked)
             || recorded
                 .origin
                 .as_ref()
@@ -599,7 +808,8 @@ impl Invocations {
                     let recorded = kept.by_id.get(id)?;
                     if recorded.workspace.as_deref() != Some(workspace)
                         || recorded.ended_ms.is_some()
-                        || recorded.caller.acting().member_id() != Some(agent)
+                        || !(recorded.caller.acting().member_id() == Some(agent)
+                            || recorded.asked.acting().member_id() == Some(agent))
                     {
                         return None;
                     }
@@ -985,6 +1195,101 @@ mod tests {
                 other => panic!("the answer was ready, not {other:?}"),
             }
         }
+    }
+
+    /// A tool call an agent's session runs is an invocation of the agent's: listed while it
+    /// runs, and stopped when its person stops the agent, which the session answers cancelled.
+    #[test]
+    fn a_running_tool_call_is_listed_and_its_person_stops_it() {
+        let invocations = Arc::new(Invocations::default());
+        let root = [1u8; 32];
+        let agent = Caller::delegated_agent("claude", root, [2u8; 32]).in_workspace("w1");
+        let person = Caller::local_person(hex::encode(root)).in_workspace("w1");
+        let mut run = invocations.tool_started(&agent, "w1", InvocationId::new(), "tilo_watch");
+
+        let listed = invocations.listed("w1");
+        assert_eq!(listed.len(), 1, "the agent's call is listed");
+        assert_eq!(
+            listed[0].asked.acting().member_id(),
+            agent.acting().member_id(),
+            "as the agent's"
+        );
+        assert!(
+            !listed[0]
+                .state
+                .as_ref()
+                .expect("a running call says so")
+                .update
+                .is_terminal(),
+            "and it is still running"
+        );
+
+        // The person stops the agent: what it was running is stopped, and the session answers it
+        // cancelled.
+        let member = agent
+            .acting()
+            .member_id()
+            .expect("an agent is a member")
+            .clone();
+        let never = |_: &Caller, _: &Origin| false;
+        let stopping = invocations.stop_agent(&person, "w1", &member, &never);
+        assert_eq!(stopping.len(), 1, "the stop reaches the running call");
+        let mut stopping = stopping.into_iter().next().expect("one stop");
+        assert!(
+            matches!(stopping.poll_ready(), PendingPoll::Ready(Ok(()))),
+            "the call is stopped"
+        );
+        assert!(matches!(
+            run.stopped.poll_ready(),
+            PendingPoll::Ready(Ok(()))
+        ));
+        run.ended(true);
+
+        let settled = invocations.listed("w1");
+        assert!(
+            matches!(
+                settled[0].state.as_ref().map(|state| &state.update),
+                Some(InvocationUpdate::Cancelled { .. })
+            ),
+            "the call ended cancelled"
+        );
+        assert!(settled[0].ended_ms.is_some(), "and says when");
+    }
+
+    /// A call a person's own connection made for the agent it runs is the agent's too: stopping
+    /// the agent stops it.
+    #[test]
+    fn stopping_an_agent_stops_a_call_its_session_made_as_the_person() {
+        let invocations = Arc::new(Invocations::default());
+        let root = [1u8; 32];
+        let agent = Caller::delegated_agent("claude", root, [2u8; 32]).in_workspace("w1");
+        let person = Caller::local_person(hex::encode(root)).in_workspace("w1");
+        let runs = Arc::new(Runs::default());
+        let request = request();
+        let id = request.invocation;
+        invocations.record(
+            &person,
+            &agent,
+            &request,
+            Some("w1"),
+            (runs.clone(), agent.clone()),
+        );
+
+        let member = agent
+            .acting()
+            .member_id()
+            .expect("an agent is a member")
+            .clone();
+        let never = |_: &Caller, _: &Origin| false;
+        let stopping = invocations.stop_agent(&person, "w1", &member, &never);
+        assert_eq!(stopping.len(), 1, "the agent's call is stopped");
+        let mut stopping = stopping.into_iter().next().expect("one stop");
+        assert!(matches!(stopping.poll_ready(), PendingPoll::Ready(Ok(()))));
+        assert!(
+            runs.stopped.load(Ordering::SeqCst),
+            "the provider it runs at was told"
+        );
+        assert!(invocations.get(&person, &id).is_some());
     }
 
     /// A call is recorded as every call is, and its record keeps none of the arguments its

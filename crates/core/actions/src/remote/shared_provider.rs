@@ -45,6 +45,15 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
         (**self).invoke(caller, request)
     }
 
+    fn tool_started(
+        &self,
+        caller: &Caller,
+        id: &InvocationId,
+        tool: &str,
+    ) -> Option<super::RunningTool> {
+        (**self).tool_started(caller, id, tool)
+    }
+
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         (**self).observe(caller, id)
     }

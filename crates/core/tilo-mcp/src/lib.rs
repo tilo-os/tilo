@@ -206,6 +206,10 @@ pub struct McpServer<H> {
     /// that takes ([`McpServer::for_turn`]). Any other server answers such a call `pending`
     /// after [`DEFAULT_WAIT_MS`].
     until_ended: bool,
+    /// Whether each tool call this session runs is recorded at the host as an invocation of the
+    /// agent's ([`ActionProvider::tool_started`]): what its person reads and may stop. False for
+    /// a session whose steps the host already took as invocations of their own.
+    records_tools: bool,
 }
 
 pub use agent::TaskHosts;
@@ -602,6 +606,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Self::from_caller(host, workspace, caller)
     }
 
+    /// This session's tool calls are steps the host has already taken as invocations of its own
+    /// (a device's agent-tools steps): it keeps no second record of them.
+    #[must_use]
+    pub fn steps_already_recorded(mut self) -> Self {
+        self.records_tools = false;
+        self
+    }
+
     /// One session of `person` themselves in `workspace`: a REPL the host admitted because
     /// the person said so (a desktop's MCP server). Every call is the person's own, attributed
     /// to them and decided by their own authority, as their own input is. Its own fresh
@@ -619,9 +631,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The run is a person's, or an agent's acting for one: a key's own run is
     /// the agent its certificate names.
     pub fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
-        if caller.acting().person_id().is_none()
-            && caller.acting().acted_for_person().is_none()
-        {
+        if caller.acting().person_id().is_none() && caller.acting().acted_for_person().is_none() {
             return Err(std::io::Error::other(
                 "MCP requires an admitted person execution",
             ));
@@ -678,6 +688,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             invocation_waiters: std::sync::Mutex::default(),
             unfollowed: std::sync::Arc::default(),
             until_ended: false,
+            records_tools: true,
         }
     }
 
@@ -1429,14 +1440,72 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .and_then(|metadata| metadata.pointer(SURFACE_STRUCTURED))
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        STEP.scope(
+        // The tool the call names: what its record at the host is titled, where the host keeps
+        // one.
+        let tool = params
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let called = STEP.scope(
             step,
             STEP_INVOCATION.scope(
                 declared,
                 self.call_named(parse::<ToolCall>(params), structured),
             ),
-        )
-        .await
+        );
+        let started = self
+            .records_tools
+            .then(|| {
+                self.host
+                    .tool_started(&self.caller(), &tilo_actions::InvocationId::new(), &tool)
+            })
+            .flatten();
+        let Some(mut run) = started else {
+            return called.await;
+        };
+        let (answered, stopping) = {
+            let called = std::pin::pin!(called);
+            let mut stopped = std::pin::pin!(&mut run.stopped);
+            tokio::select! {
+                // The person's stop wins over a tool that answered in the same breath: what
+                // they stopped ended cancelled, whether or not its work was already done.
+                biased;
+                stopping = &mut *stopped => (None, Some(stopping)),
+                answered = called => (Some(answered), None),
+            }
+        };
+        // The stop's answer is `None` when its producer went away without it: the record this
+        // call was kept under is gone, and the call ends with nothing watching it either.
+        let cancelled = |tool: &str| {
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!("{tool} was cancelled: its person stopped the agent"),
+                }],
+                "isError": true,
+            }))
+        };
+        match (answered, stopping) {
+            // The person's stop reached the call's record in the breath the tool answered:
+            // what they stopped ends cancelled, not with an answer they never asked for.
+            (Some(_), _) if run.was_stopped() => {
+                run.ended(true);
+                cancelled(&tool)
+            }
+            (Some(answered), _) => {
+                run.ended(false);
+                answered
+            }
+            (None, Some(Some(Err(error)))) => {
+                run.ended(false);
+                Err(format!("the call was not stopped: {error}"))
+            }
+            (None, None | Some(Some(Ok(())) | None)) => {
+                run.ended(true);
+                cancelled(&tool)
+            }
+        }
     }
     /// [`Self::call_tool`], inside the call's undo step.
     async fn call_named(
