@@ -1601,6 +1601,25 @@ impl Instance {
         self.flush();
     }
 
+    /// Tell the window what the action the press `press` chose answered ([`ToApp::Invoke`]):
+    /// its output, or the code and words of its refusal. The caller who chose it at the window
+    /// hears that answer.
+    pub fn press_answered(
+        &mut self,
+        press: u64,
+        answer: Result<&tilo_actions::ActionOutput, (String, String)>,
+    ) {
+        let answer = match answer.map(serde_json::to_vec) {
+            Ok(Ok(output)) => ui::PressAnswer::Done(output),
+            Ok(Err(error)) => ui::PressAnswer::Refused {
+                code: "invalid_output".to_owned(),
+                message: format!("the action's answer does not encode: {error}"),
+            },
+            Err((code, message)) => ui::PressAnswer::Refused { code, message },
+        };
+        self.out.push(ToUi::Answered { press, answer });
+    }
+
     /// Show what a person's press made, and what search hits or agents asked the window to
     /// show.
     fn take_open_requests(&mut self) -> bool {
@@ -2037,6 +2056,9 @@ impl Instance {
                 self.fired = fired;
                 self.last_fire = fired;
                 if argument.is_none() && self.open_chosen_form(&address) {
+                    // What the press did is ask the person for the arguments: whoever called it
+                    // hears it ran, and the action runs when they submit the form.
+                    self.press_answered(fired, Ok(&tilo_actions::ActionOutput::default()));
                     Ok(())
                 } else {
                     self.chosen.push_back((fired, address, argument));

@@ -333,6 +333,10 @@ pub struct AppWindow {
     /// them the app said it ran (`ToUi::Took`).
     fired: u64,
     took: u64,
+    /// The calls of the app's actions made at the window that wait on the app's answer, by the
+    /// press each was sent as ([`Self::await_answer`]), and the answers that came for them.
+    called: HashMap<u64, tilo_actions::InvocationId>,
+    answered: HashMap<tilo_actions::InvocationId, tilo_actions::InvocationUpdate>,
     typed: std::collections::VecDeque<Typed>,
     /// How many presses the window had sent when the person last pointed (a click, a touch): what
     /// they type after a press they pointed after goes where they put the keyboard, not where it
@@ -536,6 +540,8 @@ impl AppWindow {
             shown_runs: Vec::new(),
             fired: 0,
             took: 0,
+            called: HashMap::new(),
+            answered: HashMap::new(),
             typed: std::collections::VecDeque::new(),
             pointed_after: None,
             focus_request: None,
@@ -727,11 +733,14 @@ impl AppWindow {
     /// them. An action whose key a text field of the view declares (a list's entry) is pressed
     /// where that field is: the press puts the keyboard in it, as the key does, instead of making
     /// an empty item nobody typed.
+    ///
+    /// Answers the press the app runs it as, whose answer the app sends ([`ToUi::Answered`]);
+    /// `None` for a press the window took itself (the keyboard put in a field).
     pub fn invoke_action(
         &mut self,
         address: tilo_actions::ActionAddress,
         argument: Option<String>,
-    ) {
+    ) -> Option<u64> {
         if argument.is_none()
             && let Some(key) = self
                 .actions()
@@ -745,7 +754,7 @@ impl AppWindow {
         {
             self.focus_request = Some(field);
             self.flush();
-            return;
+            return None;
         }
         // What the person typed since the last batch goes out first: an action that reads the field
         // it was asked for (a save, a send) reads every character typed before it, never the text
@@ -755,6 +764,48 @@ impl AppWindow {
         // the keyboard, and what it makes opens as their input.
         self.fired = self.fired.saturating_add(1);
         self.tell(ToApp::Invoke { address, argument });
+        Some(self.fired)
+    }
+
+    /// Answer `invocation` with what the app answers for the press `press` ([`ToUi::Answered`]):
+    /// a call of the app's action made at the window ends as the app ran it.
+    pub(crate) fn await_answer(&mut self, press: u64, invocation: tilo_actions::InvocationId) {
+        self.called.insert(press, invocation);
+    }
+
+    /// The answer the app gave `invocation`, once it gave one ([`Self::await_answer`]).
+    pub(crate) fn take_answer(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        self.answered.remove(&invocation)
+    }
+
+    /// Keep what the app answered for the press `press`, for the call that waits on it.
+    fn take_answered(&mut self, press: u64, answer: wire::PressAnswer) {
+        let Some(invocation) = self.called.remove(&press) else {
+            return;
+        };
+        let failed = |code: String, message: String| tilo_actions::InvocationUpdate::Failed {
+            invocation,
+            error: tilo_actions::ActionFailure {
+                code,
+                message,
+                details: None,
+                retryable: false,
+            },
+        };
+        let update = match answer {
+            wire::PressAnswer::Done(output) => match serde_json::from_slice(&output) {
+                Ok(output) => tilo_actions::InvocationUpdate::Succeeded { invocation, output },
+                Err(error) => failed(
+                    "invalid_output".to_owned(),
+                    format!("the app's answer does not read: {error}"),
+                ),
+            },
+            wire::PressAnswer::Refused { code, message } => failed(code, message),
+        };
+        self.answered.insert(invocation, update);
     }
 
     /// Whether the app asked for the window to come forward since this was last asked
@@ -993,6 +1044,7 @@ impl AppWindow {
                     self.focus_request = Some(key.unwrap_or_default());
                     self.structure_dirty = true;
                 }
+                ToUi::Answered { press, answer } => self.take_answered(press, answer),
             }
         }
         self.check_budget()?;

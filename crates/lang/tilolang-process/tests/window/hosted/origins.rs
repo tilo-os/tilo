@@ -61,12 +61,11 @@ fn connector_process() {
     });
     match origin.as_str() {
         "youtube" => {
-            let service: std::sync::Arc<dyn tilolang_youtube::Service> = std::sync::Arc::new(
-                Asked {
+            let service: std::sync::Arc<dyn tilolang_youtube::Service> =
+                std::sync::Arc::new(Asked {
                     service: scripted(),
                     log: connector_log(),
-                },
-            );
+                });
             tilolang_youtube::connector::serve(&service, attachments);
         }
         other => panic!("the window started no connector this test stands in for: {other}"),
@@ -85,9 +84,7 @@ fn connector_log() -> std::path::PathBuf {
     let parent = std::os::unix::process::parent_id();
     #[cfg(not(unix))]
     let parent = 0;
-    asked_log(&std::env::temp_dir().join(format!(
-        "tilo-tube-origins-{parent}"
-    )))
+    asked_log(&std::env::temp_dir().join(format!("tilo-tube-origins-{parent}")))
 }
 
 /// The asks the connector answered, oldest first: `search <query>`, `stream <key>`.
@@ -96,6 +93,65 @@ fn asks(profile: &std::path::Path) -> Vec<String> {
         |_| Vec::new(),
         |log| log.lines().map(str::to_owned).collect(),
     )
+}
+
+/// Whether the app's store under `profile` keeps `text` in the record of the window's resource
+/// `resource` (`tl:<app>:<document>/<item>`): each resource of the documents the store keeps that
+/// record in (its own, and those of its collections), read through the store's own reads as it
+/// opens again from what the window's instance wrote. `false` until the store holds them whole.
+fn record_keeps(profile: &std::path::Path, resource: &str, text: &str) -> bool {
+    let Some((app, path)) = resource
+        .strip_prefix("tl:")
+        .and_then(|rest| rest.split_once(':'))
+    else {
+        return false;
+    };
+    let record = path.split('/').next().unwrap_or(path);
+    let Some(store) = stores_under(profile)
+        .into_iter()
+        .find(|dir| dir.parent().is_some_and(|parent| parent.ends_with(app)))
+    else {
+        return false;
+    };
+    let Ok(store) = tilolang_tilo::resources::LocalPort::at(store) else {
+        return false;
+    };
+    use tilolang_tilo::resources::Port as _;
+    store
+        .documents()
+        .iter()
+        .filter(|document| document.contains(record))
+        .flat_map(|document| store.held(document).unwrap_or_default())
+        .flat_map(|(kind, id)| {
+            [
+                collab_types::store::wire::Command::Get {
+                    kind: kind.clone(),
+                    id: id.clone(),
+                },
+                collab_types::store::wire::Command::Content { kind, id },
+            ]
+        })
+        .filter_map(|read| store.command(read).ok())
+        .any(|answer| format!("{answer:?}").contains(text))
+}
+
+/// Every store directory (`resources`) under `dir`.
+fn stores_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for path in entries.flatten().map(|entry| entry.path()) {
+        if !path.is_dir() {
+            continue;
+        }
+        if path.file_name().is_some_and(|name| name == "resources") {
+            found.push(path);
+        } else {
+            found.extend(stores_under(&path));
+        }
+    }
+    found
 }
 
 /// The scripted service, with each ask it answers written down: what the window asked the
@@ -147,11 +203,7 @@ impl tilolang_youtube::Service for Asked {
         self.service.trending()
     }
 
-    fn stream(
-        &self,
-        key: &str,
-        quality: &str,
-    ) -> Result<String, tilolang_youtube::ServiceError> {
+    fn stream(&self, key: &str, quality: &str) -> Result<String, tilolang_youtube::ServiceError> {
         let answered = self.service.stream(key, quality);
         match &answered {
             Ok(address) => self.noted(&format!("stream {key} {address}")),
@@ -181,10 +233,7 @@ impl tilolang_youtube::Service for Asked {
         self.service.branding(key)
     }
 
-    fn votes(
-        &self,
-        key: &str,
-    ) -> Result<tilolang_youtube::Votes, tilolang_youtube::ServiceError> {
+    fn votes(&self, key: &str) -> Result<tilolang_youtube::Votes, tilolang_youtube::ServiceError> {
         self.service.votes(key)
     }
 }
@@ -298,7 +347,7 @@ fn a_window_without_a_session_browses_and_plays_through_the_connector() {
     crate::support::installed(TUBE_DIR);
     let mut app = TubeApp::open_data_dir(&profile).expect("the window opens");
     let root = published(&mut app, "search", None);
-    app.call_on(&root, "search", json!({ "query": "compositor" }))
+    app.call_on_finished(&root, "search", json!({ "query": "compositor" }))
         .expect("the client searches");
     // The answer reached the record through the connector, and the window shows it.
     until(&mut app, "shows the video the search found", |app| {
@@ -315,13 +364,19 @@ fn a_window_without_a_session_browses_and_plays_through_the_connector() {
         asks(&profile)
     );
     // Playing it asks the connector for the address its bytes play from: the address only the
-    // scripted service names, answered for the video the window plays.
+    // scripted service names, answered for the video the window plays, and the record keeps what
+    // the connector answered.
     let video = published(&mut app, "progress", Some(TITLE));
-    app.call_on(&video, "progress", json!({ "at": 0.0 }))
+    app.call_on_finished(&video, "progress", json!({ "at": 0.0 }))
         .expect("the client plays the video");
     let streamed = format!("stream {VIDEO} {STREAM}");
-    until(&mut app, "asks the connector where the video plays from", |_| {
-        asks(&profile).contains(&streamed)
+    until(
+        &mut app,
+        "asks the connector where the video plays from",
+        |_| asks(&profile).contains(&streamed),
+    );
+    until(&mut app, "keeps the video's stream in its record", |_| {
+        record_keeps(&profile, &video, STREAM)
     });
     frames(&mut app, 20);
     assert_eq!(
@@ -332,6 +387,14 @@ fn a_window_without_a_session_browses_and_plays_through_the_connector() {
         1,
         "the connector is asked the stream once: {:?}",
         asks(&profile)
+    );
+    // A read the app refuses comes back refused, not as an empty success.
+    let refused = app
+        .call_on_finished(&video, "read", json!({ "version": "an-older-one" }))
+        .expect_err("a past version is read from the app's versions");
+    assert!(
+        refused.to_string().contains("versions"),
+        "the caller hears the app's own refusal: {refused}"
     );
     drop(app);
     let _ = std::fs::remove_dir_all(&profile);

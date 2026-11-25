@@ -4369,6 +4369,9 @@ impl Hosted {
         // runs when the broker delivers it back.
         if address.action == collaboration::APPROVED_CHECK_ACTION {
             self.dispatch_press(&address, argument.as_deref());
+            // Its caller follows the check as the invocation the workspace holds.
+            self.instance
+                .press_answered(press, Ok(&tilo_actions::ActionOutput::default()));
             self.instance.press_ran(press);
             return true;
         }
@@ -4395,6 +4398,18 @@ impl Hosted {
                 outcome,
             );
         }
+        // Whoever chose the action at the window hears what it answered: its output, or why it
+        // was refused. One that waits on another app's answer goes on as its run, which the
+        // press does not wait for.
+        let waiting = tilo_actions::ActionOutput::default();
+        self.instance.press_answered(
+            press,
+            match &ran {
+                Ok(Ran::Done(output)) => Ok(output),
+                Ok(Ran::Waits { .. }) => Ok(&waiting),
+                Err(refused) => Err((refused.code.clone(), refused.message.clone())),
+            },
+        );
         match ran {
             // A press that ran as a call waits as that call, kept with the rest of it.
             Ok(Ran::Waits { .. }) if call.is_some() => {}

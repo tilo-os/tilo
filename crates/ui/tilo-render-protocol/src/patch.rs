@@ -693,6 +693,19 @@ pub enum ToUi {
     /// test id, `None` ends its place in an editor (the `blur()` a view applies), as closing the
     /// editor does. The window answers through the same focus request a widget builds with.
     Focus { key: Option<String> },
+    /// What became of the press `press` that chose an action ([`ToApp::Invoke`]), counted as
+    /// [`ToUi::Took`] counts presses: what the action answered, or why it was refused. Whoever
+    /// called the action at the window (its palette, an agent, a script) hears that answer.
+    Answered { press: u64, answer: PressAnswer },
+}
+
+/// What an action a press chose answered ([`ToUi::Answered`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PressAnswer {
+    /// It ran, and answered this output (a `tilo_actions::ActionOutput`, as JSON).
+    Done(#[serde(with = "serde_bytes")] Vec<u8>),
+    /// It was refused, with the refusal's code and what it says.
+    Refused { code: String, message: String },
 }
 
 /// Which of a person's pictures a call tile shows.

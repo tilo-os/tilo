@@ -232,6 +232,14 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
     // whose role lets them change the workspace's records but asks before outside effects (an
     // editor) presses an undoable action as the app's own window lets them.
     ty.contract.kind = descriptor.contract.kind;
+    // The app runs the action in its own process and answers once it ran: a call of the
+    // window's copy is a job that ends with that answer, checked against the result the app
+    // declares.
+    ty.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: false };
+    ty.contract.result = match &descriptor.contract.result {
+        tilo_actions::ResultSpec::None => tilo_actions::ResultSpec::Job,
+        declared => declared.clone(),
+    };
     ty.contract.field.clone_from(&descriptor.contract.field);
     ty.contract.risk = descriptor.contract.risk;
     ty.contract.tags.clone_from(&descriptor.contract.tags);
@@ -305,10 +313,40 @@ impl ResourceOperations for AppWindow {
         let chosen: Chosen = serde_json::from_slice(request.payload)
             .map_err(|error| format!("a chosen action did not read back: {error}"))?;
         let argument = chosen.argument();
-        self.invoke_action(ActionAddress::new(chosen.resource, chosen.action), argument);
+        let press =
+            self.invoke_action(ActionAddress::new(chosen.resource, chosen.action), argument);
         self.flush();
-        Ok(Some(ResourceOperationStart::Completed(
-            ActionOutput::default(),
-        )))
+        // The call ends as the app runs the action: with what it answers, or its refusal. A press
+        // the window took itself (the keyboard put in a field) is done.
+        Ok(Some(match press {
+            Some(press) => {
+                self.await_answer(press, request.invocation);
+                ResourceOperationStart::Accepted
+            }
+            None => ResourceOperationStart::Completed(ActionOutput::default()),
+        }))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &ui::automerge::AutoCommit,
+        path: &ui::automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        // An operation a control of the window started is that control's to answer.
+        self.take_answer(invocation).or_else(|| {
+            ui::widget::Widget::children_mut(self)
+                .into_iter()
+                .find_map(|child| {
+                    ui::host_operation::poll_resource_operation(
+                        child,
+                        invocation,
+                        cancellation_requested,
+                        doc,
+                        path,
+                    )
+                })
+        })
     }
 }

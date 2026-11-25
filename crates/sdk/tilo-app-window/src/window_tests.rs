@@ -4431,3 +4431,69 @@ fn a_menu_in_a_components_own_view_says_where_it_may_stand() {
         "the window names where a menu may stand: {broken:?}"
     );
 }
+
+/// A call of the app's action made at the window ends as the app answered the press it was sent
+/// as: an output stays that call's, and a refusal comes back a failure, never a success, whatever
+/// order the answers come in.
+#[test]
+fn a_call_made_at_the_window_ends_as_the_app_answered_it() {
+    let (mut app, mut window) = window();
+    send(&mut app, &plain_page());
+    window.receive();
+    let address = tilo_actions::ActionAddress::new("doc", "new");
+    let (made, refused) = (
+        tilo_actions::InvocationId::new(),
+        tilo_actions::InvocationId::new(),
+    );
+    let first = window
+        .invoke_action(address.clone(), None)
+        .expect("the app runs the press");
+    window.await_answer(first, made);
+    let second = window
+        .invoke_action(address, None)
+        .expect("the app runs the press");
+    window.await_answer(second, refused);
+    assert!(
+        window.take_answer(made).is_none(),
+        "nothing ends before the app answers"
+    );
+    let output = tilo_actions::ActionOutput {
+        value: Some(serde_json::json!({ "made": "doc:2" })),
+        resources: vec!["doc:2".to_owned()],
+    };
+    send(
+        &mut app,
+        &[
+            ToUi::Answered {
+                press: second,
+                answer: wire::PressAnswer::Refused {
+                    code: "action_failed".to_owned(),
+                    message: "the list is full".to_owned(),
+                },
+            },
+            ToUi::Answered {
+                press: first,
+                answer: wire::PressAnswer::Done(serde_json::to_vec(&output).expect("encodes")),
+            },
+        ],
+    );
+    window.receive();
+    assert_eq!(
+        window.take_answer(made),
+        Some(tilo_actions::InvocationUpdate::Succeeded {
+            invocation: made,
+            output,
+        }),
+        "the call ends with what the app answered"
+    );
+    match window.take_answer(refused) {
+        Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+            assert_eq!(
+                (error.code.as_str(), error.message.as_str()),
+                ("action_failed", "the list is full"),
+                "the caller hears the app's own refusal"
+            );
+        }
+        other => panic!("a refused call came back as {other:?}"),
+    }
+}

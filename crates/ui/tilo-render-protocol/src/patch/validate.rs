@@ -20,8 +20,8 @@ use tilo_actions::ActionAddress;
 use tilo_ui_graph::component::{Catalogue, Description, Type, companion};
 
 use super::{
-    Binding, Event, MAX_CALL_PICTURE_BYTES, MAX_CALL_PICTURES, Node, Patch, ResourceRef, RowChange,
-    ToApp, ToUi, Value, Words,
+    Binding, Event, MAX_CALL_PICTURE_BYTES, MAX_CALL_PICTURES, Node, Patch, PressAnswer,
+    ResourceRef, RowChange, ToApp, ToUi, Value, Words,
 };
 
 /// Why a batch was refused: what was wrong, and where.
@@ -217,6 +217,15 @@ impl<'a> Validator<'a> {
             ToUi::Focus { key } => match key {
                 Some(key) => self.key(key),
                 None => Ok(()),
+            },
+            ToUi::Answered { answer, .. } => match answer {
+                PressAnswer::Done(output) => {
+                    self.carried(output.len(), "over the limit of bytes in an answer")
+                }
+                PressAnswer::Refused { code, message } => {
+                    self.key(code)?;
+                    self.carried(message.len(), "over the limit of bytes in a refusal")
+                }
             },
             ToUi::Actions(catalogue) => {
                 self.carried(catalogue.len(), "over the limit of bytes in a catalogue")
