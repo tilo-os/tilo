@@ -90,13 +90,14 @@ impl From<String> for WriteRefusal {
     }
 }
 
-/// This device's writes to one record it has not been sent to a peer yet.
+/// This device's writes to one record: those not sent to a peer yet, and what its hosts
+/// answered of those sent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DocumentWrites {
     pub pending: usize,
     pub durable: u64,
     pub refused: u64,
-    /// The latest order a peer kept of the record; none, now that no peer answers.
+    /// The latest order a host kept of the record, once one answered.
     pub last_order: Option<u64>,
 }
 

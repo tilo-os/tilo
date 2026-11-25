@@ -3946,6 +3946,21 @@ impl Task {
                 self.fail_on(FailureKind::Storage, "storage-transaction-failed", error);
             }
         }
+        self.reports.change(|status| {
+            for answer in &answered {
+                let Some((route, _)) = written_to(&answer.frame) else {
+                    continue;
+                };
+                let writes = status.answered.entry(route).or_default();
+                match answer.outcome {
+                    Ok(order) => {
+                        writes.durable = writes.durable.saturating_add(1);
+                        writes.last_order = Some(order);
+                    }
+                    Err(_) => writes.refused = writes.refused.saturating_add(1),
+                }
+            }
+        });
         self.outbound_due = true;
         for AnsweredWrite {
             id,

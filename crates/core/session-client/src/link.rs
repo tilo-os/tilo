@@ -121,6 +121,9 @@ pub struct PeerStatus {
     pub failures: Vec<Failure>,
     /// Commits not yet acknowledged, over every route.
     pub outgoing_pending: usize,
+    /// What the hosts answered this device's writes to each record: how many they kept durably,
+    /// at which order the latest, and how many they refused.
+    pub answered: BTreeMap<DocumentRoute, tilo_peer_state::owner::DocumentWrites>,
     /// This device.
     pub device: [u8; 32],
     /// Bumped on every change.
@@ -164,6 +167,7 @@ impl PeerStatus {
             local: BTreeMap::new(),
             failures: Vec::new(),
             outgoing_pending: 0,
+            answered: BTreeMap::new(),
             device,
             generation: 0,
             connections: 0,
@@ -638,11 +642,12 @@ impl Link {
     }
 
     /// This session's health: its status, and this device's writes to each record as its
-    /// replica's ownership keeps them.
+    /// replica's ownership keeps them and its hosts answered them.
     #[must_use]
     pub fn snapshot(&self) -> crate::health::PeerSnapshot {
         let owner = self.engine.owner();
-        let writes = self
+        let status = self.status();
+        let mut writes: BTreeMap<DocumentRoute, tilo_peer_state::owner::DocumentWrites> = self
             .engine
             .workspaces()
             .into_iter()
@@ -661,7 +666,13 @@ impl Link {
                 )
             })
             .collect();
-        crate::health::PeerSnapshot::from_status(&self.status(), &writes)
+        for (route, answered) in &status.answered {
+            let writes = writes.entry(route.clone()).or_default();
+            writes.durable = answered.durable;
+            writes.refused = answered.refused;
+            writes.last_order = answered.last_order;
+        }
+        crate::health::PeerSnapshot::from_status(&status, &writes)
     }
 
     /// Why this page shows no live presence, in the words it shows in its members' place, or
