@@ -49,9 +49,16 @@ public class TiloActivity extends NativeActivity {
         activated(getIntent());
     }
 
+    /**
+     * A launch that arrives while the app runs: the system's new intent is the app's own from
+     * here, the push tap it may carry is left where Rust reads it, and a notification's button
+     * opens what it names, as a launch from one does.
+     */
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        setIntent(intent);
+        TiloPush.rememberTap(this, intent);
         activated(intent);
     }
 
@@ -71,13 +78,6 @@ public class TiloActivity extends NativeActivity {
         // An app whose manifest takes pushes registers with its distributor, and a launch a
         // notification started leaves the link it opened for Rust to read.
         TiloPush.install(this, getIntent());
-    }
-
-    @Override
-    protected void onNewIntent(Intent intent) {
-        super.onNewIntent(intent);
-        setIntent(intent);
-        TiloPush.rememberTap(this, intent);
     }
 
     @Override
