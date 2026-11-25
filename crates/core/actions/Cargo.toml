@@ -25,6 +25,11 @@ path = "src/lib.rs"
 document-read = ["dep:tilo-automerge"]
 # `remote::TestProvider`, a closure-built action host for other crates' tests.
 test-support = []
+# Answering record reads on the async runtime of the process that asked: a provider whose reads the
+# API posts, and anything that awaits a reading past a revision. A build that only names records and
+# passes readings around (the shared desktop model, automation) leaves it off and carries no
+# runtime; its providers answer a posted read as one that reads no records.
+answer-reads = ["dep:tilo-rt"]
 # A host driving calls off an async runtime enables this: its state reads run on a blocking thread.
 off-worker = ["dep:tokio"]
 # The questions a program outside Tilo asks the person at the device (`asks`): the channel the
@@ -72,8 +77,10 @@ tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical
 zeroize.workspace = true
 
 [dev-dependencies]
-# The tests read documents as JSON, which the feature carries.
-tilo-actions = { path = ".", features = ["document-read"] }
+# The tests read documents as JSON (`document-read`), and answer reads on a runtime, with the
+# timer a wait for a write runs out on (`answer-reads`).
+tilo-actions = { path = ".", features = ["document-read", "answer-reads"] }
+tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 postcard = { workspace = true, features = ["alloc"] }
 tilo-test-env = { path = "../../../tools/test-env" }
@@ -89,10 +96,11 @@ uuid = { version = "1.23.1", features = ["js"] }
 [target.'cfg(all(target_family = "wasm", target_os = "unknown", tilo_no_js))'.dependencies]
 uuid = { version = "1.23.1", features = ["rng-getrandom"] }
 
-# A read is answered on a task of the runtime that asked, and its wait for a write is a timer of it.
-# A `tilo_no_js` build (an app's model module) has no page, so no runtime: it serves no reads.
+# A read is answered on a task of the runtime that asked, and its wait for a write is a timer of it
+# (`answer-reads`). A `tilo_no_js` build (an app's model module) has no page, so no runtime: it
+# serves no reads.
 [target.'cfg(not(tilo_no_js))'.dependencies]
-tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
+tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt", optional = true }
 
 # A line client's connection is this login's local socket: a Unix socket, or a named pipe on Windows.
 [target.'cfg(any(unix, windows))'.dependencies]

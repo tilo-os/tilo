@@ -103,7 +103,7 @@ serde.workspace = true
 serde_json.workspace = true
 # The digests a check's receipt carries of what the host observed.
 sha2.workspace = true
-tilo-actions = { path = "../actions", features = ["document-read"] }
+tilo-actions = { path = "../actions", features = ["answer-reads", "document-read"] }
 # The app id of the one app this device's server settings are read and changed for.
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 # The resource layer: this device's server settings are published as one of this device's typed

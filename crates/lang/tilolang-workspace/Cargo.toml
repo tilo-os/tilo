@@ -19,7 +19,7 @@ tilo-workspace-service = { path = "../../core/tilo-workspace-service" }
 runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
 # The member, resource or message a record's rich text names.
 tilo-reference = { path = "../../core/reference" }
-tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions", features = ["answer-reads"] }
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }

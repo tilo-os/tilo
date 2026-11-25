@@ -590,10 +590,11 @@ pub async fn read_resources<Reads: ResourceReads + ?Sized>(
             return Ok(readings);
         }
         let mut woken = std::pin::pin!(woken);
-        #[cfg(not(tilo_no_js))]
+        #[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
         let mut passed = std::pin::pin!(tilo_rt::sleep(deadline.saturating_duration_since(now)));
-        // A model module has no runtime and so no timer: it only waits for the write.
-        #[cfg(tilo_no_js)]
+        // A build without a runtime (a model module, or one that answers no reads) has no timer: it
+        // only waits for the write.
+        #[cfg(not(all(feature = "answer-reads", not(tilo_no_js))))]
         let mut passed = std::pin::pin!(std::future::pending::<()>());
         std::future::poll_fn(|cx| {
             if woken.as_mut().poll(cx).is_ready() || passed.as_mut().poll(cx).is_ready() {
@@ -650,6 +651,7 @@ pub async fn answered(
 
 /// `reading`, answered on a task of the runtime that asked, or of the app's runtime when no
 /// runtime asked: what the API's dispatch, which answers through [`super::Pending`], waits on.
+#[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
 pub(crate) fn on_a_task(reading: ReadingAnswer) -> super::Pending<super::RemoteActionMessage> {
     let (answer, answered) = super::pending();
     let task = async move { answer.complete(reading.await) };
@@ -658,17 +660,8 @@ pub(crate) fn on_a_task(reading: ReadingAnswer) -> super::Pending<super::RemoteA
         drop(runtime.spawn(task));
         return answered;
     }
-    #[cfg(not(tilo_no_js))]
-    {
-        drop(tilo_rt::app().spawn(task));
-        answered
-    }
-    // A model module applies actions and answers no API, so nothing posts a read to it.
-    #[cfg(tilo_no_js)]
-    {
-        drop((task, answered));
-        unreachable!("a model module answers no record reads")
-    }
+    drop(tilo_rt::app().spawn(task));
+    answered
 }
 
 /// What a provider that reads no records answers a read of one: the API posts every read through

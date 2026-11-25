@@ -21,7 +21,7 @@ ignored = ["serde_bytes"]
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
-tilo-actions = { path = "../actions" }
+tilo-actions = { path = "../actions", features = ["answer-reads"] }
 fnv.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true

@@ -2663,10 +2663,22 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         // made of loads with the code that reads records, not with every provider's API.
         RemoteActionMessage::ResourceRead {
             correlation, read, ..
-        } => provider.resource_reads().map_or_else(
-            || resource_read::unanswered(correlation),
-            |reads| resource_read::on_a_task(reads.answer_read(caller, correlation, read)),
-        ),
+        } => {
+            #[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
+            {
+                provider.resource_reads().map_or_else(
+                    || resource_read::unanswered(correlation),
+                    |reads| resource_read::on_a_task(reads.answer_read(caller, correlation, read)),
+                )
+            }
+            // A build with no runtime to answer on (a model module, or one that reads no records)
+            // answers every posted read as a provider that reads no records does.
+            #[cfg(not(all(feature = "answer-reads", not(tilo_no_js))))]
+            {
+                drop((provider, read));
+                resource_read::unanswered(correlation)
+            }
+        }
         // A question is the person's to answer, on the device they are at.
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
             confirmation::unanswered(correlation, ActionCallError::confirmation_required()),

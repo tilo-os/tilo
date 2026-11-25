@@ -58,7 +58,7 @@ tilo-runtime = { path = "../../core/tilo-runtime" }
 # The collaboration client the SDK app the process tests install uses, without the toolkit: an
 # app's own connection to its workspace.
 collaboration = { package = "tilo-collaboration", path = "../../core/collaboration", features = ["native", "broker-transport"] }
-tilo-actions = { path = "../../core/actions" }
+tilo-actions = { path = "../../core/actions", features = ["answer-reads"] }
 tilo-workspace-service = { path = "../../core/tilo-workspace-service" }
 # The language runtime the workspace service reads and changes tilolang apps' records through,
 # and the styles it offers: the core names no language, and this program mounts this one.

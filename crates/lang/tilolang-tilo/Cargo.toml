@@ -28,7 +28,7 @@ toml.workspace = true
 # The one compiled surface form: what the host generates and every receiver reads.
 tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 tracing.workspace = true
-tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions", features = ["answer-reads"] }
 # The person's layout as a shell reads it, which the shell's hosts write into its `Layout` root.
 tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model" }
 # The one policy what the runtime invokes is decided by.

@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }
-tilo-actions = { path = "../actions" }
+tilo-actions = { path = "../actions", features = ["answer-reads"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-content-types = { path = "../content-types" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }

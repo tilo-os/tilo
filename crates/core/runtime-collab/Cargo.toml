@@ -49,7 +49,7 @@ uuid.workspace = true
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 # The typed action vocabulary the exported surface and directory rows hold;
 # only this crate's codec turns it into wire text.
-tilo-actions = { version = "0.1.0", path = "../actions" }
+tilo-actions = { version = "0.1.0", path = "../actions", features = ["answer-reads"] }
 # Where content a record references has got to, as collaboration events say.
 tilo-content = { version = "0.1.0", path = "../content", default-features = false }
 runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../runtime-portal", optional = true }

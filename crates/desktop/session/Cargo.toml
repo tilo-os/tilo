@@ -117,7 +117,7 @@ tilo-paths.workspace = true
 # This process's id and kernel start time, which the desktop's ready record names.
 tilo-process = { path = "../../platform/tilo-process" }
 tilo-action-policy = { path = "../../core/action-policy" }
-tilo-actions = { path = "../../core/actions" }
+tilo-actions = { path = "../../core/actions", features = ["answer-reads"] }
 # The directory of public workspaces a site serves: what joins list and
 # what a site's entry and directory answer.
 tilo-server-protocol = { path = "../../core/tilo-server-protocol" }

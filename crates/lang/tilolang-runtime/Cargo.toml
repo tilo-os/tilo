@@ -60,7 +60,7 @@ tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 # Which document a resource id lives in: the store's rule, which names the documents a view reads.
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
 # Why an app declined an edit: the reason a window tells the person in their own language.
-tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions", features = ["answer-reads"] }
 serde.workspace = true
 serde_json.workspace = true
 # A draw comes from the system's CSPRNG, on the device the invocation runs on.

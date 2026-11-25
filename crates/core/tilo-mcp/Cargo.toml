@@ -26,7 +26,7 @@ hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { path = "../action-policy" }
-tilo-actions = { path = "../actions", features = ["off-worker"] }
+tilo-actions = { path = "../actions", features = ["answer-reads", "off-worker"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-content = { path = "../content" }
 tilo-files = { path = "../../platform/tilo-files" }
