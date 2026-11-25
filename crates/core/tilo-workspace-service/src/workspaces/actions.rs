@@ -4341,22 +4341,6 @@ impl ActionProvider for InWorkspace {
             });
         }
         self.run_asked(caller, request)
-            return self.server.spawn(async move {
-                let certificate = workspaces
-                    .callers_certificate(this.workspace_id, &caller)
-                    .await;
-                let asked = Self {
-                    certificate,
-                    ..this
-                };
-                asked.run_asked(&caller, request).await.unwrap_or(Err(
-                    ActionCallError::Unavailable {
-                        reason: "the workspace closed".into(),
-                    },
-                ))
-            });
-        }
-        self.run_asked(caller, request)
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
