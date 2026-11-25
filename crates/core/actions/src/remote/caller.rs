@@ -550,6 +550,10 @@ impl Caller {
     pub fn session_handed(mut self) -> Self {
         if self.acting.is_agent() && self.device_public_key.is_some() {
             self.session_delegated = true;
+            // What it writes says so, as [`Self::delegated_to`]'s does: every device that admits
+            // the write decides it with the delegation the person's device handed it, the one
+            // this device decided it with, never as an agent nobody delegated.
+            self.acting = self.acting.handed();
         }
         self
     }
@@ -1122,8 +1126,14 @@ mod tests {
             .session_handed()
             .in_workspace("w");
         assert_eq!(joined.certified("w"), expected);
+        // What either writes names that delegation, so every device admitting the write decides
+        // it as this one did.
+        let preset = handed.acting().handed_preset("w");
+        assert!(!preset.is_empty());
+        assert_eq!(joined.acting().handed_preset("w"), preset);
         // An agent that only says it is one for a person is named by no session and no roster.
         let bare = Caller::delegated_agent("scout", ada, device).in_workspace("w");
+        assert!(bare.acting().handed_preset("w").is_empty());
         assert!(
             bare.certified("w").is_empty(),
             "no session and no roster: {:?}",
