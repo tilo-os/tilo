@@ -1066,7 +1066,7 @@ impl ActorState {
             }
             _ => msg,
         };
-        if !self.relay_to_device(ws, target, &msg) {
+        if !Self::relay_to_device(ws, target, &msg) {
             tracing::debug!(ws = %ws, "record content has no route to the device that asked");
         }
     }
@@ -1074,12 +1074,7 @@ impl ActorState {
     /// A record's content, or a window's control message, that cannot go directly: this device
     /// has no session with a workspace host to carry it, and the workspace's own host hands a
     /// member's asks on over the link each device holds to it. Nothing goes this way.
-    fn relay_to_device(
-        &self,
-        _ws: WorkspaceId,
-        _target: Option<EndpointId>,
-        _msg: &NeighbourMsg,
-    ) -> bool {
+    fn relay_to_device(_ws: WorkspaceId, _target: Option<EndpointId>, _msg: &NeighbourMsg) -> bool {
         false
     }
 
@@ -1158,7 +1153,7 @@ impl ActorState {
             NeighbourMsg::DocumentContentPiece { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
             | NeighbourMsg::DocumentContentRefused { .. } => {
-                let _ = self.relay_to_device(ws, Some(target), &msg);
+                let _ = Self::relay_to_device(ws, Some(target), &msg);
             }
             _ => {}
         }

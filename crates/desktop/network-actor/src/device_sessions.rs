@@ -416,7 +416,7 @@ impl ActorState {
 
     /// `sibling`, once `peer`'s, is a sibling no longer: what streamed to it
     /// stops, and the shell hears its membership ended.
-    async fn sibling_gone(&mut self, peer: EndpointId, sibling: Sibling) {
+    async fn sibling_gone(&self, peer: EndpointId, sibling: Sibling) {
         let epoch = sibling.epoch;
         drop(sibling);
         self.tell_siblings(NetEvent::SiblingLeft {
