@@ -335,6 +335,9 @@ d-dg52uuxd = Vorhersage
     .w-the-week-ahead = Die Woche voraus
     .w-air-quality = Luftqualität
     .w-reading-the-forecast = Die Vorhersage wird gelesen…
+    .w-temperature-over-the-next-hours = Temperatur in den nächsten Stunden
+    .w-reading-the-air = Die Luft wird gelesen…
+    .w-no-air-quality-reading-for-this = Keine Luftqualitätsmessung für diesen Ort.
 
 d-jifwgrup = Ortszeile
 
@@ -352,6 +355,7 @@ d-b52eh6m4 = Wetterfenster
     .w-search-for-a-city-or-town = Suche eine Stadt nach Namen
     .w-cancel = Abbrechen
     .w-a-city-or-town = Eine Stadt
+    .w-rename = Umbenennen
 
 d-beqyw3ws = Ort speichern
     .doc = Speichert einen Ort, dem eine Person folgt.
@@ -410,7 +414,6 @@ d-ctbwrcxw = Erneut versuchen
 d-ctbwrcxw-place = Ort
 
 d-np2uffp7 = Wetter abholen
-    .w-the-place-search-could-not-be = Die Ortssuche ließ sich nicht lesen: { $why }
     .doc = Nimmt, was das letzte Lesen fand: die Messung eines Ortes und seine Stunden und Tage landen zusammen, und die Zeilen der Suche neben dem Feld.
 
 d-fiih6vhd = Ankommen
@@ -452,6 +455,8 @@ d-mubgbm45 = Nächsten Ort lesen
 
 d-cnvt7jm5 = Ablehnung
     .w-the-weather-service-refused-the-request = Der Wetterdienst hat die Anfrage abgelehnt (HTTP { $status })
+    .w-couldn-t-reach-the-weather-service = Der Wetterdienst war nicht erreichbar. Prüfe deine Verbindung.
+    .w-the-weather-service-refused-the-request-2 = Der Wetterdienst hat die Anfrage abgelehnt
 
 d-ajd3uzuo = Messung
     .doc = Was dieses Gerät zuletzt über einen Ort gelesen hat: den Himmel, die Stunden und die Woche voraus, die Luft, und wie die Messung steht.
@@ -543,3 +548,105 @@ d-ghfrburs-place = Ort
 d-ghfrburs-name = Name
 
 d-mcbmxei2 = Ort umbenennen
+
+d-jwbxovvp = Ausstehend
+    .doc = Die Anfrage, die der letzte Blick gesehen hat: ein Blick wartet, bis sich das Getippte nicht mehr ändert, sodass ein Buchstabe für Buchstabe getipptes Wort eine Suche kostet, nicht eine je Buchstabe.
+
+d-f6t2ktz4 = Einen Ort verschieben
+    .doc = Verschiebt den Ort, den eine Person gezogen hat, vor den, auf den er abgelegt wurde: die Umsortierung der Liste meldet die beiden IDs in dieser Reihenfolge.
+    .did = verschob einen Ort
+
+d-f6t2ktz4-ids = IDs
+
+d-53yveuqz = Ort suchen
+    .doc = Sucht, was die Person getippt hat, sobald es sich nicht mehr ändert: die Anfrage wartet einen Blick, und das Gerät wird nur nach der letzten Anfrage gefragt.
+    .w-the-place-search-could-not-be = Die Ortssuche konnte nicht gelesen werden: { $why }
+
+d-oxvalk5z = Geschwindigkeitseinheit
+    .w-mph = mph
+    .w-km-h = km/h
+
+d-im5dzlxe = Regeneinheit
+    .w-in = in
+    .w-mm = mm
+
+d-5svxwkul = Kompass
+    .w-n = N
+    .w-nne = NNO
+    .w-ne = NO
+    .w-ene = ONO
+    .w-e = O
+    .w-ese = OSO
+    .w-se = SO
+    .w-sse = SSO
+    .w-s = S
+    .w-ssw = SSW
+    .w-sw = SW
+    .w-wsw = WSW
+    .w-w = W
+    .w-wnw = WNW
+    .w-nw = NW
+    .w-nnw = NNW
+
+d-ib6tkehr = Wetterlage
+    .w-clear-sky = Klarer Himmel
+    .w-mainly-clear = Überwiegend klar
+    .w-partly-cloudy = Teils bewölkt
+    .w-overcast = Bedeckt
+    .w-fog = Nebel
+    .w-rime-fog = Reifnebel
+    .w-light-drizzle = Leichter Nieselregen
+    .w-drizzle = Nieselregen
+    .w-dense-drizzle = Dichter Nieselregen
+    .w-freezing-drizzle = Gefrierender Nieselregen
+    .w-dense-freezing-drizzle = Dichter gefrierender Nieselregen
+    .w-slight-rain = Leichter Regen
+    .w-rain = Regen
+    .w-heavy-rain = Starker Regen
+    .w-freezing-rain = Gefrierender Regen
+    .w-heavy-freezing-rain = Starker gefrierender Regen
+    .w-slight-snow = Leichter Schnee
+    .w-snow = Schnee
+    .w-heavy-snow = Starker Schnee
+    .w-snow-grains = Schneegriesel
+    .w-light-showers = Leichte Schauer
+    .w-showers = Schauer
+    .w-violent-showers = Heftige Schauer
+    .w-slight-snow-showers = Leichte Schneeschauer
+    .w-snow-showers = Schneeschauer
+    .w-thunderstorm = Gewitter
+    .w-thunderstorm-with-hail = Gewitter mit Hagel
+    .w-severe-thunderstorm = Schweres Gewitter
+    .w-weather = Wetter
+
+d-mijxqwur = UV-Worte
+    .w-low = Niedrig
+    .w-moderate = Mäßig
+    .w-high = Hoch
+    .w-very-high = Sehr hoch
+    .w-extreme = Extrem
+
+d-hfdrz3a5 = AQI-Band
+    .w-good = Gut
+    .w-fair = Mäßig
+    .w-moderate = Mäßig
+    .w-poor = Schlecht
+    .w-very-poor = Sehr schlecht
+    .w-extremely-poor = Extrem schlecht
+
+d-z4ilwel6 = Wochentagsname
+    .w-mon = Mo
+    .w-tue = Di
+    .w-wed = Mi
+    .w-thu = Do
+    .w-fri = Fr
+    .w-sat = Sa
+    .w-sun = So
+
+d-4sedjayt = Tagesname
+    .w-today = Heute
+    .w-tomorrow = Morgen
+
+d-vbsymmo5 = Suchworte
+    .w-type-two-letters-or-more = Tippe mindestens zwei Buchstaben
+    .w-no-places-found = Keine Orte gefunden

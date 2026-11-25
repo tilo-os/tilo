@@ -156,6 +156,9 @@ type Searching (readers: author) {
     wanted: Text = ""
     /// What the device was last asked for: it looks when the two differ.
     asked: Text = ""
+    /// The query the last look saw: a look waits until what is typed stops changing, so a word
+    /// typed letter by letter costs one search, not one per letter.
+    pending: Text = ""
     found: Collection<Found>
     /// Why the search could not be read, in words; empty otherwise.
     note: Text = ""
@@ -260,6 +263,23 @@ action use_as_default(w: Locations, place: Place) (
 action move_to_top(w: Locations, place: Place) (icon: .arrow_up, label: "Move to top") {
     require w.places.index_of(place) != .some(0) "This place is already at the top"
     w.places.move(place, to: 0)
+}
+
+/// Moves the place a person dragged, before the one it was dropped on: the list's reorder
+/// reports the two ids in that order.
+action move_place(w: Locations, ids: List<Text>) (label: "Move a place", did: "moved a place") {
+    if ids.len() < 2 {
+        return
+    }
+    let moved = w.places.find(p -> p.id() == (ids.at(0) ?? ""))
+    let before = w.places.find(p -> p.id() == (ids.at(1) ?? ""))
+    if let p = moved, next = before {
+        if p != next {
+            w.places.move(p, before: next)
+        } else {
+            return
+        }
+    } else if let p = moved { w.places.move(p, to: w.places.len()) }
 }
 
 /// Renames a place the person follows.
@@ -390,11 +410,11 @@ action read_place(r: Readings, place: Place) -> Bool uses web, time {
 /// What a service's refusal says, as the place's row reads it.
 fn refusal(answer: Response) -> Text {
     if answer.status == 0 {
-        "Couldn't reach the weather service. Check your connection."
+        std.say("Couldn't reach the weather service. Check your connection.")
     } else if answer.status > 0 {
         std.say("The weather service refused the request (HTTP {answer.status})")
     } else {
-        "The weather service refused the request"
+        std.say("The weather service refused the request")
     }
 }
 
@@ -741,16 +761,39 @@ action poll_weather(w: Locations) uses time, web {
         // its last read failed: a service that refused stays refused until a person asks again.
         refresh(w)
     }
-    // What a person is looking for: the device is asked once per query, so typing starts one read
-    // rather than one per keystroke, and the last of them is the one that stands.
+    // What the person is looking for is asked beside the forecasts: one look a second, and only
+    // once what they typed has stopped changing.
+    look_for_place(w)
+    // A reading that has stood for hours says so, so the page never calls it current.
+    for here in mine.of {
+        let stale = if let read = here.fetched { (now - read).seconds() >= 7200 } else { false }
+        if here.stale != stale {
+            here.stale = stale
+        }
+    }
+}
+
+/// The forecasts are taken as they land, and a place nothing is known of is read once.
+trigger watch_weather(w: Locations) every 1s: poll_weather(w)
+
+/// Looks for what the person typed once it has stopped changing: the query waits one look, and
+/// the device is asked for the last query only.
+action look_for_place(w: Locations) uses web {
     if let reader = w.searches.first() {
-        if reader.wanted.trim() != reader.asked {
-            let query = reader.wanted.trim()
-            reader.asked = query
+        let query = reader.wanted.trim()
+        if query != reader.pending {
+            // Still being typed: what the last query found no longer stands, and the dialog says
+            // it is looking rather than showing a place that is not the one asked for.
+            reader.pending = query
             for old in reader.found.map(place -> place) {
                 reader.found.remove(old)
             }
             reader.note = ""
+            if query.len() < 2 {
+                reader.asked = ""
+            }
+        } else if query != reader.asked {
+            reader.asked = query
             if query.len() >= 2 {
                 let answer = web.get(geocode_address(query))
                 if not answer.ok {
@@ -771,17 +814,7 @@ action poll_weather(w: Locations) uses time, web {
             }
         }
     }
-    // A reading that has stood for hours says so, so the page never calls it current.
-    for here in mine.of {
-        let stale = if let read = here.fetched { (now - read).seconds() >= 7200 } else { false }
-        if here.stale != stale {
-            here.stale = stale
-        }
-    }
 }
-
-/// The forecasts are taken as they land, and a place nothing is known of is read once.
-trigger watch_weather(w: Locations) every 1s: poll_weather(w)
 
 /// Whether `place` stands within a twentieth of a degree of a point: about five kilometres.
 fn near(place: Place, latitude: Float, longitude: Float) -> Bool {
@@ -819,6 +852,7 @@ action begin_search(w: Locations) -> Searching (icon: .search, label: "Look for 
     let found = w.searches.first() ?? w.searches.insert(Searching())
     found.wanted = ""
     found.asked = ""
+    found.pending = ""
     for old in found.found.map(place -> place) {
         found.found.remove(old)
     }
@@ -830,6 +864,7 @@ action begin_search(w: Locations) -> Searching (icon: .search, label: "Look for 
 action end_search(w: Locations, reader: Searching) {
     reader.wanted = ""
     reader.asked = ""
+    reader.pending = ""
     for old in reader.found.map(place -> place) {
         reader.found.remove(old)
     }
@@ -861,6 +896,11 @@ action accept_found(w: Locations, reader: Searching, choice: Text) {
 /// The display units the person chose in Settings: the readings are kept in metric and converted
 /// as they are drawn, so changing them never costs a fetch.
 // ---------------------------------------------------------------- units and words
+/// A temperature in the person's units, as the trend curve draws it.
+fn scaled(celsius: Float, imperial: Bool) -> Float {
+    if imperial { celsius * 9.0 / 5.0 + 32.0 } else { celsius }
+}
+
 fn degrees(celsius: Float, imperial: Bool) -> Int {
     if imperial { (celsius * 9.0 / 5.0 + 32.0).round() } else { celsius.round() }
 }
@@ -890,25 +930,25 @@ fn rain_unit(imperial: Bool) -> Text {
 /// Where the wind comes from, by the sixteen points of a compass.
 fn compass(degrees_from: Float) -> Text {
     let points = [
-        "N",
-        "NNE",
-        "NE",
-        "ENE",
-        "E",
-        "ESE",
-        "SE",
-        "SSE",
-        "S",
-        "SSW",
-        "SW",
-        "WSW",
-        "W",
-        "WNW",
-        "NW",
-        "NNW",
+        std.say("N"),
+        std.say("NNE"),
+        std.say("NE"),
+        std.say("ENE"),
+        std.say("E"),
+        std.say("ESE"),
+        std.say("SE"),
+        std.say("SSE"),
+        std.say("S"),
+        std.say("SSW"),
+        std.say("SW"),
+        std.say("WSW"),
+        std.say("W"),
+        std.say("WNW"),
+        std.say("NW"),
+        std.say("NNW"),
     ]
     let turn = (degrees_from / 22.5).round()
-    points.at((turn % 16 + 16) % 16) ?? "N"
+    points.at((turn % 16 + 16) % 16) ?? std.say("N")
 }
 
 /// The glyph a weather code shows, by the icon set's name: the sun and the moon stand for a
@@ -932,82 +972,86 @@ fn glyph(code: Int, day: Bool) -> Text {
 /// What the sky is doing, in the words Open-Meteo's codes stand for.
 fn condition(code: Int) -> Text {
     if code == 0 {
-        "Clear sky"
+        std.say("Clear sky")
     } else if code == 1 {
-        "Mainly clear"
+        std.say("Mainly clear")
     } else if code == 2 {
-        "Partly cloudy"
+        std.say("Partly cloudy")
     } else if code == 3 {
-        "Overcast"
+        std.say("Overcast")
     } else if code == 45 {
-        "Fog"
+        std.say("Fog")
     } else if code == 48 {
-        "Rime fog"
+        std.say("Rime fog")
     } else if code == 51 {
-        "Light drizzle"
+        std.say("Light drizzle")
     } else if code == 53 {
-        "Drizzle"
+        std.say("Drizzle")
     } else if code == 55 {
-        "Dense drizzle"
+        std.say("Dense drizzle")
     } else if code == 56 {
-        "Freezing drizzle"
+        std.say("Freezing drizzle")
     } else if code == 57 {
-        "Dense freezing drizzle"
+        std.say("Dense freezing drizzle")
     } else if code == 61 {
-        "Slight rain"
+        std.say("Slight rain")
     } else if code == 63 {
-        "Rain"
+        std.say("Rain")
     } else if code == 65 {
-        "Heavy rain"
+        std.say("Heavy rain")
     } else if code == 66 {
-        "Freezing rain"
+        std.say("Freezing rain")
     } else if code == 67 {
-        "Heavy freezing rain"
+        std.say("Heavy freezing rain")
     } else if code == 71 {
-        "Slight snow"
+        std.say("Slight snow")
     } else if code == 73 {
-        "Snow"
+        std.say("Snow")
     } else if code == 75 {
-        "Heavy snow"
+        std.say("Heavy snow")
     } else if code == 77 {
-        "Snow grains"
+        std.say("Snow grains")
     } else if code == 80 {
-        "Light showers"
+        std.say("Light showers")
     } else if code == 81 {
-        "Showers"
+        std.say("Showers")
     } else if code == 82 {
-        "Violent showers"
+        std.say("Violent showers")
     } else if code == 85 {
-        "Slight snow showers"
+        std.say("Slight snow showers")
     } else if code == 86 {
-        "Snow showers"
+        std.say("Snow showers")
     } else if code == 95 {
-        "Thunderstorm"
+        std.say("Thunderstorm")
     } else if code == 96 {
-        "Thunderstorm with hail"
-    } else if code == 99 { "Severe thunderstorm" } else { "Weather" }
+        std.say("Thunderstorm with hail")
+    } else if code == 99 { std.say("Severe thunderstorm") } else { std.say("Weather") }
 }
 
 /// How strong the sun burns, in the words a person reads.
 fn uv_words(uv: Float) -> Text {
     let n = uv.round()
     if n <= 2 {
-        "Low"
+        std.say("Low")
     } else if n <= 5 {
-        "Moderate"
-    } else if n <= 7 { "High" } else if n <= 10 { "Very high" } else { "Extreme" }
+        std.say("Moderate")
+    } else if n <= 7 {
+        std.say("High")
+    } else if n <= 10 { std.say("Very high") } else { std.say("Extreme") }
 }
 
 /// The band the European air quality index falls in.
 fn aqi_band(aqi: Float) -> Text {
     let n = aqi.round()
     if n <= 20 {
-        "Good"
+        std.say("Good")
     } else if n <= 40 {
-        "Fair"
+        std.say("Fair")
     } else if n <= 60 {
-        "Moderate"
-    } else if n <= 80 { "Poor" } else if n <= 100 { "Very poor" } else { "Extremely poor" }
+        std.say("Moderate")
+    } else if n <= 80 {
+        std.say("Poor")
+    } else if n <= 100 { std.say("Very poor") } else { std.say("Extremely poor") }
 }
 
 /// A pollutant that may be absent, as its tile says it.
@@ -1018,21 +1062,23 @@ fn measured(value: Option<Float>, unit: Text) -> Text {
 /// A weekday's short name, as the days of the week ahead are listed.
 fn weekday_name(weekday: Int) -> Text {
     if weekday == 0 {
-        "Mon"
+        std.say("Mon")
     } else if weekday == 1 {
-        "Tue"
+        std.say("Tue")
     } else if weekday == 2 {
-        "Wed"
+        std.say("Wed")
     } else if weekday == 3 {
-        "Thu"
-    } else if weekday == 4 { "Fri" } else if weekday == 5 { "Sat" } else { "Sun" }
+        std.say("Thu")
+    } else if weekday == 4 {
+        std.say("Fri")
+    } else if weekday == 5 { std.say("Sat") } else { std.say("Sun") }
 }
 
 /// A day's own name: today, tomorrow, or the weekday it falls on.
 fn day_name(day: Day, today: Text, tomorrow: Text) -> Text {
     if day.date == today {
-        "Today"
-    } else if day.date == tomorrow { "Tomorrow" } else { weekday_name(day.weekday) }
+        std.say("Today")
+    } else if day.date == tomorrow { std.say("Tomorrow") } else { weekday_name(day.weekday) }
 }
 
 /// An ISO local time, `2026-06-30T05:01`, as the clock it names, `05:01`.
@@ -1088,10 +1134,10 @@ fn shown_key(w: Locations, shown: Option<Place>) -> Text {
 /// What the field under the search says when there is nothing to choose from.
 fn search_words(reader: Searching) -> Text {
     if reader.wanted.trim().len() < 2 {
-        "Type two letters or more"
+        std.say("Type two letters or more")
     } else if reader.note != "" {
         reader.note
-    } else if reader.found.is_empty() { "No places found" } else { "" }
+    } else if reader.found.is_empty() { std.say("No places found") } else { "" }
 }
 
 /// The tile of one hour: its clock, its sky, its temperature and how likely rain is.
@@ -1333,6 +1379,14 @@ view place_page(place: Place) {
                         }
                     }
                     ui.Section("Next 24 hours") {
+                        ui.Sparkline(
+                            here.hours.map(hour -> scaled(hour.temperature, imperial)),
+                            label: "Temperature over the next hours",
+                            unit: "°",
+                            smooth: true,
+                            filled: true,
+                            leading_dot: scaled(here.current.temperature, imperial),
+                        )
                         hours_strip(here, imperial, here.current.at)
                     }
                     ui.Section("The week ahead") {
@@ -1349,6 +1403,21 @@ view place_page(place: Place) {
                     if here.has_air {
                         ui.Section("Air quality") {
                             air_quality(here.air)
+                        }
+                    } else if readings.refresh.state == "running" {
+                        // The air is a second reading, asked beside the forecast: while it is on
+                        // its way the section says so rather than claiming there is none.
+                        ui.Section("Air quality") {
+                            ui.Skeleton(shape: .block)
+                            ui.Text("Reading the air…", role: .caption, secondary: true)
+                        }
+                    } else if here.read {
+                        ui.Section("Air quality") {
+                            ui.Text(
+                                "No air-quality reading for this place.",
+                                role: .caption,
+                                secondary: true,
+                            )
                         }
                     }
                 } else if here.trouble == "" {
@@ -1382,6 +1451,7 @@ view place_row(p: Place) {
 /// reports.
 view places_side(w: Locations, shown: Option<Place>, chosen: State<Option<Place>>) {
     ui.NavList(selected: shown_key(w, shown), title: "Places") {
+        on reorder(ids: List<Text>): move_place(w, ids)
         for place in w.places {
             let here = reading_of(readings, place)
             if here.read {
