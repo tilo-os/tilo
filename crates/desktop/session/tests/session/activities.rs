@@ -511,7 +511,6 @@ fn whole_clock(session: &Session, name: &str, width: i32, clipped: &mut Vec<Stri
             (rect.1 < 48.0).then_some((label, rect))
         })
         .collect();
-    println!("{name}: {bar:?}");
     let Some((x, y, w, h)) = session.shell_text_bounds(&clock) else {
         clipped.push(format!("{name}: the bar shows no time {clock:?}: {bar:?}"));
         return;

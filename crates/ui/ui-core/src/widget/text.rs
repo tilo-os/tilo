@@ -969,13 +969,25 @@ impl Widget for Text {
                 }
             }
         };
-        let (w, mut h) = measure_at(max_w, text_renderer);
+        let (mut w, mut h) = measure_at(max_w, text_renderer);
         // Wrapped as narrow as it goes, its width is its longest word, and its height there is
         // the lines it wraps into at that width, where short words share a line again: the height it is
         // laid out to once given the width it asked for, so a solve that measured it this way
         // may keep the answer.
         if known_dimensions.width.is_none() && max_w.is_some_and(|width| width <= 0.0) && w > 0.0 {
             h = measure_at(Some(w + 0.1 + 1.0), text_renderer).1;
+        }
+        // A text that takes one line and does not elide is that whole line: measured at its
+        // narrowest it answers its longest word, which lets a row give it less room than the line
+        // it will draw and cut it short. Short fixed content a glance reads — a bar's clock — must
+        // not be squeezed between its words, so the room it asks for is the line it draws, and a
+        // row that cannot hold it gives way elsewhere.
+        if known_dimensions.width.is_none()
+            && matches!(available_space.width, taffy::AvailableSpace::MinContent)
+            && self.max_lines == Some(1)
+            && !self.truncate
+        {
+            w = measure_at(None, text_renderer).0;
         }
 
         if let Some(lines) = self.elided_lines() {
@@ -1135,8 +1147,10 @@ impl Widget for Text {
     }
 
     /// Words that wrap keep their words whole: given less room than its longest word, a wrapping
-    /// text breaks that word inside itself, so a row must give it the room. A text that elides
-    /// says less instead and fits any width.
+    /// text breaks that word inside itself, so a row must give it the room. A text that takes one
+    /// line and does not elide keeps that whole line, so a row gives it the room its words need
+    /// and never squeezes it between them. A text that elides says less instead and fits any
+    /// width.
     fn keeps_its_words(&self) -> bool {
         !self.truncates()
     }
@@ -1369,6 +1383,49 @@ mod tests {
             assert!(
                 narrowest.height < line * 8.0,
                 "short words share lines at the longest word's width: {narrowest:?}"
+            );
+        }
+
+        phase a_one_line_text_keeps_its_line_whole_unless_it_elides;
+        {
+            let said = "12:59 PM";
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            let mut measure = |text: &mut Text, width| {
+                Widget::measure(
+                    text,
+                    taffy::Size {
+                        width: None,
+                        height: None,
+                    },
+                    taffy::Size {
+                        width,
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                    &mut renderer,
+                )
+            };
+            let line = measure(&mut Text::new(said), taffy::AvailableSpace::MaxContent);
+            // At its narrowest a wrapping text answers its longest word, which would let a row
+            // give it less room than the one line it draws.
+            let kept = measure(
+                &mut Text::new(said).with_lines(Some(1)),
+                taffy::AvailableSpace::MinContent,
+            );
+            assert!(
+                (kept.width - line.width).abs() < 0.5,
+                "a one-line text that does not elide asks for its whole line ({kept:?}), not its \
+                 longest word, where the line is {line:?}"
+            );
+            let elided = measure(
+                &mut Text::new(said)
+                    .with_lines(Some(1))
+                    .with_truncate(true),
+                taffy::AvailableSpace::MinContent,
+            );
+            assert!(
+                elided.width < 1.0,
+                "a one-line text that elides holds no word, so a row may squeeze it to nothing: \
+                 {elided:?}"
             );
         }
 
