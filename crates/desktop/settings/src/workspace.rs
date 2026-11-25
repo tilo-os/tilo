@@ -59,22 +59,48 @@ pub fn surface_json() -> &'static str {
     })
 }
 
-/// What waits in `file` for a workspace: the sections set while no session held one.
+/// One change waiting for a workspace, as the device keeps it across runs: the sections it
+/// writes, and who made it — which is what makes it theirs to take back in the next run.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WaitingStep {
+    /// The sections it writes, each with the fields it sets.
+    pub sections: std::collections::BTreeMap<String, Map<String, Value>>,
+    /// The actor that made it, as a change's stamp names it; none for a change that named
+    /// nobody, which is nobody's to take back.
+    #[serde(default)]
+    pub actor: Option<String>,
+    /// The action that made it, as its origin names it.
+    #[serde(default)]
+    pub action: Option<String>,
+}
+
+/// The file the settings wait in: its steps, oldest first.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WaitingFile {
+    steps: Vec<WaitingStep>,
+}
+
+/// What waits in `file` for a workspace, oldest change first: the settings set while no session
+/// held one, each with the step that made it.
 #[must_use]
-pub fn waiting(file: &Path) -> Map<String, Value> {
+pub fn waiting(file: &Path) -> Vec<WaitingStep> {
     std::fs::read(file)
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<WaitingFile>(&bytes).ok())
+        .map(|waiting| waiting.steps)
         .unwrap_or_default()
 }
 
-/// Keep `waiting` in `file` until a workspace takes it, or remove the file once nothing waits.
+/// Keep `steps` in `file` until a workspace takes them, or remove the file once nothing waits.
 ///
 /// # Errors
 /// The file could not be written or removed.
-pub fn keep_waiting(file: &Path, waiting: &Map<String, Value>) -> std::io::Result<()> {
-    if !waiting.is_empty() {
-        let bytes = serde_json::to_vec(waiting).map_err(std::io::Error::other)?;
+pub fn keep_waiting(file: &Path, steps: &[WaitingStep]) -> std::io::Result<()> {
+    if !steps.is_empty() {
+        let bytes = serde_json::to_vec(&WaitingFile {
+            steps: steps.to_vec(),
+        })
+        .map_err(std::io::Error::other)?;
         return tilo_files::native::atomic::write_creating_parent(file, &bytes);
     }
     std::fs::remove_file(file).or_else(|error| match error.kind() {

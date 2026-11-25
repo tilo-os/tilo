@@ -112,7 +112,12 @@ fn set_at(
         values = Map::from_iter([(app, Value::Object(values))]);
     }
     let mut kept = crate::workspace::waiting(waiting);
-    crate::merge_section(&mut kept, &section, values.clone());
+    kept.push(crate::workspace::WaitingStep {
+        sections: std::collections::BTreeMap::from([(section.clone(), values.clone())]),
+        // A process outside the session names no person: the change is nobody's to take back.
+        actor: None,
+        action: Some(format!("{resource}#{action}")),
+    });
     crate::workspace::keep_waiting(waiting, &kept).map_err(|error| error.to_string())?;
     let mut settings = held.settings;
     let Value::Object(kept) = settings
@@ -482,7 +487,12 @@ mod tests {
             read[placement::APP_PERSONAL_SECTION]["so.tilo.osk"]["size"],
             "large"
         );
-        let kept = crate::workspace::waiting(&waiting);
+        let mut kept = Map::new();
+        for step in crate::workspace::waiting(&waiting) {
+            for (section, values) in &step.sections {
+                crate::merge_section(&mut kept, section, values.clone());
+            }
+        }
         assert_eq!(
             kept["appearance"]["high_contrast"], true,
             "the session writes it once it runs"

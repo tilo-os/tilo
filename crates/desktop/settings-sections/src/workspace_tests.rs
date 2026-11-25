@@ -434,6 +434,97 @@ fn a_setting_kept_before_a_workspace_is_attached_is_its_makers_to_undo() {
     );
 }
 
+/// A change a session writes names nobody, and it stays when the person takes back their step
+/// before it: undo takes their newest step of the section, not the last change made.
+#[test]
+fn a_later_change_naming_nobody_stays_when_a_kept_step_is_undone() {
+    let settings = WorkspaceSettings::new();
+    let person = ChangeOrigin::action("settings.appearance/set-mode").by(PERSON);
+    settings
+        .update_section_by("appearance", object(json!({ "mode": "dark" })), &person)
+        .expect("kept");
+    settings
+        .update_section_by(
+            "appearance",
+            object(json!({ "high_contrast": true })),
+            &ChangeOrigin::default(),
+        )
+        .expect("kept");
+    assert!(
+        settings
+            .step("appearance", None, true, &[PERSON.to_owned()])
+            .expect("taken back"),
+        "their step is taken back though a later change came"
+    );
+    assert_eq!(mode(&settings), None);
+    assert_eq!(
+        settings
+            .load()
+            .get("appearance")
+            .and_then(|held| held.get("high_contrast")),
+        Some(&json!(true)),
+        "the later change stays"
+    );
+}
+
+/// A change kept for a workspace keeps its step across a restart: the next run reads who made
+/// it and what it wrote, so the person takes it back before any workspace holds it.
+#[test]
+fn a_kept_change_is_undone_after_a_restart() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let file = dir.path().join("settings-waiting.json");
+    let person = ChangeOrigin::action("settings.appearance/set-mode").by(PERSON);
+    {
+        let settings = WorkspaceSettings::kept_in(file.clone());
+        settings
+            .update_section_by("appearance", object(json!({ "mode": "dark" })), &person)
+            .expect("kept");
+        settings
+            .update_section_by(
+                "appearance",
+                object(json!({ "high_contrast": true })),
+                &person,
+            )
+            .expect("kept");
+    }
+    let restarted = WorkspaceSettings::kept_in(file.clone());
+    assert_eq!(mode(&restarted), Some(json!("dark")), "the values waited");
+    assert!(
+        !restarted
+            .step("appearance", None, true, &[AGENT.to_owned()])
+            .expect("no store is no failure"),
+        "the step kept who made it, and it is not the agent's"
+    );
+    assert!(
+        restarted
+            .step("appearance", None, true, &[PERSON.to_owned()])
+            .expect("taken back"),
+        "the person's step survived the restart"
+    );
+    assert_eq!(
+        restarted
+            .load()
+            .get("appearance")
+            .and_then(|held| held.get("high_contrast")),
+        None,
+        "the step taken back wrote the contrast"
+    );
+    assert_eq!(mode(&restarted), Some(json!("dark")));
+    assert!(
+        restarted
+            .step("appearance", None, true, &[PERSON.to_owned()])
+            .expect("taken back"),
+        "and the step before it"
+    );
+    assert_eq!(mode(&restarted), None);
+    restarted.flush_kept();
+    {
+        // What the third run reads is what waits now: nothing.
+        let again = WorkspaceSettings::kept_in(file);
+        assert_eq!(again.load().get("appearance"), None);
+    }
+}
+
 /// The settings channel's write of a read-only field is refused where it is admitted, and the
 /// section keeps its value: the appearance's `theme_package` is written by the action that
 /// applies a theme, never by an app's record change naming it.

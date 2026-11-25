@@ -132,10 +132,10 @@ pub struct WorkspaceSettings {
 
 /// What the worker that keeps what waits for a workspace is given.
 enum Kept {
-    /// Keep `sections` at `file`, or remove it once nothing waits.
+    /// Keep `steps` at `file`, or remove it once nothing waits.
     Write {
         file: PathBuf,
-        sections: Map<String, Value>,
+        steps: Vec<settings_store::workspace::WaitingStep>,
     },
     /// Say when everything handed to the worker before this is on the disk.
     Flush(mpsc::Sender<()>),
@@ -161,28 +161,27 @@ impl WorkspaceSettings {
     }
 
     /// Settings whose writes keep `file` while they wait for a workspace: what an earlier run
-    /// set there and no workspace took yet is read from it, and waits again. What is kept is
-    /// written by a worker, so the pass that made a change does not wait on the disk
-    /// ([`Self::flush_kept`]).
+    /// set there and no workspace took yet is read back, steps and all, so a change kept before
+    /// a restart is still its maker's to take back. What is kept is written by a worker, so the
+    /// pass that made a change does not wait on the disk ([`Self::flush_kept`]).
     #[must_use]
     pub fn kept_in(file: PathBuf) -> Self {
         let waiting = settings_store::workspace::waiting(&file);
         let mut settings = Self::new();
         settings.kept = Some(file);
-        let sections: Vec<(String, Map<String, Value>)> = waiting
-            .into_iter()
-            .filter_map(|(name, values)| match values {
-                Value::Object(values) => Some((name, values)),
-                _ => None,
-            })
-            .collect();
-        if !sections.is_empty() {
+        if !waiting.is_empty() {
             let mut state = settings.state.lock_recover();
-            state.pending.push(Pending {
-                sections,
-                origin: ChangeOrigin::default(),
-                undoable: false,
-            });
+            for step in waiting {
+                let undoable = step.actor.is_some();
+                state.pending.push(Pending {
+                    sections: step.sections.into_iter().collect(),
+                    origin: ChangeOrigin {
+                        action: step.action,
+                        actor: step.actor,
+                    },
+                    undoable,
+                });
+            }
             state.rebuild();
         }
         settings
@@ -191,22 +190,28 @@ impl WorkspaceSettings {
     /// Keep what waits for the store in [`Self::kept`], or remove the file once nothing does.
     ///
     /// The file is written by a worker ([`Self::flush_kept`] waits for it): a change made on the
-    /// session's loop never waits on the disk.
+    /// session's loop never waits on the disk. What is kept is the steps themselves, each with
+    /// who made it, so taking one back still works in the next run.
     fn keep(&self) {
         let Some(file) = &self.kept else {
             return;
         };
-        let mut waiting = Map::new();
-        for pending in &self.state.lock_recover().pending {
-            for (section, values) in &pending.sections {
-                settings_store::merge_section(&mut waiting, section, values.clone());
-            }
-        }
-        self.keep_elsewhere(file, waiting);
+        let steps: Vec<settings_store::workspace::WaitingStep> = self
+            .state
+            .lock_recover()
+            .pending
+            .iter()
+            .map(|pending| settings_store::workspace::WaitingStep {
+                sections: pending.sections.iter().cloned().collect(),
+                actor: pending.origin.actor.clone(),
+                action: pending.origin.action.clone(),
+            })
+            .collect();
+        self.keep_elsewhere(file, steps);
     }
 
     /// Hand the file's next content to the worker, or write it here when no worker runs.
-    fn keep_elsewhere(&self, file: &Path, sections: Map<String, Value>) {
+    fn keep_elsewhere(&self, file: &Path, steps: Vec<settings_store::workspace::WaitingStep>) {
         let jobs = {
             let mut writing = self.writing.lock_recover();
             if writing.is_none() {
@@ -222,15 +227,15 @@ impl WorkspaceSettings {
         };
         let job = Kept::Write {
             file: file.to_owned(),
-            sections,
+            steps,
         };
         // A job no worker took is written here.
         let unsent = match jobs {
             Some(jobs) => jobs.send(job).err().map(|unsent| unsent.0),
             None => Some(job),
         };
-        if let Some(Kept::Write { file, sections }) = unsent {
-            write_waiting(&file, &sections);
+        if let Some(Kept::Write { file, steps }) = unsent {
+            write_waiting(&file, &steps);
         }
     }
 
@@ -426,33 +431,32 @@ impl WorkspaceSettings {
         moved
     }
 
-    /// Take back (`undo`) the last change kept on the device, while no workspace holds the
-    /// settings: it is a step of whoever made it, as one the store holds. Only the newest change
-    /// of the section, and only a change of theirs, is taken back — an older one would undo a
-    /// later one with it. A change read back from the waiting file names no history, so none of
-    /// it is taken back. Whether there was one.
+    /// Take back (`undo`) the newest change of `section` kept on the device by any of `invokers`,
+    /// while no workspace holds the settings: it is a step of theirs, as one the store holds.
+    /// What a later change wrote stays; what only this step wrote is gone. A change read back
+    /// from a waiting file of an earlier version names no history, so none of it is taken back.
+    /// Whether there was one.
     fn step_kept(&self, section: &str, app: Option<&str>, undo: bool, invokers: &[String]) -> bool {
         if !undo {
             return false;
         }
         {
             let mut state = self.state.lock_recover();
-            let Some(pending) = state.pending.last() else {
+            let Some(at) = state.pending.iter().rposition(|pending| {
+                pending.undoable
+                    && pending
+                        .origin
+                        .actor
+                        .as_deref()
+                        .is_some_and(|actor| invokers.iter().any(|invoker| invoker == actor))
+                    && pending.sections.iter().any(|(name, values)| {
+                        name == section && app.is_none_or(|app| values.contains_key(app))
+                    })
+            }) else {
                 return false;
             };
-            let theirs = pending
-                .origin
-                .actor
-                .as_deref()
-                .is_some_and(|actor| invokers.iter().any(|invoker| invoker == actor));
-            let touches = pending.sections.iter().any(|(name, values)| {
-                name == section && app.is_none_or(|app| values.contains_key(app))
-            });
-            if !theirs || !touches || !pending.undoable {
-                return false;
-            }
-            state.pending.pop();
-            // What the step wrote is gone; what it was made over stays.
+            state.pending.remove(at);
+            // What the step wrote is gone; what it was made over, and what came after, stay.
             state.rebuild();
         }
         // What waits no longer holds the step, and readers hear the change.
@@ -513,7 +517,7 @@ fn start_writer() -> std::io::Result<mpsc::Sender<Kept>> {
         .spawn(move || {
             while let Ok(job) = work.recv() {
                 match job {
-                    Kept::Write { file, sections } => write_waiting(&file, &sections),
+                    Kept::Write { file, steps } => write_waiting(&file, &steps),
                     Kept::Flush(done) => {
                         let _ = done.send(());
                     }
@@ -524,8 +528,8 @@ fn start_writer() -> std::io::Result<mpsc::Sender<Kept>> {
 }
 
 /// [`settings_store::workspace::keep_waiting`], saying so when it fails.
-fn write_waiting(file: &Path, waiting: &Map<String, Value>) {
-    if let Err(error) = settings_store::workspace::keep_waiting(file, waiting) {
+fn write_waiting(file: &Path, steps: &[settings_store::workspace::WaitingStep]) {
+    if let Err(error) = settings_store::workspace::keep_waiting(file, steps) {
         tracing::warn!(%error, file = %file.display(), "the settings waiting for a workspace were not kept");
     }
 }
