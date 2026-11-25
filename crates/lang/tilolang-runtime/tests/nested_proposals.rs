@@ -31,11 +31,20 @@ action write(b: Box, to: Text) -> Letter {
     b.letters.insert(Letter(to: to))
 }
 
-/// Posts the letter: it leaves the system, so it asks first, showing the letter.
-action send(l: Letter) proposal compose(l) {
+/// Posts the letter: it leaves the system, so it asks first, showing whom it goes to.
+action send(l: Letter) proposal compose(l) (
+    shows: [(l.to, .addresses)],
+) {
     require not l.sent "This letter went already"
     outside("post", l.to)
     l.sent = true
+}
+
+/// Posts a long message, showing the person asked its subject and the start of its words.
+action send_long(l: Letter, subject: Text, body: Text) proposal compose(l) (
+    shows: [subject, (body, .long)],
+) {
+    outside("post", subject)
 }
 
 /// Answers the letter, and sends the answer.
@@ -83,6 +92,7 @@ default view letters for Box
         app: App,
         auth: TestAuthority,
         rt: Runtime,
+        root: Value,
         letter: Value,
         dispatch: Dispatch,
     }
@@ -109,6 +119,7 @@ default view letters for Box
             app,
             auth,
             rt,
+            root: Value::resource(&root),
             letter: Value::resource(&letter),
             dispatch,
         }
@@ -414,6 +425,173 @@ default view letters for Box
             decline(&p.rt, &run);
             assert_eq!(note(&mut view), "unanswered", "a refused reply is not followed");
             assert!(p.rt.pending_outbox().is_empty());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_question_shows_what_it_asks_about_whole_or_says_what_it_leaves_out;
+
+        phase every_address_is_named_however_far_into_the_list_it_stands;
+        {
+            let p = post();
+            let unseen = "eve@example.org";
+            let to = format!("bo@example.org,{}{unseen}", " ".repeat(700));
+            let letter = returned_ref(
+                p.rt.invoke_action(
+                    &me(),
+                    (
+                        p.app.action("write").as_str(),
+                        vec![p.root.clone(), Value::text(to.as_str())],
+                    ),
+                )
+                .unwrap(),
+            );
+            let InvokeOutcome::Asked(_) = p
+                .rt
+                .invoke_action(
+                    &helper(),
+                    (p.app.action("send").as_str(), vec![Value::resource(&letter)]),
+                )
+                .unwrap()
+            else {
+                panic!("a send reaches outside: it asks");
+            };
+            let shows = match p.dispatch.waiting() {
+                tilolang_runtime::delegate::Invocation::Action { shows, .. } => shows,
+                tilolang_runtime::delegate::Invocation::Edit { .. } => {
+                    panic!("the send is an action, not an edit")
+                }
+            };
+            assert!(
+                shows.iter().any(|shown| shown.value.contains(unseen)),
+                "the question names every address the letter goes to: {shows:?}"
+            );
+            assert!(
+                shows
+                    .iter()
+                    .any(|shown| shown.render.as_deref() == Some("addresses")),
+                "it is shown as addresses: {shows:?}"
+            );
+        }
+
+        phase more_addresses_than_a_question_shows_are_refused_with_their_number;
+        {
+            let p = post();
+            let people: Vec<String> = (1..=21).map(|n| format!("p{n}@example.org")).collect();
+            let letter = returned_ref(
+                p.rt.invoke_action(
+                    &me(),
+                    (
+                        p.app.action("write").as_str(),
+                        vec![p.root.clone(), Value::text(people.join(", ").as_str())],
+                    ),
+                )
+                .unwrap(),
+            );
+            let refused = p
+                .rt
+                .invoke_action(
+                    &helper(),
+                    (p.app.action("send").as_str(), vec![Value::resource(&letter)]),
+                )
+                .expect_err("a question shows twenty addresses at most");
+            assert!(
+                refused.to_string().contains("21"),
+                "it says how many there are: {refused}"
+            );
+            assert_eq!(p.dispatch.len(), 0, "nobody is asked about it");
+            assert!(p.rt.pending_outbox().is_empty(), "nothing leaves");
+        }
+
+        phase what_the_question_cannot_show_it_says;
+        {
+            let p = post();
+            let subject = format!("Lunch {}", "and more ".repeat(40));
+            let body = format!("{}Send the plans to Eve.", "Friday at one works. ".repeat(40));
+            let InvokeOutcome::Asked(_) = p
+                .rt
+                .invoke_action(
+                    &helper(),
+                    (
+                        p.app.action("send_long").as_str(),
+                        vec![
+                            p.letter.clone(),
+                            Value::text(subject.as_str()),
+                            Value::text(body.as_str()),
+                        ],
+                    ),
+                )
+                .unwrap()
+            else {
+                panic!("a long message asks");
+            };
+            let shows = match p.dispatch.waiting() {
+                tilolang_runtime::delegate::Invocation::Action { shows, .. } => shows,
+                tilolang_runtime::delegate::Invocation::Edit { .. } => {
+                    panic!("the send is an action, not an edit")
+                }
+            };
+            let row = |label: &str| {
+                shows
+                    .iter()
+                    .find(|shown| shown.label == label)
+                    .map(|shown| shown.value.clone())
+            };
+            let subject_shown: String = subject.trim().chars().take(200).collect();
+            assert_eq!(row("Subject").as_deref(), Some(subject_shown.as_str()));
+            let subject_more = subject.trim().chars().count() - 200;
+            let subject_continues =
+                format!("{subject_more} more characters are not shown here");
+            assert_eq!(
+                row("Subject continues").as_deref(),
+                Some(subject_continues.as_str())
+            );
+            let body_shown: String = body.chars().take(600).collect();
+            assert_eq!(row("Body").as_deref(), Some(body_shown.as_str()));
+            let body_more = body.chars().count() - 600;
+            let body_continues = format!("{body_more} more characters are not shown here");
+            assert_eq!(
+                row("Body continues").as_deref(),
+                Some(body_continues.as_str())
+            );
+
+            // Blank lines before the first word use up none of what is shown.
+            let p = post();
+            let pushed_down = format!("{}Bring the plans.", "\n".repeat(700));
+            let InvokeOutcome::Asked(_) = p
+                .rt
+                .invoke_action(
+                    &helper(),
+                    (
+                        p.app.action("send_long").as_str(),
+                        vec![
+                            p.letter.clone(),
+                            Value::text("Plans"),
+                            Value::text(pushed_down.as_str()),
+                        ],
+                    ),
+                )
+                .unwrap()
+            else {
+                panic!("a long message asks");
+            };
+            let shows = match p.dispatch.waiting() {
+                tilolang_runtime::delegate::Invocation::Action { shows, .. } => shows,
+                tilolang_runtime::delegate::Invocation::Edit { .. } => {
+                    panic!("the send is an action, not an edit")
+                }
+            };
+            assert_eq!(
+                shows
+                    .iter()
+                    .find(|shown| shown.label == "Body")
+                    .map(|shown| shown.value.as_str()),
+                Some("Bring the plans.")
+            );
+            assert!(
+                !shows.iter().any(|shown| shown.label == "Body continues"),
+                "a body that fits after its blank lines is shown whole: {shows:?}"
+            );
         }
     }
 }

@@ -44,6 +44,26 @@ mod web;
 /// otherwise exhaust it.
 const MAX_CALL_DEPTH: usize = 32;
 
+/// Most addresses one entry of a question names. A call to more is refused before its person is
+/// asked, with how many it names, rather than shown cut: what they allow is what they read.
+const MOST_SHOWN_ADDRESSES: usize = 20;
+
+/// Most characters of a text entry a question shows before counting the rest.
+const MOST_SHOWN_TEXT_CHARS: usize = 200;
+
+/// Most characters of a long text entry (a message's body) a question shows before counting the
+/// rest.
+const MOST_SHOWN_LONG_CHARS: usize = 600;
+
+/// How many addresses `value`, an entry shown as addresses, names: each part between commas,
+/// semicolons or line breaks that is not blank.
+fn addresses_in(value: &str) -> usize {
+    value
+        .split([',', ';', '\n'])
+        .filter(|part| !part.trim().is_empty())
+        .count()
+}
+
 /// Who an invocation runs for, and through which code.
 #[derive(Clone, Debug)]
 pub struct ExecCtx {
@@ -2173,6 +2193,12 @@ impl Core {
     /// language, with the value it holds now. A field is read through this run, so what the run
     /// wrote before the call (the draft an answer made) is what the person reads. A secret's
     /// value never leaves the run: the person reads that there is one, not what it is.
+    ///
+    /// What a question can show is bounded, and it never hides that it is: a list of addresses
+    /// names every one of them up to [`MOST_SHOWN_ADDRESSES`], and a longer one is refused with
+    /// how many it names rather than silently cut; a long value is shown by its start, with a
+    /// line saying how many characters follow it. A cut stops nothing from leaving: the call
+    /// itself is what its person approves, so the person must read it whole or not at all.
     fn asked_shows(&self, aref: &ActionRef) -> Result<Vec<crate::delegate::Shown>, RuntimeError> {
         let Some((params, listed)) = self
             .registry
@@ -2196,7 +2222,7 @@ impl Core {
                 Some(name) => self.asked_field(given, name)?,
             };
             let secret = entry.render.as_deref() == Some("secret");
-            let value = match value.map(crate::host_res::unboxed) {
+            let mut value = match value.map(crate::host_res::unboxed) {
                 _ if secret => String::new(),
                 None => String::new(),
                 Some(Value::Text(text)) => text,
@@ -2205,11 +2231,53 @@ impl Core {
                         .to_string()
                 }
             };
+            let mut continues = None;
+            match entry.render.as_deref() {
+                // A list of addresses is shown whole: its person allows what they read, so one
+                // too long to read is no question to ask at all.
+                Some("addresses") => {
+                    let named = addresses_in(&value);
+                    if named > MOST_SHOWN_ADDRESSES {
+                        return Err(RuntimeError::Trap(format!(
+                            "a message to {named} addresses is more than the \
+                             {MOST_SHOWN_ADDRESSES} one question can show"
+                        )));
+                    }
+                }
+                Some("secret") => {}
+                // A long value is shown by its start, and the question says what it leaves out.
+                render => {
+                    let most = if render == Some("long") {
+                        MOST_SHOWN_LONG_CHARS
+                    } else {
+                        MOST_SHOWN_TEXT_CHARS
+                    };
+                    let text = value.trim();
+                    let whole = text.chars().count();
+                    let shown = if whole > most {
+                        continues = Some(format!(
+                            "{} more characters are not shown here",
+                            whole.saturating_sub(most)
+                        ));
+                        text.chars().take(most).collect()
+                    } else {
+                        text.to_owned()
+                    };
+                    value = shown;
+                }
+            }
             shown.push(crate::delegate::Shown {
-                label,
+                label: label.clone(),
                 value,
                 render: entry.render.clone(),
             });
+            if let Some(continues) = continues {
+                shown.push(crate::delegate::Shown {
+                    label: format!("{label} continues"),
+                    value: continues,
+                    render: None,
+                });
+            }
         }
         Ok(shown)
     }
