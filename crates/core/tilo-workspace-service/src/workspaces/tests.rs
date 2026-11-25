@@ -10,7 +10,7 @@ use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
     device_cert, entry_join, governor, governor_with, restricted_until, signed_pre_admission,
-    test_host, test_host_with_grants,
+    test_host,
 };
 
 pub(crate) mod admission_cost;

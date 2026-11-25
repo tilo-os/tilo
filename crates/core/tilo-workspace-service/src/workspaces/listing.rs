@@ -408,6 +408,14 @@ impl Workspaces {
     ) -> Result<(), CollaborationError> {
         self.settle_entry(workspace, device, |entry| {
             entry.invitation_only = invites_only;
+            // An entry that takes everyone who asks keeps no requests: there
+            // is nobody to ask, and a wait list it kept made opening it an
+            // entry no one could settle.
+            if !invites_only {
+                entry.wait_list_max = 0;
+                entry.contact = None;
+                entry.mail = None;
+            }
         })
         .await
         .map(drop)
@@ -761,13 +769,10 @@ impl Workspaces {
             // link in as a guest. The invitation a member made is the
             // decision; this host issues none of its own.
             if entry.invitation_only {
-                // An invitation carrying an owner's pre-admission is redeemed
-                // with that owner's one-time token, which the entry does not
-                // hand out: the person comes with the link that carries both.
-                let Some(issued) = governed
-                    .invitation_for(user, now)
-                    .filter(|issued| !governed.admissions.carries(issued.invite_id))
-                else {
+                // An invitation the workspace holds for this person is the
+                // member's decision: the entry hands it to the person it
+                // names, and the host issues none of its own.
+                let Some(issued) = governed.invitation_for(user, now) else {
                     return Err(EntryRefusal::InvitationOnly);
                 };
                 return Ok(Listed::Invited(issued));
@@ -1010,6 +1015,210 @@ pub(crate) mod entry_tests {
                     .await)
             }
         }
+    }
+
+    /// The entry an owner published open lets a guest in at its listed role,
+    /// with its own device's signed admission and nothing the host signs.
+    #[tokio::test]
+    async fn an_open_entry_admits_a_guest_at_the_role_it_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: "Everyone".into(),
+                    default_role: Role::Commenter,
+                },
+            )
+            .await
+            .unwrap();
+        let (guest_key, guest) = guest_device();
+        let join = EntryJoin {
+            user_public_key: hex::encode(guest.user_public_key),
+            display_name: "Ada".into(),
+        };
+        let reply = walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest))
+            .await
+            .unwrap();
+        assert!(
+            matches!(reply, JoinReply::Admitted { role, .. } if role == Role::Commenter),
+            "the guest comes in at the entry's role: {reply:?}"
+        );
+        let joined = workspaces
+            .summary(&workspace)
+            .await
+            .unwrap()
+            .members
+            .into_iter()
+            .find(|member| member.root() == Some(guest.user_public_key))
+            .expect("the workspace holds the guest now");
+        assert_eq!(joined.role, Some(Role::Commenter));
+        server.shutdown().await;
+    }
+
+    /// A person the workspace already has in it asks the entry from a second
+    /// device: they are told, in words they can act on, to add it from the
+    /// device that is already in, because the entry admits strangers and not
+    /// a person who is here already.
+    #[tokio::test]
+    async fn a_second_device_is_told_to_be_added_from_the_one_already_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: "Everyone".into(),
+                    default_role: Role::Commenter,
+                },
+            )
+            .await
+            .unwrap();
+        let (member_key, member) = guest_device();
+        workspaces
+            .add_member(
+                &workspace,
+                &owner,
+                AddMemberRequest {
+                    request_id: [21; 32],
+                    user_public_key: member.user_public_key,
+                    place: MemberPlace::Role(Role::Editor),
+                    name: None,
+                },
+            )
+            .await
+            .unwrap();
+        let join = EntryJoin {
+            user_public_key: hex::encode(member.user_public_key),
+            display_name: "Ada".into(),
+        };
+        let refused = workspaces.admit_listed(&workspace, &join).await;
+        let Err(EntryRefusal::Refused(said)) = refused else {
+            panic!("a member's second device asks the entry: {refused:?}");
+        };
+        assert!(
+            said.contains("as one of yours") && said.contains("already in"),
+            "the person reads what to do instead: {said}"
+        );
+        let _ = (member_key, member);
+        server.shutdown().await;
+    }
+
+    /// An admission signed while the entry was open is refused once its owner
+    /// closes it: the entry the workspace records now is the grant.
+    #[tokio::test]
+    async fn an_admission_signed_before_the_entry_closed_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: "Everyone".into(),
+                    default_role: Role::Commenter,
+                },
+            )
+            .await
+            .unwrap();
+        let (guest_key, guest) = guest_device();
+        let request_id = rand::random();
+        let signed = workspaces.entry_signed_changes(&workspace).await.unwrap();
+        let admission = tilo_peer_state::own_admission::sign_entry_admission(
+            &workspace,
+            &signed,
+            &guest,
+            request_id,
+            Some("Ada"),
+            &guest_key,
+            tilo_clock::wall(),
+        )
+        .await
+        .unwrap();
+        workspaces
+            .list_invitation_only(&workspace, &owner, true)
+            .await
+            .unwrap();
+        let reply = workspaces
+            .admit_entered(&guest, &workspace, request_id, &admission)
+            .await;
+        let JoinReply::Refused(said) = reply else {
+            panic!("a closed entry admits nobody: {reply:?}");
+        };
+        assert!(
+            said.contains("does not take people who ask"),
+            "the refusal names the entry: {said}"
+        );
+        server.shutdown().await;
+    }
+
+    /// A guest admitted while the entry was open is a member still after its
+    /// owner closes the entry and a fresh host reads the workspace from its
+    /// files: replay judges the admission by the entry its own place held,
+    /// not by the entry at the head.
+    #[tokio::test]
+    async fn a_guest_admitted_while_open_stays_a_member_after_the_owner_closes_the_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let workspace;
+        let guest_person;
+        {
+            let server = test_host(dir.path(), &key, &owner).await;
+            let workspaces = server.workspaces();
+            workspace = workspaces.create("Lounge").await.unwrap().workspace;
+            workspaces
+                .publish(
+                    &workspace,
+                    &owner,
+                    Listing {
+                        description: "Everyone".into(),
+                        default_role: Role::Commenter,
+                    },
+                )
+                .await
+                .unwrap();
+            let (guest_key, guest) = guest_device();
+            guest_person = guest.user_public_key;
+            let join = EntryJoin {
+                user_public_key: hex::encode(guest_person),
+                display_name: "Ada".into(),
+            };
+            let reply = walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest))
+                .await
+                .unwrap();
+            assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+            workspaces
+                .list_invitation_only(&workspace, &owner, true)
+                .await
+                .unwrap();
+            server.shutdown().await;
+        }
+        let again = test_host(dir.path(), &key, &owner).await;
+        let members = again
+            .workspaces()
+            .summary(&workspace)
+            .await
+            .unwrap()
+            .members;
+        assert!(
+            members
+                .iter()
+                .any(|member| member.root() == Some(guest_person) && !member.removed),
+            "the guest admitted while the entry was open is a member still: {members:?}"
+        );
+        again.shutdown().await;
     }
 
     #[tokio::test]

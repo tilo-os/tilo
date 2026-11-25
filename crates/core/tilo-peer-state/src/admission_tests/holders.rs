@@ -4,6 +4,7 @@ use super::*;
 use crate::join::{
     InviteGrant, Role, decode_and_verify_invitation, issue_invitation, verify_connection_redemption,
 };
+use crate::state::GovernedIdentity;
 use std::collections::BTreeSet;
 
 /// A device of `root_seed`'s person, `device_seed`'s key, certified by that
@@ -389,4 +390,312 @@ fn says_nothing_of_its_copy(peer: &StatePeer, holder: &DeviceCert, now: SystemTi
         .map(|change| change.raw_bytes().to_vec())
         .collect();
     assert!(from_author(&mut peer.clone(), holder.device_public_key, copy_row, now).is_err());
+}
+
+/// An entry the workspace never recorded admits nobody, whatever a device
+/// signs: the receipt's digest must be the entry the workspace holds.
+#[test]
+fn an_admission_naming_an_entry_the_workspace_never_had_admits_nobody() {
+    use automerge::transaction::Transactable as _;
+
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let entry = opened(&mut peer, &authority_key, now);
+    let forged = [0x77; 32];
+    let (guest_key, guest) = device_of(70, 71, "Guest");
+    let workspace = peer.workspace_id().to_owned();
+    let now_ns: u64 = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .try_into()
+        .unwrap();
+    let op = crate::members::SignedMembershipOp::signed(
+        &guest,
+        &guest_key,
+        Vec::new(),
+        now_ns,
+        crate::members::MembershipOpCommand::Enter {
+            entry: forged,
+            person: guest.user_public_key,
+        },
+    )
+    .unwrap();
+    let mut row = entry_row(&workspace, (&guest_key, &guest), entry);
+    row.entry = Some(crate::state::EntryReceipt {
+        entry: forged,
+        role: Role::Commenter,
+        request_id: [4; 32],
+    });
+    let changes = sender_changes(&peer, |doc| {
+        crate::members::put_op(doc, &op).unwrap();
+        let identities = doc
+            .get(automerge::ROOT, "peer_identities_v1")
+            .unwrap()
+            .unwrap()
+            .1;
+        doc.put(
+            &identities,
+            hex::encode(guest.device_public_key).as_str(),
+            automerge::ScalarValue::Bytes(row.encode().unwrap()),
+        )
+        .unwrap();
+    });
+    let refused = peer
+        .admit_own(&guest, changes, now)
+        .expect_err("an entry the workspace never recorded admits nobody");
+    assert!(
+        refused.contains("does not take this person in"),
+        "{refused}"
+    );
+}
+
+/// Entry admissions replay by the entry their own place in the log held, and
+/// the entry is read once for the operation that settled it: many guests cost
+/// their operations, not each a reading of the whole document.
+#[test]
+fn many_entry_admissions_replay_by_the_entry_their_place_held() {
+    use crate::members::{MembershipOpCommand, SignedMembershipOp, put_op};
+    use tilo_user_identity::sign_device_cert;
+
+    const GUESTS: usize = 500;
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let entry = tilo_action_policy::EntryPolicy {
+        listing: Some(tilo_action_policy::ListingPolicy {
+            description: "Everyone".into(),
+            default_role: Role::Commenter,
+        }),
+        ..Default::default()
+    };
+    assert!(
+        peer.governance_mut()
+            .put_governed_entry(&entry, &authority_key, now)
+            .unwrap()
+    );
+    let workspace = peer.workspace_id().to_owned();
+    let mut doc = peer.admitted_workspace().unwrap().clone();
+    let digest = crate::state::entry_digest(&entry).unwrap();
+    // The entry the owner settled last is the one it just wrote.
+    let entry_op = crate::members::ops(&doc)
+        .into_iter()
+        .filter(|(_, op)| {
+            matches!(&op.command, MembershipOpCommand::Governance { rows }
+                if rows.contains(&crate::workspace::GovernanceRow::Settings))
+        })
+        .max_by_key(|(_, op)| op.at_ns)
+        .map(|(id, _)| id)
+        .expect("the entry is an operation the workspace holds");
+    let now_ns: u64 = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .try_into()
+        .unwrap();
+    for index in 0..GUESTS {
+        let mut seed = [0u8; 32];
+        seed[..8].copy_from_slice(&(index as u64 + 1).to_le_bytes());
+        let root = SigningKey::from_bytes(&seed);
+        let mut device_seed = [0x5a; 32];
+        device_seed[..8].copy_from_slice(&(index as u64 + 1).to_le_bytes());
+        let key = SigningKey::from_bytes(&device_seed);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Guest".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        let op = SignedMembershipOp::signed(
+            &cert,
+            &key,
+            vec![entry_op],
+            now_ns.saturating_add(index as u64),
+            MembershipOpCommand::Enter {
+                entry: digest,
+                person: cert.user_public_key,
+            },
+        )
+        .unwrap();
+        put_op(&mut doc, &op).unwrap();
+    }
+    doc.commit();
+    let started = std::time::Instant::now();
+    let policy = crate::members::replay(&doc, &workspace);
+    let elapsed = started.elapsed();
+    assert!(
+        policy.members.len() >= GUESTS,
+        "every guest came in at the entry's role: {} members",
+        policy.members.len()
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "replaying {GUESTS} entry admissions took {elapsed:?}"
+    );
+}
+
+/// The open entry of `peer` (its owner's copy), and the entry's digest.
+fn opened(peer: &mut StatePeer, authority: &SigningKey, now: SystemTime) -> [u8; 32] {
+    let entry = tilo_action_policy::EntryPolicy {
+        listing: Some(tilo_action_policy::ListingPolicy {
+            description: "Everyone".into(),
+            default_role: Role::Commenter,
+        }),
+        ..Default::default()
+    };
+    assert!(
+        peer.governance_mut()
+            .put_governed_entry(&entry, authority, now)
+            .unwrap()
+    );
+    crate::state::entry_digest(&entry).unwrap()
+}
+
+/// The changes `peer` would carry from `author`'s `write`, as a holder relays
+/// them: what a receiver takes in on its own.
+fn sender_changes(
+    peer: &StatePeer,
+    write: impl FnOnce(&mut automerge::AutoCommit),
+) -> Vec<Vec<u8>> {
+    let mut doc = peer.admitted_workspace().unwrap().clone();
+    let heads = doc.get_heads();
+    write(&mut doc);
+    doc.commit();
+    doc.get_changes(&heads)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect()
+}
+
+/// A device's identity row that came in under `entry`, as its own device
+/// wrote it.
+fn entry_row(
+    workspace: &str,
+    (key, cert): (&SigningKey, &DeviceCert),
+    entry: [u8; 32],
+) -> GovernedIdentity {
+    let _ = (key, workspace);
+    GovernedIdentity {
+        device_cert: cert.clone(),
+        revocations: Vec::new(),
+        admission: None,
+        admissions: Vec::new(),
+        delegate: None,
+        workspace_delegations: Vec::new(),
+        removed: false,
+        entry: Some(crate::state::EntryReceipt {
+            entry,
+            role: Role::Commenter,
+            request_id: [4; 32],
+        }),
+    }
+}
+
+/// A server that keeps the workspace signs no guest in: the admission's
+/// author is the guest's own device, and one any other key signs admits
+/// nobody.
+#[test]
+fn a_server_signing_a_guests_admission_admits_nobody() {
+    use crate::members::{MembershipOpCommand, SignedMembershipOp, put_op};
+    use automerge::transaction::Transactable as _;
+
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let entry = opened(&mut peer, &authority_key, now);
+    let (holder_key, holder) = device_of(91, 92, "Server");
+    let (guest_key, guest) = device_of(93, 94, "Guest");
+    let workspace = peer.workspace_id().to_owned();
+    let now_ns: u64 = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .try_into()
+        .unwrap();
+    let op = SignedMembershipOp::signed(
+        &holder,
+        &holder_key,
+        Vec::new(),
+        now_ns,
+        MembershipOpCommand::Enter {
+            entry,
+            person: guest.user_public_key,
+        },
+    )
+    .unwrap();
+    let row = entry_row(&workspace, (&guest_key, &guest), entry);
+    let changes = sender_changes(&peer, |doc| {
+        put_op(doc, &op).unwrap();
+        let identities = doc
+            .get(automerge::ROOT, "peer_identities_v1")
+            .unwrap()
+            .unwrap()
+            .1;
+        doc.put(
+            &identities,
+            hex::encode(guest.device_public_key).as_str(),
+            automerge::ScalarValue::Bytes(row.encode().unwrap()),
+        )
+        .unwrap();
+    });
+    let refused = peer
+        .admit_own(&guest, changes, now)
+        .expect_err("a server's key admits no guest");
+    assert!(refused.contains("write forbidden"), "{refused}");
+}
+
+/// The entry the owner listed is the most its admissions hand out: a receipt
+/// naming a role above it admits nobody.
+#[test]
+fn a_receipt_naming_a_role_above_the_entry_admits_nobody() {
+    use automerge::transaction::Transactable as _;
+
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let entry = opened(&mut peer, &authority_key, now);
+    let (guest_key, guest) = device_of(98, 99, "Guest");
+    let workspace = peer.workspace_id().to_owned();
+    let now_ns: u64 = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .try_into()
+        .unwrap();
+    let op = crate::members::SignedMembershipOp::signed(
+        &guest,
+        &guest_key,
+        Vec::new(),
+        now_ns,
+        crate::members::MembershipOpCommand::Enter {
+            entry,
+            person: guest.user_public_key,
+        },
+    )
+    .unwrap();
+    let mut row = entry_row(&workspace, (&guest_key, &guest), entry);
+    row.entry = Some(crate::state::EntryReceipt {
+        entry,
+        role: Role::Editor,
+        request_id: [4; 32],
+    });
+    let changes = sender_changes(&peer, |doc| {
+        crate::members::put_op(doc, &op).unwrap();
+        let identities = doc
+            .get(automerge::ROOT, "peer_identities_v1")
+            .unwrap()
+            .unwrap()
+            .1;
+        doc.put(
+            &identities,
+            hex::encode(guest.device_public_key).as_str(),
+            automerge::ScalarValue::Bytes(row.encode().unwrap()),
+        )
+        .unwrap();
+    });
+    let refused = peer
+        .admit_own(&guest, changes, now)
+        .expect_err("a role above the entry's admits nobody");
+    assert!(
+        refused.contains("does not take this person in"),
+        "{refused}"
+    );
 }

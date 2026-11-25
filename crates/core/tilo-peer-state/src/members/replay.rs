@@ -29,6 +29,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value, transaction::Tran
 use tilo_action_policy::{Change, Context, Grantee, Role, WorkspacePolicy, roles};
 
 use super::op::{MembershipOpCommand, OpId, SignedMembershipOp};
+use crate::workspace::GovernanceRow;
 
 /// The operations a workspace document holds, by id.
 pub type HeldOps = BTreeMap<OpId, std::sync::Arc<SignedMembershipOp>>;
@@ -213,6 +214,7 @@ pub(crate) fn carry(
         };
         let owner = replayed.policy.owner.clone();
         replayed.unadmitted |= !op_effect(&mut replayed.policy, &op, &mut log);
+        log.record_entry(&op);
         replayed.owner_moved |= replayed.policy.owner != owner;
         replayed.heads = BTreeSet::from([id]);
     }
@@ -339,6 +341,7 @@ fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspaceP
         if let Some(op) = held.get(&next) {
             let owner = policy.owner.clone();
             unadmitted |= !op_effect(&mut policy, op, &mut log);
+            log.record_entry(op);
             owner_moved |= policy.owner != owner;
         }
         for child in children.remove(&next).unwrap_or_default() {
@@ -369,11 +372,18 @@ struct Log<'a> {
     doc: &'a AutoCommit,
     workspace: &'a str,
     parts: Option<BTreeMap<String, Vec<Vec<u8>>>>,
-    /// The heads each membership operation's change was written on, by the
-    /// document key the operation is stored under: what an entry admission
-    /// names is read at the place its operation sits, not at the head now.
-    op_deps: Option<BTreeMap<String, Vec<automerge::ChangeHash>>>,
+    /// The change that wrote each entry-setting operation, by operation id:
+    /// the entry it settled is read once from there, not once per admission.
+    entry_changes: Option<BTreeMap<OpId, automerge::ChangeHash>>,
+    /// The entry in force after each operation the replay has reached, by its
+    /// id: a later operation reads what its parents' place held, so a guest's
+    /// admission is judged by the entry of its own time and no other.
+    entries: BTreeMap<OpId, Option<EntryAt>>,
 }
+
+/// The entry a workspace's governance recorded, and the digest an admission
+/// names it by.
+type EntryAt = (tilo_action_policy::EntryPolicy, [u8; 32]);
 
 impl<'a> Log<'a> {
     const fn new(doc: &'a AutoCommit, workspace: &'a str) -> Self {
@@ -381,49 +391,110 @@ impl<'a> Log<'a> {
             doc,
             workspace,
             parts: None,
-            op_deps: None,
+            entry_changes: None,
+            entries: BTreeMap::new(),
         }
     }
 
-    /// The entry the workspace's governance held where operation `id` sits:
-    /// the heads its change was written on are the basis the device that made
-    /// it saw, and the entry there is what admits its author. `None` when the
-    /// document does not hold the change that wrote the operation.
-    ///
-    /// This is the only place a replay reads an entry: the entry now decides
-    /// nothing about a change already in the log, so the owner closing the
-    /// entry throws out no guest who came in while it was open.
-    fn entry_at(&mut self, id: crate::members::OpId) -> Option<tilo_action_policy::EntryPolicy> {
-        let key = crate::members::op::op_key(id);
-        let heads = self.op_deps().get(&key)?.clone();
-        let mut doc = self.doc.clone();
-        let forked = doc.fork_at(&heads).ok()?;
-        Some(tilo_desktop_model::projection::workspace_entry_of(&forked))
+    /// The entry in force where `parents` stand, from the causal order the
+    /// replay walks: the entry the latest of them left. Concurrent parents
+    /// that settled different entries resolve the same way everywhere, by
+    /// the last operation's id.
+    fn entry_at_parents(&self, parents: &[OpId]) -> Option<EntryAt> {
+        let mut latest: Option<(OpId, EntryAt)> = None;
+        for parent in parents {
+            let Some(Some(entry)) = self.entries.get(parent) else {
+                continue;
+            };
+            if latest.as_ref().is_none_or(|(id, _)| parent > id) {
+                latest = Some((*parent, entry.clone()));
+            }
+        }
+        latest.map(|(_, entry)| entry)
     }
 
-    /// The heads each membership operation's change was written on, read once
-    /// from the document's changes.
-    fn op_deps(&mut self) -> &BTreeMap<String, Vec<automerge::ChangeHash>> {
-        self.op_deps.get_or_insert_with(|| {
+    /// Record the entry in force after `op`, once its effect is applied: what
+    /// its parents left, or what it itself settled where it changed the
+    /// workspace's entry.
+    fn record_entry(&mut self, op: &SignedMembershipOp) {
+        let Ok(id) = op.id() else {
+            return;
+        };
+        let mut entry = self.entry_at_parents(&op.parents);
+        if let MembershipOpCommand::Governance { rows } = &op.command
+            && rows.contains(&GovernanceRow::Settings)
+        {
+            entry = self.entry_settled_by(id).or(entry);
+        }
+        self.entries.insert(id, entry);
+    }
+
+    /// The entry the operation `id` settled, read once from the change that
+    /// wrote it: the only place a replay reads the document's entry, and only
+    /// for an operation that changed it.
+    fn entry_settled_by(&mut self, id: OpId) -> Option<EntryAt> {
+        let hash = self.entry_changes().get(&id).copied()?;
+        let mut doc = self.doc.clone();
+        let forked = doc.fork_at(&[hash]).ok()?;
+        let policy = tilo_desktop_model::projection::workspace_entry_of(&forked);
+        let digest = crate::state::entry_digest(&policy).ok()?;
+        Some((policy, digest))
+    }
+
+    /// The change that wrote each operation changing the workspace's entry,
+    /// read once: every other membership operation is not even decoded.
+    fn entry_changes(&mut self) -> &BTreeMap<OpId, automerge::ChangeHash> {
+        self.entry_changes.get_or_insert_with(|| {
             let mut doc = self.doc.clone();
-            let mut deps = BTreeMap::new();
+            let mut changes = BTreeMap::new();
+            let mut op_keys: Vec<(String, automerge::ChangeHash)> = Vec::new();
             for change in doc.get_changes(&[]) {
-                let keys: Vec<String> = change
-                    .decode()
-                    .operations
-                    .iter()
-                    .filter(|operation| operation.obj == automerge::legacy::ObjectId::Root)
-                    .filter_map(|operation| match &operation.key {
-                        automerge::legacy::Key::Map(key) => Some(key.to_string()),
-                        automerge::legacy::Key::Seq(_) => None,
-                    })
-                    .filter(|key| crate::members::op::keyed(key).is_some())
-                    .collect();
-                for key in keys {
-                    deps.insert(key, change.deps().to_vec());
+                let hash = change.hash();
+                let decoded = change.decode();
+                for operation in decoded.operations {
+                    if operation.obj != automerge::legacy::ObjectId::Root {
+                        continue;
+                    }
+                    let automerge::legacy::Key::Map(key) = operation.key else {
+                        continue;
+                    };
+                    if crate::members::op::keyed(&key).is_some() {
+                        op_keys.push((key.to_string(), hash));
+                    }
                 }
             }
-            deps
+            for (key, hash) in op_keys {
+                let Some(id) = crate::members::op::keyed(&key) else {
+                    continue;
+                };
+                let Some(id) = tilo_failure::ignored!(
+                    "a membership operation key that is no id names no operation, so no entry it wrote is read",
+                    hex::decode(id).ok()
+                )
+                .and_then(|id| <[u8; 32]>::try_from(id).ok())
+                .map(OpId)
+                else {
+                    continue;
+                };
+                let Some(operation) = doc.get(automerge::ROOT, key.as_str()).ok().flatten() else {
+                    continue;
+                };
+                let automerge::Value::Scalar(value) = operation.0 else {
+                    continue;
+                };
+                let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
+                    continue;
+                };
+                let Ok((_, op)) = SignedMembershipOp::verified_stored(bytes) else {
+                    continue;
+                };
+                if let MembershipOpCommand::Governance { rows } = &op.command
+                    && rows.contains(&GovernanceRow::Settings)
+                {
+                    changes.insert(id, hash);
+                }
+            }
+            changes
         })
     }
 
@@ -433,7 +504,7 @@ impl<'a> Log<'a> {
     /// people who ask, and the person takes its role. The owner and a banned
     /// person come in neither. Whether it admitted anyone.
     fn enter(
-        &mut self,
+        &self,
         policy: &mut WorkspacePolicy,
         op: &SignedMembershipOp,
         entry: [u8; 32],
@@ -443,13 +514,16 @@ impl<'a> Log<'a> {
         if policy.is_owner(&person_hex) || policy.is_banned(&person_hex) {
             return false;
         }
-        let Ok(id) = op.id() else {
-            return false;
+        // An operation a replay of one new change reaches was written on every
+        // head the state held ([`carry`]), so where its parents' places were
+        // not walked here, the entry now is the entry at its place.
+        let entry_now = || {
+            let policy = tilo_desktop_model::projection::workspace_entry_of(self.doc);
+            crate::state::entry_digest(&policy)
+                .ok()
+                .map(|digest| (policy, digest))
         };
-        let Some(at) = self.entry_at(id) else {
-            return false;
-        };
-        let Ok(digest) = crate::state::entry_digest(&at) else {
+        let Some((at, digest)) = self.entry_at_parents(&op.parents).or_else(entry_now) else {
             return false;
         };
         if digest != entry {
@@ -467,7 +541,6 @@ impl<'a> Log<'a> {
         policy.members.entry(person_hex).or_insert(role);
         true
     }
-
     /// Admit `person` into `policy` by the invitation `invite`, as recorded at
     /// `at_ns`: the log holds their receipt for it, the invitation it names
     /// admits them as `policy` stands ([`crate::workspace::membership::invitation_admits`]),

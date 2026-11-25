@@ -1152,6 +1152,7 @@ impl PeerGovernanceMut<'_> {
     /// to come in by the entry, or governance cannot be updated.
     pub fn admit_entered_member(
         self,
+        own: &DeviceCert,
         entry: [u8; 32],
         request_id: [u8; 32],
         name: Option<&str>,
@@ -1164,15 +1165,10 @@ impl PeerGovernanceMut<'_> {
                     .map_err(tilo_user_identity::DisplayNameError::reason)
             })
             .transpose()?;
-        let device = key.device_public_key();
-        let cert = self
-            .peer
-            .certificate(&device, now)
-            .map_err(|error| error.to_string())?
-            .clone();
-        if key.device_public_key() != cert.device_public_key {
+        if key.device_public_key() != own.device_public_key {
             return Err("a device signs only its own admission".into());
         }
+        let cert = own.clone();
         if cert.capabilities.agent.is_some() || cert.capabilities.stand_in {
             return Err(
                 "a key acting for someone comes in by its delegation, not through the entry".into(),
@@ -1371,6 +1367,7 @@ impl PeerGovernanceMut<'_> {
                 delegate: None,
                 workspace_delegations: Vec::new(),
                 removed: false,
+                entry: None,
             },
         };
         let identities = doc

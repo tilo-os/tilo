@@ -176,7 +176,7 @@ pub fn entry_admission(
             let digest = crate::state::entry_digest(&entry)?;
             let admitted = peer
                 .governance_mut()
-                .admit_entered_member(digest, request_id, name, key, now)?;
+                .admit_entered_member(own, digest, request_id, name, key, now)?;
             let granted = peer
                 .governance_mut()
                 .author_own_grant(own, name, key, now)?;

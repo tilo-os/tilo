@@ -127,13 +127,6 @@ impl Admissions {
         Ok(())
     }
 
-    /// Whether `invite_id` already carries a grant, spent or not: an entry
-    /// handing back an invitation a member pre-admitted keeps that grant,
-    /// whose own token admits them.
-    pub(super) fn carries(&self, invite_id: [u8; 32]) -> bool {
-        self.grants.iter().any(|known| known.invite_id == invite_id)
-    }
-
     /// The unspent, unexpired grant of `invite_id` whose token is `token`.
     pub(super) fn grant_for(
         &self,
@@ -181,8 +174,6 @@ impl Admissions {
         self.notices.push(notice);
         self.save()
     }
-
-    /// Change the grant recorded for `invite_id` in place, as an attacker
 
     pub(super) fn notices(&self) -> Vec<WorkspaceNotice> {
         self.notices.clone()

@@ -25,6 +25,10 @@ const fn refused(reason: String) -> EnterRefusal {
 }
 
 impl Admit for Workspaces {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the entry's one answer: which refusals come first, and which path a device takes"
+    )]
     fn enter<'a>(&'a self, cert: &'a DeviceCert, entry: Entry) -> EntryFuture<'a, Entered> {
         Box::pin(async move {
             let Entry {
@@ -96,38 +100,16 @@ impl Admit for Workspaces {
             let entered = match (member_device, entering.through) {
                 (Some(entered), _) => entered,
                 (None, Through::Entry) => {
-                    // The entry lets a person who asks in: they sign their own
-                    // admission under the entry the workspace records, and no
-                    // host signs anything for them. A device that comes back
-                    // with that admission is taken in as it wrote itself.
-                    if entering.admission.is_empty() {
-                        match self.entry(cert, &entering.workspace, &entering.name).await {
-                            Ok(Listed::Open) => {
-                                return self.sign_on(&entering.workspace, Through::Entry).await;
-                            }
-                            Ok(Listed::Invited(issued)) => {
-                                let through = Through::Invitation {
-                                    invitation: issued.signed_invitation,
-                                    token: None,
-                                };
-                                return self.sign_on(&entering.workspace, through).await;
-                            }
-                            Err(refused) => return Entered::Refused(refused),
-                        }
-                    }
-                    let admitted = self
-                        .admit_entered(
-                            cert,
+                    self.entered_by_entry(
+                        cert,
+                        (
                             &entering.workspace,
+                            &entering.name,
                             entering.request_id,
                             &entering.admission,
-                        )
-                        .await;
-                    let admitted = entered(admitted);
-                    if !matches!(admitted, Entered::Admitted { .. }) {
-                        return admitted;
-                    }
-                    admitted
+                        ),
+                    )
+                    .await
                 }
                 (None, Through::Invitation { invitation, token }) => {
                     // The keys the entry asks for are the named workspace's group's: an
@@ -176,6 +158,34 @@ impl Admit for Workspaces {
 }
 
 impl Workspaces {
+    /// What a device that asks `workspace`'s entry hears: the workspace lets
+    /// it sign its own admission under the entry, hands it an invitation the
+    /// workspace holds for it, or takes the admission it signed and lets it
+    /// in. No host signs anything for it.
+    async fn entered_by_entry(
+        &self,
+        cert: &DeviceCert,
+        (workspace, name, request_id, admission): (&str, &str, [u8; 32], &[Vec<u8>]),
+    ) -> Entered {
+        if admission.is_empty() {
+            return match self.entry(cert, workspace, name).await {
+                Ok(Listed::Open) => self.sign_on(workspace, Through::Entry).await,
+                Ok(Listed::Invited(issued)) => {
+                    let through = Through::Invitation {
+                        invitation: issued.signed_invitation,
+                        token: None,
+                    };
+                    self.sign_on(workspace, through).await
+                }
+                Err(refused) => Entered::Refused(refused),
+            };
+        }
+        entered(
+            self.admit_entered(cert, workspace, request_id, admission)
+                .await,
+        )
+    }
+
     /// What a device that may come into `workspace` is answered before it
     /// signs its own admission: the workspace's member list it writes it on,
     /// and how to come back with it (`through`).
@@ -353,11 +363,7 @@ impl Workspaces {
         admission: &[Vec<u8>],
         now: u64,
     ) -> Result<(), String> {
-        let policy = governed
-            .peer()
-            .governance()
-            .governed_policy()
-            .map_err(|error| error.to_string())?;
+        let policy = governed.peer().governance().governed_policy()?;
         let host = hex::encode(self.inner.host.cert.user_public_key);
         if !policy.is_owner(&host) && policy.active_role(&host).is_none() {
             return Err(
