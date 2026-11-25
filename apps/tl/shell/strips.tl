@@ -29,6 +29,16 @@ fn strips_of(a: Layout, row: Text) -> List<LayoutStrip> {
     a.strips.filter(s -> s.row == row and s.display == device.screen.output)
 }
 
+/// Whether a strip of the row `row` holds a window.
+fn row_holds_a_window(a: Layout, row: Text) -> Bool {
+    for s in a.strips.filter(s -> s.row == row) {
+        if not places_of(a, s.key).is_empty() {
+            return true
+        }
+    }
+    return false
+}
+
 /// The rows of the workspace `workspace`, in the document's order.
 fn rows_of(a: Layout, workspace: Text) -> List<LayoutRow> {
     a.rows.filter(r -> r.workspace == workspace)
@@ -1447,12 +1457,15 @@ view strip_before(a: Layout) {
 }
 
 /// Where the person is among the strips, at the trailing edge, with the way to make another: the
-/// strip shown numbered against the workspace's count. Nothing where the workspace shows no
-/// strip, so no empty card stands at the edge.
+/// strip shown numbered against the workspace's count. Nothing while the workspace is one strip
+/// that holds nothing: there is nowhere else to go, nothing to count, and a new strip would be as
+/// empty as this one.
 view strip_count(a: Layout) {
     if let held = shown_workspace(a) {
         let rows = rows_of(a, held.key)
-        if let current = rows.find(r -> r.current) {
+        if let current = rows.find(
+                r -> r.current and (rows.len() > 1 or row_holds_a_window(a, r.key)),
+            ) {
             let at = rows.index_of(current) ?? 0
             let number = at + 1
             ui.Card {

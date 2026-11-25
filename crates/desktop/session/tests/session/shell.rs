@@ -850,6 +850,17 @@ fn plain_desktop(
         120.0,
         80.0,
     );
+    // One strip, holding nothing: there is nowhere else to go and nothing to count, so the rail
+    // has nothing to show and no card of it stands anywhere.
+    for name_of in ["New strip", "1 of 1"] {
+        if !session.shell_controls(name_of).is_empty()
+            || session.shell_text_bounds(name_of).is_some()
+        {
+            failures.push(format!(
+                "{name}: {name_of:?} stands on a desktop of one empty strip"
+            ));
+        }
+    }
     for control in session.controls() {
         let (x, y, w, h) = control.rect;
         let (left, top, held_w, held_h) = held;
@@ -909,6 +920,122 @@ fn nothing_hangs_under_the_bar_when_it_has_nothing_to_show() {
     assert!(
         failures.is_empty(),
         "the bar's band is empty where nothing has anything to show:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Two strips, the second shown, in one theme and at one width, kept as `name`: the strip rail
+/// stands at the band's trailing edge with where the person is ("2 of 2") and the way to make
+/// another, both drawn whole, each said in `failures` where it is not.
+fn two_strips(
+    presentation: fn() -> ui::application::ComponentRunnerInputs,
+    width: i32,
+    name: &str,
+    dir: &std::path::Path,
+    failures: &mut Vec<String>,
+) {
+    let (notebook, notes) = crate::common::notebook(&crate::common::TITLES);
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", width, HEIGHT)],
+        Options {
+            person: crate::common::PERSON.to_owned(),
+            presentation,
+            collab: false,
+            services: vec![Box::new(notebook)],
+            ..Options::default()
+        },
+    );
+    crate::layout_shortcuts::open(&mut session, &notes, 1);
+    crate::layout_shortcuts::new_strip(&mut session);
+    crate::common::wait_for(&mut session, "the rail counts two strips", |session| {
+        session.shell_text_bounds("2 of 2").map(|_| ())
+    });
+    settle(&mut session, 8);
+    capture_to(&mut session, dir, name);
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot");
+    let scale = f64::from(shot.width) / f64::from(width);
+    let size = (shot.width, shot.height);
+    // Whether something is drawn in `rect`: its pixels are not one flat colour.
+    let drawn = |(x, y, w, h): (f64, f64, f64, f64)| {
+        let across = shot.width as usize;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a rect on the frame"
+        )]
+        let (x0, y0, x1, y1) = (
+            (x * scale) as usize,
+            (y * scale) as usize,
+            (((x + w) * scale) as usize).min(across),
+            (((y + h) * scale) as usize).min(shot.height as usize),
+        );
+        let lum = |at: usize| {
+            0.2126 * f64::from(shot.rgba[at])
+                + 0.7152 * f64::from(shot.rgba[at + 1])
+                + 0.0722 * f64::from(shot.rgba[at + 2])
+        };
+        let (mut low, mut high) = (f64::MAX, f64::MIN);
+        for row in y0..y1 {
+            for column in x0..x1 {
+                let l = lum((row * across + column) * 4);
+                low = low.min(l);
+                high = high.max(l);
+            }
+        }
+        high - low > 40.0
+    };
+    let on_screen = |(x, y, w, h): (f64, f64, f64, f64)| {
+        x >= 0.0 && y >= 0.0 && x + w <= f64::from(width) && y + h <= f64::from(HEIGHT)
+    };
+    match session.shell_text_bounds("2 of 2") {
+        Some(rect) if rect.2 >= 20.0 && on_screen(rect) && drawn(rect) => {}
+        rect => failures.push(format!(
+            "{name}: the strip count is not drawn whole: {rect:?}"
+        )),
+    }
+    match session.shell_controls("New strip").first().copied() {
+        Some(rect) if rect.2 >= 24.0 && rect.3 >= 24.0 && on_screen(rect) && drawn(rect) => {}
+        rect => failures.push(format!("{name}: New strip is not drawn whole: {rect:?}")),
+    }
+}
+
+/// The strip rail shows where the person is among the strips and the way to make another,
+/// drawn whole at the band's edge in either theme and on a phone; on a desktop of one empty strip
+/// it has nothing to show and stands nowhere ([`nothing_hangs_under_the_bar_when_it_has_nothing_to_show`]).
+#[test]
+fn the_strip_rail_draws_the_count_and_new_strip_whole() {
+    let _settled = ui::motion::testing::settled();
+    let _clock = held_clock();
+    let dir = std::env::var_os("VISUAL_ACTIVITY_OUT").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../target/activity-shots")
+        },
+        std::path::PathBuf::from,
+    );
+    let mut failures = Vec::new();
+    for (width, size) in [(WIDTH, "desktop"), (420, "phone")] {
+        two_strips(
+            ui::headless::fixture_runner_inputs,
+            width,
+            &format!("rail-{size}-dark"),
+            &dir,
+            &mut failures,
+        );
+        two_strips(
+            light_runner_inputs,
+            width,
+            &format!("rail-{size}-light"),
+            &dir,
+            &mut failures,
+        );
+    }
+    assert!(
+        failures.is_empty(),
+        "the strip rail:\n{}",
         failures.join("\n")
     );
 }
