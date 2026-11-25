@@ -1870,14 +1870,27 @@ impl Daemon {
             }
         });
         // This device is one of the person's, listed with their others: what every host admits
-        // it by, and where a revocation of it is marked.
-        // Kept before anything is served, so the first host that reads the person's devices sees
-        // this one enrolled: a device that served before its entry landed would be refused.
+        // it by, and where a revocation of it is marked. The device whose ticket made this one
+        // listed it before it answered the certificate, so what is left here is a record that
+        // does not have it yet: it is written where this device holds their own workspace and
+        // may write.
         {
             let (copies, own) = (workspaces.copies().clone(), identity.cert.clone());
             if let Err(error) = block_on_owned(async move {
-                tilo_workspace_service::workspaces::person_workspace::devices::keep(&copies, &own)
+                use tilo_workspace_service::workspaces::person_workspace;
+                if !person_workspace::holds_person_workspace(&copies).await {
+                    return Ok(());
+                }
+                let person = own.user_public_key;
+                let listed = person_workspace::devices::of(&copies, &person)
                     .await
+                    .listed(&person)
+                    .iter()
+                    .any(|listed| listed.cert.device_public_key == own.device_public_key);
+                if listed {
+                    return Ok(());
+                }
+                person_workspace::devices::keep(&copies, &own).await
             }) {
                 tracing::warn!(%error, "this device is not listed with its person's");
             }

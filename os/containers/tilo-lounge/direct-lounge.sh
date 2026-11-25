@@ -72,7 +72,9 @@ await_lounge() {
   local deadline=$((SECONDS + ${LOUNGE_ANSWER_SECONDS:-30})) socket
   while :; do
     socket=$(find "$lounge_volume" -name native.sock -print -quit 2>/dev/null)
-    [[ -n $socket ]] && break
+    # The profile names its endpoint with a link, and the link answers only while the daemon
+    # bound the socket it names: one left by a stopped daemon is no answer.
+    [[ -n $socket && -S $socket ]] && break
     kill -0 "$lounge_pid" 2>/dev/null || lounge_fail 'the Lounge stopped before it answered'
     ((SECONDS < deadline)) \
       || lounge_fail "the Lounge did not answer in ${LOUNGE_ANSWER_SECONDS:-30}s"

@@ -178,23 +178,16 @@ impl TicketServer {
 
     /// Serve a ticket for a computer to become one of the person's devices, and what `role`
     /// says beside: the ticket, as the one string the person hands on is its encoding. A planned
-    /// machine's is kept with its plan before it is served.
+    /// machine's is kept with its plan before it is served. `beside` serves it beside every
+    /// ticket served before it, none taking another's place, so each computer it is handed to
+    /// can still spend it: what the first tickets a founding hands back ask for. Otherwise a
+    /// ticket for a computer at hand takes the place of the one printed before it.
     ///
     /// # Errors
     /// This device cannot add a device (no identity, no network, no root of the person's), the
     /// plan is not one still waiting for its machine, or its ticket could not be kept.
-    pub async fn issue(&self, role: Option<Role>) -> Result<Ticket, String> {
-        self.issued(role, true).await
-    }
-
-    /// [`Self::issue`] for one of several tickets a single act asks for (the first tickets a
-    /// person's founding hands back): served beside every ticket issued before it, none taking
-    /// another's place, so each computer it is handed to can still spend it.
-    ///
-    /// # Errors
-    /// As [`Self::issue`].
-    pub async fn issue_beside(&self, role: Option<Role>) -> Result<Ticket, String> {
-        self.issued(role, false).await
+    pub async fn issue(&self, role: Option<Role>, beside: bool) -> Result<Ticket, String> {
+        self.issued(role, !beside).await
     }
 
     /// [`Self::issue`], whose ticket for a computer at hand takes the place of the one printed
@@ -488,16 +481,13 @@ impl Approver for RootApprover {
 struct KeptInRecord(Workspaces);
 
 impl Keeping for KeptInRecord {
-    fn keep(&self, cert: DeviceCert) {
+    fn keep(&self, cert: DeviceCert) -> tilo_peer_state::new_device::Kept {
         let workspaces = self.0.clone();
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        runtime.spawn(async move {
+        Box::pin(async move {
             if let Err(error) = person_workspace::devices::keep(&workspaces, &cert).await {
                 tracing::warn!(%error, "the added computer is listed once it enters");
             }
-        });
+        })
     }
 }
 

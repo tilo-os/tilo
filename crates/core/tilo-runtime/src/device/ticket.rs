@@ -1187,7 +1187,10 @@ impl Tickets {
                         if unreached {
                             tilo_endpoint_reachability::await_relay(&served.0.endpoint).await;
                         }
-                        served.issue(&args, false).await
+                        // One act that hands back several tickets (a founding's first, say) asks
+                        // for each beside the others: none takes another's place.
+                        let beside = args.get("beside").and_then(Value::as_bool) == Some(true);
+                        served.issue(&args, beside).await
                     }
                 };
                 let update = match answer {
@@ -1280,28 +1283,47 @@ impl Tickets {
     }
 
     /// Issue the ticket `kind` asks for (`server` for a server, `device` for a computer at hand)
-    /// as `person`'s own act: the ticket as the one string the person hands on.
+    /// as `person`'s own act, through the one `devices#issue` call `tilo device add` makes: the
+    /// ticket as the one string the person hands on, served beside the tickets issued before it
+    /// so each computer the founding's first tickets are handed to can still spend its own.
     ///
     /// # Errors
     /// The kind is no ticket this device issues, the device is not reachable yet, or it keeps no
     /// root of that person's.
-    pub(crate) async fn issue_as_person(
-        &self,
-        person: [u8; 32],
-        kind: &str,
-    ) -> Result<Value, String> {
-        let args = match kind {
-            "server" => json!({ "server": true }),
-            "device" => json!({}),
+    pub(crate) async fn issue_first(&self, person: [u8; 32], kind: &str) -> Result<Value, String> {
+        let mut args = Map::new();
+        match kind {
+            "server" => {
+                args.insert("server".to_owned(), true.into());
+            }
+            "device" => {}
             other => return Err(format!("{other} is no ticket a founding issues")),
+        }
+        args.insert("beside".to_owned(), true.into());
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation: InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(RESOURCE, ISSUE),
+            },
+            argument: InvokeArgument::Json(args),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
         };
         // The person just founded holds the root this device keeps, where this computer is the
-        // one their account made them on: otherwise their root is the device's own. A founding
-        // asks for its tickets together, so each is served beside the others.
-        let root = super::services::holds_root_for_person(person).then_some(person);
-        super::services::with_root_caller(root, self.issue(&args, true))
-            .await
-            .map_err(|error| format!("{error:#}"))
+        // one their account made them on: otherwise their root is the device's own.
+        let caller =
+            tilo_actions::remote::Caller::authenticated(person, self.0.cert.device_public_key);
+        match self.run_to_end(&request, &caller).await {
+            InvocationUpdate::Succeeded { output, .. } => Ok(output.value.unwrap_or(Value::Null)),
+            InvocationUpdate::Failed { error, .. } => Err(error.message),
+            _ => Err("the founding's ticket did not issue".to_owned()),
+        }
     }
 
     /// Take `request` and wait for it to end: how it ended.
@@ -1532,12 +1554,10 @@ impl Tickets {
             None => None,
         };
         let fleet = &self.0.fleet;
-        let ticket = if beside {
-            fleet.issue_beside(role).await
-        } else {
-            fleet.issue(role).await
-        }
-        .map_err(|error| anyhow!(error))?;
+        let ticket = fleet
+            .issue(role, beside)
+            .await
+            .map_err(|error| anyhow!(error))?;
         Ok(json!({"ticket": ticket.encode()}))
     }
 

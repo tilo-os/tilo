@@ -89,6 +89,23 @@ fn native_socket(profile: &Path) -> io::Result<PathBuf> {
     Ok(sockets(profile)?.native)
 }
 
+/// Name the endpoint `native` in `profile`, as `<profile>/native.sock`: a link, so a host that
+/// starts the daemon over a profile finds it where it looks whatever the sockets' own directory
+/// is, and the profile's path never has to fit a socket's address.
+#[cfg(unix)]
+fn publish_native(profile: &Path, native: &Path) -> io::Result<()> {
+    let named = profile.join(tilo_paths::machine::DAEMON_NATIVE);
+    if named == native {
+        return Ok(());
+    }
+    match std::fs::symlink_metadata(&named) {
+        Ok(_) => std::fs::remove_file(&named)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::os::unix::fs::symlink(native, &named)
+}
+
 /// [`sockets`] with the services' own in [`service_sockets`] instead: a daemon of the computer's
 /// keeps those where only it may enter, and its native endpoint where every client finds it.
 pub(crate) fn sockets_served(profile: &Path) -> io::Result<Sockets> {
@@ -315,6 +332,8 @@ impl Running {
         // once they run. This process has the device's lock, so only it removes a stale endpoint.
         let path = native_socket(profile)?;
         let listener = tilo_files::native::private::bind_socket(&path)?;
+        #[cfg(unix)]
+        publish_native(profile, &path)?;
         #[cfg(unix)]
         if tilo_api::daemon::system_daemon() {
             use std::os::unix::fs::PermissionsExt as _;
