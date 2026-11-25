@@ -54,7 +54,6 @@ core = [
     "tilo-collaboration -> tilo-settings-store",
     "tilo-collaboration -> tilo-test-env",
     "tilo-endpoint-reachability -> tilo-settings-store",
-    "tilo-fs -> account-credentials",
     "tilo-fs -> tilo-accounts",
     "tilo-fs -> tilo-cloud-source",
     "tilo-fs -> tilo-cloud-source-dav",
