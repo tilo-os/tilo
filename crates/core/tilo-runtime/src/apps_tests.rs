@@ -1639,3 +1639,36 @@ fn a_launch_asks_the_launcher_for_the_installed_packages_own_program() {
         "{refused}"
     );
 }
+
+// A start whose program ends as it starts has run no app: it answers the status and the
+// program's own words, never that it started.
+#[cfg(target_os = "linux")]
+tilo_test_env::scenario! {
+    fn a_start_that_ends_as_it_starts_answers_why;
+
+    phase the_launch_answers_the_programs_own_words;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        let device = SigningKey::from_bytes(&[7_u8; 32]);
+        let of = "org.example.notes";
+        store.install(of, &manifest(of, "gui", ""), &[("probe", b"binary")]);
+        let dev = store.install_dev(of, &device);
+        let display = root.join("wayland-0");
+        std::fs::write(&display, b"").unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("WAYLAND_DISPLAY", &display);
+        let launcher = tilo_test_env::stand_in(
+            root.join("tilo-launcher"),
+            "echo 'the sandbox refused this app' >&2\nexit 3\n",
+        )
+        .unwrap();
+        let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+        let error = match apps.start(&dev.id, WORKSPACE) {
+            Ok(_) => panic!("a start that ran no app is refused"),
+            Err(error) => error,
+        };
+        assert!(error.contains("ended as it started"), "{error}");
+        assert!(error.contains("the sandbox refused this app"), "{error}");
+    }
+}

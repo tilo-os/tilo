@@ -887,6 +887,32 @@ impl Apps {
             launch.kill();
             return Err(format!("could not let {app_id}'s launcher go on: {error}"));
         }
+        // A start that ends as it starts has run no app: answer what it said, never "started".
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+        loop {
+            match launch.ended() {
+                Ok(Some(status)) => {
+                    self.launched.forget(launch.pid);
+                    let said = launch.said();
+                    let said = said.trim();
+                    return Err(if said.is_empty() {
+                        format!("{app_id} ended as it started ({status})")
+                    } else {
+                        format!("{app_id} ended as it started ({status}): {said}")
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.launched.forget(launch.pid);
+                    launch.kill();
+                    return Err(format!("{app_id}'s start could not be read: {error}"));
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         Ok(launch)
     }
 
@@ -1198,6 +1224,9 @@ pub struct Launch {
     /// The window's link, which its patch connection came on: held while the window runs.
     #[cfg(windows)]
     _link: runtime_portal::process_link::Descriptor,
+    /// What the program said on its standard error, bounded: a start that ends as it starts
+    /// answers this, so a person is told why rather than that it started.
+    stderr: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
 impl Launch {
@@ -1218,6 +1247,27 @@ impl Launch {
             return hold.release();
         }
         Ok(())
+    }
+
+    /// Whether the program already ended, and how: a start that ends as it starts has run no
+    /// app.
+    fn ended(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        #[cfg(target_os = "linux")]
+        {
+            self.child.try_wait()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(None)
+        }
+    }
+
+    /// What the program said on its standard error before it ended.
+    fn said(&self) -> String {
+        self.stderr
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Wait for the process to exit; its exit code, when it exited normally.

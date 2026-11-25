@@ -96,6 +96,7 @@ pub(super) fn launch(
         ));
     }
     Ok(Launch {
+        stderr: std::sync::Arc::default(),
         pid: confined.pid(),
         app: confined,
         _link: link,

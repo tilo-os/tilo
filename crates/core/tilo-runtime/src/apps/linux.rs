@@ -62,10 +62,36 @@ pub(super) fn launch(
     // can never connect before the broker could attest it.
     let registration = launcher::launch_hold::install(&mut command)
         .map_err(|error| format!("refusing to launch: the launcher's launch hold: {error}"))?;
-    let child = command
+    // What the program says before it ends is what a start that ends as it starts answers: the
+    // sandbox's refusal, a missing runtime, an app that cannot load its module.
+    command.stderr(std::process::Stdio::piped());
+    let mut child = command
         .spawn()
         .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
+    let stderr = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(mut pipe) = child.stderr.take() {
+        let captured = std::sync::Arc::clone(&stderr);
+        std::thread::Builder::new()
+            .name("app-start-stderr".into())
+            .spawn(move || {
+                use std::io::Read as _;
+                let mut chunk = [0_u8; 512];
+                while let Ok(read) = pipe.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    let mut said = captured
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if said.len() < 8192 {
+                        said.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    }
+                }
+            })
+            .ok();
+    }
     Ok(Launch {
+        stderr,
         pid: child.id(),
         child,
         registration: Some(registration),

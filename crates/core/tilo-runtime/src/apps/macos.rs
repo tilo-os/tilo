@@ -174,6 +174,7 @@ pub(super) fn launch(
     let pid = u32::try_from(launched.pid())
         .map_err(|_| format!("{} started with an invalid pid", app.app_id))?;
     Ok(Launch {
+        stderr: std::sync::Arc::default(),
         pid,
         app: launched,
         _link: link,
