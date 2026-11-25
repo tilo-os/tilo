@@ -349,38 +349,42 @@ pub async fn keeps(
     }
 }
 
-/// The upload `reference` is sealed under the Files keys, and the file `workspace`'s tree names at
-/// `hash` opens as exactly `expected` for a member of the workspace.
+/// The file `workspace`'s tree names at `hash` is the one the upload `reference` answered, as
+/// Files keeps a file: the upload names the bytes it took by their own address, kept where
+/// content put into the workspace waits for whatever refers to it, while the tree names the file
+/// by its chunk manifest, kept and sealed where the workspace keeps its files. The two names
+/// differ, and both open, for a member of the workspace, as exactly the uploaded bytes.
 ///
 /// The store-side manifest and its chunks are not read here: a device's dispatch answers content
-/// only as the workspace opens it for its member, so what a test can prove is that the uploaded
-/// reference carries a sealing key and that the node's content opens as the uploaded bytes.
-pub async fn assert_sealed_file(
+/// only as the workspace opens it for its member. That the manifest is sealed under the Files keys
+/// is the files service's own test.
+pub async fn assert_put_file(
     session: &Session<'_>,
     workspace: &str,
     reference: &str,
     hash: &str,
     expected: &[u8],
 ) {
-    let sealed = reference
-        .split_once('.')
-        .is_some_and(|(_, key)| !key.is_empty());
-    assert!(
-        sealed,
-        "the upload is sealed under the Files keys: {reference}"
-    );
+    let uploaded = tilo_actions::content_hash(reference)
+        .unwrap_or_else(|| panic!("the upload answers a content reference: {reference}"));
     assert_eq!(
-        reference
-            .trim_start_matches("tilo.content:")
-            .split('.')
-            .next(),
-        Some(hash),
-        "the tree names the content the upload answered",
+        uploaded,
+        blake3::hash(expected).to_hex().as_str(),
+        "the upload names the bytes it took",
+    );
+    assert_ne!(
+        hash, uploaded,
+        "the tree names the file by its own manifest, not by the upload's address",
     );
     assert_eq!(
         content_at_hash(session, workspace, hash).await.as_deref(),
         Some(expected),
         "the serving device opens exactly the uploaded bytes under the Files keys",
+    );
+    assert_eq!(
+        content_bytes(session, workspace, reference).await,
+        expected,
+        "the upload's reference reads the same bytes",
     );
 }
 

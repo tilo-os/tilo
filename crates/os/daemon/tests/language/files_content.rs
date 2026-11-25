@@ -10,7 +10,7 @@
 use serde_json::{Value, json};
 
 use crate::language::files_support::{
-    Session, assert_sealed_file, content_at, content_bytes, content_in, files, form_pdf, kept_when,
+    Session, assert_put_file, content_at, content_bytes, content_in, files, form_pdf, kept_when,
     put, said,
 };
 use crate::language::host;
@@ -49,7 +49,7 @@ fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
             .as_deref()
             .expect("the file names its content")
             .to_owned();
-        assert_sealed_file(&session, &workspace, &content, &first, &form).await;
+        assert_put_file(&session, &workspace, &content, &first, &form).await;
         assert_eq!(node.size, form.len() as u64);
         assert_eq!(
             content_bytes(&session, &workspace, &content).await,
@@ -73,7 +73,7 @@ fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
         .await;
         let node = crate::language::files_support::file_at(&tree, "forms/2026", "permit.pdf")
             .expect("the file is in its folder");
-        assert_sealed_file(
+        assert_put_file(
             &session,
             &workspace,
             &permit_content,
@@ -102,7 +102,7 @@ fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
         .await;
         let node = crate::language::files_support::file_at(&tree, "", "visa.pdf")
             .expect("still one file of that name");
-        assert_sealed_file(
+        assert_put_file(
             &session,
             &workspace,
             &cover_content,
@@ -320,7 +320,7 @@ fn a_resumed_upload_of_a_large_file_lands_once_and_whole() {
         .await;
         let node = crate::language::files_support::file_at(&tree, "scans", "scan.pdf")
             .expect("the large file is in the tree");
-        assert_sealed_file(
+        assert_put_file(
             &session,
             &workspace,
             &content,
