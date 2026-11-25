@@ -5,6 +5,7 @@
 
 mod app_records_tests;
 mod calendar_bridge_tests;
+mod declared_kinds_tests;
 mod hosted_own_agent_tests;
 mod mail_bridge_tests;
 mod moderation_history_tests;
@@ -52,6 +53,7 @@ mod files_paths;
 /// What the Files tests read of what a daemon keeps.
 mod files_support;
 mod files_views;
+mod first_device;
 /// A person who is not the device's own, admitted by an invitation and asking over the link.
 mod guests;
 mod hosted_agent_terminal;

@@ -390,6 +390,30 @@ impl ServiceSessions {
         }
     }
 
+    /// Name the surfaces every start of a service declares, whatever app is installed here: the
+    /// settings' sections, the person's own records and the workspace records the system keeps
+    /// ([`crate::workspaces::person_workspace::declare_kinds`]), the calls that wait for their
+    /// person's yes and the workspace's agents. What the service's stores judge a change's
+    /// records by from its first write.
+    ///
+    /// # Errors
+    /// A surface of a record the system keeps does not write as the file that record is judged
+    /// by.
+    pub(crate) fn declare_start_surfaces(
+        surfaces: &collab_types::app_surface::Surfaces,
+    ) -> Result<(), String> {
+        // The settings are resources of every workspace that keeps a person's or a device's:
+        // each section's kind and setters are declared on every holder alike.
+        surfaces.register_built_in(
+            settings_store::workspace::SURFACE_APP,
+            settings_store::workspace::surface_json(),
+        );
+        // The kinds the system keeps, declared from their types: the person's records, the
+        // workspace records kept for apps, the calls that wait and the agents. A service that
+        // could not judge one of them does not start.
+        crate::workspaces::person_workspace::declare_kinds(surfaces)
+    }
+
     /// What the workspaces a service hosts take from it: its workspaces' registry,
     /// access, records, identity and live trust, and `cfg`'s workspace settings.
     fn workspace_services(
@@ -426,15 +450,7 @@ impl ServiceSessions {
             })),
             member: cfg.member.clone(),
             surfaces: {
-                // The settings are resources of every workspace that keeps a person's or a
-                // device's: each section's kind and setters are declared on every holder alike.
-                cfg.surfaces.register_built_in(
-                    settings_store::workspace::SURFACE_APP,
-                    settings_store::workspace::surface_json(),
-                );
-                // The kinds the system keeps, declared from their types: a service that could not
-                // judge one of them does not start.
-                crate::workspaces::person_workspace::declare_kinds(&cfg.surfaces)?;
+                Self::declare_start_surfaces(&cfg.surfaces)?;
                 Arc::clone(&cfg.surfaces)
             },
             apps,

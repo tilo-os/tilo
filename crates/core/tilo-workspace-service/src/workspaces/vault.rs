@@ -1021,8 +1021,9 @@ mod tests {
     }
 
     /// The vault is the system's record on every device: installing Passwords, whose package
-    /// declares its own records, keeps the vault's writes admitted, and a package that declares
-    /// the vault's type itself is refused, so no package judges the vault's writes by its copy.
+    /// declares its own records, keeps the vault's writes admitted, and a package that names the
+    /// vault's type itself does not declare it, so no package judges the vault's writes by its
+    /// copy.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn installing_passwords_keeps_the_vault_the_systems() {
         const PASSWORDS: &str = r#"{"format":2,"resources":[{"fields":[{"path":"title","type":"text"}],"kind":"passwords.item","label":"Item","verbs":[{"id":"type","kind":"undoable"}],"version":1}]}"#;
@@ -1043,10 +1044,13 @@ mod tests {
         let squatter = PASSWORDS.replace("passwords.item", WorkspaceVaultEntries::KIND);
         surfaces.register_package("test.vault-copy", squatter.as_bytes());
         assert!(
-            surfaces.hash_of("test.vault-copy").is_none(),
-            "a package declaring the vault's type is refused"
+            surfaces.hash_of("test.vault-copy").is_some(),
+            "a package naming the vault's type keeps the surface its other kinds are declared by"
         );
-        assert!(surfaces.kinds_of("test.vault-copy").is_empty());
+        assert!(
+            surfaces.kinds_of("test.vault-copy").is_empty(),
+            "the vault's type stays the system's: a package's copy of it is no kind its store declares"
+        );
 
         let workspace = workspaces.create("Vault").await.unwrap().workspace;
         let opened = workspaces.open_vault(&workspace).await.unwrap();
