@@ -237,7 +237,8 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
     // Heard from the daemon's first moment: before there is a person, waiting for one is all it
     // does, and a signal the caller had ignored is inherited across exec.
     let stop = crate::device::serve::Stop::default();
-    crate::device::serve::hear_stops(stop.clone(), crate::device::serve::STOPPED_WITHIN)
+    let native = native_socket(profile)?;
+    crate::device::serve::hear_stops(stop.clone(), crate::device::serve::STOPPED_WITHIN, native)
         .map_err(|error| io::Error::other(format!("{error:#}")))?;
     Running::start_serving(profile, dev, stop)?.wait()
 }
@@ -615,14 +616,31 @@ fn serve_device(
         if stop.told() {
             return Ok(());
         }
+        stop.waiting_on("the wait between its person's parts");
+        // In a build that is not a release, a test can hold the daemon between its parts, where
+        // a step of the part that ended does not return: what a folder that will not unmount
+        // does. The stop must still end the daemon there.
+        #[cfg(debug_assertions)]
+        {
+            if !stop.told()
+                && let Some(block) = std::env::var_os("TILO_TEST_HOLD_BETWEEN_PARTS_MS")
+                    .and_then(|ms| ms.to_str().and_then(|ms| ms.parse::<u64>().ok()))
+            {
+                tracing::info!(
+                    ms = block,
+                    "a test holds the daemon between its person's parts"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(block));
+            }
+        }
         // Each stage is the work under way until the next begins: a start that hangs is named
         // by the stage it hangs in, in the stall's report.
         let mut watched = None;
         let mut stage = |stage: &str| {
             tracing::debug!(stage, "starting the person's services");
-            watched = Some(tilo_rt::stall::doing(format!(
-                "starting the person's services: {stage}"
-            )));
+            let what = format!("starting the person's services: {stage}");
+            stop.waiting_on(what.clone());
+            watched = Some(tilo_rt::stall::doing(what));
         };
         let session = match Daemon::start_locked(
             profile,
@@ -680,28 +698,45 @@ fn serve_device(
         native.serve_the_person(the_persons(&session, search));
         native.serve_keys(key_endpoint(&session));
         person.set(Some(&session));
+        // A part serves from here: a stop told now is the part's to take up, with its folders to
+        // unmount and its trees to keep.
+        stop.serving(true);
         // The device is served until the daemon is told to stop, another takes the device over,
         // or this computer logs in with a ticket: its person's part starts again as that device,
         // the device's own part (the native endpoint, the device's lock) staying up meanwhile.
         let held = crate::device::hold(&session, stop);
+        // Between parts from here: a stop told now has nothing of a part's to let go of, and
+        // ends the daemon rather than wait for the start that follows to take it up.
+        stop.serving(false);
         person.set(None);
         native.forget_the_person();
+        if stop.told() {
+            // The part ended because it was told to stop: what it served is let go by the
+            // process ending, as a kill would let go of it, rather than closed for a start that
+            // will not come.
+            drop(session);
+            return Ok(());
+        }
         let closed = session.connections().end();
         tracing::info!(closed, "the person's part closed the connections it served");
         // Its workspace service stops answering and saves what it took in, and its endpoint
         // closes, before the next part opens the same stores and enters as the same device.
         let workspaces = Arc::clone(session.serving());
+        let left = Arc::downgrade(&session);
         crate::device::serve::ending_step(
+            Some(stop),
             "the person's part's workspace service",
             CLOSING_WORKSPACES,
             move || {
                 crate::device::workspaces::block_on_owned(async move {
                     workspaces.shutdown().await;
                 });
+                // What the part kept of its folders lets go here, on this step's own thread: a
+                // mount that will not unmount blocks this step alone, never the daemon that
+                // has to hear its stop.
+                drop(session);
             },
         );
-        let left = Arc::downgrade(&session);
-        drop(session);
         match held.map_err(|error| io::Error::other(format!("{error:#}")))? {
             crate::device::Ended::Stopped => return Ok(()),
             crate::device::Ended::LoggedIn(device) => entered = Some(*device),
