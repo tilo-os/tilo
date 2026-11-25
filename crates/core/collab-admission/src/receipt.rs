@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use collab_types::claim::{ChangeClaim, ClaimedAction, FrameworkChange};
+use collab_types::claim::{ChangeClaim, ClaimedAction, FrameworkChange, Invoker};
 use collab_types::receipt::{
     Allows, Receipt, ReceiptRefusal, SurfaceFor, Surfaces, WrittenDocument, WrittenUnits, by_kind,
     check_claimed_changes, check_claims, check_claims_by_kind, check_continuations,
@@ -288,9 +288,13 @@ fn decide_change_op(
     };
     let surface_for = |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
     let Some(changes) = opened_changes(op, opened)? else {
-        // A sealed op: the server decides the claims its envelope
-        // carries; devices check the changes once they open them.
-        return check_claims_by_kind(&op.claims, document, kind, replay, &surface_for, allows);
+        // A sealed op: the server decides the claims its envelope carries, each as who it names
+        // ([`sealed_invoker`]); devices check the changes once they open them.
+        let mut claims = op.claims.clone();
+        for claim in &mut claims {
+            claim.invoker = sealed_invoker(claim, (imported, signer))?.map(Invoker::new);
+        }
+        return check_claims_by_kind(&claims, document, kind, replay, &surface_for, allows);
     };
     // A cleartext change names its action in itself, under the op's
     // signature: the envelope carries no second copy.
@@ -477,12 +481,8 @@ fn decide_as_document_edit(
     (imported, signer): (Option<&Acting>, Option<&Acting>),
 ) -> Result<Receipt, ReceiptRefusal> {
     let record = written_node(document);
-    // A change that carries a resource store's stamp names its invoker there;
-    // one whose stamp names none is refused, as any change that names nobody,
-    // unless an import step said whose it is. A framework change that names no one is its
-    // signer's, and a checkpoint carries its writes' own.
-    // Each is decided at the record, or, for a resource store's change, at the verb it was
-    // written under: a grant on that verb alone admits it, and admits no other edit.
+    // Each change is decided as who made it ([`crate::claim::maker_of`]) at the record, or a
+    // store's change at the verb it was written under, which admits no other edit.
     let at_verb = |verb: Option<&str>| match verb {
         Some(verb) => record.clone().action(verb),
         None => record.clone(),
@@ -491,13 +491,9 @@ fn decide_as_document_edit(
     match changes {
         Some(changes) => {
             for change in changes {
-                let verb = ChangeClaim::of_change(
-                    change.hash().0,
-                    change.message(),
-                    Vec::new(),
-                )
-                .ok()
-                .and_then(|claim| claim.action.store_verb().map(str::to_owned));
+                let verb = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new())
+                    .ok()
+                    .and_then(|claim| claim.action.store_verb().map(str::to_owned));
                 let invoker = match (crate::claim::maker_of(change), imported) {
                     (crate::claim::Maker::Named, _) => collab_types::claim::invoker_of(change),
                     (crate::claim::Maker::Derived, _) => None,
@@ -508,29 +504,11 @@ fn decide_as_document_edit(
                 invokers.push((invoker, at_verb(verb.as_deref())));
             }
         }
-        // Who made a write this receiver cannot read is who its claims name: signed with the
-        // write, and checked against its changes by every device that opens it. Never the
-        // signing device alone, which would let an app's write, or an agent's, stand as if
-        // the signer's person had made it.
+        // A write this receiver cannot read is decided by its signed claims ([`sealed_invoker`]).
         None => {
             for claim in claims {
                 let node = at_verb(claim.action.store_verb());
-                let invoker = match (&claim.invoker, &claim.action) {
-                    (Some(invoker), _) => Some(Acting::clone(invoker)),
-                    // A record's founding, which every device derives alike, names no one.
-                    (
-                        None,
-                        ClaimedAction::Framework(
-                            FrameworkChange::Genesis | FrameworkChange::Structure,
-                        ),
-                    ) => None,
-                    (None, ClaimedAction::Framework(_)) => signer.cloned(),
-                    (None, _) => match imported {
-                        Some(person) => Some(person.clone()),
-                        None => return Err(ReceiptRefusal::NoInvoker),
-                    },
-                };
-                invokers.push((invoker, node));
+                invokers.push((sealed_invoker(claim, (imported, signer))?, node));
             }
         }
     }
@@ -551,6 +529,23 @@ fn decide_as_document_edit(
         }
         Ok(Receipt::Admit)
     }
+}
+
+/// Who made a sealed op's change, by its `claim`: who it names; no one for a founding every device
+/// derives; the signer for the framework's own change; the importer for an imported history.
+/// Any other claim naming no one is refused, never decided as the signing device's.
+fn sealed_invoker(
+    claim: &ChangeClaim,
+    (imported, signer): (Option<&Acting>, Option<&Acting>),
+) -> Result<Option<Acting>, ReceiptRefusal> {
+    Ok(match (&claim.invoker, &claim.action) {
+        (Some(invoker), _) => Some(Acting::clone(invoker)),
+        (None, ClaimedAction::Framework(FrameworkChange::Genesis | FrameworkChange::Structure)) => {
+            None
+        }
+        (None, ClaimedAction::Framework(_)) => signer.cloned(),
+        (None, _) => Some(imported.ok_or(ReceiptRefusal::NoInvoker)?.clone()),
+    })
 }
 
 /// A sealed compaction folds a record's sealed history into one snapshot of

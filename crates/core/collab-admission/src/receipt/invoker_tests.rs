@@ -420,7 +420,8 @@ fn a_sealed_write_by_an_app_is_decided_by_the_apps_grant_not_its_signer() {
             &tree(),
             (None, None, None),
             None,
-            &Surfaces::default(),
+            // A write naming no surface is decided as an edit of its record.
+            &Surfaces::from_source(std::sync::Arc::new(Tree)),
             &allows,
             (None, Some(&signer.acting)),
         )
@@ -450,6 +451,17 @@ fn a_sealed_write_by_an_app_is_decided_by_the_apps_grant_not_its_signer() {
         decided(&installed, &nameless),
         Err(ReceiptRefusal::NoInvoker),
         "a write that names no one is no one's to admit"
+    );
+    // Decided by its claims against the surface its app publishes, the same: one naming no one
+    // is refused, never decided as the device that signed it.
+    let mut published = sealed(&write_by(Some(&app))).0;
+    assert_eq!(decided(&installed, &published), Ok(Receipt::Admit));
+    for claim in &mut published.claims {
+        claim.invoker = None;
+    }
+    assert_eq!(
+        decided(&installed, &published),
+        Err(ReceiptRefusal::NoInvoker)
     );
 }
 
@@ -523,7 +535,11 @@ fn a_visitors_store_write_is_decided_as_the_verb_it_was_written_under() {
         "the claim names the verb the change was written under"
     );
     assert_eq!(decided(&sealed), Ok(Receipt::Admit), "leaving an address");
-    assert_eq!(decided(&clear), Ok(Receipt::Admit), "leaving an address, opened");
+    assert_eq!(
+        decided(&clear),
+        Ok(Receipt::Admit),
+        "leaving an address, opened"
+    );
     for other in ["remove", "$put", ""] {
         let (clear, sealed) = write(other);
         for op in [&sealed, &clear] {
