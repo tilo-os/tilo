@@ -84,7 +84,17 @@ async fn a_member_fetches_a_bridged_avatar_from_the_workspace_host() {
     tilo_test_env::within("the avatar arrives", async {
         loop {
             let heard = linked.next().await.expect("the link stays open");
-            assert_eq!(heard.author, host.device_pubkey(), "the host answers");
+            // The link first catches the member up on the workspace, each
+            // change under the device that signed it, its own entry
+            // included. Content answers come from the host alone.
+            let answer = matches!(
+                heard.message,
+                NeighbourMsg::DocumentContentLacks { .. }
+                    | NeighbourMsg::DocumentContentPiece { .. }
+            );
+            if answer {
+                assert_eq!(heard.author, host.device_pubkey(), "the host answers");
+            }
             match heard.message {
                 NeighbourMsg::DocumentContentLacks { hash, .. } => {
                     lacking.push(hash);
