@@ -226,6 +226,8 @@ jiff = { workspace = true, optional = true }
 rustix = { workspace = true, features = ["process"], optional = true }
 
 [dev-dependencies]
+# Compiles the surface this crate publishes for the test that holds its file to it.
+tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 # The committed package a provider's actions are described by, which its test reads.
 toml.workspace = true
 # The document app whose record the broker's fixture seeds and drives.

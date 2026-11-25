@@ -244,9 +244,8 @@ fn newest_package(dist: &Path) -> Result<PathBuf> {
 }
 
 /// The workspace's `install` for the package `package` built from the app in
-/// `app_dir`: the surface its changes name (the BLAKE3 of the app's
-/// `surface.toml` in the form it is kept by), the package's `tapp:` hash and
-/// the key that signed it.
+/// `app_dir`: the surface its changes name (the BLAKE3 of the app's compiled
+/// surface), the package's `tapp:` hash and the key that signed it.
 pub fn app_push(app_dir: &Path, package: &Path, dev: bool) -> Result<Push> {
     let file =
         std::fs::File::open(package).with_context(|| format!("open {}", package.display()))?;
@@ -261,22 +260,22 @@ pub fn app_push(app_dir: &Path, package: &Path, dev: bool) -> Result<Push> {
             package.display()
         );
     }
-    let surface_file = app_dir.join("surface.toml");
-    let surface = std::fs::read(&surface_file).with_context(|| {
-        format!(
-            "read {}: the workspace decides changes against it (`tilolang surface`)",
+    let surface_file = app_dir.join(tilo_surface_compile::SOURCE_FILE);
+    if !surface_file.is_file() {
+        bail!(
+            "{} is missing: the workspace decides changes against it (`tilolang surface`)",
             surface_file.display()
-        )
-    })?;
-    let (_, kept) = collab_types::surface::SurfaceFile::kept(&surface)
-        .map_err(|error| anyhow::anyhow!("{}: {error}", surface_file.display()))?;
+        );
+    }
+    let surface = tilo_surface_compile::compile_file(&surface_file)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
     let manifest = &tapp.meta.manifest.package;
     let argument = object([
         ("app", json!(manifest.id)),
         ("version", json!(manifest.version)),
         (
             "surface",
-            json!(blake3::hash(kept.as_bytes()).to_hex().as_str()),
+            json!(blake3::hash(surface.as_bytes()).to_hex().as_str()),
         ),
         ("package", json!(hex::encode(tapp.meta.id.0))),
         (

@@ -11,8 +11,8 @@
 //!   the same way, so the runtime runs their views and actions on the resources it holds of them
 //!   (a board drawing todos' rows), each package under its own authority. The standard library
 //!   is not among them: the runtime the package names carries it (`lib/tilo.std.wasm`);
-//! * `surface.toml`: the surface generated from the metadata, which receivers decide the app's
-//!   changes against;
+//! * `surface.json`: the compiled surface generated from the metadata, which receivers decide
+//!   the app's changes against;
 //! * `icon.svg`: the app's icon, when it declares one.
 
 use std::path::{Path, PathBuf};
@@ -23,7 +23,7 @@ use tilolang_runtime::meta::Meta;
 pub const MODULE_ENV: &str = "TILO_APP_MODULE";
 pub const WASM_FILE: &str = "app.wasm";
 pub const IDS_FILE: &str = "app.ids";
-pub const SURFACE_FILE: &str = "surface.toml";
+pub const SURFACE_FILE: &str = "surface.json";
 pub const ICON_FILE: &str = "icon.svg";
 pub const IMPORTS_DIR: &str = "imports";
 
@@ -304,7 +304,7 @@ impl Bundle {
         Self::read(Path::new(&dir))
     }
 
-    /// The `surface.toml` bytes generated from this package's metadata: its resources, and as
+    /// The compiled surface bytes generated from this package's metadata: its resources, and as
     /// `reads` those of the packages it uses. The bytes are part of the package's digest, so they
     /// say each name in its source words, never in the language of whoever built it.
     ///
@@ -317,7 +317,7 @@ impl Bundle {
             .iter()
             .map(|import| import.meta.clone())
             .collect();
-        crate::surface::surface_toml_reading(&[&self.meta], &reads, &tilolang_runtime::SourceWords)
+        crate::surface::surface_bytes_reading(&[&self.meta], &reads, &tilolang_runtime::SourceWords)
             .map_err(|error| BundleError::Surface {
                 app: self.meta.app.clone(),
                 reason: error.to_string(),
@@ -334,7 +334,7 @@ impl Bundle {
         self.imports
             .iter()
             .map(|import| {
-                crate::surface::surface_toml_reading(
+                crate::surface::surface_bytes_reading(
                     &[&import.meta],
                     &[],
                     &tilolang_runtime::SourceWords,

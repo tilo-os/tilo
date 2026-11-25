@@ -158,8 +158,8 @@ pub fn metadata(package_id: &str) -> Option<&'static FleetApp> {
     apps().iter().find(|app| app.id == wanted)
 }
 
-/// The signed `surface.toml` of `package_id`, as its package ships it: the declarations a
-/// program in a workspace compiles that app against there.
+/// The compiled surface of `package_id`, as its package ships it: the declarations a program in
+/// a workspace compiles that app against there.
 #[cfg(feature = "surfaces")]
 #[must_use]
 pub fn surface(package_id: &str) -> Option<&'static str> {

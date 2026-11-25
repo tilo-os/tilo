@@ -405,26 +405,26 @@ pub(crate) fn signed_entry(
     Ok(entry)
 }
 
-/// The BLAKE3 of the surface `tapp_bytes` carries, in the form it is kept by: what a workspace
-/// that runs the version records and decides its changes against. Empty for a package that
-/// publishes no surface.
+/// The BLAKE3 of the compiled surface `tapp_bytes` carries: what a workspace that runs the
+/// version records and decides its changes against. Empty for a package that publishes no
+/// surface.
 ///
 /// # Errors
-/// The bytes are no package, or its surface.toml is missing from it or does not parse.
+/// The bytes are no package, or its surface.json is missing from it or is not the compiled form.
 pub fn surface_hex(tapp_bytes: &[u8]) -> Result<String> {
     let mut blobs: std::collections::BTreeMap<tilo_app_package::blobs::BlobHash, Vec<u8>> =
         std::collections::BTreeMap::new();
     let tapp = tilo_app_package::tapp::read(tapp_bytes, &mut blobs)
         .map_err(|error| anyhow!("decode .tapp: {error}"))?;
-    let Some(hash) = tapp.meta.collection.entries.get("surface.toml") else {
+    let Some(hash) = tapp.meta.collection.entries.get("surface.json") else {
         return Ok(String::new());
     };
     let bytes = blobs
         .get(hash)
-        .ok_or_else(|| anyhow!("the .tapp names a surface.toml it does not carry"))?;
-    let (_, kept) = collab_types::surface::SurfaceFile::kept(bytes)
-        .map_err(|error| anyhow!("the package's surface.toml: {error}"))?;
-    Ok(blake3::hash(kept.as_bytes()).to_hex().to_string())
+        .ok_or_else(|| anyhow!("the .tapp names a surface.json it does not carry"))?;
+    collab_types::surface::SurfaceFile::compiled(bytes)
+        .map_err(|error| anyhow!("the package's surface.json: {error}"))?;
+    Ok(blake3::hash(bytes).to_hex().to_string())
 }
 
 /// What a registry version binds from the final tapp bytes.

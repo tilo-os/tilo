@@ -101,6 +101,8 @@ toolkit = []
 test-support = []
 
 [dev-dependencies]
+# Compiles the surfaces its tests read and keep.
+tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }
 # The page holder a test reads a peer's workspace through: the workspace service's document
 # core over the replica the peer's session admits into, as a page reads it.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["device-keys", "session-pages", "test-support"] }

@@ -198,6 +198,9 @@ pub(crate) fn run_surfaces(args: SurfacesArgs) -> Result<Value> {
             if tilo_app_builder::surface::write_offers(app, &report.offers)? {
                 println!("Wrote {}'s offers", app.display());
             }
+        } else if let Err(error) = tilo_app_builder::surface::compiled_is_current(app) {
+            failures.push(format!("{}: {error}", app.display()));
+            continue;
         }
         match tilo_app_builder::surface::check_report(
             app,

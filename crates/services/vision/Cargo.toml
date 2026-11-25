@@ -36,6 +36,8 @@ launcher = { path = "../../core/launcher" }
 runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
 
 [dev-dependencies]
+# The canonical compiled form of the surface this crate publishes.
+tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]

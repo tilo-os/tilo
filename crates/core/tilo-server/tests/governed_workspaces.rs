@@ -566,8 +566,7 @@ type = "String"
     ) {
         return;
     }
-    let (_, kept) = collab_types::surface::SurfaceFile::kept(SURFACE.as_bytes())
-        .expect("the fixture is a surface");
+    let kept = tilo_surface_compile::compile(SURFACE).expect("the fixture is a surface");
     let hash = *blake3::hash(kept.as_bytes()).as_bytes();
     let hex = hex::encode(hash);
     crate::common::install_process_surfaces(
@@ -678,8 +677,7 @@ params = []
     ) {
         return;
     }
-    let (_, kept) = collab_types::surface::SurfaceFile::kept(SURFACE.as_bytes())
-        .expect("the fixture is a surface");
+    let kept = tilo_surface_compile::compile(SURFACE).expect("the fixture is a surface");
     let hash = *blake3::hash(kept.as_bytes()).as_bytes();
     let hex = hex::encode(hash);
     crate::common::install_process_surfaces(

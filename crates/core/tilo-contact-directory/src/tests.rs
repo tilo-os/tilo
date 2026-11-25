@@ -574,8 +574,7 @@ fn a_projected_picture_shows_for_the_one_person_with_that_mailbox() {
 #[test]
 fn the_directory_surface_file_is_what_this_crate_publishes() {
     let surface = tilo_resource::surface::surface_of::<ContactDirectory>();
-    let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": [surface] }))
-        .expect("a surface writes as JSON");
+    let text = tilo_surface_compile::canonical(&serde_json::json!({ "resources": [surface] }));
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("surface.json");
     let committed = std::fs::read_to_string(&path).ok();
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {

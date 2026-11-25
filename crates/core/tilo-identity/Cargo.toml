@@ -64,6 +64,8 @@ tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Compiles the surfaces its tests register.
+tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }
 tempfile.workspace = true
 # A commenter's comment, as the change a notes window makes.
 automerge.workspace = true

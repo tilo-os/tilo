@@ -32,8 +32,11 @@ use crate::action::{
     INSERT_BLOCK_ACTION, ORIGIN_ACTION, SCENARIO_ACTION,
 };
 
-/// The surface file of an app directory, next to its manifest.
+/// The authored surface of an app directory, next to its manifest: the build tools compile it
+/// ([`tilo_surface_compile`]).
 pub const SURFACE_FILE: &str = "surface.toml";
+/// The compiled surface of an app directory: the one form a receiver reads.
+pub const COMPILED_SURFACE_FILE: &str = "surface.json";
 /// The manifest of a native app directory.
 pub const MANIFEST_FILE: &str = "tilo-app.toml";
 
@@ -74,7 +77,8 @@ struct PublishedFile {
 }
 
 fn published(text: &str) -> Result<Vec<Published>, String> {
-    let file: PublishedFile = toml::from_str(text).map_err(|error| error.to_string())?;
+    let file: PublishedFile = serde_json::from_str(text)
+        .map_err(|error| format!("not the compiled form of a surface: {error}"))?;
     Ok(file.resources)
 }
 
@@ -129,11 +133,10 @@ fn loose(text: &str) -> Result<BTreeMap<String, (String, VerbSurface)>, String> 
     Ok(out)
 }
 
-/// The resources a `surface.toml` lists.
+/// The resources a compiled surface (`surface.json`) lists.
 pub fn parse_surfaces(text: &str) -> Result<Vec<Surface>, String> {
-    // Through a JSON value, as receivers read it (`collab_types::surface::SurfaceFile`).
-    let value: serde_json::Value = toml::from_str(text).map_err(|error| error.to_string())?;
-    let file: SurfaceFile = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    let file: SurfaceFile = serde_json::from_str(text)
+        .map_err(|error| format!("not the compiled form of a surface: {error}"))?;
     // A resource written field by field publishes a setter of each field, which its file leaves
     // to the one rule that derives them.
     Ok(file
@@ -149,10 +152,10 @@ pub fn parse_surfaces(text: &str) -> Result<Vec<Surface>, String> {
         .collect())
 }
 
-/// One native app's published surface: its package id, the name people call it, and the bytes
-/// of its `surface.toml`. [`NativeSurface::package`] reads it as a tilolang package, whichever
-/// way it arrived: from the app's directory ([`native_surface`]) for `tilolang check`, or from
-/// what a session hands a task's host.
+/// One native app's published surface: its package id, the name people call it, and its compiled
+/// surface. [`NativeSurface::package`] reads it as a tilolang package, whichever way it arrived:
+/// from the app's directory ([`native_surface`]) for `tilolang check`, or from what a session
+/// hands a task's host.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeSurface {
     pub app: String,
@@ -285,8 +288,9 @@ pub fn published_verb<'a>(app: &str, id: &'a str) -> &'a str {
     id.rsplit_once('/').map_or(id, |(_, verb)| verb)
 }
 
-/// The surface a native app directory publishes: its manifest's id and name, and its
-/// `surface.toml`. `None` for a directory that is not a native app with a committed surface.
+/// The surface a native app directory publishes: its manifest's id and name, and its compiled
+/// surface, compiled here from the `surface.toml` beside its manifest. `None` for a directory
+/// that is not a native app with an authored surface.
 pub fn native_surface(dir: &Path) -> Result<Option<NativeSurface>, String> {
     let (manifest, surface) = (dir.join(MANIFEST_FILE), dir.join(SURFACE_FILE));
     if !manifest.is_file() || !surface.is_file() {
@@ -295,14 +299,15 @@ pub fn native_surface(dir: &Path) -> Result<Option<NativeSurface>, String> {
     let read = |path: &Path| {
         std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))
     };
-    NativeSurface::read(&read(&manifest)?, read(&surface)?)
+    let compiled = tilo_surface_compile::compile_file(&surface)?;
+    NativeSurface::read(&read(&manifest)?, compiled)
         .map(Some)
         .map_err(|error| format!("{}: {error}", dir.join(MANIFEST_FILE).display()))
 }
 
 impl NativeSurface {
-    /// The native app whose `tilo-app.toml` is `manifest` and whose `surface.toml` is `surface`:
-    /// [`native_surface`] over files already read, as a host with no disk holds them.
+    /// The native app whose `tilo-app.toml` is `manifest` and whose compiled surface is
+    /// `surface`: [`native_surface`] over data already read, as a host with no disk holds it.
     ///
     /// # Errors
     /// The manifest is not one.
@@ -329,7 +334,7 @@ pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
         .map_err(|error| format!("{}: {error}", dir.join(SURFACE_FILE).display()))
 }
 
-/// The package of the app `app` named `title` whose `surface.toml` is `text`: a description a
+/// The package of the app `app` named `title` whose compiled surface is `text`: a description a
 /// binary carries, its actions named as the surface names them.
 ///
 /// A task's host and `tilolang check` both read a native app through this one reader, so a

@@ -23,12 +23,10 @@ tilo_test_env::scenario! {
                     .surface_bytes(app.id)
                     .await
                     .unwrap_or_else(|| panic!("{} answers no surface", app.id));
-                let (_, kept) = collab_types::surface::SurfaceFile::kept(
-                    app_fleet::surface(app.id)
-                        .expect("the fleet compiles its surface in")
-                        .as_bytes(),
-                )
-                .expect("the fleet's surface is one");
+                let kept = app_fleet::surface(app.id)
+                    .expect("the fleet compiles its surface in");
+                collab_types::surface::SurfaceFile::compiled(kept.as_bytes())
+                    .expect("the fleet's surface is compiled");
                 assert_eq!(
                     String::from_utf8_lossy(&surface),
                     kept,

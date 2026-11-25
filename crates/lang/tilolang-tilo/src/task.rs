@@ -1216,7 +1216,7 @@ mod tests {
         crate::catalogue::NativeSurface {
             app: "so.tilo.chat".to_owned(),
             title: "Chat".to_owned(),
-            surface: include_str!("../tests/native-chat/surface.toml").to_owned(),
+            surface: include_str!("../tests/native-chat/surface.json").to_owned(),
         }
         .package()
         .expect("Chat's surface reads")

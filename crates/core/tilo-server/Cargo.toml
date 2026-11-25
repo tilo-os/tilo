@@ -346,3 +346,7 @@ workspace = true
 # Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
 # outside a systemd session.
 sd-notify.workspace = true
+
+[dev-dependencies]
+# Compiles the surfaces its tests decide changes against.
+tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }

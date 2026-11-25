@@ -160,12 +160,11 @@ fn surfaces(reach: crate::api::Reach<'_>, workspace: Option<&str>) -> Result<Vec
 fn fleet() -> Result<Vec<App>> {
     app_fleet::surfaced()
         .map(|(id, name, file)| {
-            let (_, surface) =
-                SurfaceFile::kept(file.as_bytes()).map_err(|error| anyhow!("{id}: {error}"))?;
+            SurfaceFile::from_json(file).map_err(|error| anyhow!("{id}: {error}"))?;
             Ok(App {
                 id: id.to_owned(),
                 title: name.to_owned(),
-                surface,
+                surface: file.to_owned(),
             })
         })
         .collect()
@@ -1939,7 +1938,7 @@ required = false
 type = { option = "duration" }
 schema = { type = "integer", description = "Duration in whole seconds" }
 "#;
-        let (_, surface) = SurfaceFile::kept(toml.as_bytes()).expect("timer surface parses");
+        let surface = tilo_surface_compile::compile(toml).expect("timer surface parses");
         let timer = App {
             id: "so.tilo.timer".to_owned(),
             title: "Timer".to_owned(),

@@ -318,10 +318,10 @@ fn collect_unexpected(
     Ok(())
 }
 
-pub const SURFACE_FILE: &str = "surface.toml";
+pub const SURFACE_FILE: &str = "surface.json";
 
-/// The surface the signed package ships: its `surface.toml` bytes from the
-/// payload, only when they hash to the blob the signed collection names.
+/// The surface the signed package ships: its compiled `surface.json` bytes from
+/// the payload, only when they hash to the blob the signed collection names.
 /// `None` for a package that ships none, one whose surface changed after
 /// install, or one without a signed record.
 #[must_use]

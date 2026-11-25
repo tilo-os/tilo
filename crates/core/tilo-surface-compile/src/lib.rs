@@ -19,13 +19,20 @@ pub const SOURCE_FILE: &str = "surface.toml";
 /// The compiled form: canonical JSON, the one form that is committed, addressed, hashed and sent.
 pub const FILE: &str = "surface.json";
 
+/// `value` as canonical JSON: the one encoding every surface is committed, addressed, hashed and
+/// sent in.
+#[must_use]
+pub fn canonical(value: &Value) -> String {
+    tilo_canonical_json::to_string(value)
+}
+
 /// The compiled form of the surface `toml` writes.
 ///
 /// # Errors
 /// `toml` is not a surface file.
 pub fn compile(toml: &str) -> Result<String, String> {
     let value: Value = toml::from_str(toml).map_err(|error| error.to_string())?;
-    Ok(tilo_canonical_json::to_string(&value))
+    Ok(canonical(&value))
 }
 
 /// The compiled form of `resources` — a surface an app's code publishes — with `reads` the

@@ -299,7 +299,7 @@ fn a_package_that_uses_the_platforms_apps_builds() {
 }
 
 fn collab_types_surface(bytes: &[u8]) -> collab_types::surface::SurfaceFile {
-    collab_types::surface::SurfaceFile::parse(bytes).unwrap()
+    collab_types::surface::SurfaceFile::compiled(bytes).unwrap()
 }
 
 #[cfg(target_os = "linux")]

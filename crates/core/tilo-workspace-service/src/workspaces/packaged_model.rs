@@ -62,14 +62,12 @@ pub(crate) fn keep_surface(
     app: &str,
     surface: &[u8],
 ) {
+    if collab_types::surface::SurfaceFile::compiled(surface).is_err() {
+        return;
+    }
     surfaces.register_package(app, surface);
     collab_types::app_surface::register_package(app, surface);
-    if let Ok((_, canonical)) = collab_types::surface::SurfaceFile::kept(surface) {
-        crate::surfaces::keep(
-            &blake3::hash(canonical.as_bytes()).to_hex(),
-            canonical.as_bytes(),
-        );
-    }
+    crate::surfaces::keep(&blake3::hash(surface).to_hex(), surface);
 }
 
 impl Workspaces {

@@ -120,33 +120,30 @@ pub struct Root {
     pub published: String,
 }
 
-/// [`surface`] as its committed file, `published.toml` beside this crate, holds it: the
-/// resources in the form an app's committed surface takes, then the roots.
+/// [`surface`] as its committed file, `published.json` beside this crate, holds it: the
+/// resources in the compiled form an app's surface takes, then the roots, canonical so the same
+/// sections always hash to the same bytes.
 ///
 /// # Errors
 /// A resource that holds what a surface file cannot.
 pub fn surface_file() -> Result<String, String> {
-    use std::fmt::Write as _;
     let (resources, roots) = surface();
-    let resources = serde_json::to_value(resources).map_err(|error| error.to_string())?;
-    let mut text = ui::tilo_resource::surface::file::render(
-        "# What the settings provider publishes, written by this crate's tests\n\
-         # (`UPDATE_SNAPSHOTS=1`); review changes like an API change.\n\n",
-        resources.as_array().map_or(&[][..], Vec::as_slice),
-        &[],
-    )?;
-    for Root {
-        name,
-        kind,
-        published,
-    } in roots
-    {
-        let _ = write!(
-            text,
-            "[[roots]]\nname = {name:?}\nkind = {kind:?}\npublished = {published:?}\n\n"
-        );
-    }
-    Ok(text)
+    let mut file = serde_json::Map::new();
+    file.insert(
+        "format".into(),
+        serde_json::Value::from(ui::tilo_resource::surface::file::FORMAT),
+    );
+    file.insert(
+        "resources".into(),
+        serde_json::to_value(resources).map_err(|error| error.to_string())?,
+    );
+    file.insert(
+        "roots".into(),
+        serde_json::to_value(roots).map_err(|error| error.to_string())?,
+    );
+    Ok(tilo_canonical_json::to_string(&serde_json::Value::Object(
+        file,
+    )))
 }
 
 /// Bring a section's record of version 1 up to 2: the leaves another section

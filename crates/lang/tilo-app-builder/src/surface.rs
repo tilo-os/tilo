@@ -468,7 +468,8 @@ pub fn render_with(resources: &[Value], reads: &[String], header: &str) -> Resul
 }
 
 /// Write `resources` to the app's [`FILE`], the kinds it reads of other apps
-/// under `reads`. Returns its path.
+/// under `reads`, and the compiled form the system commits, addresses and ships beside it.
+/// Returns the authored file's path.
 ///
 /// # Errors
 /// A read kind the app's manifest does not declare (see [`declared_reads`]).
@@ -480,10 +481,36 @@ pub fn write(
     let (app, kinds) = manifest_resource_kinds(app_dir)?;
     let (own, reads) = split_resources(resources, owners, &app);
     declared_reads(app_dir, &app, &kinds, &reads)?;
+    let text = render(&own, &reads)?;
     let path = app_dir.join(FILE);
-    std::fs::write(&path, render(&own, &reads)?)
-        .with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(&path, &text).with_context(|| format!("writing {}", path.display()))?;
+    let compiled = tilo_surface_compile::compile(&text).map_err(anyhow::Error::msg)?;
+    let file = app_dir.join(tilo_surface_compile::FILE);
+    std::fs::write(&file, compiled).with_context(|| format!("writing {}", file.display()))?;
     Ok(path)
+}
+
+/// Whether the app's compiled surface ([`tilo_surface_compile::FILE`]) is the compiled form of
+/// its authored [`FILE`], which is the one form the system commits, addresses and ships.
+///
+/// # Errors
+/// The compiled file is missing or another surface than the authored one compiles to.
+pub fn compiled_is_current(app_dir: &Path) -> Result<(), String> {
+    let authored = app_dir.join(FILE);
+    if !authored.is_file() {
+        return Ok(());
+    }
+    let compiled = tilo_surface_compile::compile_file(&authored)?;
+    let file = app_dir.join(tilo_surface_compile::FILE);
+    let committed = std::fs::read_to_string(&file).unwrap_or_default();
+    if committed != compiled {
+        return Err(format!(
+            "{} is not the compiled form of {}; run `tilolang surface --write`",
+            file.display(),
+            authored.display()
+        ));
+    }
+    Ok(())
 }
 
 /// The app's package id and the record kinds its manifest declares in

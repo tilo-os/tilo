@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use base64::Engine as _;
 use tilolang::source::{ASSETS_DIR, BuildError, BuiltPackage, IDS_FILE, PackageAsset};
 use tilolang::{IdsLock, PackageMeta, PackageSource, SeededEntropy};
-use tilolang_tilo::catalogue::{MANIFEST_FILE, NativeSurface, SURFACE_FILE};
+use tilolang_tilo::catalogue::{COMPILED_SURFACE_FILE, MANIFEST_FILE, NativeSurface};
 
 /// The files of one directory: its own files by name, its catalogues by locale, and the files it
 /// ships under `media/`.
@@ -115,9 +115,10 @@ impl Tree {
         let mut natives = Vec::new();
         for (dir, mut held) in dirs {
             let shown = |name: &str| dir.join(name).display().to_string();
-            if let (Some(manifest), Some(surface)) =
-                (held.files.get(MANIFEST_FILE), held.files.get(SURFACE_FILE))
-            {
+            if let (Some(manifest), Some(surface)) = (
+                held.files.get(MANIFEST_FILE),
+                held.files.get(COMPILED_SURFACE_FILE),
+            ) {
                 let package = NativeSurface::read(manifest, surface.clone())
                     .and_then(|native| native.package())
                     .map_err(|error| Failure::read(format!("{}: {error}", shown(MANIFEST_FILE))))?;

@@ -1,4 +1,4 @@
-//! The session's description (`apps/tl/session/surface.toml`) is what its API publishes, and
+//! The session's description (`apps/tl/session/surface.json`) is what its API publishes, and
 //! it reads as the package a shell uses.
 
 use std::path::{Path, PathBuf};
@@ -75,7 +75,7 @@ tilo_test_env::scenario! {
             param("x").default,
             Some(tilolang_tilo::runtime::meta::DefaultMeta::none())
         );
-        let text = std::fs::read_to_string(dir.join("surface.toml")).expect("the description");
+        let text = std::fs::read_to_string(dir.join("surface.json")).expect("the description");
         let addresses = tilolang_tilo::catalogue::addresses(&text).expect("each action one address");
         assert_eq!(addresses["Shell/place"], "shell:layout");
         // An app opens its recents and clears them by these two addresses, `session.recents(app:

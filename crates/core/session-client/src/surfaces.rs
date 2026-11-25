@@ -17,7 +17,7 @@ use std::sync::{Mutex, OnceLock};
 use tilo_lock::MutexRecover as _;
 
 /// Surfaces one page keeps at once; past it further ones are not kept. A
-/// surface is a few kilobytes of `surface.toml`, and a page runs a handful of
+/// surface is a few kilobytes of compiled JSON, and a page runs a handful of
 /// apps.
 const MAX_SURFACES: usize = 256;
 

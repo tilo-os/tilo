@@ -351,16 +351,17 @@ pub fn build_bwrap_argv(
     )
 }
 
-/// The surface the package ships (`surface.toml` at its payload root), by its path in the sandbox and
-/// its hash: the app reads it from there, checks the hash and names it in every change it signs.
+/// The compiled surface the package ships (`surface.json` at its payload root), by its path in the
+/// sandbox and its hash: the app reads it from there, checks the hash and names it in every change
+/// it signs.
 fn push_surface(argv: &mut Vec<String>, payload_root: &Path, payload_mount: &Path) {
-    let Ok(bytes) = std::fs::read(payload_root.join("surface.toml")) else {
+    let Ok(bytes) = std::fs::read(payload_root.join("surface.json")) else {
         return;
     };
     argv.extend([
         "--setenv".to_string(),
         "TILO_SURFACE".to_string(),
-        payload_mount.join("surface.toml").display().to_string(),
+        payload_mount.join("surface.json").display().to_string(),
         "--setenv".to_string(),
         "TILO_SURFACE_HASH".to_string(),
         blake3::hash(&bytes).to_hex().to_string(),
@@ -1347,7 +1348,11 @@ mod tests {
                     None,
                     "a package without a surface names none"
                 );
-                std::fs::write(payload.path().join("surface.toml"), b"[[resources]]\n").unwrap();
+                std::fs::write(
+                payload.path().join("surface.json"),
+                b"{\"resources\":[{\"kind\":\"com.example.notes\",\"label\":\"Notes\",\"version\":1}]}",
+            )
+            .unwrap();
                 let with = build_bwrap_argv(
                     &m,
                     payload.path(),
@@ -1357,7 +1362,7 @@ mod tests {
                     &CapabilityPlan::empty());
                 assert_eq!(
                     named(&with, "TILO_SURFACE").as_deref(),
-                    Some("/var/tilo-apps/com.example.notes/surface.toml"),
+                    Some("/var/tilo-apps/com.example.notes/surface.json"),
                     "the file in the sandbox's payload"
                 );
                 assert_eq!(

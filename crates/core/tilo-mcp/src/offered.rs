@@ -68,16 +68,16 @@ where
     // has neither started it nor kept its package: the fleet compiles each app's surface in,
     // so every installed app's types are readable on a fresh workspace.
     if let Some(surface) = app_fleet::surface(app_id)
-        && let Ok((_, kept)) = SurfaceFile::kept(surface.as_bytes())
+        && SurfaceFile::compiled(surface.as_bytes()).is_ok()
     {
-        return Some(kept.into_bytes());
+        return Some(surface.as_bytes().to_vec());
     }
     // The workspace publishes its own actions: its catalogue root carries the surface, and no
     // installed application names it.
     if let Some(surface) = tree.surface_of(app_id).await
-        && let Ok((_, kept)) = SurfaceFile::kept(surface.as_bytes())
+        && SurfaceFile::compiled(surface.as_bytes()).is_ok()
     {
-        return Some(kept.into_bytes());
+        return Some(surface.into_bytes());
     }
     None
 }

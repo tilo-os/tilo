@@ -1457,7 +1457,7 @@ fn is_language_source(relative: &Path) -> bool {
                     | "app.toml"
                     | "tilo-app.toml"
                     | "app.wasm"
-                    | "surface.toml"
+                    | "surface.json"
                     | "icon.svg"
                     | "imports"
             )

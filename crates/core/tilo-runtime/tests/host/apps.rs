@@ -372,7 +372,7 @@ pub fn install_rust(root: &Path, package: &str, bin: &str) {
     // package is placed as an install leaves one; a copy keeps the build's mode, so it runs.
     std::fs::copy(tilo_test_env::sibling_binary(package, bin), &entry)
         .unwrap_or_else(|error| panic!("{package}'s binary: {error}"));
-    std::fs::copy(dir.join("surface.toml"), payload.join("surface.toml"))
+    std::fs::copy(dir.join("surface.json"), payload.join("surface.json"))
         .unwrap_or_else(|error| panic!("{package}'s surface: {error}"));
     let meta = tilo_app_package::pack(&payload, &parsed, &publisher)
         .unwrap_or_else(|error| panic!("{package} packs: {error}"))

@@ -1509,24 +1509,21 @@ impl PackageCache {
     }
 }
 
-/// The surface the package `bytes` carries: its hash in the form it is kept by, as a release
-/// names it, and its `surface.toml`. `None` for a package that publishes none.
+/// The compiled surface the package `bytes` carries: its hash, as a release names it, and its
+/// bytes. `None` for a package that publishes none.
 fn package_surface(bytes: &[u8]) -> Result<Option<(String, Vec<u8>)>, String> {
     let mut blobs = std::collections::BTreeMap::new();
     let tapp =
         tilo_app_package::tapp::read(bytes, &mut blobs).map_err(|error| error.to_string())?;
-    let Some(hash) = tapp.meta.collection.entries.get("surface.toml") else {
+    let Some(hash) = tapp.meta.collection.entries.get("surface.json") else {
         return Ok(None);
     };
     let file = blobs
         .remove(hash)
-        .ok_or("the package names a surface.toml it does not carry")?;
-    let (_, kept) = collab_types::surface::SurfaceFile::kept(&file)
-        .map_err(|error| format!("the package's surface.toml: {error}"))?;
-    Ok(Some((
-        blake3::hash(kept.as_bytes()).to_hex().to_string(),
-        file,
-    )))
+        .ok_or("the package names a surface.json it does not carry")?;
+    collab_types::surface::SurfaceFile::compiled(&file)
+        .map_err(|error| format!("the package's surface.json: {error}"))?;
+    Ok(Some((blake3::hash(&file).to_hex().to_string(), file)))
 }
 
 #[cfg(test)]

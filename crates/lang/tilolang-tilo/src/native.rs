@@ -1141,7 +1141,7 @@ mod tests {
         let meta = crate::catalogue::NativeSurface {
             app: "so.tilo.tasks".to_owned(),
             title: "Tasks".to_owned(),
-            surface: include_str!("../tests/native-tasks/surface.toml").to_owned(),
+            surface: include_str!("../tests/native-tasks/surface.json").to_owned(),
         }
         .package()
         .expect("the surface reads");
@@ -1154,7 +1154,7 @@ mod tests {
         let meta = crate::catalogue::NativeSurface {
             app: "so.tilo.chat".to_owned(),
             title: "Chat".to_owned(),
-            surface: include_str!("../tests/native-chat/surface.toml").to_owned(),
+            surface: include_str!("../tests/native-chat/surface.json").to_owned(),
         }
         .package()
         .expect("the surface reads");

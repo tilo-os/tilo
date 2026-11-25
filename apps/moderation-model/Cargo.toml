@@ -14,6 +14,8 @@ tilo-actions = { version = "0.1.0", path = "../../crates/core/actions" }
 tilo-resource = { version = "0.1.0", path = "../../crates/core/tilo-resource" }
 
 [dev-dependencies]
+# The canonical compiled form of the surface this crate publishes.
+tilo-surface-compile = { version = "0.1.0", path = "../../crates/core/tilo-surface-compile" }
 tilo-resource = { path = "../../crates/core/tilo-resource", features = ["test-support"] }
 
 [lints]

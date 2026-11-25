@@ -2121,9 +2121,7 @@ mod tests {
     #[test]
     fn the_activity_surface_file_is_what_the_session_publishes() {
         let published = vec![surface(), range_surface(), feed_surface(), output_surface()];
-        let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
-            .expect("a surface writes as JSON")
-            + "\n";
+        let text = tilo_surface_compile::canonical(&serde_json::json!({ "resources": published }));
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("activity-surface.json");
         let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
         if on_disk == text {

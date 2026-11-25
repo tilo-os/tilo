@@ -795,12 +795,12 @@ fn the_committed_package_is_what_the_engine_registers() {
         manifest["package"]["name"].as_str(),
         Some(registered.title.as_str())
     );
-    let committed: toml::Table = toml::from_str(include_str!(
-        "../../../../../apps/tl/migrate-engine/surface.toml"
+    let committed: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../apps/tl/migrate-engine/surface.json"
     ))
     .expect("the description reads");
     let committed: Vec<tilo_actions::surface::Surface> =
-        serde_json::from_value(serde_json::to_value(&committed["resources"]).expect("as JSON"))
+        serde_json::from_value(committed["resources"].clone())
             .expect("the description is surfaces");
     let published: Vec<_> = registered
         .resources

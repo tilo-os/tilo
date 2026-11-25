@@ -1041,8 +1041,7 @@ label = "Comment"
 field = "comments"
 params = []
 "#;
-            let (_, kept) = collab_types::surface::SurfaceFile::kept(surface.as_bytes())
-                .expect("the fixture is a surface");
+            let kept = tilo_surface_compile::compile(surface).expect("the fixture is a surface");
             let hash = *blake3::hash(kept.as_bytes()).as_bytes();
             let hex = hex::encode(hash);
             collab_types::Surfaces::set_process(collab_types::Surfaces::from_source(

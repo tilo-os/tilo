@@ -28,3 +28,7 @@ workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# The canonical compiled form of the surface this crate publishes.
+tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }

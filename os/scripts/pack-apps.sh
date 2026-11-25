@@ -391,11 +391,11 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     mkdir -p "$payload/$(dirname "$entry_bin")"
     cp "$built" "$payload/$entry_bin"
     chmod 755 "$payload/$entry_bin"
-    # The app's public surface ships at the payload root, as the release
+    # The app's compiled surface ships at the payload root, as the release
     # packages stage it (dist/apps/package-apps.sh): the shell decides a
     # workspace's writes of the app against it and names it in the app's own.
-    if [ -f "$(dirname "$manifest")/surface.toml" ]; then
-        install -pm 0644 "$(dirname "$manifest")/surface.toml" "$payload/surface.toml"
+    if [ -f "$(dirname "$manifest")/surface.json" ]; then
+        install -pm 0644 "$(dirname "$manifest")/surface.json" "$payload/surface.json"
     fi
     # An app declares a model by keeping a guest crate beside it (apps/poker ->
     # apps/poker-model-wasm). The module the app-models check built for it ships

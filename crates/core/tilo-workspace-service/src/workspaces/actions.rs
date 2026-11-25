@@ -1130,7 +1130,7 @@ const GOVERNANCE: Publisher = Publisher {
 /// A workspace's own actions, as the file its test writes beside this crate: what its root
 /// catalogue row carries, so a caller reads the surface its programs compile against from the
 /// workspace itself.
-const WORKSPACE_SURFACE: &[u8] = include_bytes!("../../workspace-surface.toml");
+const WORKSPACE_SURFACE: &[u8] = include_bytes!("../../workspace-surface.json");
 
 impl Publisher {
     /// The catalogue entry naming this provider, offered on `workspace` (empty
@@ -4988,7 +4988,6 @@ mod surface_tests {
 
     /// The header the file carries: written by this test, so a change to it reads in review as
     /// an API change.
-    const HEADER: &str = "# Written by its test; review like an API change.\n\n";
 
     /// The verbs a member change names, declared on the members root it changes beside the
     /// actions that make it: a change names the governance operation it is (`remove-member`,
@@ -5193,8 +5192,14 @@ mod surface_tests {
             >())
             .expect("a surface writes as JSON"),
         );
-        tilo_resource::surface::file::render(HEADER, &resources, &[])
-            .expect("a surface writes as TOML")
+        let resources: Vec<Value> = resources
+            .iter()
+            .map(tilo_resource::surface::file::filed)
+            .collect();
+        tilo_surface_compile::canonical(&json!({
+            "format": tilo_resource::surface::file::FORMAT,
+            "resources": resources,
+        }))
     }
 
     /// The parameters the action `verb` takes, each with the schema its type gives and the
@@ -5248,7 +5253,7 @@ mod surface_tests {
     #[test]
     fn the_surface_file_is_what_this_crate_publishes() {
         let text = surface();
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("workspace-surface.toml");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("workspace-surface.json");
         let committed = std::fs::read_to_string(&path).ok();
         if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
             std::fs::write(&path, &text).expect("the surface file is written");
@@ -5257,7 +5262,7 @@ mod surface_tests {
         assert_eq!(
             committed.as_deref(),
             Some(text.as_str()),
-            "crates/core/tilo-workspace-service/workspace-surface.toml is not what a \
+            "crates/core/tilo-workspace-service/workspace-surface.json is not what a \
              workspace publishes; regenerate it with UPDATE_SNAPSHOTS=1"
         );
     }

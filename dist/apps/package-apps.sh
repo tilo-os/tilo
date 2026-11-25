@@ -290,9 +290,9 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     # The app's public surface ships at the payload root, as `tilolang package`
     # stages it: the launcher names that file to the app, which reads it from
     # there, and relays fetch it from the registry by the hash its ops name.
-    surface="$repo_root/$(dirname "$manifest")/surface.toml"
+    surface="$repo_root/$(dirname "$manifest")/surface.json"
     if [[ -f $surface ]]; then
-        install -pm 0644 "$surface" "$payload/surface.toml"
+        install -pm 0644 "$surface" "$payload/surface.json"
     fi
     # An app declares a model by keeping a guest crate beside it (apps/db-client ->
     # apps/db-client-model-wasm). The module the app-models check built for it ships

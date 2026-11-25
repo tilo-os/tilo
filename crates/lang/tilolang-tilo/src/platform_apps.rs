@@ -94,7 +94,7 @@ pub const SESSION_APP: &str = "so.tilo.session";
 pub const DESKTOP_APP: &str = "desktop";
 /// What the session publishes, described as a package (`tilo_session::session_package`, which
 /// a test holds to what its api publishes).
-const SESSION_DESCRIPTION: &str = include_str!("../../../../apps/tl/session/surface.toml");
+const SESSION_DESCRIPTION: &str = include_str!("../../../../apps/tl/session/surface.json");
 
 /// The session's actions as its description declares them, by id: what a call's arguments
 /// are sent as ([`tilo_actions::surface::nest_arguments`]).
@@ -270,7 +270,7 @@ const CONTACTS_ROOTS: &[(&str, &str, &str)] = &[(
 /// fields and the verbs it declares, the service's readings (the agent model choice, the
 /// providers, the shortcuts table), and where each is published (written by the sections' own
 /// test, beside them).
-const SECTIONS_SURFACE: &str = include_str!("../../../desktop/settings-sections/published.toml");
+const SECTIONS_SURFACE: &str = include_str!("../../../desktop/settings-sections/published.json");
 
 /// What stands for the device's key in the address of one of the device's settings
 /// (`devices/{device}/settings/power`): a view names the device's settings wherever it runs, and
@@ -324,7 +324,8 @@ fn settings_roots() -> Result<Vec<(String, String, String)>, String> {
     struct File {
         roots: Vec<Root>,
     }
-    let file: File = toml::from_str(SECTIONS_SURFACE).map_err(|error| error.to_string())?;
+    let file: File = serde_json::from_str(SECTIONS_SURFACE)
+        .map_err(|error| format!("the settings sections' surface: {error}"))?;
     Ok(file
         .roots
         .into_iter()
@@ -479,7 +480,7 @@ const PUBLISHED: &[Published] = &[
         roots: WORKSPACE_ROOTS,
         // What a workspace's own actions are, written beside the service that publishes them.
         files: &[include_str!(
-            "../../../core/tilo-workspace-service/workspace-surface.toml"
+            "../../../core/tilo-workspace-service/workspace-surface.json"
         )],
         described: false,
         listed: &[],
@@ -489,7 +490,7 @@ const PUBLISHED: &[Published] = &[
         title: "Session",
         kinds: &[],
         roots: &[],
-        files: &[include_str!("../../../../apps/tl/session/surface.toml")],
+        files: &[include_str!("../../../../apps/tl/session/surface.json")],
         described: true,
         listed: &[],
     },
@@ -502,7 +503,7 @@ const PUBLISHED: &[Published] = &[
         kinds: &[],
         roots: &[],
         files: &[include_str!(
-            "../../../desktop/session/window-menu-surface.toml"
+            "../../../desktop/session/window-menu-surface.json"
         )],
         described: false,
         listed: &[],
@@ -826,19 +827,9 @@ fn name_settings(meta: &mut PackageMeta, surfaces: &[Surface]) -> Result<(), Str
     Ok(())
 }
 
-/// The resources a surface file publishes, however it was written: a service's JSON, or an
-/// app's `surface.toml`.
+/// The resources a published description declares, as the compiled form every receiver reads.
 fn surfaces_of(file: &str) -> Result<Vec<Surface>, String> {
-    #[derive(Deserialize)]
-    struct Json {
-        resources: Vec<Surface>,
-    }
-    if file.trim_start().starts_with('{') {
-        let json: Json = serde_json::from_str(file).map_err(|error| error.to_string())?;
-        Ok(json.resources)
-    } else {
-        parse_surfaces(file)
-    }
+    parse_surfaces(file)
 }
 
 /// One published resource, followed: its reading each time the session publishes one.

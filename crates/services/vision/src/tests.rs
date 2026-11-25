@@ -470,25 +470,18 @@ tilo_test_env::scenario! {
 
 #[test]
 fn the_surface_file_is_what_this_crate_publishes() {
-    let published = serde_json::json!({ "resources": crate::surfaces() });
+    let text =
+        tilo_surface_compile::canonical(&serde_json::json!({ "resources": crate::surfaces() }));
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("surface.json");
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
-        serde_json::to_string_pretty(&published)
-            .map(|text| std::fs::write(&path, text))
-            .expect("the surface file is written");
+        std::fs::write(&path, &text).expect("the surface file is written");
         return;
     }
-    let committed = std::fs::read_to_string(&path).ok();
-    // The values a package publishes, not the order their keys are written in: that order is
-    // the writer's, and a build that unifies its dependencies differently keeps the same surface.
-    let written: serde_json::Value = committed
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .expect("the committed surface is JSON")
-        .unwrap_or(serde_json::Value::Null);
+    // The canonical bytes, not a pretty form of the same values: the address a change names is
+    // the hash of these bytes.
     assert_eq!(
-        written, published,
+        std::fs::read_to_string(&path).ok().as_deref(),
+        Some(text.as_str()),
         "crates/services/vision/surface.json is not what this crate publishes; \
          regenerate it with UPDATE_SNAPSHOTS=1"
     );

@@ -23,7 +23,7 @@ mod cases {
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/totp/app.tl");
-    const VAULT: &str = include_str!("../../../../apps/tl/vault/surface.toml");
+    const VAULT: &str = include_str!("../../../../apps/tl/vault/surface.json");
 
     /// The RFC 6238 test secret: "12345678901234567890" in base32.
     const VECTOR: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";

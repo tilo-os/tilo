@@ -609,7 +609,7 @@ rm -rf "$out/apps" "$out/language-packs" "$out/fonts"
 for manifest in apps/*/tilo-app.toml; do
   app=$(dirname "$manifest")
   install -D -m 0644 "$manifest" "$out/$app/tilo-app.toml"
-  [[ ! -f $app/surface.toml ]] || install -m 0644 "$app/surface.toml" "$out/$app/surface.toml"
+  [[ ! -f $app/surface.json ]] || install -m 0644 "$app/surface.json" "$out/$app/surface.json"
   [[ ! -f $app-model-wasm/Cargo.toml ]] \
     || install -D -m 0644 "$app-model-wasm/Cargo.toml" "$out/$app-model-wasm/Cargo.toml"
 done

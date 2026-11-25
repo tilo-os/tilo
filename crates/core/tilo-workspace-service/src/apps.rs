@@ -94,7 +94,7 @@ pub fn register_package_surface_and_reads<I>(
     I: IntoIterator<Item = (String, Vec<u8>)>,
 {
     register_package_surface(app_id, surface);
-    let reader = match collab_types::surface::SurfaceFile::parse(surface) {
+    let reader = match collab_types::surface::SurfaceFile::compiled(surface) {
         Ok(reader) => reader,
         Err(error) => {
             // What it reads is then nothing.
@@ -109,7 +109,7 @@ pub fn register_package_surface_and_reads<I>(
         if owner == app_id {
             continue;
         }
-        match collab_types::surface::SurfaceFile::parse(&bytes) {
+        match collab_types::surface::SurfaceFile::compiled(&bytes) {
             Ok(surface) if reader.reads_any_of(&surface) => {
                 register_package_surface(&owner, &bytes);
             }
@@ -207,15 +207,17 @@ mod running_surface_tests {
     #[test]
     fn a_package_surface_this_process_runs_is_served_by_its_hash_only() {
         let app = "so.tilo.test.running-surface";
-        let file = b"[[resources]]\nkind = \"so.tilo.test.running-surface.note\"\nlabel = \"Note\"\nversion = 1\nfields = []\n";
-        // A package's surface is kept, and named by the changes it signs, in its canonical form.
-        let (_, kept) = collab_types::surface::SurfaceFile::kept(file).unwrap();
-        let hash = hex::encode(blake3::hash(kept.as_bytes()).as_bytes());
+        let file = tilo_surface_compile::compile(
+            "[[resources]]\nkind = \"so.tilo.test.running-surface.note\"\nlabel = \"Note\"\nversion = 1\nfields = []\n",
+        )
+        .unwrap();
+        let file = file.as_bytes();
+        let hash = hex::encode(blake3::hash(file).as_bytes());
         assert_eq!(running_surface(app, &hash), None);
         super::register_package_surface(app, file);
         assert_eq!(
             running_surface(app, &hash).as_deref(),
-            Some(kept.as_bytes()),
+            Some(file),
             "the change this process signs names this surface, so it must decide it"
         );
         assert_eq!(

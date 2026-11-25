@@ -26,12 +26,10 @@ fn surface_of(version: u8) -> [u8; 32] {
     *blake3::hash(kept_of(version).as_bytes()).as_bytes()
 }
 
-/// A version's surface, in the form it is kept by.
+/// A version's compiled surface.
 fn kept_of(version: u8) -> String {
-    let (_, kept) =
-        collab_types::surface::SurfaceFile::kept(if version == 1 { V1 } else { V2 }.as_bytes())
-            .expect("the fixture is a surface");
-    kept
+    tilo_surface_compile::compile(if version == 1 { V1 } else { V2 })
+        .expect("the fixture is a surface")
 }
 
 /// The topic the workspace's host holds.

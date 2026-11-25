@@ -126,14 +126,12 @@ fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
     let mut session = desktop.session;
     served(&mut session, &socket);
     let api = crate::common::Api::open(&mut session, root.path());
-    // What `tilo sdk gen` writes the sections' types for: their committed surface, in the form
-    // it is kept by.
-    let (_, kept) = collab_types::surface::SurfaceFile::kept(include_bytes!(
-        "../../../desktop/settings-sections/published.toml"
-    ))
-    .expect("the sections' committed surface parses");
+    // What `tilo sdk gen` writes the sections' types for: their compiled surface.
+    let kept = include_bytes!("../../../desktop/settings-sections/published.json");
+    collab_types::surface::SurfaceFile::compiled(kept)
+        .expect("the sections' compiled surface parses");
     let surface =
-        tilo_api::v1::surface_version(tilo_actions::remote::settings_resources::SURFACE_APP, &kept);
+        tilo_api::v1::surface_version(tilo_actions::remote::settings_resources::SURFACE_APP, kept);
     let appearance = tilo_app::framework::section_address("appearance", None);
     let power = tilo_app::framework::section_address("power", None);
     assert!(

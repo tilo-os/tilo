@@ -224,22 +224,21 @@ fn thousands_of_items_are_written_fast_and_listed() {
 fn an_apps_writes_land_beside_the_types_other_apps_declare() {
     let compiled = compile();
     let own =
-        tilolang_tilo::surface::surface_toml(&[&compiled.meta], &tilolang_runtime::SourceWords)
+        tilolang_tilo::surface::surface_bytes(&[&compiled.meta], &tilolang_runtime::SourceWords)
             .unwrap();
     // An app whose surface declares the types it keeps, as a native app's does.
-    let other = collab_types::surface::SurfaceFile::from_json(
+    let other = collab_types::surface::SurfaceFile::from_json(&tilo_surface_compile::canonical(
         &serde_json::json!({"resources": [{
             "kind": "tasks.tracker", "label": "Tracker", "version": 1, "fields": [],
             "types": [
                 {"name": "Tracker", "fields": [{"name": "name", "type": "text"}]},
                 {"name": "Thread", "fields": [{"name": "subject", "type": "text"}]},
             ],
-        }]})
-        .to_string(),
-    )
+        }]}),
+    ))
     .unwrap();
     let surfaces = [
-        collab_types::surface::SurfaceFile::parse(&own).unwrap(),
+        collab_types::surface::SurfaceFile::compiled(&own).unwrap(),
         other,
     ];
     let t = Todo::over(

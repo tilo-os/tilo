@@ -48,7 +48,7 @@ pub fn surface_json() -> &'static str {
                 })
             })
             .collect();
-        serde_json::json!({ "resources": resources }).to_string()
+        tilo_canonical_json::to_string(&serde_json::json!({ "resources": resources }))
     })
 }
 

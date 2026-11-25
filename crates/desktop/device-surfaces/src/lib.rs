@@ -135,8 +135,7 @@ mod tests {
         if committed.resources == published {
             return;
         }
-        let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
-            .expect("a surface writes as JSON");
+        let text = tilo_surface_compile::canonical(&serde_json::json!({ "resources": published }));
         // `UPDATE_SNAPSHOTS=1` writes the file the device publishes.
         if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("device-surface.json");

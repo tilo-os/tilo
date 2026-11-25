@@ -402,7 +402,7 @@ impl ServiceSessions {
                 crate::workspaces::keep_surface(
                     &cfg.surfaces,
                     tilo_workspace_agent::OWNER,
-                    include_bytes!("../workspace-surface.toml"),
+                    include_bytes!("../workspace-surface.json"),
                 );
                 Arc::clone(&cfg.surfaces)
             },

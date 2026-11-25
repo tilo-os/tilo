@@ -1,9 +1,8 @@
-//! A host updated from a build that named each app's surface by the hash of its `surface.toml`
-//! still lists what that build wrote. Every change names the surface of the app version that made
-//! it, and the host keeps each surface its workspaces' changes name in its content store, in the
-//! form it was named by: an earlier build kept the `surface.toml` itself there, and the changes it
-//! wrote name the hash of those bytes. The update reads them as they are, so nothing written
-//! before it disappears from the app's listing.
+//! A host updated from a build that ran an older version of an app still lists what that build
+//! wrote. Every change names the compiled surface of the app version that made it, and the host
+//! keeps each surface its workspaces' changes name in its content store: the earlier version's
+//! changes name the hash of its compiled surface. The update reads them as they are, so nothing
+//! written before it disappears from the app's listing.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -25,23 +24,27 @@ const APP: &str = "so.tilo.test.older-version";
 const KIND: &str = "so.tilo.test.older-version.article";
 const RECORDS: usize = 12;
 
-/// The app's surface as both builds ship it. The earlier build names the hash of these bytes;
-/// this build names the hash of their canonical JSON form ([`SurfaceFile::kept`]), which is
-/// another surface as far as an op is concerned.
-const SURFACE: &[u8] = b"# An app's `surface.toml`, as the package ships it.
-format = 2
+/// The app's compiled surface as the earlier build shipped it, version 1.
+fn earlier_surface() -> Vec<u8> {
+    tilo_surface_compile::compile(
+        "[[resources]]\nkind = \"so.tilo.test.older-version.article\"\nlabel = \"Article\"\nversion = 1\nfields = [\n  { path = \"title\", type = \"text\" },\n]\n",
+    )
+    .expect("a surface")
+    .into_bytes()
+}
 
-[[resources]]
-kind = \"so.tilo.test.older-version.article\"
-label = \"Article\"
-version = 1
-fields = [
-  { path = \"title\", type = \"text\" },
-]
-";
+/// The compiled surface this build ships: version 2, so its hash is another surface as far as an
+/// op is concerned.
+fn current_surface() -> Vec<u8> {
+    tilo_surface_compile::compile(
+        "[[resources]]\nkind = \"so.tilo.test.older-version.article\"\nlabel = \"Article\"\nversion = 2\nfields = [\n  { path = \"title\", type = \"text\" },\n  { path = \"subtitle\", type = \"text\" },\n]\n",
+    )
+    .expect("a surface")
+    .into_bytes()
+}
 
-/// How the earlier build decided changes: by the surface a change names, read from the content
-/// store `dir` as the `surface.toml` it kept there.
+/// How the earlier build decided changes: by the compiled surface a change names, read from the
+/// content store `dir`.
 struct EarlierBuild {
     dir: std::path::PathBuf,
 }
@@ -58,7 +61,7 @@ impl collab_types::SurfaceSource for EarlierBuild {
         if blake3::hash(&bytes).as_bytes() != named {
             return None;
         }
-        let file = SurfaceFile::parse(&bytes).ok()?;
+        let file = SurfaceFile::compiled(&bytes).ok()?;
         let resource = match kind {
             Some(kind) => file.resource(kind)?,
             None => file.own_resource()?,
@@ -98,14 +101,16 @@ async fn title(workspaces: &Workspaces, workspace: &str, record: &str) -> Option
     clippy::too_many_lines,
     reason = "one flow through the build that writes, the update, and what it lists afterwards"
 )]
-async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() {
-    // The earlier build: it kept the app's `surface.toml` in the host's content store, and named
-    // the hash of those bytes in every change it signed.
+async fn an_update_lists_what_a_build_that_ran_an_older_app_version_wrote() {
+    // The earlier build: it kept the app version's compiled surface in the host's content store,
+    // and named the hash of those bytes in every change it signed.
+    let surface = earlier_surface();
+    let current = current_surface();
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("surfaces");
     std::fs::create_dir_all(&store).unwrap();
-    let earlier = *blake3::hash(SURFACE).as_bytes();
-    std::fs::write(store.join(hex::encode(earlier)), SURFACE).unwrap();
+    let earlier = *blake3::hash(&surface).as_bytes();
+    std::fs::write(store.join(hex::encode(earlier)), &surface).unwrap();
     tilo_peer_state::decide_with_surfaces(
         collab_types::Surfaces::from_source(Arc::new(EarlierBuild { dir: store.clone() })),
         move |app| (app == APP).then_some(earlier),
@@ -172,7 +177,7 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
 
     // The update: this build starts on the state the earlier one kept, and its own hash of the
     // app's surface is not the one the earlier build's changes name.
-    collab_types::app_surface::register_package(APP, SURFACE);
+    collab_types::app_surface::register_package(APP, &current);
     assert_ne!(
         collab_types::app_surface::hash_of(APP),
         Some(earlier),

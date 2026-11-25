@@ -42,22 +42,7 @@ fn author(app: &str, version: &str) -> Vec<u8> {
 }
 
 /// The surface a book of sheets publishes: one resource and its two actions.
-const SURFACE: &str = r#"format = 2
-
-[[resources]]
-kind = "sheets.book"
-label = "Book"
-version = 1
-
-[[resources.verbs]]
-id = "recalculate"
-kind = "undoable"
-
-[[resources.verbs]]
-id = "clear"
-destructive = true
-kind = "undoable"
-"#;
+const SURFACE: &str = r#"{"resources":[{"fields":[],"kind":"sheets.book","label":"Book","verbs":[{"id":"recalculate","kind":"undoable"},{"destructive":true,"id":"clear","kind":"undoable"}],"version":1}]}"#;
 
 /// A signed package of `app` at `version` that carries `surface`, when it publishes one.
 fn author_carrying(app: &str, version: &str, surface: Option<&str>) -> Vec<u8> {
@@ -80,7 +65,7 @@ fn author_bound_to(
     std::fs::create_dir_all(payload.join("bin")).unwrap();
     std::fs::write(payload.join("bin/app"), b"#!/bin/true\ntilo app\n").unwrap();
     if let Some(surface) = surface {
-        std::fs::write(payload.join("surface.toml"), surface).unwrap();
+        std::fs::write(payload.join("surface.json"), surface).unwrap();
     }
     let (architecture, isa, _) = native_target();
     let mut bound = String::new();

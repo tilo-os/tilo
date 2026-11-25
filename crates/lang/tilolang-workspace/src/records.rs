@@ -174,7 +174,7 @@ impl Packages {
                             .cloned()
                     })
                     .collect();
-                let bytes = tilolang_tilo::surface::surface_toml_reading(
+                let bytes = tilolang_tilo::surface::surface_bytes_reading(
                     &[&package.meta],
                     &reads,
                     &tilolang_tilo::runtime::SourceWords,

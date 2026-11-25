@@ -121,6 +121,8 @@ tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-formats = { path = "../../ui/tilo-formats" }
 toml.workspace = true
+# The canonical compiled form of the session description it publishes.
+tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
 url.workspace = true
 # The key this device signs its own changes of a workspace with, as the
 # broker's owner commits ask for it.
@@ -479,6 +481,8 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 [dev-dependencies]
 # The notification service's socket, as an app connects it in tests.
 tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
+# The canonical compiled form of the surface this crate publishes.
+tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 # The person's devices as a host holding their record lists them, which the tests' own identities
 # are checked against (`sources::test_trust`).
 tilo-identity = { path = "../../core/tilo-identity", features = ["test-support"] }

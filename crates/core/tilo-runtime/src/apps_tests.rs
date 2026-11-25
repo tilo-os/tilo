@@ -459,8 +459,7 @@ tilo_test_env::scenario! {
         const TAMPERED: &str = "so.tilo.person-tampered";
         let surface = |kind: &str| {
             format!(
-                "[[resources]]\nkind = \"{kind}.page\"\nlabel = \"Page\"\nversion = 1\n\n\
-             [[resources]]\nkind = \"{kind}.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n"
+                r#"{{"resources":[{{"kind":"{kind}.page","label":"Page","version":1}},{{"kind":"{kind}.history","label":"History","person":true,"version":1}}]}}"#
             )
         };
         let (_temp, root) = canonical_temp();
@@ -469,18 +468,18 @@ tilo_test_env::scenario! {
         store.install(
             KEEPER,
             &manifest(KEEPER, "gui", ""),
-            &[("probe", b"binary"), ("surface.toml", keeper.as_bytes())],
+            &[("probe", b"binary"), ("surface.json", keeper.as_bytes())],
         );
         let tampered = store.install(
             TAMPERED,
             &manifest(TAMPERED, "gui", ""),
             &[
                 ("probe", b"binary"),
-                ("surface.toml", surface("person-tampered").as_bytes()),
+                ("surface.json", surface("person-tampered").as_bytes()),
             ],
         );
         std::fs::write(
-            tampered.payload_root.join("surface.toml"),
+            tampered.payload_root.join("surface.json"),
             surface("person-forged"),
         )
         .unwrap();

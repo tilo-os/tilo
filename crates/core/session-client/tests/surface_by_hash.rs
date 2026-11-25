@@ -33,18 +33,16 @@ use crate::support::{
     workspace,
 };
 
-/// The surface the laptop's write names: an app's own `surface.toml` in the
-/// form it is kept by, a version of it this page does not run.
+/// The surface the laptop's write names: an app's own compiled surface, a version of it this
+/// page does not run.
 fn older_surface() -> Vec<u8> {
     let file = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/surface.toml"
+        "/tests/fixtures/surface.json"
     ))
     .unwrap();
-    collab_types::surface::SurfaceFile::kept(&file)
-        .expect("the app's surface parses")
-        .1
-        .into_bytes()
+    collab_types::surface::SurfaceFile::compiled(&file).expect("the app's surface is compiled");
+    file
 }
 
 /// A host that keeps app surfaces, as one that decided changes against them

@@ -1,7 +1,8 @@
 //! `tilolang describe`: an app's catalogue entry printed as tilolang, native and tilolang apps
 //! alike.
 //!
-//! A native app is read from the `surface.toml` it commits next to its manifest; a tilolang
+//! A native app is read from the `surface.toml` it commits next to its manifest, compiled; a
+//! tilolang
 //! package is printed from its own metadata, as it was compiled. Either way what is printed is
 //! what a package that `use`s the app compiles against.
 //!
@@ -71,7 +72,7 @@ pub struct FleetEntry {
     pub windows_personal: bool,
     /// Whether each window shows a document of its own rather than the workspace's.
     pub window_documents: bool,
-    /// The signed `surface.toml` its package ships, as generated from the same metadata.
+    /// The compiled surface its package ships, as generated from the same metadata.
     pub surface: String,
     /// The ids it was published under before.
     pub previously: Vec<String>,

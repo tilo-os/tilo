@@ -11,7 +11,7 @@ use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{
     ActionTypes, PlanRequest, Planner, publish_package, publish_resource, resource_id,
 };
-use tilolang_tilo::surface::{HOST_KIND, host_surface, package_surfaces, surface_toml};
+use tilolang_tilo::surface::{HOST_KIND, host_surface, package_surfaces, surface_bytes};
 
 use crate::fixtures::{COUNTER, Replica, TODO, field_id};
 
@@ -70,7 +70,7 @@ tilo_test_env::scenario! {
     // app declares, while the change it makes keeps naming the declaration's id.
     {
         let meta = counter();
-        let bytes = surface_toml(&[&meta], &SourceWords).unwrap();
+        let bytes = surface_bytes(&[&meta], &SourceWords).unwrap();
         let read = tilolang_tilo::catalogue::described(
             &meta.app,
             &meta.title,
@@ -320,11 +320,12 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_surface_file_parses;
+    phase the_compiled_surface_file_reads;
     {
         let meta = counter();
-        let bytes = surface_toml(&[&meta], &SourceWords).unwrap();
-        let value: toml::Value = toml::from_str(std::str::from_utf8(&bytes).unwrap()).unwrap();
+        let bytes = surface_bytes(&[&meta], &SourceWords).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("the surface is compiled JSON");
         let kinds: Vec<&str> = value["resources"]
             .as_array()
             .unwrap()
@@ -962,8 +963,9 @@ fn a_package_keeping_a_workspace_record_publishes_its_surface() {
     const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
     const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
     let kinds = |meta: &Meta| -> Vec<String> {
-        let bytes = surface_toml(&[meta], &SourceWords).unwrap();
-        toml::from_str::<toml::Value>(std::str::from_utf8(&bytes).unwrap()).unwrap()["resources"]
+        let bytes = surface_bytes(&[meta], &SourceWords).unwrap();
+        serde_json::from_slice::<serde_json::Value>(&bytes).expect("the surface is compiled JSON")
+            ["resources"]
             .as_array()
             .unwrap()
             .iter()

@@ -6900,13 +6900,13 @@ impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
             && ui::app_surface::bytes_of(app_id).is_none()
         {
             // Changes are decided against the surface their op names, read
-            // from the content store as a package's is: the form it is kept
-            // by, as registering the package keeps it.
-            let Ok((_, kept)) = collab_types::surface::SurfaceFile::kept(surface) else {
-                tracing::warn!(app_id, "the development surface does not parse");
+            // from the content store as a package's is: the compiled form, as
+            // registering the package keeps it.
+            if collab_types::surface::SurfaceFile::compiled(surface).is_err() {
+                tracing::warn!(app_id, "the development surface is not the compiled form");
                 return;
-            };
-            if let Err(error) = tilo_content_device::for_app().put(kept.as_bytes()) {
+            }
+            if let Err(error) = tilo_content_device::for_app().put(surface) {
                 tracing::warn!(%error, app_id, "the development surface could not be stored");
                 return;
             }

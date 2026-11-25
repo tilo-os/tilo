@@ -740,9 +740,8 @@ mod surface_tests {
     /// serves. `UPDATE_SNAPSHOTS=1` writes it.
     #[test]
     fn the_accounts_surface_file_is_what_this_crate_publishes() {
-        let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": [surface()] }))
-            .expect("a surface writes as JSON")
-            + "\n";
+        let text =
+            tilo_surface_compile::canonical(&serde_json::json!({ "resources": [surface()] }));
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("accounts-surface.json");
         if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
             std::fs::write(&path, &text).expect("the surface file is written");

@@ -1,7 +1,7 @@
 //! The app surfaces this host decides received changes against, kept with the
 //! workspace's content.
 //!
-//! A change's op names the content hash of its app's `surface.toml`, and the
+//! A change's op names the content hash of its app's compiled surface, and the
 //! change is decided against that version's surface, whoever ran it. A host
 //! has the surfaces of the apps it runs in its own process; every other one is
 //! content of the workspace, kept under its state directory by hash, which the
@@ -152,18 +152,15 @@ const fn signed_surface(_: &str) -> Option<[u8; 32]> {
 }
 
 /// The surfaces this build publishes for the versions of the built-in apps it
-/// does not run itself: one file per version of an app's `surface.toml`, laid
-/// out by the image's build beside its programs (`TILO_SURFACES` names
-/// another).
+/// does not run itself: one compiled surface per version of an app, laid out by
+/// the image's build beside its programs (`TILO_SURFACES` names another).
 const BUILT_SURFACES: &str = "/usr/local/share/tilo/surfaces";
 
-/// Publish the surfaces this build carries into the content store `dir`, in
-/// the form they are kept by
-/// ([`collab_types::surface::canonical`]), and as the `surface.toml` they
-/// were built from, the form and address earlier builds named in the changes
-/// they wrote: a change naming one of them is decided here even when no
-/// member still has that version. Files already in the content store are
-/// left as they are, so a start publishes once.
+/// Publish the compiled surfaces this build carries into the content store
+/// `dir`, in the form and by the address their changes name: a change naming
+/// one of them is decided here even when no member still has that version.
+/// Files already in the content store are left as they are, so a start
+/// publishes once.
 fn publish_built(dir: &Path) {
     let built = std::env::var_os("TILO_SURFACES")
         .map_or_else(|| PathBuf::from(BUILT_SURFACES), PathBuf::from);
@@ -180,24 +177,22 @@ fn publish_from(built: &Path, dir: &Path) {
         let Ok(bytes) = std::fs::read(entry.path()) else {
             continue;
         };
-        let Ok((_, surface)) = collab_types::surface::SurfaceFile::kept(&bytes) else {
+        let Ok(_) = collab_types::surface::SurfaceFile::compiled(&bytes) else {
             tracing::warn!(
                 file = %entry.path().display(),
-                "a surface this build carries does not parse; it is not published"
+                "a surface this build carries is not the compiled form; it is not published"
             );
             continue;
         };
-        for form in [surface.as_bytes(), bytes.as_slice()] {
-            let hash = hex::encode(blake3::hash(form).as_bytes());
-            if dir.join(&hash).exists() {
-                already = already.saturating_add(1);
-                continue;
-            }
-            match write(dir, &hash, form) {
-                Ok(()) => published = published.saturating_add(1),
-                Err(error) => {
-                    tracing::warn!(%error, %hash, "a surface this build carries was not published");
-                }
+        let hash = hex::encode(blake3::hash(&bytes).as_bytes());
+        if dir.join(&hash).exists() {
+            already = already.saturating_add(1);
+            continue;
+        }
+        match write(dir, &hash, &bytes) {
+            Ok(()) => published = published.saturating_add(1),
+            Err(error) => {
+                tracing::warn!(%error, %hash, "a surface this build carries was not published");
             }
         }
     }
@@ -277,41 +272,39 @@ mod tests {
         let built = scratch.path().join("built");
         let content_store = scratch.path().join("surfaces");
         std::fs::create_dir_all(&built).unwrap();
-        let old = b"[[resources]]\nkind = \"chat.workspace\"\nlabel = \"Chat\"\nversion = 1\n";
-        let older = b"[[resources]]\nkind = \"chat.workspace\"\nlabel = \"Chat\"\nversion = 2\n";
-        std::fs::write(built.join("chat.9102a1.toml"), old).unwrap();
-        std::fs::write(built.join("chat.4c1e77.toml"), older).unwrap();
-        std::fs::write(built.join("slides.9102a1.toml"), old).unwrap();
+        let old = tilo_surface_compile::compile(
+            "[[resources]]\nkind = \"chat.workspace\"\nlabel = \"Chat\"\nversion = 1\n",
+        )
+        .unwrap();
+        let older = tilo_surface_compile::compile(
+            "[[resources]]\nkind = \"chat.workspace\"\nlabel = \"Chat\"\nversion = 2\n",
+        )
+        .unwrap();
+        std::fs::write(built.join("chat.9102a1.json"), &old).unwrap();
+        std::fs::write(built.join("chat.4c1e77.json"), &older).unwrap();
+        std::fs::write(built.join("slides.9102a1.json"), &old).unwrap();
 
         publish_from(&built, &content_store);
 
-        for (version, bytes) in [("chat v1", old.as_slice()), ("chat v2", older.as_slice())] {
-            let (_, surface) = collab_types::surface::SurfaceFile::kept(bytes).unwrap();
-            let hash = hex::encode(blake3::hash(surface.as_bytes()).as_bytes());
+        for (version, bytes) in [("chat v1", old.as_bytes()), ("chat v2", older.as_bytes())] {
+            let hash = hex::encode(blake3::hash(bytes).as_bytes());
             assert_eq!(
                 std::fs::read(content_store.join(&hash)).unwrap(),
-                surface.as_bytes(),
-                "{version} is in the content store, by its hash, in the form it is kept by"
-            );
-            let built_hash = hex::encode(blake3::hash(bytes).as_bytes());
-            assert_eq!(
-                std::fs::read(content_store.join(&built_hash)).unwrap(),
                 bytes,
-                "{version} is in the content store as built too, by the hash earlier builds' changes name"
+                "{version} is in the content store, by the hash its changes name"
             );
         }
         assert_eq!(
             std::fs::read_dir(&content_store).unwrap().count(),
-            4,
-            "two forms per version, not per file"
+            2,
+            "one form per version, not per file"
         );
 
         // A start after this one publishes nothing new.
-        let (_, surface) = collab_types::surface::SurfaceFile::kept(old).unwrap();
-        let path = content_store.join(hex::encode(blake3::hash(surface.as_bytes()).as_bytes()));
+        let path = content_store.join(hex::encode(blake3::hash(old.as_bytes()).as_bytes()));
         let kept = std::fs::metadata(&path).unwrap().modified().unwrap();
         publish_from(&built, &content_store);
-        assert_eq!(std::fs::read_dir(&content_store).unwrap().count(), 4);
+        assert_eq!(std::fs::read_dir(&content_store).unwrap().count(), 2);
         assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), kept);
     }
 }

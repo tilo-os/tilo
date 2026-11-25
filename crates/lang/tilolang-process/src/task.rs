@@ -926,7 +926,7 @@ mod tests {
         native(
             "so.tilo.chat",
             "Chat",
-            include_str!("../../tilolang-tilo/tests/native-chat/surface.toml"),
+            include_str!("../../tilolang-tilo/tests/native-chat/surface.json"),
         )
     }
 
@@ -935,7 +935,7 @@ mod tests {
         native(
             "so.tilo.tasks",
             "Tasks",
-            include_str!("../../tilolang-tilo/tests/native-tasks/surface.toml"),
+            include_str!("../../tilolang-tilo/tests/native-tasks/surface.json"),
         )
     }
 

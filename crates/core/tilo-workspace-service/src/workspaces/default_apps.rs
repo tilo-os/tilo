@@ -119,7 +119,7 @@ fn from_cache(app: &str, cached: &dyn Fn(&str) -> Option<AppRelease>) -> Option<
 }
 
 /// The release of `app` this device's package cache holds: the version installed, its signed
-/// package root and publisher, and the surface its signed payload ships, in the form it is kept by.
+/// package root and publisher, and the compiled surface its signed payload ships.
 fn cached(app: &str) -> Option<AppRelease> {
     let package = package_store::find_installed(app).ok()??;
     if package.package_id_hex.is_empty() || package.publisher_key_hex.is_empty() {
@@ -128,8 +128,8 @@ fn cached(app: &str) -> Option<AppRelease> {
     }
     let surface = match package_store::integrity::signed_surface(&package) {
         Some(bytes) => {
-            let (_, kept) = collab_types::surface::SurfaceFile::kept(&bytes).ok()?;
-            blake3::hash(kept.as_bytes()).to_hex().to_string()
+            collab_types::surface::SurfaceFile::compiled(&bytes).ok()?;
+            blake3::hash(&bytes).to_hex().to_string()
         }
         None => String::new(),
     };

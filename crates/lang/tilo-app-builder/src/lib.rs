@@ -5388,12 +5388,14 @@ fn stage_payload(
     if app_payload.is_dir() {
         copy_payload_tree(&app_payload, payload)?;
     }
-    // The committed public surface ships at the package root: what the OS offers of the app while it
-    // is not running.
-    let surface = spec.app_dir.join(surface::FILE);
+    // The compiled public surface ships at the package root: what the OS offers of the app while
+    // it is not running, in the one form the system addresses and hashes.
+    let surface = spec.app_dir.join(tilo_surface_compile::SOURCE_FILE);
     if surface.is_file() {
-        std::fs::copy(&surface, payload.join(surface::FILE))
-            .with_context(|| format!("copying {}", surface.display()))?;
+        let compiled = tilo_surface_compile::compile_file(&surface).map_err(anyhow::Error::msg)?;
+        let destination = payload.join(tilo_surface_compile::FILE);
+        std::fs::write(&destination, compiled)
+            .with_context(|| format!("writing {}", destination.display()))?;
     }
     if let Some(module) = model_wasm::build(&spec.app_dir)? {
         let destination = payload.join(model_wasm::MODEL_MODULE);
@@ -6669,8 +6671,9 @@ fn dev_session_dir(app_dir: &Path) -> PathBuf {
 
 /// The environment of an app `dev` starts: its dev session, its runtime host, and inside a Tilo session
 /// the shell's file chooser. Returns this process's end of the chooser connection, to keep until the
-/// app has started. Name the app's committed `surface.toml` to the app, by path and hash, as its
-/// launcher names the one its package ships: the app reads it from there.
+/// app has started. Compile the app's `surface.toml` and name the compiled surface to the app,
+/// by path and hash, as its launcher names the one its package ships: the app reads it from
+/// there.
 /// The font artifact cache the command prepared Tilo's fonts in, when it did: every app it starts
 /// is told it (`TILO_FONT_ASSET_CACHE`), so an app run with a cache directory of its own (a
 /// scenario's isolated state) still finds the fonts there.
@@ -6685,7 +6688,9 @@ fn attach_surface_env(command: &mut ProcessCommand, app_dir: &Path) {
     if let Some(cache) = FONT_ARTIFACT_CACHE.get() {
         command.env("TILO_FONT_ASSET_CACHE", cache);
     }
-    let file = app_dir.join(surface::FILE);
+    let Ok(Some(file)) = tilo_surface_compile::write_compiled(app_dir) else {
+        return;
+    };
     let Ok(bytes) = std::fs::read(&file) else {
         return;
     };

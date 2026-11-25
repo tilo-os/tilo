@@ -33,6 +33,8 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 # The session's settings service: each section published with a setter per field.
 tilo-actions = { path = "../../core/actions" }
 tilo-resource = { path = "../../core/tilo-resource" }
+# The one canonical encoding of the compiled surface this crate publishes.
+tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
 tilo-service = { path = "../../desktop/service" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }

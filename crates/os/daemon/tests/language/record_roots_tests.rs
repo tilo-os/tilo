@@ -30,10 +30,9 @@ async fn a_built_in_apps_root_is_made_where_the_workspace_runs_the_app() {
         .expect("Tasks declares its surface");
     // Tasks' types are declared so this device's write of a task is judged by them.
     declare_app(server, APP, &surface);
-    let (_, canonical) =
-        collab_types::surface::SurfaceFile::kept(&surface).expect("the built-in surface reads");
-    // The version the workspace runs names its surface by the hash of the file it keeps, as an
-    // installed release does: one install through the workspace's published `install-app`.
+    collab_types::surface::SurfaceFile::compiled(&surface).expect("the built-in surface reads");
+    // The version the workspace runs names its surface by its hash, as an installed release
+    // does: one install through the workspace's published `install-app`.
     super::govern(
         workspaces,
         &workspace,
@@ -42,7 +41,7 @@ async fn a_built_in_apps_root_is_made_where_the_workspace_runs_the_app() {
         serde_json::json!({
             "app": APP,
             "version": "1.0.0",
-            "surface": blake3::hash(canonical.as_bytes()).to_hex().to_string(),
+            "surface": blake3::hash(&surface).to_hex().to_string(),
             "package": "00".repeat(32),
             "publisher": "00".repeat(32),
             "dev": true,

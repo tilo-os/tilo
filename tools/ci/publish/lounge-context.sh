@@ -16,7 +16,7 @@ rm -rf "$out"
 mkdir -p "$out/bin" "$out/fonts"
 cp "$binaries/tilo-runtime" "$binaries/discord-worker" "$out/bin/"
 cp -a "$fonts/." "$out/fonts/"
-# Every version of each built-in app's surface.toml the apps' history holds, one
+# Every version of each built-in app's compiled surface the apps' history holds, one
 # file per version: the server publishes them into its content store at start, so
 # a change written by an older version than this build runs is decided without
 # asking anybody.
@@ -33,12 +33,12 @@ surfaces_from_history() {
   surface_versions() {
     local surface=$1 app commit
     app=${surface#apps/}
-    app=${app%/surface.toml}
+    app=${app%/surface.json}
     while read -r commit; do
-      git cat-file -p "$commit:$surface" > "$out/surfaces/$app.$commit.toml"
+      git cat-file -p "$commit:$surface" > "$out/surfaces/$app.$commit.json"
     done < <(git log --format=%H -- "$surface")
   }
-  for surface in apps/*/surface.toml; do
+  for surface in apps/*/surface.json; do
     surface_versions "$surface" &
     pids+=("$!")
   done
@@ -48,10 +48,10 @@ surfaces_from_history() {
 }
 surfaces_from_checkout() {
   local surface app
-  for surface in apps/*/surface.toml; do
+  for surface in apps/*/surface.json; do
     app=${surface#apps/}
-    app=${app%/surface.toml}
-    cp "$surface" "$out/surfaces/$app.${TILO_LOUNGE_SURFACE_COMMIT:-current}.toml"
+    app=${app%/surface.json}
+    cp "$surface" "$out/surfaces/$app.${TILO_LOUNGE_SURFACE_COMMIT:-current}.json"
   done
 }
 if git rev-parse --show-toplevel >/dev/null 2>&1; then
@@ -62,7 +62,7 @@ if git rev-parse --show-toplevel >/dev/null 2>&1; then
 else
   surfaces_from_checkout
 fi
-echo "surfaces: $(ls "$out/surfaces" | wc -l) versions of the built-in apps' surface.toml"
+echo "surfaces: $(ls "$out/surfaces" | wc -l) versions of the built-in apps' compiled surfaces"
 container=os/containers/tilo-lounge
 cp "$container/Containerfile" "$container/Containerfile.dockerignore" "$container/entrypoint.sh" \
   os/scripts/verify-no-cisco-openh264.sh "$out/"

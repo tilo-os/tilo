@@ -1537,7 +1537,7 @@ impl Host {
                 .iter()
                 .filter_map(|app| self.package(app).map(|package| package.meta))
                 .collect();
-            if let Ok(bytes) = crate::surface::surface_toml_reading(
+            if let Ok(bytes) = crate::surface::surface_bytes_reading(
                 &[&meta],
                 &reads,
                 &tilolang_runtime::SourceWords,

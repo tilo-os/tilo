@@ -1,11 +1,11 @@
 //! What the settings provider publishes, as `tilolang-tilo` reads it for a view: written beside
-//! this crate (`published.toml`).
+//! this crate (`published.json`).
 
 /// The committed surface file is what this crate describes. `UPDATE_SNAPSHOTS=1` writes it.
 #[test]
 fn the_surface_file_is_what_this_crate_describes() {
     let text = super::surface_file().expect("the surface writes");
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("published.toml");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("published.json");
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
         std::fs::write(&path, &text).expect("the surface file is written");
         return;
@@ -13,7 +13,7 @@ fn the_surface_file_is_what_this_crate_describes() {
     assert_eq!(
         std::fs::read_to_string(&path).ok().as_deref(),
         Some(text.as_str()),
-        "crates/desktop/settings-sections/published.toml is not what this crate describes; \
+        "crates/desktop/settings-sections/published.json is not what this crate describes; \
          regenerate it with UPDATE_SNAPSHOTS=1"
     );
 }
