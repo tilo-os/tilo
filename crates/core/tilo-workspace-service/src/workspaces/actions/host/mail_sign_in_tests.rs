@@ -672,8 +672,8 @@ async fn another_member_lists_the_account_and_checks_its_server() {
 }
 
 /// A login the workspace's vault keeps for Ada's mail servers adds her account without a
-/// password being typed again: the listing offers it by its reference and name, never its
-/// secret, and the account signs in with that entry.
+/// password being typed again: the listing offers every login the vault keeps, by its
+/// reference, name and places, never its secret, and the account signs in with that entry.
 #[tokio::test]
 async fn a_login_the_vault_keeps_adds_its_account() {
     let setup = Setup::new().await;
@@ -694,9 +694,27 @@ async fn a_login_the_vault_keeps_adds_its_account() {
         .await
         .expect("the workspace's vault keeps her login");
     let reference = kept["reference"].as_str().expect("a reference").to_owned();
+    // A login for a site that is no mail server is the vault's too, and is listed as it is.
+    let site = setup
+        .ask_target(
+            &setup.owner,
+            person_vault::PROVIDER,
+            person_vault::RESOURCE,
+            person_vault::ADD,
+            json!({
+                "kind": "login",
+                "title": "example.test",
+                "belongsTo": ["https://example.test"],
+                "username": "ada",
+                "secret": "site-password",
+            }),
+        )
+        .await
+        .expect("the workspace's vault keeps her site login");
+    let site = site["reference"].as_str().expect("a reference").to_owned();
 
-    // The accounts listing offers the logins that belong to mail servers, and says nothing
-    // of what they sign in with.
+    // The accounts listing offers the logins the vault keeps, and says nothing of what they
+    // sign in with.
     let offered: MailSignIns = serde_json::from_value(
         setup
             .ask(
@@ -708,20 +726,31 @@ async fn a_login_the_vault_keeps_adds_its_account() {
             .expect("the workspace's logins are read"),
     )
     .expect("the login listing reads");
-    assert_eq!(offered.sign_ins.len(), 1, "{offered:?}");
-    let offered = &offered.sign_ins[0];
-    assert_eq!(offered.id, reference);
-    assert_eq!(offered.title, EXAMPLE);
-    assert_eq!(offered.username, EXAMPLE);
+    assert_eq!(offered.sign_ins.len(), 2, "{offered:?}");
+    let login = offered
+        .sign_ins
+        .iter()
+        .find(|login| login.id == reference)
+        .expect("her mail login is offered");
+    assert_eq!(login.id, reference);
+    assert_eq!(login.title, EXAMPLE);
+    assert_eq!(login.username, EXAMPLE);
     assert_eq!(
-        offered.places,
+        login.places,
         vec![
             "imap://imap.example.test:993".to_owned(),
             "smtp://smtp.example.test:465".to_owned()
         ]
     );
+    let site_login = offered
+        .sign_ins
+        .iter()
+        .find(|login| login.id == site)
+        .expect("her site login is offered too");
+    assert_eq!(site_login.places, vec!["https://example.test".to_owned()]);
     let said = serde_json::to_string(&offered).unwrap();
     assert!(!said.contains("kept-password"), "{said}");
+    assert!(!said.contains("site-password"), "{said}");
 
     // Adding from it keeps the account, signing in with that entry and nothing copied.
     let added: MailAccount = serde_json::from_value(

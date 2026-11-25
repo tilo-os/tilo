@@ -364,7 +364,7 @@ view accounts_pane() {
             ui.Button("Use a password from Passwords") {
                 on press: {
                     let found = accounts.sign_ins(accounts.accounts)
-                    set(sign_in_choices, found.sign_ins)
+                    set(sign_in_choices, found.sign_ins.filter(choice -> is_mail_login(choice)))
                 }
             }
             if editing == "" and address != "" {
@@ -760,4 +760,10 @@ fn smtp_place(places: List<Text>) -> Text {
         }
     }
     ""
+}
+
+/// Whether a vault login belongs to a mail account: it signs in to an `imap` server and to an
+/// `smtp` one. The vault lists every login it keeps; the ones for a mail server are Mail's.
+fn is_mail_login(choice: accounts.MailSignIn) -> Bool {
+    imap_place(choice.places) != "" and smtp_place(choice.places) != ""
 }
