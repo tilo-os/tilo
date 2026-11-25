@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@8213a8f9a9dcf15a";
+export const SURFACE = "so.tilo.tube@a058d6505b3392cf";
 
 /** The arguments of `subscribe`. */
 export interface SubscribeArgs {

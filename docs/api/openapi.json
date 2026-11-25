@@ -13242,12 +13242,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.calendar.Project.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.calendar.Project.set_project_color.Arguments": {
         "type": "object",
         "properties": {
@@ -13384,12 +13378,6 @@
           "block"
         ],
         "description": "Remove the paragraph the address names, and the paragraphs it holds."
-      },
-      "tl.so.tilo.calendar.Task.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.calendar.Task.check_task.Arguments": {
         "type": "object",
@@ -14542,12 +14530,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.calendar.Calendars.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.calendar.Calendars.new_event.Arguments": {
         "type": "object",
         "properties": {
@@ -15088,12 +15070,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.calendar.Busy.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.calendar.Moment.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -15134,12 +15110,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.calendar.Moment.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.camera.ScanEntry.$create.Arguments": {
         "type": "object",
@@ -37968,12 +37938,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.DChannel.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.Overwrite.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38018,12 +37982,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.Overwrite.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.DRole.$create.Arguments": {
         "type": "object",
@@ -38072,12 +38030,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.DRole.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.DEmoji.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38123,12 +38075,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.DEmoji.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.Mapping.$create.Arguments": {
         "type": "object",
@@ -38177,12 +38123,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.Mapping.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.Link.$create.Arguments": {
         "type": "object",
@@ -38235,12 +38175,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.Link.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.LinkOffer.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38291,12 +38225,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.LinkOffer.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.Connect.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38342,12 +38270,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.Connect.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.ServerChoice.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38391,12 +38313,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.ServerChoice.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.SendOp.$create.Arguments": {
         "type": "object",
@@ -38446,12 +38362,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.SendOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.OutAttachment.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38495,12 +38405,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.OutAttachment.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.EditOp.$create.Arguments": {
         "type": "object",
@@ -38549,12 +38453,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.EditOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.DeleteOp.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38599,12 +38497,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.DeleteOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.ReactOp.$create.Arguments": {
         "type": "object",
@@ -38651,12 +38543,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.ReactOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.StartThreadOp.$create.Arguments": {
         "type": "object",
@@ -38705,12 +38591,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.StartThreadOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.CreateWebhookOp.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38755,12 +38635,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.CreateWebhookOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.ChannelSpec.$create.Arguments": {
         "type": "object",
@@ -38808,12 +38682,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.ChannelSpec.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.ChannelDeletion.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38858,12 +38726,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.ChannelDeletion.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.CategoryPlace.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38906,12 +38768,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.CategoryPlace.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.ChannelPlace.$create.Arguments": {
         "type": "object",
@@ -38956,12 +38812,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.ChannelPlace.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.ArrangeOp.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -39004,12 +38854,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.ArrangeOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.RoleSpec.$create.Arguments": {
         "type": "object",
@@ -39057,12 +38901,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.RoleSpec.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.DeleteRoleOp.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -39106,12 +38944,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.DeleteRoleOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.MemberRolesOp.$create.Arguments": {
         "type": "object",
@@ -39157,12 +38989,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.MemberRolesOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.MemberOp.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -39207,12 +39033,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.MemberOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.OverwriteOp.$create.Arguments": {
         "type": "object",
@@ -39261,12 +39081,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.OverwriteOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.FetchAssetOp.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -39313,12 +39127,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.FetchAssetOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.AnswerInteractionOp.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -39363,12 +39171,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.AnswerInteractionOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.EmojiSpec.$create.Arguments": {
         "type": "object",
@@ -39416,12 +39218,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.EmojiSpec.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.DeleteEmojiOp.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -39467,12 +39263,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.discord.preview.DeleteEmojiOp.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.Accounts.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -39513,12 +39303,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.Accounts.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.discord.preview.Accounts.begin_setup.Arguments": {
         "type": "object",
@@ -39569,12 +39353,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.VoicePair.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.lang.discussion.Origin.$create.Arguments": {
         "type": "object",
@@ -52864,12 +52642,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.mail.Label.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.mail.Label.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -53087,12 +52859,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.mail.Picture.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.mail.Picture.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -53141,12 +52907,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.mail.TrustedSender.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.mail.TrustedSender.$scenario.Arguments": {
         "type": "object",
@@ -53210,12 +52970,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.mail.Draft.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.mail.Draft.$scenario.Arguments": {
         "type": "object",
@@ -53387,12 +53141,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.mail.Mail.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.mail.Mail.$scenario.Arguments": {
         "type": "object",
@@ -56625,12 +56373,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.music.Mixtape.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.music.Mixtape.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -56821,12 +56563,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.music.Taste.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.music.Taste.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -56893,12 +56629,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.music.Library.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.music.Library.$scenario.Arguments": {
         "type": "object",
@@ -70820,12 +70550,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.shell.Picking.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.shell.Picking.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -70893,12 +70617,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.shell.CallEdit.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.shell.CallEdit.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -70957,12 +70675,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.shell.Shell.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.Shell.$scenario.Arguments": {
         "type": "object",
@@ -71809,12 +71521,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.shell.BarPart.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.shell.BarPart.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -71870,12 +71576,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.shell.DockItem.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.shell.DockItem.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -71926,12 +71626,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.shell.ReportPick.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.ReportPick.$scenario.Arguments": {
         "type": "object",
@@ -72843,12 +72537,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.shell.Viewing.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.shell.Viewing.$scenario.Arguments": {
         "type": "object",
@@ -86110,12 +85798,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.tube.Reply.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.tube.Reply.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -86172,12 +85854,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.tube.Subscription.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.tube.Subscription.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -86226,12 +85902,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.tube.QueuedVideo.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.QueuedVideo.$scenario.Arguments": {
         "type": "object",
@@ -86288,12 +85958,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.tube.PlaybackPrefs.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.tube.PlaybackPrefs.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -86344,12 +86008,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.tube.WatchEntry.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.WatchEntry.$scenario.Arguments": {
         "type": "object",
@@ -86405,12 +86063,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.tube.PairedDevice.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.tube.PairedDevice.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -86460,12 +86112,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.tube.GrayjayPairAsk.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.tube.GrayjayPairAsk.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -86512,12 +86158,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.tube.GrayjaySyncAsk.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.GrayjaySyncAsk.$scenario.Arguments": {
         "type": "object",
@@ -86569,12 +86209,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.tube.GrayjayPeer.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.tube.GrayjayPeer.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -86624,12 +86258,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.tube.GrayjaySubscription.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.GrayjaySubscription.$scenario.Arguments": {
         "type": "object",
@@ -86681,12 +86309,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.tube.GrayjayJob.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.GrayjayJob.$scenario.Arguments": {
         "type": "object",
@@ -86740,12 +86362,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.tube.GrayjayOutcome.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.tube.GrayjayOutcome.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -86792,12 +86408,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.tube.GrayjayRead.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.GrayjayRead.$scenario.Arguments": {
         "type": "object",
@@ -86863,12 +86473,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.tube.YouTube.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.tube.YouTube.$scenario.Arguments": {
         "type": "object",
@@ -101440,12 +101044,6 @@
     {
       "app": "so.tilo.calendar",
       "resource": "tl.so.tilo.calendar.Project",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.calendar.Project.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tl.so.tilo.calendar.Project",
       "action": "set_project_color",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Project.set_project_color.Arguments"
     },
@@ -101490,12 +101088,6 @@
       "resource": "tl.so.tilo.calendar.Task",
       "action": "delete-block",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.delete-block.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tl.so.tilo.calendar.Task",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.calendar.Task.$origin.Arguments"
     },
     {
       "app": "so.tilo.calendar",
@@ -101914,12 +101506,6 @@
     {
       "app": "so.tilo.calendar",
       "resource": "tl.so.tilo.calendar.Calendars",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tl.so.tilo.calendar.Calendars",
       "action": "new_event",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.new_event.Arguments"
     },
@@ -102087,12 +101673,6 @@
     },
     {
       "app": "so.tilo.calendar",
-      "resource": "tl.so.tilo.calendar.Busy",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.calendar.Busy.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
       "resource": "tl.so.tilo.calendar.Moment",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Moment.$create.Arguments"
@@ -102108,12 +101688,6 @@
       "resource": "tl.so.tilo.calendar.Moment",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Moment.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
-      "resource": "tl.so.tilo.calendar.Moment",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.calendar.Moment.$origin.Arguments"
     },
     {
       "app": "so.tilo.camera",
@@ -109623,12 +109197,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.DChannel",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.DChannel.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.Overwrite",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Overwrite.$create.Arguments"
@@ -109644,12 +109212,6 @@
       "resource": "tl.so.tilo.discord.preview.Overwrite",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Overwrite.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.Overwrite",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Overwrite.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -109671,12 +109233,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.DRole",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.DRole.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.DEmoji",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.DEmoji.$create.Arguments"
@@ -109692,12 +109248,6 @@
       "resource": "tl.so.tilo.discord.preview.DEmoji",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.DEmoji.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.DEmoji",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.DEmoji.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -109719,12 +109269,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.Mapping",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Mapping.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.Link",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Link.$create.Arguments"
@@ -109740,12 +109284,6 @@
       "resource": "tl.so.tilo.discord.preview.Link",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Link.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.Link",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Link.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -109767,12 +109305,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.LinkOffer",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.LinkOffer.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.Connect",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Connect.$create.Arguments"
@@ -109788,12 +109320,6 @@
       "resource": "tl.so.tilo.discord.preview.Connect",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Connect.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.Connect",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Connect.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -109815,12 +109341,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.ServerChoice",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ServerChoice.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.SendOp",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.SendOp.$create.Arguments"
@@ -109836,12 +109356,6 @@
       "resource": "tl.so.tilo.discord.preview.SendOp",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.SendOp.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.SendOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.SendOp.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -109863,12 +109377,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.OutAttachment",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.OutAttachment.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.EditOp",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.EditOp.$create.Arguments"
@@ -109884,12 +109392,6 @@
       "resource": "tl.so.tilo.discord.preview.EditOp",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.EditOp.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.EditOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.EditOp.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -109911,12 +109413,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.DeleteOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.DeleteOp.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.ReactOp",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ReactOp.$create.Arguments"
@@ -109932,12 +109428,6 @@
       "resource": "tl.so.tilo.discord.preview.ReactOp",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ReactOp.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.ReactOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ReactOp.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -109959,12 +109449,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.StartThreadOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.StartThreadOp.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.CreateWebhookOp",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.CreateWebhookOp.$create.Arguments"
@@ -109980,12 +109464,6 @@
       "resource": "tl.so.tilo.discord.preview.CreateWebhookOp",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.CreateWebhookOp.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.CreateWebhookOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.CreateWebhookOp.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -110007,12 +109485,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.ChannelSpec",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ChannelSpec.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.ChannelDeletion",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ChannelDeletion.$create.Arguments"
@@ -110028,12 +109500,6 @@
       "resource": "tl.so.tilo.discord.preview.ChannelDeletion",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ChannelDeletion.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.ChannelDeletion",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ChannelDeletion.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -110055,12 +109521,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.CategoryPlace",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.CategoryPlace.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.ChannelPlace",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ChannelPlace.$create.Arguments"
@@ -110076,12 +109536,6 @@
       "resource": "tl.so.tilo.discord.preview.ChannelPlace",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ChannelPlace.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.ChannelPlace",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ChannelPlace.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -110103,12 +109557,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.ArrangeOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.ArrangeOp.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.RoleSpec",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.RoleSpec.$create.Arguments"
@@ -110124,12 +109572,6 @@
       "resource": "tl.so.tilo.discord.preview.RoleSpec",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.RoleSpec.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.RoleSpec",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.RoleSpec.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -110151,12 +109593,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.DeleteRoleOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.DeleteRoleOp.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.MemberRolesOp",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.MemberRolesOp.$create.Arguments"
@@ -110172,12 +109608,6 @@
       "resource": "tl.so.tilo.discord.preview.MemberRolesOp",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.MemberRolesOp.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.MemberRolesOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.MemberRolesOp.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -110199,12 +109629,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.MemberOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.MemberOp.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.OverwriteOp",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.OverwriteOp.$create.Arguments"
@@ -110220,12 +109644,6 @@
       "resource": "tl.so.tilo.discord.preview.OverwriteOp",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.OverwriteOp.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.OverwriteOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.OverwriteOp.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -110247,12 +109665,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.FetchAssetOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.FetchAssetOp.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.AnswerInteractionOp",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.AnswerInteractionOp.$create.Arguments"
@@ -110268,12 +109680,6 @@
       "resource": "tl.so.tilo.discord.preview.AnswerInteractionOp",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.AnswerInteractionOp.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.AnswerInteractionOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.AnswerInteractionOp.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -110295,12 +109701,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.EmojiSpec",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.EmojiSpec.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.DeleteEmojiOp",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.DeleteEmojiOp.$create.Arguments"
@@ -110319,12 +109719,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.DeleteEmojiOp",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.DeleteEmojiOp.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.Accounts",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Accounts.$create.Arguments"
@@ -110340,12 +109734,6 @@
       "resource": "tl.so.tilo.discord.preview.Accounts",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Accounts.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.Accounts",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Accounts.$origin.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
@@ -110370,12 +109758,6 @@
       "resource": "tl.so.tilo.discord.preview.VoicePair",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.VoicePair.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.VoicePair",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.VoicePair.$origin.Arguments"
     },
     {
       "app": "so.tilo.lang.discussion",
@@ -115624,12 +115006,6 @@
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Label",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.mail.Label.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "tl.so.tilo.mail.Label",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Label.$scenario.Arguments"
     },
@@ -115756,12 +115132,6 @@
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Picture",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.mail.Picture.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "tl.so.tilo.mail.Picture",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Picture.$scenario.Arguments"
     },
@@ -115786,12 +115156,6 @@
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.TrustedSender",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.mail.TrustedSender.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "tl.so.tilo.mail.TrustedSender",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.mail.TrustedSender.$scenario.Arguments"
     },
@@ -115812,12 +115176,6 @@
       "resource": "tl.so.tilo.mail.Draft",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "tl.so.tilo.mail.Draft",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.$origin.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -115908,12 +115266,6 @@
       "resource": "tl.so.tilo.mail.Mail",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "tl.so.tilo.mail.Mail",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.$origin.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -117232,12 +116584,6 @@
     {
       "app": "so.tilo.music",
       "resource": "tl.so.tilo.music.Mixtape",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.music.Mixtape.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.music",
-      "resource": "tl.so.tilo.music.Mixtape",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.music.Mixtape.$scenario.Arguments"
     },
@@ -117310,12 +116656,6 @@
     {
       "app": "so.tilo.music",
       "resource": "tl.so.tilo.music.Taste",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.music.Taste.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.music",
-      "resource": "tl.so.tilo.music.Taste",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.music.Taste.$scenario.Arguments"
     },
@@ -117336,12 +116676,6 @@
       "resource": "tl.so.tilo.music.Library",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.music.Library.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.music",
-      "resource": "tl.so.tilo.music.Library",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.music.Library.$origin.Arguments"
     },
     {
       "app": "so.tilo.music",
@@ -121948,12 +121282,6 @@
     {
       "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.Picking",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.shell.Picking.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tl.so.tilo.shell.Picking",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Picking.$scenario.Arguments"
     },
@@ -121990,12 +121318,6 @@
     {
       "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.CallEdit",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.shell.CallEdit.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tl.so.tilo.shell.CallEdit",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.shell.CallEdit.$scenario.Arguments"
     },
@@ -122016,12 +121338,6 @@
       "resource": "tl.so.tilo.shell.Shell",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tl.so.tilo.shell.Shell",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -122278,12 +121594,6 @@
     {
       "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.BarPart",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.shell.BarPart.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tl.so.tilo.shell.BarPart",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.shell.BarPart.$scenario.Arguments"
     },
@@ -122308,12 +121618,6 @@
     {
       "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.DockItem",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.shell.DockItem.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tl.so.tilo.shell.DockItem",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.shell.DockItem.$scenario.Arguments"
     },
@@ -122334,12 +121638,6 @@
       "resource": "tl.so.tilo.shell.ReportPick",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.ReportPick.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tl.so.tilo.shell.ReportPick",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.shell.ReportPick.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -122700,12 +121998,6 @@
       "resource": "tl.so.tilo.shell.Viewing",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Viewing.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tl.so.tilo.shell.Viewing",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.shell.Viewing.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -126814,12 +126106,6 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.Reply",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.Reply.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.Reply",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Reply.$scenario.Arguments"
     },
@@ -126850,12 +126136,6 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.Subscription",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.Subscription",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.$scenario.Arguments"
     },
@@ -126876,12 +126156,6 @@
       "resource": "tl.so.tilo.tube.QueuedVideo",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.QueuedVideo.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.QueuedVideo",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.QueuedVideo.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -126910,12 +126184,6 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.PlaybackPrefs",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.PlaybackPrefs.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.PlaybackPrefs",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.tube.PlaybackPrefs.$scenario.Arguments"
     },
@@ -126936,12 +126204,6 @@
       "resource": "tl.so.tilo.tube.WatchEntry",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.WatchEntry.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.WatchEntry",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.WatchEntry.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -126970,12 +126232,6 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.PairedDevice",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.PairedDevice.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.PairedDevice",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.tube.PairedDevice.$scenario.Arguments"
     },
@@ -126996,12 +126252,6 @@
       "resource": "tl.so.tilo.tube.GrayjayPairAsk",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPairAsk.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjayPairAsk",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPairAsk.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -127030,12 +126280,6 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.GrayjaySyncAsk",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySyncAsk.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjaySyncAsk",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySyncAsk.$scenario.Arguments"
     },
@@ -127056,12 +126300,6 @@
       "resource": "tl.so.tilo.tube.GrayjayPeer",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPeer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjayPeer",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPeer.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -127090,12 +126328,6 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.GrayjaySubscription",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySubscription.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjaySubscription",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySubscription.$scenario.Arguments"
     },
@@ -127116,12 +126348,6 @@
       "resource": "tl.so.tilo.tube.GrayjayJob",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayJob.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjayJob",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayJob.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -127150,12 +126376,6 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.GrayjayOutcome",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayOutcome.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjayOutcome",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayOutcome.$scenario.Arguments"
     },
@@ -127180,12 +126400,6 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.GrayjayRead",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayRead.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjayRead",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayRead.$scenario.Arguments"
     },
@@ -127206,12 +126420,6 @@
       "resource": "tl.so.tilo.tube.YouTube",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.YouTube",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",

@@ -379,7 +379,7 @@ PlaceWidgetArgs = TypedDict("PlaceWidgetArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -440,7 +440,7 @@ class Notice(Resource):
 
 class Picking(Resource):
     """Picking — `tl.so.tilo.shell.Picking`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     @property
     def _5xjx7oct(self) -> str:
         """folder (`5xjx7oct` on the wire)."""
@@ -482,7 +482,7 @@ class Picking(Resource):
 
 class CallEdit(Resource):
     """CallEdit — `tl.so.tilo.shell.CallEdit`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     r6c6zjdg: list[str]  # path
     @property
     def _5fhfjzcm(self) -> str:
@@ -496,7 +496,7 @@ class CallEdit(Resource):
 
 class Shell(Resource):
     """Shell — `tl.so.tilo.shell.Shell`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     qsrjrjkd: ChromePreset  # preset
     @property
     def _2se66uzq(self) -> ChromePreset:
@@ -924,14 +924,14 @@ class Shell(Resource):
 
 class BarPart(Resource):
     """BarPart — `tl.so.tilo.shell.BarPart`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     fjzbw5un: BarPartKind  # kind
     pbly7ymy: bool  # shown
 
 
 class DockItem(Resource):
     """DockItem — `tl.so.tilo.shell.DockItem`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     rfsefuzv: str  # key
     qsnrl2gk: str  # title
     @property
@@ -957,7 +957,7 @@ class DockItem(Resource):
 
 class ReportPick(Resource):
     """ReportPick — `tl.so.tilo.shell.ReportPick`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     hb2dxuji: str  # key
     hu4bokd4: str  # title
     abe7lbj4: str  # app_name
@@ -965,7 +965,7 @@ class ReportPick(Resource):
 
 class Layout(Resource):
     """Layout — `tl.so.tilo.shell.Layout`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     uykuo63i: str  # person
     k4p3z4ee: str  # front
     yb7sokzs: list[Entry[LayoutPerson]]  # people
@@ -1098,7 +1098,7 @@ class Layout(Resource):
 
 class LayoutRecent(Resource):
     """LayoutRecent — `tl.so.tilo.shell.LayoutRecent`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     zyqmwz53: str  # key
     g5lvltn4: str  # resource
     @property
@@ -1126,7 +1126,7 @@ class LayoutRecent(Resource):
 
 class LayoutQuery(Resource):
     """LayoutQuery — `tl.so.tilo.shell.LayoutQuery`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     @property
     def _6jget5cg(self) -> str:
         """key (`6jget5cg` on the wire)."""
@@ -1144,7 +1144,7 @@ class LayoutQuery(Resource):
 
 class LayoutRef(Resource):
     """LayoutRef — `tl.so.tilo.shell.LayoutRef`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     k652vouu: str  # key
     vdsinb5l: str  # query
     vj5mgxi6: str  # address
@@ -1161,7 +1161,7 @@ class LayoutRef(Resource):
 
 class LayoutWorkspace(Resource):
     """LayoutWorkspace — `tl.so.tilo.shell.LayoutWorkspace`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     @property
     def _5zibpqs6(self) -> str:
         """key (`5zibpqs6` on the wire)."""
@@ -1177,7 +1177,7 @@ class LayoutWorkspace(Resource):
 
 class LayoutPerson(Resource):
     """LayoutPerson — `tl.so.tilo.shell.LayoutPerson`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     @property
     def _3rpmhtjf(self) -> str:
         """key (`3rpmhtjf` on the wire)."""
@@ -1198,7 +1198,7 @@ class LayoutPerson(Resource):
 
 class LayoutRow(Resource):
     """LayoutRow — `tl.so.tilo.shell.LayoutRow`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     @property
     def _3xc5xbon(self) -> str:
         """key (`3xc5xbon` on the wire)."""
@@ -1215,7 +1215,7 @@ class LayoutRow(Resource):
 
 class LayoutStrip(Resource):
     """LayoutStrip — `tl.so.tilo.shell.LayoutStrip`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     dufcke3u: str  # key
     x42tiiqe: str  # workspace
     dvberkpa: str  # row
@@ -1290,7 +1290,7 @@ class LayoutStrip(Resource):
 
 class LayoutPlace(Resource):
     """LayoutPlace — `tl.so.tilo.shell.LayoutPlace`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     ba3kyokq: str  # key
     @property
     def _7dno3n47(self) -> str:
@@ -1319,7 +1319,7 @@ class LayoutPlace(Resource):
 
 class Viewing(Resource):
     """Viewing — `tl.so.tilo.shell.Viewing`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     kna5sco4: str  # style
 
     def show_style(self, *, style: str) -> None:
@@ -1337,7 +1337,7 @@ class Viewing(Resource):
 
 class TiloShell(Resource):
     """Shell — `tl.so.tilo.shell`."""
-    __surface__ = "so.tilo.shell@d3158ae44944f67c"
+    __surface__ = "so.tilo.shell@903d1dcbc0b08edc"
     def rename_workspace(self,
         *,
         key: str,

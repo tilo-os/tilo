@@ -225,7 +225,7 @@ ThisWeekArgs = TypedDict("ThisWeekArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.calendar@698effea1e53ec9b"
+    __surface__ = "so.tilo.calendar@da913c05a77c12c0"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -286,7 +286,7 @@ class Notice(Resource):
 
 class Attendee(Resource):
     """Attendee — `tl.so.tilo.calendar.Attendee`."""
-    __surface__ = "so.tilo.calendar@698effea1e53ec9b"
+    __surface__ = "so.tilo.calendar@da913c05a77c12c0"
     oiolhfhy: str  # name
     zr5l6sfu: str  # email
     wyfwksgq: str  # status
@@ -295,7 +295,7 @@ class Attendee(Resource):
 
 class Account(Resource):
     """Account — `tl.so.tilo.calendar.Account`."""
-    __surface__ = "so.tilo.calendar@698effea1e53ec9b"
+    __surface__ = "so.tilo.calendar@da913c05a77c12c0"
     f44j5f26: str  # key
     gxn236ef: str  # address
     rfeeyuff: str  # name
@@ -324,7 +324,7 @@ class Account(Resource):
 
 class Project(Resource):
     """Project — `tl.so.tilo.calendar.Project`."""
-    __surface__ = "so.tilo.calendar@698effea1e53ec9b"
+    __surface__ = "so.tilo.calendar@da913c05a77c12c0"
     iivr4dfm: str  # name
     @property
     def _5kprlx3s(self) -> Color:
@@ -359,7 +359,7 @@ class Project(Resource):
 
 class Task(Resource):
     """Task — `tl.so.tilo.calendar.Task`."""
-    __surface__ = "so.tilo.calendar@698effea1e53ec9b"
+    __surface__ = "so.tilo.calendar@da913c05a77c12c0"
     r2vx64eh: str  # title
     s6raiajy: bool  # done
     kibl2yut: str | None  # due
@@ -497,7 +497,7 @@ class Task(Resource):
 
 class Event(Resource):
     """Event — `tl.so.tilo.calendar.Event`."""
-    __surface__ = "so.tilo.calendar@698effea1e53ec9b"
+    __surface__ = "so.tilo.calendar@da913c05a77c12c0"
     qqkexjof: str  # key
     yclpjnie: str  # href
     lpmkddba: str  # etag
@@ -857,7 +857,7 @@ class Event(Resource):
 
 class Calendar(Resource):
     """Calendar — `tl.so.tilo.calendar.Calendar`."""
-    __surface__ = "so.tilo.calendar@698effea1e53ec9b"
+    __surface__ = "so.tilo.calendar@da913c05a77c12c0"
     gzrwihvd: str  # key
     pwrd7qqx: str  # account
     dn3prfqt: str  # sync_token
@@ -880,7 +880,7 @@ class Calendar(Resource):
 
 class Calendars(Resource):
     """Calendars — `tl.so.tilo.calendar.Calendars`."""
-    __surface__ = "so.tilo.calendar@698effea1e53ec9b"
+    __surface__ = "so.tilo.calendar@da913c05a77c12c0"
     g3gq3jmz: list[Entry[Event]]  # events
     ozulkrgt: list[Entry[Calendar]]  # calendars
     lubytvuv: list[Entry[Account]]  # accounts
@@ -1092,7 +1092,7 @@ class Calendars(Resource):
 
 class Busy(Resource):
     """Busy — `tl.so.tilo.calendar.Busy`."""
-    __surface__ = "so.tilo.calendar@698effea1e53ec9b"
+    __surface__ = "so.tilo.calendar@da913c05a77c12c0"
     @property
     def _76f4x76t(self) -> str:
         """start (`76f4x76t` on the wire)."""
@@ -1114,7 +1114,7 @@ class Busy(Resource):
 
 class Moment(Resource):
     """Moment — `tl.so.tilo.calendar.Moment`."""
-    __surface__ = "so.tilo.calendar@698effea1e53ec9b"
+    __surface__ = "so.tilo.calendar@da913c05a77c12c0"
     kd3noj7y: Event  # event
     ejfozpye: str  # at
     @property
@@ -1129,5 +1129,5 @@ class Moment(Resource):
 
 class TiloCalendar(Resource):
     """Calendar — `tl.so.tilo.calendar`."""
-    __surface__ = "so.tilo.calendar@698effea1e53ec9b"
+    __surface__ = "so.tilo.calendar@da913c05a77c12c0"
 

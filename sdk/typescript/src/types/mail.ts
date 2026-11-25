@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@14087dc7d5e5e752";
+export const SURFACE = "so.tilo.mail@3d8d68c3ca9b0145";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {

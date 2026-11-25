@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.discord.preview@b341ab6e1fe55808";
+export const SURFACE = "so.tilo.discord.preview@085cf91e5cebb00e";
 
 /** What kind of place a Discord channel is. One of "text", "voice", "category", "thread". */
 export type ChannelKind = "text" | "voice" | "category" | "thread";
