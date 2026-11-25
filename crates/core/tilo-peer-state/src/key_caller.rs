@@ -26,16 +26,24 @@ pub fn caller_of_certificate(certificate: &DeviceCert) -> Caller {
 /// first: the host's own operations, asked of its action service or in process, and a
 /// workspace's governance verbs a device asks its own service for. A server key is its person
 /// ([`caller_of_certificate`]); any other agent's grant is the agent its key names
-/// ([`tilo_action_policy::key_agent_id`]), never the person who delegated it, so what it does
-/// beyond reading waits for that person's yes ([`crate::key_caller`]).
+/// ([`tilo_action_policy::key_agent_id`]), never the person who delegated it, with the
+/// delegation its certificate gives it ([`tilo_action_policy::roles::certified_agent`]): it
+/// reads, and whatever changes something waits for its person's yes.
 #[must_use]
 pub fn caller_of_key_here(certificate: &DeviceCert) -> Caller {
     if certificate.capabilities.agent.is_some() && !certificate.capabilities.server_key {
+        let agent = tilo_action_policy::key_agent_id(&certificate.device_public_key);
+        let person = hex::encode(certificate.user_public_key);
         Caller::delegated_agent(
-            tilo_action_policy::key_agent_id(&certificate.device_public_key),
+            agent.clone(),
             certificate.user_public_key,
             certificate.device_public_key,
         )
+        .granting(tilo_action_policy::roles::certified_agent(
+            "",
+            (&agent, &person),
+            &person,
+        ))
     } else {
         Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
     }
