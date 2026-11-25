@@ -9161,7 +9161,7 @@
         },
         {
           "name": "chosen",
-          "doc": "The items selected, in the order they stand: the selection a host keeps for its person, given back so a list built again shows it as they left it.",
+          "doc": "The items selected, in the order they stand: the selection a host keeps for its person, given back so a list built again shows it as they left it. An item whose row the list does not hold yet — a list whose host renders its rows as they show — is held and selected as its row arrives.",
           "type": {
             "option": {
               "list": "resource"

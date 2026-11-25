@@ -23,7 +23,8 @@ app tilo.std "Standard library"
 /// its own opens into it where it stands — the row grows into the item's page, and pressing it
 /// again, Escape or a press beside it closes it — while a row whose item the window shows
 /// elsewhere opens it beside the list when chosen and in front when activated, as every list of
-/// the platform does; and the row says who else is at the item.
+/// the platform does; and the row says who else is at the item. The row of the item the window
+/// has open stands chosen, so the list says what is open beside it.
 ///
 /// `row` draws an item, handed the item and who else is at it, and writes the `ui.ListItem` the
 /// list shows: its `group:`, its `parent:` and its `tail:` say the list's grouping, nesting and
@@ -63,8 +64,11 @@ template view list<T>(
         ungrouped_title: ungrouped,
         tail_title: tail_title,
         open: opened,
+        chosen: if let x = opened { [x] },
         reveal: reveal,
     ) {
+        // The row of the item the window shows is chosen, so the list says what is open while the
+        // item's page stands beside it.
         on select(x: T): open(x, front: false)
         on activate(x: T): open(x)
         on opened(x: T): set(opened, x)

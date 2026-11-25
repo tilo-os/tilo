@@ -368,6 +368,9 @@ pub struct VirtualRows {
     open: Option<ListKey>,
     rereading_open: Option<ListKey>,
     held_open: Option<String>,
+    /// The items a host chose for its person, held while the rows cannot answer for every one
+    /// of them: a row that arrives selects its item then, as a row the host holds open opens.
+    held_chosen: Option<Vec<String>>,
     growth: Vec<(ListKey, crate::motion::MotionValue<f64>)>,
     growing: HashSet<ListKey>,
     menus: RowMenus,
@@ -521,6 +524,7 @@ impl VirtualRows {
         }
         if legacy_wakeup || received_changes {
             self.open_held();
+            self.chosen_held();
         }
         legacy_wakeup || received_changes
     }
@@ -568,6 +572,7 @@ impl VirtualRows {
             open: None,
             rereading_open: None,
             held_open: None,
+            held_chosen: None,
             growth: Vec::new(),
             growing: HashSet::new(),
             menus: RowMenus::None,
@@ -775,6 +780,52 @@ impl VirtualRows {
                 .as_ref()
                 .and_then(|names| names(item))
         })
+    }
+
+    /// The rows of the items a host chose for its person, each selected: what a list shows while
+    /// the view keeps one of them open beside it. An item the rows cannot answer for yet — the
+    /// app is reading them, or its row has not arrived — is held and selects its row as it
+    /// arrives, as a row a host holds open opens. `None` leaves the list's own choice.
+    pub(super) fn set_chosen(&mut self, items: Option<&[String]>) {
+        self.held_chosen = None;
+        let Some(items) = items else {
+            return;
+        };
+        if items.is_empty() {
+            self.choose(KeySelection::new());
+            return;
+        }
+        match self.chosen_rows(items) {
+            Some(chosen) => self.choose(chosen),
+            None => self.held_chosen = Some(items.to_vec()),
+        }
+    }
+
+    /// Select the rows the host chose, once the rows answer for every item it named.
+    fn chosen_held(&mut self) {
+        let Some(items) = self.held_chosen.take() else {
+            return;
+        };
+        match self.chosen_rows(&items) {
+            Some(chosen) => self.choose(chosen),
+            None => self.held_chosen = Some(items),
+        }
+    }
+
+    /// The selection of the rows presenting `items`, when the rows present every one of them.
+    fn chosen_rows(&self, items: &[String]) -> Option<KeySelection<ListKey>> {
+        let mut chosen = KeySelection::new();
+        for item in items {
+            chosen.toggle(self.key_of_item(item)?);
+        }
+        Some(chosen)
+    }
+
+    /// Choose `chosen`, as a host's choice is taken: the rows it names stand selected, and a
+    /// choice of several rows is reported with what a person's own is.
+    fn choose(&mut self, chosen: KeySelection<ListKey>) {
+        self.reported_many = chosen.is_select_all() || chosen.stored_keys().count() > 1;
+        self.selection = chosen;
     }
 
     /// Show the row of the item `item` names, as its model presents it: it scrolls into view at

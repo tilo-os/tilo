@@ -1654,9 +1654,20 @@ mod tests {
                          {width}×{height}"
                     );
                 } else {
+                    // The list is the window's overview and the task's page stands in the
+                    // content column beside it, so the row stays a row and says by its choice
+                    // that its task is the one open.
                     assert!(
-                        shows_open(root, answered),
-                        "the task the scenario answers with is the one open"
+                        page_shows(root, answered),
+                        "the task the scenario answers with is the one the content column holds"
+                    );
+                    assert!(
+                        chosen_named(root, answered),
+                        "the task's row stands chosen, so the list says what is open"
+                    );
+                    assert!(
+                        !page_shows(root, label),
+                        "no other task's page stands beside the list"
                     );
                 }
             }
@@ -1697,26 +1708,35 @@ mod tests {
                 continue;
             }
             assert!(
-                shows_open(root, label),
-                "the row opened where it stands at {width}×{height}"
+                page_shows(root, label),
+                "the pressed task stands in the content column at {width}×{height}"
+            );
+            assert!(
+                chosen_named(root, label),
+                "the pressed row is the one the list says is open at {width}×{height}"
+            );
+            assert!(
+                !chosen_named(root, answered),
+                "the row of the task before it is no longer chosen at {width}×{height}"
+            );
+            assert!(
+                !page_shows(root, answered),
+                "the task before it left the content column at {width}×{height}"
             );
             assert!(
                 shown_named(root, "Subtasks"),
-                "the row holds the task's document where it stands at {width}×{height}"
+                "the content column holds the task's document at {width}×{height}"
             );
-
-            staged.key("Escape");
-            let root = &staged.harness().inspection().root;
-            assert!(!shows_open(root, label), "Escape closes the document again");
             assert!(
-                !shown_named(root, "Subtasks"),
-                "Escape puts the document away again"
+                named(root, ROWS, label).is_some(),
+                "the list keeps the row while its page stands beside it at {width}×{height}"
             );
         }
     }
 
-    /// A scenario that answers with a task stages that task's place with its row open where it
-    /// stands: the window a script answers in is the list, not a page laid over it.
+    /// A scenario that answers with a task stages that task's place with its page in the content
+    /// column and its row chosen in the list: the window a script answers in is the list and the
+    /// task beside it, not a page laid over the list.
     #[test]
     fn a_scenario_that_answers_with_a_task_shows_its_row_open_in_its_place() {
         tilo_app_window::i18n::ensure();
@@ -1752,16 +1772,22 @@ mod tests {
                      {width}×{height}"
                 );
             } else {
+                // The task the scenario answers with stands in the content column beside the
+                // list, and its row says by its choice that it is the one open.
                 assert!(
-                    shows_open(root, label),
-                    "the task stands open where it stands at {width}×{height}"
+                    page_shows(root, label),
+                    "the task stands in the content column at {width}×{height}"
+                );
+                assert!(
+                    chosen_named(root, label),
+                    "the task's row stands chosen at {width}×{height}"
                 );
                 assert!(
                     shown_named(root, "Subtasks"),
-                    "the row holds the task's document at {width}×{height}"
+                    "the content column holds the task's document at {width}×{height}"
                 );
-                // The document lists the task's subtasks: a list inside the row held open gets
-                // its rows, and the row grows to hold them.
+                // The document lists the task's subtasks, and the list keeps each of them as a
+                // row of its own beside it.
                 let outline =
                     named(root, &[ui::a11y::Role::Tree], "Subtasks").expect("the task's outline");
                 for subtask in [
@@ -1778,14 +1804,18 @@ mod tests {
                         row.rect,
                         outline.rect
                     );
-                    // The row held open folds its branch: a step
-                    // its document lists does not stand in the list
-                    // again.
+                    // The document lists the step once, and the list keeps it as one row of its
+                    // own: the window holds it once in each place, never twice in one.
+                    assert_eq!(
+                        count_named(outline, ROWS, subtask),
+                        1,
+                        "{subtask:?} stands once in the document at {width}×{height}"
+                    );
                     assert_eq!(
                         count_named(root, ROWS, subtask),
-                        1,
-                        "{subtask:?} stands once at {width}×{height}: in the document of the \
-                         row state open, or in the list, never both"
+                        2,
+                        "{subtask:?} stands in the document and in the list beside it at \
+                         {width}×{height}, once in each"
                     );
                 }
                 // The outline's row says how far its branch got, as the list's row of the same task
@@ -2052,6 +2082,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Whether the window holds `label`'s page in its content column: a page titles its record
+    /// in the field at its head, which a reader sees as the field's value.
+    fn page_shows(node: &ui::headless::InspectionNode, label: &str) -> bool {
+        node.semantics.as_ref().is_some_and(|access| {
+            access.role == ui::a11y::Role::TextInput && access.value.as_deref() == Some(label)
+        }) || node.children.iter().any(|child| page_shows(child, label))
     }
 
     /// Whether the window's place list stands its entry named `label` chosen.

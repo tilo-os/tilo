@@ -467,6 +467,12 @@ impl<M: ListModel + 'static> VirtualList<M> {
         self.rows.set_selection(selection.map(ListKey::new));
     }
 
+    /// The rows of the items a host chose for its person, each selected; an item the rows cannot
+    /// answer for yet is held and selected as its row arrives.
+    pub fn set_chosen(&mut self, items: Option<&[String]>) {
+        self.rows.set_chosen(items);
+    }
+
     #[must_use]
     pub fn selection(&self) -> KeySelection<M::Key> {
         self.rows.selection().clone().map(|key| key.typed())

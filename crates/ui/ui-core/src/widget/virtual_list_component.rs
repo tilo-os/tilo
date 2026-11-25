@@ -274,7 +274,9 @@ pub struct VirtualListProps {
     /// selects nothing; none leaves the list's own choice.
     pub chosen_values: Option<Vec<String>>,
     /// The items selected, in the order they stand: the selection a host keeps for its person,
-    /// given back so a list built again shows it as they left it.
+    /// given back so a list built again shows it as they left it. An item whose row the list does
+    /// not hold yet — a list whose host renders its rows as they show — is held and selected as
+    /// its row arrives.
     #[component(state)]
     pub chosen: Option<Vec<ResourceId>>,
     /// How far the list is scrolled, in logical pixels.
@@ -1094,28 +1096,6 @@ fn rows_standing_for(rows: &DescribedRows, values: &[String]) -> KeySelection<St
     picked
 }
 
-/// The rows a host chose for its person ([`VirtualListProps::chosen`]), from the items it names:
-/// none when it names none, so a choice the list made itself stands. A choice of several rows is
-/// the host's while it holds: what the host kept of it gone, an action over the rows ran and put it
-/// away, the list puts its own away with it.
-fn picked_rows(
-    chosen: Option<Vec<ResourceId>>,
-    reading: &DescribedRows,
-    selected: usize,
-) -> Option<KeySelection<String>> {
-    let items = chosen?;
-    if items.is_empty() {
-        return (selected > 1).then(KeySelection::new);
-    }
-    let mut picked = KeySelection::new();
-    for item in &items {
-        if let Some(key) = reading.key_presenting(&item.0) {
-            picked.toggle(key);
-        }
-    }
-    Some(picked)
-}
-
 /// The commands of a row's menus that declare a shortcut (`key: "Ctrl+Enter"`), each with the
 /// keys it answers, so the row runs it where it has the keyboard as choosing it does: the
 /// item's own menu first, then what the view attached to the row. Text that is no chord names
@@ -1826,9 +1806,11 @@ impl Described for DescribedList {
             }
             list = list.with_selection(chosen);
         }
-        if let Some(picked) = picked_rows(chosen, &reading.borrow(), 0) {
-            list = list.with_selection(picked);
-        }
+        // The rows the host chose, by the items they present: the model answers for them, and
+        // holds the ones it cannot answer for yet until their rows arrive.
+        let chosen_items: Option<Vec<String>> =
+            chosen.map(|ids| ids.into_iter().map(|id| id.0).collect());
+        list.set_chosen(chosen_items.as_deref());
         if let Some(values) = &chosen_values {
             list = list.with_selection(rows_standing_for(&reading.borrow(), values));
         }
@@ -1960,8 +1942,11 @@ impl Described for DescribedList {
         if let Some(unseen) = &self.unseen {
             (*unseen.borrow_mut()).clone_from(&unseen_from);
         }
+        // The rows the host chose, by the items they present: the model answers for them, and
+        // holds the ones it cannot answer for yet until their rows arrive.
+        let chosen_items: Option<Vec<String>> =
+            chosen.map(|ids| ids.into_iter().map(|id| id.0).collect());
         let reading = rows.reader();
-        let picked = picked_rows(chosen, &reading, self.chosen_rows());
         *self.reading.borrow_mut() = reading;
         // The row the view asks to show moves the list when the key it names changes, and never
         // for the same key again, so a person's own scroll stays. It is taken before the list is
@@ -2001,9 +1986,7 @@ impl Described for DescribedList {
         // that left the list opens nothing. An item the rows cannot answer for yet // leaves the row the
         // person has open as it is, and opens as its row arrives.
         list.hold_open(open.as_ref().map(|item| item.0.as_str()));
-        if let Some(picked) = picked {
-            list.set_selection(picked);
-        }
+        list.set_chosen(chosen_items.as_deref());
         if let Some(values) = &chosen_values {
             list.set_selection(rows_standing_for(&reading.borrow(), values));
         }
@@ -2926,6 +2909,114 @@ mod tests {
         assert!(
             rows.row_state(1).is_pending(),
             "the row it has not rendered is on its way"
+        );
+    }
+
+    /// Rows a host renders as they show, arriving after the list was built: the list of a
+    /// collection an app reads page by page holds no row until its first page comes.
+    struct Arriving {
+        keys: Rc<RefCell<Vec<String>>>,
+        arriving: Rc<Cell<bool>>,
+        told: Cell<bool>,
+    }
+
+    impl crate::component::RowSource for Arriving {
+        fn len(&self) -> usize {
+            self.keys.borrow().len()
+        }
+
+        fn key_at(&self, index: usize) -> Option<String> {
+            self.keys.borrow().get(index).cloned()
+        }
+
+        fn index_of(&self, key: &str) -> Option<usize> {
+            self.keys.borrow().iter().position(|here| here == key)
+        }
+
+        fn request_range(&mut self, _range: Range<usize>, _open: Option<String>) {}
+
+        fn ask_menu(&mut self, _key: &str) {}
+
+        fn rendered(&self, key: &str) -> bool {
+            self.keys.borrow().iter().any(|here| here == key)
+        }
+
+        fn read(
+            &mut self,
+            key: &str,
+            read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+        ) -> Result<bool, String> {
+            if !self.rendered(key) {
+                return Ok(false);
+            }
+            let mut rows = ViewRows::new(&[(key, None)], 0.0, 0.0);
+            crate::component::RowSource::read(&mut rows, key, read)
+        }
+
+        fn key_presenting(&self, id: &str) -> Option<String> {
+            self.keys
+                .borrow()
+                .iter()
+                .find(|key| ViewRows::item_of(key) == id)
+                .cloned()
+        }
+
+        fn take_changes(&mut self) -> Vec<ListModelChange<String>> {
+            if self.arriving.get() && !self.told.replace(true) {
+                vec![ListModelChange::Reset]
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn has_changes(&self) -> bool {
+            self.arriving.get() && !self.told.get()
+        }
+    }
+
+    /// A list whose host renders its rows as they show takes the host's choice once the row it
+    /// names arrives, though it was built while there was no row to choose.
+    #[test]
+    fn a_hosts_choice_is_taken_when_the_row_it_names_arrives() {
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let arriving = Rc::new(Cell::new(false));
+        let rendered: SharedRows = Rc::new(RefCell::new(Arriving {
+            keys: Rc::clone(&keys),
+            arriving: Rc::clone(&arriving),
+            told: Cell::new(false),
+        }));
+        let props = VirtualListProps {
+            in_column: true,
+            chosen: Some(vec![ResourceId("item-0".to_owned())]),
+            rows: DescribedRows {
+                held: Held::Rendered(rendered),
+                ..DescribedRows::default()
+            },
+            ..VirtualListProps::default()
+        };
+        let mut list = DescribedList::from_props("list", props);
+        {
+            let inner = list.list_mut().expect("the list stands");
+            lay_out(inner, 400.0);
+            assert_eq!(
+                inner.selection_len(),
+                0,
+                "the host's rows are not there to choose from yet"
+            );
+        }
+        // The host's first page of rows arrives.
+        keys.borrow_mut().push("row-0".to_owned());
+        arriving.set(true);
+        let inner = list.list_mut().expect("the list stands");
+        lay_out(inner, 400.0);
+        assert_eq!(
+            inner.selection_len(),
+            1,
+            "the row the host chose is selected"
+        );
+        assert!(
+            inner.selection().is_selected(&"row-0".to_owned()),
+            "the row showing item-0 is the one chosen"
         );
     }
 
