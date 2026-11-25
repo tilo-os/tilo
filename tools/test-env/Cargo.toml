@@ -20,7 +20,7 @@ tempfile.workspace = true
 jiff.workspace = true
 getrandom.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
 [features]
