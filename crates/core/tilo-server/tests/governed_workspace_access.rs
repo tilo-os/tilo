@@ -219,9 +219,16 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
         "the workspace her person left admits her new device"
     );
 
+    // The host keeps Bob's write before it stops: the restart below hands it back from what the
+    // host kept, not from Bob's own copy.
+    let mut kept = bob_shared.answers();
     write(&bob_shared, &bob_device, RECORD, "after-removal").unwrap();
     crate::common::receives(&bob_shared, |peer| {
         opened(peer, &KEYS, (APP, RECORD)).is_some()
+    })
+    .await;
+    tilo_test_env::within("the host keeps Bob's write", async {
+        while kept.recv().await.expect("Bob's link stays open").kept != Kept::Durable {}
     })
     .await;
 
