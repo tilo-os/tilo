@@ -29,9 +29,10 @@ use std::rc::Rc;
 use super::{Bound, BoundId, Builder, Live, Pending, Steps};
 use crate::core::Core;
 use crate::error::RuntimeError;
-use crate::host_ui::SET_ACTION;
+use crate::host_ui::{KEEP_ACTION, SET_ACTION};
 use crate::render::{RowSource, RowsOf, VirtualRows, item_key};
 use crate::store::{Listing, Splice};
+use crate::surfaces::SELECTION_EVENT;
 use crate::value::{ActionRef, CollRef, Value};
 use crate::view::{Patch, RowStep, RowsChange, UiNode, row_steps};
 use crate::view_state::StateKey;
@@ -468,33 +469,51 @@ impl Live {
     }
 
     /// The lists the moved view state `left` (each boundary that read it, and the state) leaves:
-    /// those a boundary that read it encloses. A list's own row opening or closing — the state its
-    /// `opened` and `closed` events set — leaves none: the person reads on in the same rows.
+    /// those a boundary that read it encloses. A list's own state — the row its `opened` and
+    /// `closed` events open and close, and the rows its `selected` event says the person chose —
+    /// leaves none: the person reads on in the same rows.
     pub(super) fn left_lists(&self, core: &Core, left: &[(BoundId, &StateKey)]) -> Vec<String> {
         self.lists
             .iter()
             .filter(|(key, list)| {
                 left.iter().any(|(moved, state)| {
-                    self.encloses(*moved, list.holder) && !self.opens_with(core, key, state)
+                    self.encloses(*moved, list.holder) && !self.list_keeps(core, key, state)
                 })
             })
             .map(|(key, _)| key.clone())
             .collect()
     }
 
-    /// Whether the list `list` opens and closes its rows with the view state `state`: its
-    /// `opened` or `closed` event sets it.
-    fn opens_with(&self, core: &Core, list: &str, state: &StateKey) -> bool {
+    /// Whether the view state `state` is the list `list`'s own: its `opened` or `closed` event
+    /// sets it, or its `selected` event keeps the person's choice of its rows in it.
+    fn list_keeps(&self, core: &Core, list: &str, state: &StateKey) -> bool {
         let Some(node) = self.find(list) else {
             return false;
         };
         let frames = core.frames.borrow();
-        [OPENED, CLOSED].iter().any(|event| {
+        let action = |event: &str| {
             node.events
-                .get(*event)
+                .get(event)
                 .and_then(|retained| frames.retained(*retained))
+        };
+        let opens = [OPENED, CLOSED].iter().any(|event| {
+            action(event)
                 .is_some_and(|action| matches!(action, Value::Action(set) if sets(set, state)))
-        })
+        });
+        opens
+            || action(SELECTION_EVENT).is_some_and(
+                |action| matches!(action, Value::Action(keep) if self.keeps(keep, state)),
+            )
+    }
+
+    /// Whether `action` keeps a value in the window's runtime state `state` for the person
+    /// looking (`$keep`), as a list keeps the rows they chose.
+    fn keeps(&self, action: &ActionRef, state: &StateKey) -> bool {
+        action.action == KEEP_ACTION
+            && !state.declared
+            && state.window == self.window
+            && state.actor.as_ref() == Some(&self.viewer)
+            && matches!(action.args.first(), Some(Value::Text(t)) if *t == state.state)
     }
 
     /// The rows kept for the viewer settle in the lists `settling`: the view they stood in is

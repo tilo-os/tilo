@@ -93,7 +93,7 @@ const MULTI_SELECT: &str = "multi_select";
 /// list it builds again shows them chosen.
 const CHOSEN: &str = "chosen";
 /// The event a multi-selecting list reports its choice with.
-const SELECTION_EVENT: &str = "selected";
+pub(crate) const SELECTION_EVENT: &str = "selected";
 /// The window part holding what the person chose of what the window shows. It is the window's
 /// own reading, kept for the person looking alone ([`StateKey::runtime`], set by the host), and
 /// what the bar acts on: a selection belongs to where the person is, not to the workspace.
