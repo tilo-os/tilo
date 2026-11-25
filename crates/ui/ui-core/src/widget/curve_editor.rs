@@ -7,13 +7,13 @@
 //! a curve with no value at 0 or 1 has undefined ends.
 //!
 //! The line is drawn with the same monotone cubic Hermite the colour grade applies
-//! (`crates/engines/video-edit/src/curve.rs`), so what a person shapes is what the picture
-//! gets: the limiter there is what keeps a segment from overshooting its own ends, and the same
-//! limiter is here.
+//! ([`tilo_image_codec::curve`]): the toolkit and the picture's bake share that one copy, so
+//! what a person shapes is what the picture gets.
 
 use std::collections::HashMap;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_image_codec::curve::{CurvePoint, MIN_X_GAP, normalised, value_at};
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -31,118 +31,9 @@ pub const POINT_GRAB: f64 = 0.055;
 /// How far outside the box a point must be let go to come off the curve.
 const DROP_MARGIN: f64 = 0.06;
 
-/// Closer than this two points have no slope worth drawing between them, so an insert that
-/// lands there is refused and grabs its neighbour instead.
-pub const MIN_X_GAP: f64 = 1.0 / 64.0;
-
-/// The points a curve is drawn through: x and y each in 0..1, sorted by x, both ends present.
-#[must_use]
-pub fn normalised(points: &[f64]) -> Vec<(f64, f64)> {
-    let mut drawn: Vec<(f64, f64)> = points
-        .chunks_exact(2)
-        .filter(|pair| pair[0].is_finite() && pair[1].is_finite())
-        .map(|pair| (pair[0].clamp(0.0, 1.0), pair[1].clamp(0.0, 1.0)))
-        .collect();
-    drawn.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    if drawn.first().is_none_or(|point| point.0 > 1e-9) {
-        drawn.insert(0, (0.0, 0.0));
-    }
-    if drawn.last().is_none_or(|point| point.0 < 1.0 - 1e-9) {
-        drawn.push((1.0, 1.0));
-    }
-    // Points on top of each other are one point: the later one wins.
-    let mut out: Vec<(f64, f64)> = Vec::with_capacity(drawn.len());
-    for point in drawn {
-        match out.last_mut() {
-            Some(previous) if (previous.0 - point.0).abs() < 1e-9 => *previous = point,
-            _ => out.push(point),
-        }
-    }
-    out
-}
-
-/// The value the curve takes at `x`, between the points `points`, as the grade applies it.
-#[must_use]
-pub fn value_at(points: &[(f64, f64)], x: f64) -> f64 {
-    let (Some(first), Some(last)) = (points.first(), points.last()) else {
-        return x.clamp(0.0, 1.0);
-    };
-    if points.len() == 1 {
-        return first.1;
-    }
-    let x = x.clamp(0.0, 1.0);
-    if x <= first.0 {
-        return first.1;
-    }
-    if x >= last.0 {
-        return last.1;
-    }
-    let i = points
-        .iter()
-        .rposition(|point| point.0 <= x)
-        .unwrap_or(0)
-        .min(points.len() - 2);
-    let Some(&[a, b]) = points.get(i..i + 2) else {
-        return last.1;
-    };
-    let width = b.0 - a.0;
-    if width <= 1e-12 {
-        return b.1;
-    }
-    let (ma, mb) = tangents(points, i);
-    let t = (x - a.0) / width;
-    let t2 = t * t;
-    let t3 = t2 * t;
-    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
-    let h10 = t3 - 2.0 * t2 + t;
-    let h01 = -2.0 * t3 + 3.0 * t2;
-    let h11 = t3 - t2;
-    (h00 * a.1 + h10 * width * ma + h01 * b.1 + h11 * width * mb).clamp(0.0, 1.0)
-}
-
-/// The Fritsch–Carlson tangents of segment `i`: the limiter is what makes the curve monotone
-/// rather than merely smooth.
-fn tangents(points: &[(f64, f64)], i: usize) -> (f64, f64) {
-    let n = points.len();
-    let slope = |k: usize| -> f64 {
-        let Some(&[left, right]) = points.get(k..k + 2) else {
-            return 0.0;
-        };
-        let width = right.0 - left.0;
-        if width <= 1e-12 {
-            0.0
-        } else {
-            (right.1 - left.1) / width
-        }
-    };
-    let tangent = |k: usize| -> f64 {
-        if k == 0 {
-            return slope(0);
-        }
-        if k + 1 == n {
-            return slope(n - 2);
-        }
-        let (before, after) = (slope(k - 1), slope(k));
-        if before * after <= 0.0 {
-            // A local extremum: a tangent here is an overshooting bulge.
-            return 0.0;
-        }
-        let mean = (before + after) / 2.0;
-        let limit = 3.0 * before.abs().min(after.abs());
-        mean.clamp(-limit, limit)
-    };
-    let secant = slope(i);
-    if secant.abs() <= 1e-12 {
-        // A flat segment stays flat, whatever its neighbours want.
-        return (0.0, 0.0);
-    }
-    let cap = 3.0 * secant.abs();
-    (tangent(i).clamp(-cap, cap), tangent(i + 1).clamp(-cap, cap))
-}
-
 /// A tone curve a person shapes. See the module docs.
 pub struct CurveEditor {
-    points: Vec<(f64, f64)>,
+    points: Vec<CurvePoint>,
     change: Event,
     label: Option<String>,
     height: f64,
@@ -195,7 +86,7 @@ impl CurveEditor {
 
     /// The points it draws now.
     #[must_use]
-    pub fn points(&self) -> &[(f64, f64)] {
+    pub fn points(&self) -> &[CurvePoint] {
         &self.points
     }
 
@@ -236,7 +127,7 @@ impl CurveEditor {
         let flat: Vec<Value> = self
             .points
             .iter()
-            .flat_map(|(x, y)| [Value::Float(*x), Value::Float(*y)])
+            .flat_map(|point| [Value::Float(point.x), Value::Float(point.y)])
             .collect();
         self.dirty = true;
         self.change.fire(Some(Value::List(flat)));
@@ -257,7 +148,7 @@ impl CurveEditor {
         self.points
             .iter()
             .enumerate()
-            .map(|(i, point)| (i, ((point.0 - x).powi(2) + (point.1 - y).powi(2)).sqrt()))
+            .map(|(i, point)| (i, ((point.x - x).powi(2) + (point.y - y).powi(2)).sqrt()))
             .filter(|(_, away)| *away <= tolerance)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(i, _)| i)
@@ -288,16 +179,16 @@ impl CurveEditor {
         if self
             .points
             .iter()
-            .any(|point| (point.0 - x).abs() < MIN_X_GAP)
+            .any(|point| (point.x - x).abs() < MIN_X_GAP)
         {
             return None;
         }
         let at = self
             .points
             .iter()
-            .position(|point| point.0 > x)
+            .position(|point| point.x > x)
             .unwrap_or(self.points.len());
-        self.points.insert(at, (x, y));
+        self.points.insert(at, CurvePoint::new(x, y));
         self.report();
         Some(at)
     }
@@ -314,16 +205,19 @@ impl CurveEditor {
             return;
         }
         let moved = if index == 0 || index + 1 == count {
-            (self.points[index].0, y)
+            CurvePoint {
+                x: self.points[index].x,
+                y,
+            }
         } else {
-            let low = self.points[index - 1].0 + MIN_X_GAP;
-            let high = self.points[index + 1].0 - MIN_X_GAP;
+            let low = self.points[index - 1].x + MIN_X_GAP;
+            let high = self.points[index + 1].x - MIN_X_GAP;
             let x = if low <= high {
                 x.clamp(low, high)
             } else {
-                self.points[index].0
+                self.points[index].x
             };
-            (x, y)
+            CurvePoint { x, y }
         };
         if self.points[index] != moved {
             self.points[index] = moved;
@@ -369,10 +263,10 @@ impl CurveEditor {
             return false;
         };
         match key {
-            NamedKey::ArrowLeft if index > 0 => held.0 = (held.0 - step).max(0.0),
-            NamedKey::ArrowRight if index + 1 < count => held.0 = (held.0 + step).min(1.0),
-            NamedKey::ArrowUp => held.1 = (held.1 + step).min(1.0),
-            NamedKey::ArrowDown => held.1 = (held.1 - step).max(0.0),
+            NamedKey::ArrowLeft if index > 0 => held.x = (held.x - step).max(0.0),
+            NamedKey::ArrowRight if index + 1 < count => held.x = (held.x + step).min(1.0),
+            NamedKey::ArrowUp => held.y = (held.y + step).min(1.0),
+            NamedKey::ArrowDown => held.y = (held.y - step).max(0.0),
             _ => return false,
         }
         self.dirty = true;
@@ -398,8 +292,11 @@ impl CurveEditor {
         path
     }
 
-    fn point_at(&self, rect: Rect, (x, y): (f64, f64)) -> Point {
-        Point::new(rect.x0 + rect.width() * x, rect.y1 - rect.height() * y)
+    fn point_at(&self, rect: Rect, point: CurvePoint) -> Point {
+        Point::new(
+            rect.x0 + rect.width() * point.x,
+            rect.y1 - rect.height() * point.y,
+        )
     }
 
     fn paint(&self, scene: &mut vello::Scene, transform: Affine, theme: &Theme) {
@@ -596,10 +493,13 @@ impl Widget for CurveEditor {
         let described: Vec<String> = self
             .points
             .iter()
-            .map(|(x, y)| {
+            .map(|point| {
                 crate::i18n::widget_format(
                     "widget-curve-point",
-                    &[("across", percent(*x).into()), ("up", percent(*y).into())],
+                    &[
+                        ("across", percent(point.x).into()),
+                        ("up", percent(point.y).into()),
+                    ],
                 )
             })
             .collect();
@@ -637,6 +537,11 @@ mod tests {
         (editor, queue)
     }
 
+    /// Points as x and y pairs, for the tests to read.
+    fn pairs(points: &[CurvePoint]) -> Vec<(f64, f64)> {
+        points.iter().map(|point| (point.x, point.y)).collect()
+    }
+
     /// The points the last report carried, as pairs.
     fn reported(queue: &crate::Intents<Fired>) -> Vec<(f64, f64)> {
         let fired = queue.take();
@@ -654,7 +559,7 @@ mod tests {
                 other => panic!("a point reads {other:?}"),
             })
             .collect();
-        normalised(&numbers)
+        pairs(&normalised(&numbers))
     }
 
     tilo_test_env::scenario! {
@@ -664,7 +569,11 @@ mod tests {
         phase the_straight_line_is_the_diagonal_and_a_point_bends_it;
         {
             let straight = normalised(&[]);
-            assert_eq!(straight, vec![(0.0, 0.0), (1.0, 1.0)], "an empty curve is the diagonal");
+            assert_eq!(
+                pairs(&straight),
+                vec![(0.0, 0.0), (1.0, 1.0)],
+                "an empty curve is the diagonal"
+            );
             for x in [0.0, 0.25, 0.5, 0.75, 1.0] {
                 assert!((value_at(&straight, x) - x).abs() < 1e-9, "the identity at {x}");
             }
@@ -716,8 +625,8 @@ mod tests {
             dispatch(&mut editor, &cursor_moved(400.0, 100.0));
             dispatch(&mut editor, &mouse_release());
             assert_eq!(
-                editor.points(),
-                &[(0.0, 0.7), (1.0, 1.0)],
+                pairs(editor.points()),
+                vec![(0.0, 0.7), (1.0, 1.0)],
                 "a point let go outside the box comes off, and the ends stay"
             );
             let left = reported(&queue);

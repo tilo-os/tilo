@@ -2500,8 +2500,9 @@ pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorPickerProps};
 pub use color_swatch::{
     ColorSwatch, ColorSwatchFace, ColorSwatchPicker, ColorSwatchPickerProps, SwatchPainter,
 };
-pub use curve_editor::{
-    CurveEditor, CurveEditorProps, normalised as curve_points, value_at as curve_value_at,
+pub use curve_editor::{CurveEditor, CurveEditorProps};
+pub use tilo_image_codec::curve::{
+    CurvePoint, normalised as curve_points, value_at as curve_value_at,
 };
 pub mod picture;
 pub mod picture_choice;

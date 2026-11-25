@@ -7,10 +7,12 @@ license = "MIT"
 readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
-description = "The one image codec boundary: format sniffing, decode, encode and pixel operations, with the browser's own codecs on the web."
+description = "The one image codec boundary: format sniffing, decode, encode, pixel operations and the tone curve a picture is graded by, with the browser's own codecs on the web."
 
 [dependencies]
 image = { workspace = true, features = ["gif", "jpeg", "png", "webp"] }
+# The tone curve is part of a clip's saved grade, so its points keep the model derive.
+serde.workspace = true
 # Format and size from an image's header alone, on every target.
 imagesize = { version = "0.14", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 # What the container says before pixels are decoded: its orientation turns them upright.

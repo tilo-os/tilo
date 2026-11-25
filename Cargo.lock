@@ -17768,6 +17768,7 @@ dependencies = [
  "imagesize",
  "js-sys",
  "send_wrapper",
+ "serde",
  "tilo-image-info",
  "wasm-bindgen",
  "wasm-bindgen-futures",

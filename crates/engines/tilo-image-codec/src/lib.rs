@@ -10,6 +10,7 @@
 //! [`decode_upright`] and [`decode_upright_now`] also turn the pixels the way
 //! the container's EXIF orientation says they are shown.
 mod codec;
+pub mod curve;
 mod format;
 mod pixels;
 #[cfg(test)]
