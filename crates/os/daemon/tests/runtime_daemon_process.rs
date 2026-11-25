@@ -843,7 +843,12 @@ fn install_dev(profile: &Path, dir: &Path, app: &str) -> Result<String> {
             payload,
         },
     )
-    .map_err(anyhow::Error::msg)?;
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "{error}\n{}",
+            std::fs::read_to_string(profile.join("daemon.log")).unwrap_or_default()
+        )
+    })?;
     let id = tilo_app_package::dev_app_id(app, &device.verifying_key().to_bytes());
     // The cache says what it installed: an answer that only says why it did not is no install.
     ensure!(
@@ -1025,7 +1030,8 @@ fn a_put_for_a_device_action_is_kept_on_the_device() -> Result<()> {
         .context("a content reference")?;
     ensure!(
         profile.path().join("apps/content").join(hash).is_file(),
-        "the device keeps the bytes its own action reads: {content}"
+        "the device keeps the bytes its own action reads: {content}\n{}",
+        profile.log()
     );
     ensure!(
         line.get(&caller, &content, 0, 0).is_err(),

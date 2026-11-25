@@ -1857,6 +1857,15 @@ impl ActionProvider for Joined {
         self.actions.as_ref()?.content_puts()
     }
 
+    /// What a put is for decides where it goes, as the actions this joins decide it
+    /// ([`tilo_actions::remote::ActionProvider::content_puts_for`]).
+    fn content_puts_for(
+        &self,
+        target: Option<&tilo_actions::remote::RemoteActionTarget>,
+    ) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        self.actions.as_ref()?.content_puts_for(target)
+    }
+
     fn content_gets(&self) -> Option<Arc<dyn tilo_actions::remote::ContentGets>> {
         self.actions.as_ref()?.content_gets()
     }

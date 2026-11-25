@@ -2206,6 +2206,15 @@ impl ActionProvider for Host {
             .and_then(|dispatch| dispatch.content_puts())
     }
 
+    fn content_puts_for(
+        &self,
+        target: Option<&tilo_actions::remote::RemoteActionTarget>,
+    ) -> Option<Arc<dyn ContentPuts>> {
+        self.state
+            .as_ref()
+            .and_then(|dispatch| dispatch.content_puts_for(target))
+    }
+
     /// The session's one search, the one the palette and text typed on the canvas run: what an
     /// agent's `find` answers with, asked on the loop's pass as the session's own services are.
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {

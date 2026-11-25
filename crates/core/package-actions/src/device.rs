@@ -21,6 +21,7 @@ use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, CatalogueQuery, ContentPut as _, InvokeArgument,
     InvokeRequest, LineClient, MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionTarget,
+    UpdateMark,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 
@@ -31,6 +32,9 @@ const CHANGE_WAIT: Duration = Duration::from_millis(CHANGE_WAIT_MS);
 
 /// The bytes of a package file one piece of an upload carries.
 const PUT_PIECE: usize = 512 * 1024;
+
+/// How long a change that has not moved on is left before it is looked at again.
+const PAUSE: Duration = Duration::from_millis(100);
 
 /// Make `change` through this computer's daemon, putting each local file it names first.
 ///
@@ -130,6 +134,7 @@ impl Connection {
         };
         let deadline = Instant::now().checked_add(CHANGE_WAIT);
         let mut status = receipt.status;
+        let mut seen = UpdateMark::Accepted;
         loop {
             match status {
                 ReceiptStatus::Accepted => {}
@@ -153,11 +158,18 @@ impl Connection {
                 Some(moved) => {
                     let _ = moved.wait_timeout(MAX_REMOTE_WAIT);
                 }
-                None => std::thread::sleep(Duration::from_millis(100)),
+                None => std::thread::sleep(PAUSE),
             }
             let Some(state) = self.line.observe(&self.caller, &id) else {
                 return Err("the daemon no longer keeps the change".to_owned());
             };
+            let at = UpdateMark::of(&state.update);
+            if at == seen {
+                // A provider that answers at once leaves the wait nothing to wait for: the
+                // change is followed at a pace rather than spun on.
+                std::thread::sleep(PAUSE);
+            }
+            seen = at;
             status = match state.update {
                 InvocationUpdate::Succeeded { output, .. } => ReceiptStatus::Completed { output },
                 InvocationUpdate::Failed { error, .. } => ReceiptStatus::Failed { error },

@@ -238,6 +238,13 @@ impl ActionProvider for Stopped {
         self.api.content_puts()
     }
 
+    fn content_puts_for(
+        &self,
+        target: Option<&tilo_actions::remote::RemoteActionTarget>,
+    ) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        self.api.content_puts_for(target)
+    }
+
     fn content_gets(&self) -> Option<Arc<dyn tilo_actions::remote::ContentGets>> {
         self.api.content_gets()
     }
@@ -483,6 +490,13 @@ impl ActionProvider for Current {
 
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.provider().content_puts()
+    }
+
+    fn content_puts_for(
+        &self,
+        target: Option<&tilo_actions::remote::RemoteActionTarget>,
+    ) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        self.provider().content_puts_for(target)
     }
 
     fn content_gets(&self) -> Option<Arc<dyn tilo_actions::remote::ContentGets>> {

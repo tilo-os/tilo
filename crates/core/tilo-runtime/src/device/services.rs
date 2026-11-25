@@ -5758,6 +5758,29 @@ impl ActionProvider for RuntimeActionProvider {
             // action.
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
+        // An action of the person's own device, asked by them on their own daemon connection:
+        // this device answers it, as it does before their services run, because what the action
+        // changes is this computer's own and no workspace's. An agent, a key or another device is
+        // answered on the workspace's admission, as before.
+        if caller.is_own_connection()
+            && !caller.is_system()
+            && let Some(registered) = self
+                .workspaces
+                .copies()
+                .providers()
+                .get(&request.target.provider)
+            && tilo_actions::api::resolve(&registered.published, &request.target.address)
+                .is_some_and(|action| action.contract.is_own_device())
+        {
+            self.invocations.record(
+                caller,
+                caller,
+                &request,
+                Some(&self.workspace),
+                (Arc::clone(&registered.answers), caller.clone()),
+            );
+            return registered.answers.invoke(caller, request);
+        }
         let origin_writes = |caller: &Caller, origin: &Origin| {
             self.broker
                 .state()
