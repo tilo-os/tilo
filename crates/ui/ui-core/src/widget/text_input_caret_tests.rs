@@ -283,8 +283,11 @@ tilo_test_env::scenario! {
             ));
             assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
 
+            // The owner setting the text is no edit of the person's, and nobody hears of it.
             ti.set_text("programmatic");
             assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
+            // Text a host splices in at the caret is what the person chose (a touch keyboard's
+            // key, a keypad's digit, a palette's emoji): it is their edit, told once.
             ti.insert_at_cursor(" helper");
             drive(
                 &mut ti,
@@ -292,7 +295,10 @@ tilo_test_env::scenario! {
                 &named_key(NamedKey::ArrowLeft),
                 mods(false, false),
             );
-            assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
+            assert_eq!(
+                &*changes.borrow(),
+                &["ab", "a漢b", "programmatic helper"]
+            );
         }
 
         {
