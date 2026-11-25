@@ -245,6 +245,8 @@ mod services;
 mod session;
 #[path = "session_package.rs"]
 mod session_package;
+#[path = "settings_hints_verb.rs"]
+mod settings_hints_verb;
 #[path = "settings_roam.rs"]
 mod settings_roam;
 #[path = "shared_checklist_between_devices.rs"]

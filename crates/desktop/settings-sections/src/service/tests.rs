@@ -699,3 +699,82 @@ fn a_pads_buttons_and_dials_are_kept_by_the_choice_its_verb_takes() {
         "a shortcut the desktop does not have is refused, not stored"
     );
 }
+
+/// Every verb a section declares is published where the section stands, and runs there: the
+/// shell's own hint call is the section's `learn-control-hint`.
+#[test]
+fn a_sections_declared_verb_is_published_and_runs() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settings = crate::in_memory::scoped();
+    let mut services = services();
+    let resource = section("control_hints");
+    let published = services
+        .resources()
+        .into_iter()
+        .find(|kept| kept.id.as_str() == resource)
+        .expect("the control hints section is published");
+    let actions: Vec<&str> = published
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert!(
+        actions.contains(&"learn-control-hint"),
+        "{resource} publishes its own verb: {actions:?}"
+    );
+    services
+        .invoke(
+            &resource,
+            "learn-control-hint",
+            &arguments(json!({ "hint": "open-from-search" })),
+        )
+        .expect("published")
+        .expect("learned");
+    assert_eq!(
+        services.read(&resource).unwrap()["learned"]["known"],
+        json!(["open-from-search"])
+    );
+}
+
+/// Every verb a section declares beyond its fields' setters is published where the section
+/// stands, as the section's surface declares it: a view's own verb of a setting reaches it, as
+/// the setting's setters do. The shell's control hint call is one of these.
+#[test]
+fn every_declared_verb_of_a_section_is_published_where_the_section_stands() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settings = crate::in_memory::scoped();
+    let (places, roots) = crate::surface();
+    let resources = services().resources();
+    let mut checked = 0;
+    for (place, root) in places.iter().zip(&roots) {
+        let address = root.published.replace(crate::DEVICE, DEVICE);
+        let Some(resource) = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == address)
+        else {
+            panic!(
+                "{address}, which {} is published at, is one of the resources",
+                place.kind
+            );
+        };
+        for verb in &place.verbs {
+            // A field's setter is published from the field; a direct content edit and a
+            // migration are the record's history, not actions; undo and redo are the person's
+            // steps, published beside the section.
+            if verb.id.starts_with("set-")
+                || tilo_actions::surface::CONTENT_VERBS.contains(&verb.id.as_str())
+                || matches!(verb.id.as_str(), "undo" | "redo")
+            {
+                continue;
+            }
+            assert!(
+                resource.actions.iter().any(|action| action.id == verb.id),
+                "{address} publishes {}#{}, as its surface declares it",
+                place.kind,
+                verb.id
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 20, "{checked} declared verbs are published");
+}

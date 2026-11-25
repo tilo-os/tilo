@@ -341,3 +341,40 @@ tilo_test_env::scenario! {
         assert_eq!(at(&restarted, "pi"), Some((1440, 300)));
     }
 }
+
+/// A section's own verb, not only its fields' setters, is a verb of the settings' workspace
+/// resources: the change it makes is written to the store, not refused for naming an undeclared
+/// verb. The shell's control hints write the person's record through `learn-control-hint`.
+#[test]
+fn a_sections_own_verb_is_a_change_the_store_admits() {
+    let workspaces = Workspaces::new();
+    let settings = WorkspaceSettings::new();
+    settings.attach(workspaces.clone());
+    settings
+        .update_section_by(
+            "control_hints",
+            object(json!({
+                "learned": {"enabled": true, "known": ["open-from-search"], "shown": {}}
+            })),
+            &ChangeOrigin::action("settings.control-hints/learn-control-hint").by(PERSON),
+        )
+        .expect("the section is written");
+    settings.sync();
+    let failures = settings.take_deferred_failures();
+    assert!(
+        failures.is_empty(),
+        "the store admits the section's own verb: {failures:?}"
+    );
+    let stored = workspaces.content(
+        Holder::Person,
+        "settings/control-hints",
+        "settings.control-hints",
+    );
+    assert!(
+        stored
+            .as_ref()
+            .and_then(|stored| stored.pointer("/learned/known"))
+            .is_some(),
+        "the hint is in the workspace's record: {stored:?}"
+    );
+}
