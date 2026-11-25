@@ -418,20 +418,18 @@ fn a_founding_call_that_stops_reporting_names_its_last_stage() {
     let staged = pending(Some("starting the person part"));
     let server = std::thread::spawn(move || {
         // The request, then the stage it reached, then none: a daemon that stopped reporting.
-        let mut held = Vec::new();
         for answer in [Some(taken), Some(staged), None] {
             let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
             let mut line = String::new();
-            std::io::BufReader::new(&stream)
-                .read_line(&mut line)
-                .unwrap();
+            reader.read_line(&mut line).unwrap();
             if let Some(answer) = answer {
-                writeln!(&stream, "{answer}").unwrap();
+                writeln!(reader.get_mut(), "{answer}").unwrap();
             } else {
-                // The connection stays open, as a daemon that stopped answering keeps it.
-                let mut waiting = std::io::BufReader::new(stream);
-                let _ = waiting.read_line(&mut line);
-                held.push(waiting);
+                // The connection stays open, as a daemon that stopped answering keeps it, until
+                // the caller gives up and closes it.
+                let mut after = String::new();
+                let _ = reader.read_line(&mut after);
             }
         }
     });
