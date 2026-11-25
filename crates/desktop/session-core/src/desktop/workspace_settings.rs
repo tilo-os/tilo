@@ -283,6 +283,70 @@ fn given_by_label(who: &MemberId, ws: &Workspace, local_user: &str) -> String {
     t_args(key, &[("id", member_name_or_short_id(ws, who).into())])
 }
 
+/// Who gave a grant, as an access view draws them: the granter's name, what kind of author they
+/// are (`you`, `person`, `agent`, `app`), and whether they are the viewer. The name and the kind
+/// are drawn beside each other, never joined into one label.
+#[must_use]
+pub fn granted_by_parts(
+    ws: &Workspace,
+    who: &Grantee,
+    local_user: &str,
+    apps: &dyn AppDirectory,
+) -> (String, &'static str, bool) {
+    match who {
+        Grantee::Member(id) => {
+            let name = person_name(ws, local_user, id);
+            let mine = id.person_id() == Some(local_user) || id.agent_id() == Some(local_user);
+            let kind = if mine {
+                "you"
+            } else if id.person_id().is_some() {
+                "person"
+            } else {
+                "agent"
+            };
+            (name, kind, mine)
+        }
+        Grantee::App(app) => (app_display_name(apps, app), "app", false),
+        Grantee::Role(role) => (role_label(*role), "role", false),
+        Grantee::CustomRole(id) => (
+            ws.policy
+                .custom_roles
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| id.clone()),
+            "role",
+            false,
+        ),
+        Grantee::AnyKey => (who.to_string(), "visitor", false),
+    }
+}
+
+/// Whether `person` may take `grant` back now: the one who gave an app grant, or whoever the
+/// workspace lets revoke grants, unless they are barred from governing. What the host then decides
+/// when the change is written.
+#[must_use]
+pub fn may_revoke(
+    ws: &Workspace,
+    person: &str,
+    grant: &tilo_action_policy::Grant,
+    now: u64,
+) -> bool {
+    if ws.policy.is_blocked(person)
+        || ws
+            .policy
+            .restricted_until(person, &tilo_action_policy::Context::at_secs(now))
+            .is_some()
+    {
+        return false;
+    }
+    let gave_it =
+        matches!(grant.grantee, Grantee::App(_)) && grant.granted_by.person_id() == Some(person);
+    gave_it
+        || ws
+            .policy
+            .may_change_at(person, tilo_action_policy::roles::governance::REVOKE, now)
+}
+
 /// A subject the grant composer can target, and the subject axis the Permissions list groups by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RecipientKind {

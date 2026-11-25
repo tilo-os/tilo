@@ -7,6 +7,7 @@ app so.tilo.settings "Settings" (
 )
 
 use so.tilo.settings.sections as settings
+use so.tilo.file-explorer as files
 use so.tilo.device as device
 use tilo.actions as actions
 use tilo.crash-reports as crashes
@@ -146,6 +147,9 @@ view settings_window(s: Settings) {
                     }
                     ui.NavItem("permissions", "Permissions", icon: .shield) {
                         on select: open_pane("permissions")
+                    }
+                    ui.NavItem("apps", "Apps", icon: .app_window) {
+                        on select: open_pane("apps")
                     }
                     ui.NavItem("agent_models", "Agent models", icon: .sparkles) {
                         on select: open_pane("agent_models")
@@ -309,6 +313,10 @@ view settings_window(s: Settings) {
                         }
                     } else if s.pane == "permissions" {
                         permissions_pane()
+                    } else if s.pane == "apps" {
+                        read_pane(of: workspace.access, what: what) {
+                            apps_access_pane()
+                        }
                     } else if s.pane == "about" {
                         read_pane(of: device.host_info, what: what) {
                             about_pane()
@@ -391,7 +399,7 @@ fn pane_title(pane: Text) -> Text {
         "Users"
     } else if pane == "permissions" {
         "Permissions"
-    } else if pane == "about" { "About" } else { "Appearance" }
+    } else if pane == "apps" { "Apps" } else if pane == "about" { "About" } else { "Appearance" }
 }
 
 /// One setting: what it is, a line about it, and the control that changes it at the row's

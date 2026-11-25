@@ -242,9 +242,17 @@ fields = [
   { path = "workspaces", type = { list = { named = "WorkspaceAccess" } }, readonly = true },
 ]
 
+[[resources.verbs]]
+id = "revoke"
+kind = "outside"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+]
+
 [[resources.types]]
 name = "WorkspaceAccess"
 fields = [
+  { name = "id", type = "text" },
   { name = "name", type = "text" },
   { name = "grants", type = { list = { named = "AccessEntry" } } },
 ]
@@ -258,6 +266,15 @@ fields = [
   { name = "allows", type = "text" },
   { name = "expiry", type = "text" },
   { name = "granted_by", type = "text" },
+  { name = "app", type = "text" },
+  { name = "path", type = "text" },
+  { name = "workspace", type = "text" },
+  { name = "holder_kind", type = "text" },
+  { name = "granted_by_name", type = "text" },
+  { name = "granted_by_kind", type = "text" },
+  { name = "granted_by_you", type = "bool" },
+  { name = "device", type = "bool" },
+  { name = "can_revoke", type = "bool" },
 ]
 
 [[resources]]

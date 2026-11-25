@@ -947,9 +947,9 @@ fn copies(downloaded: &DownloadedProgram) -> Vec<String> {
         .collect()
 }
 
-/// Where the file with record id `record` is now, under the workspace mounts
-/// this device has: the mount's exact record index, one bounded read.
-fn workspace_resource(record: [u8; 16]) -> Option<PathBuf> {
+/// Where the record `record` is now, under the workspace mounts this device has: the mount's
+/// exact record index, one bounded read. A file or a folder: what a grant names.
+pub fn workspace_resource(record: [u8; 16]) -> Option<PathBuf> {
     let id = uuid::Uuid::from_bytes(record);
     for root in workspace_roots() {
         let name = format!(
@@ -968,7 +968,6 @@ fn workspace_resource(record: [u8; 16]) -> Option<PathBuf> {
         if exact.schema_version != fs_protocol::projection::DOCUMENT_INDEX_V2_VERSION
             || !fs_protocol::projection::valid_document_index_revision(&exact.revision)
             || exact.record.document_id.0 != id
-            || exact.record.is_dir
         {
             continue;
         }

@@ -413,6 +413,48 @@ impl ChosenTable {
             self.keep();
         }
     }
+
+    /// Every choice the table holds, by the app it was made for, most recent first within an app:
+    /// what a view lists of the files people chose outside any workspace.
+    #[must_use]
+    pub fn all(&self) -> Vec<(AppKey, String, Chosen)> {
+        self.views
+            .read()
+            .ok()
+            .map(|views| {
+                views
+                    .iter()
+                    .flat_map(|(key, view)| {
+                        view.by_recency().map(move |(token, document)| {
+                            (key.clone(), token.clone(), entry(token, document.clone()))
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Forget the one choice `token` of `key`, keeping the rest. Whether it was there: the device's
+    /// record is written again without it.
+    pub fn forget(&self, key: &AppKey, token: &str) -> bool {
+        let removed = self.views.write().is_ok_and(|mut views| {
+            let Some(view) = views.get_mut(key) else {
+                return false;
+            };
+            let removed = view.documents.remove(token).is_some();
+            if removed {
+                view.recent.retain(|held| held != token);
+                if view.documents.is_empty() {
+                    views.remove(key);
+                }
+            }
+            removed
+        });
+        if removed {
+            self.keep();
+        }
+        removed
+    }
 }
 
 /// One choice, from the token the table keeps it under.

@@ -1651,12 +1651,19 @@ impl Session {
             .borrow_mut()
             .add(Box::new(crate::input_devices::Served::new(inputs.clone())));
         // What the workspaces' apps, people and agents were given beyond their own documents, as
-        // the workspace settings list them: Settings reads one summary, and changes nothing here.
+        // the workspace settings list them, and the one action that takes a grant back: the view
+        // Files and Settings draw reads this, and a revoke written here reaches the workspace's
+        // governance the way a chosen file's grant does.
         services
             .borrow_mut()
             .add(Box::new(crate::workspace_access::Served::new(
                 handle.clone(),
                 options.person.clone(),
+                view.clone(),
+                options
+                    .desktop
+                    .as_ref()
+                    .map(|desktop| std::sync::Arc::clone(desktop.chosen())),
             )));
         // The layouts this machine installs and the keys of the one inspected, drawn for a pane.
         services

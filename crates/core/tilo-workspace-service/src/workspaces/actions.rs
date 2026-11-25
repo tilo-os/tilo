@@ -5092,6 +5092,18 @@ mod surface_tests {
                 // beyond their own documents: what the session publishes as `workspace/access`,
                 // in the words the workspace's Permissions tab lists them.
                 if *kind == "access" {
+                    // The one action the access view offers: take a grant or a device-record
+                    // choice back. The session that publishes this reading answers it where the
+                    // person's own device keeps the choice.
+                    resource["verbs"] = json!([
+                        {
+                            "id": "revoke",
+                            "kind": "outside",
+                            "params": [
+                                { "name": "id", "required": true, "schema": { "type": "string" } },
+                            ],
+                        },
+                    ]);
                     resource["fields"] = json!([
                         { "path": "known", "type": "bool", "readonly": true },
                         {
@@ -5105,6 +5117,7 @@ mod surface_tests {
                             "name": "WorkspaceAccess",
                             "doc": "The grants one workspace gives.",
                             "fields": [
+                                { "name": "id", "type": "text", "title": "The workspace's id." },
                                 { "name": "name", "type": "text", "title": "What the workspace is called." },
                                 {
                                     "name": "grants",
@@ -5123,6 +5136,15 @@ mod surface_tests {
                                 { "name": "allows", "type": "text", "title": "What it allows." },
                                 { "name": "expiry", "type": "text", "title": "How long it lasts." },
                                 { "name": "granted_by", "type": "text", "title": "Who gave it, where the workspace knows." },
+                                { "name": "app", "type": "text", "title": "The app it is for, empty for a person." },
+                                { "name": "path", "type": "text", "title": "The file or folder it reaches, where it is on this device." },
+                                { "name": "workspace", "type": "text", "title": "The workspace it is in." },
+                                { "name": "holder_kind", "type": "text", "title": "What holds it: a person, an agent or an app." },
+                                { "name": "granted_by_name", "type": "text", "title": "Who gave it, by name." },
+                                { "name": "granted_by_kind", "type": "text", "title": "What the giver is: you, a person, an agent or an app." },
+                                { "name": "granted_by_you", "type": "bool", "title": "Whether the viewer gave it." },
+                                { "name": "device", "type": "bool", "title": "Whether this device's own record keeps it." },
+                                { "name": "can_revoke", "type": "bool", "title": "Whether the viewer may take it back." },
                             ],
                         },
                     ]);

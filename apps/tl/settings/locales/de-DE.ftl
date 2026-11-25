@@ -395,6 +395,7 @@ d-i67tvpqg = Settings window
     .w-billing = Abrechnung
     .w-users = Benutzer
     .w-permissions = Berechtigungen
+    .w-apps = Apps
     .w-agent-models = Agentenmodelle
     .w-devices-and-access = Geräte und Zugriff
     .w-continuity = Kontinuität
@@ -2045,3 +2046,13 @@ d-hlpmp5i4 = Betreiberwörter
     .w-not-for-this-sim = Nicht für diese SIM
     .w-in-reach = In Reichweite
     .w-unknown = Unbekannt
+
+d-vjrdgx4p = Bereichstitel
+    .w-apps = Apps
+
+d-3ufe44kf = App-Zugriff
+    .w-no-app-can-reach-a-file = Keine App erreicht eine Datei oder einen Ordner
+    .w-a-file-you-give-an-app = Eine Datei, die du einer App im Dateiauswähler gibst, steht hier.
+    .w-you-gave-this = Du hast das vergeben
+    .w-gave-this = { $granted_by_name } hat das vergeben
+    .w-take-back = Zurücknehmen

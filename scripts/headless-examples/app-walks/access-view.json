@@ -1,0 +1,202 @@
+{
+  "app": "access-view",
+  "said": "Giving an app a file from the workspace, seeing who can reach it, and taking it back",
+  "live": "tl",
+  "packages": [
+    "files",
+    "notes",
+    "settings"
+  ],
+  "tl": {
+    "id": "so.tilo.file-explorer",
+    "package": "files"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Files",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "workspace-file",
+      "said": "Make a file in the person's workspace",
+      "ops": [
+        {
+          "act": [
+            "tl.so.tilo.file-explorer.Files",
+            "show",
+            {
+              "path": "/var/workspace"
+            }
+          ]
+        },
+        {
+          "act": [
+            "tl.so.tilo.file-explorer.Files",
+            "new_file",
+            {
+              "name": "Shared plan.md"
+            }
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Shared plan.md"
+          }
+        }
+      ]
+    },
+    {
+      "id": "choose-for-an-app",
+      "said": "Notes asks for a file, and the person picks the workspace's",
+      "ops": [
+        {
+          "open": "notes"
+        },
+        {
+          "press_any": [
+            "File"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "menuitem": "Import Markdown…"
+            }
+          }
+        },
+        {
+          "press_any": [
+            {
+              "menuitem": "Import Markdown…"
+            }
+          ]
+        },
+        {
+          "choose": {
+            "path": "/var/workspace/Shared plan.md"
+          }
+        },
+        {
+          "wait_for": {
+            "prefix": "Shared plan"
+          }
+        }
+      ]
+    },
+    {
+      "id": "files-access",
+      "said": "Files shows who can reach the file, and that the person gave it",
+      "ops": [
+        {
+          "open": "files"
+        },
+        {
+          "act": [
+            "tl.so.tilo.file-explorer.Files",
+            "show",
+            {
+              "path": "/var/workspace"
+            }
+          ]
+        },
+        {
+          "click": "Shared plan.md"
+        },
+        {
+          "must": [
+            "Access",
+            "Notes",
+            "You gave this",
+            "Take back"
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "settings-apps",
+      "said": "Settings' Apps page shows every file the app can reach",
+      "ops": [
+        {
+          "open": "settings"
+        },
+        {
+          "press": "Apps"
+        },
+        {
+          "must": [
+            "Notes",
+            "Shared plan.md",
+            "Take back"
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "take-back",
+      "said": "Take the file back from Settings",
+      "ops": [
+        {
+          "press_any": [
+            "Take back"
+          ]
+        },
+        {
+          "must_not": [
+            "Shared plan.md"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gone-from-both",
+      "said": "Files no longer shows an app for the file",
+      "ops": [
+        {
+          "open": "files"
+        },
+        {
+          "act": [
+            "tl.so.tilo.file-explorer.Files",
+            "show",
+            {
+              "path": "/var/workspace"
+            }
+          ]
+        },
+        {
+          "click": "Shared plan.md"
+        },
+        {
+          "must": [
+            "Only you can reach this file."
+          ]
+        },
+        {
+          "must_not": [
+            "Notes"
+          ]
+        }
+      ],
+      "dark": true
+    }
+  ]
+}
