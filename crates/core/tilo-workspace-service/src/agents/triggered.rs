@@ -905,6 +905,28 @@ impl MayRead for crate::apps::collab_app_broker::AppBrokerState {
     }
 }
 
+/// The caller a triggered turn's read is decided as: `agent`, whose own person is `saver`,
+/// acting for `person` in `workspace` inside `place`'s turn, and holding what its certificate
+/// delegates to it there. That delegation is what every call its turn makes is decided by, so
+/// the read that starts it is decided by the same grants.
+fn turn_caller(
+    workspace: &str,
+    agent: &str,
+    saver: &str,
+    person: tilo_action_policy::PersonId,
+    place: &Where,
+) -> Caller {
+    let delegation =
+        tilo_action_policy::roles::certified_agent(workspace, (agent, saver), person.as_str());
+    Caller::agent_turn(
+        (agent, saver),
+        person,
+        tilo_action_policy::turn::Turn::new(place.conversation(), place.item.clone()),
+    )
+    .in_workspace(workspace)
+    .granting(delegation)
+}
+
 /// Why `agent`, acting for the person who asked, may not start a turn on `place` in
 /// `workspace`: what triggered it is gone, or the agent may not read it. `None` when the agent
 /// may read it.
@@ -932,11 +954,9 @@ pub async fn unreadable(
     let Ok(person) = tilo_action_policy::PersonId::parse(&person) else {
         return Some("the turn is for nobody who is a person".to_owned());
     };
-    let caller = Caller::agent_turn(
-        (agent, saver),
-        person,
-        tilo_action_policy::turn::Turn::new(place.conversation(), place.item.clone()),
-    );
+    // A caller that only says it is an agent holds no grant and reads nothing anywhere, so the
+    // read is asked as the caller the turn itself acts as ([`turn_caller`]).
+    let caller = turn_caller(event.workspace.as_str(), agent, saver, person, place);
     broker
         .may_read_resource(
             &caller,
@@ -1012,3 +1032,7 @@ impl ActionProvider for Answers {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "triggered_tests.rs"]
+mod tests;

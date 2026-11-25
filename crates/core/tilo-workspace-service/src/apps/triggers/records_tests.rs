@@ -802,3 +802,129 @@ async fn a_shortcut_kept_to_her_account_hears_her_mail_and_no_other_account() {
     assert_eq!(heard[1].2, "tl:so.tilo.mail:ada-2");
     host.shutdown().await;
 }
+
+/// Chat's messages, with the rich body a mention lives in.
+const CHAT_SURFACE: &str = r#"format = 2
+
+[[resources]]
+kind = "tl.so.tilo.chat.Message"
+label = "Message"
+version = 1
+fields = [
+  { path = "body", type = "rich_text", stored = "value" },
+]
+
+[[resources.verbs]]
+id = "send"
+kind = "undoable"
+params = []
+"#;
+
+/// A mention written the way Chat's window writes one — through the app's certified route, as
+/// the person at it — fires the agent's trigger for it: the store hands the trigger the
+/// message's rich body as the write left it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
+async fn a_mention_written_through_an_apps_route_fires_the_agents_trigger() {
+    use collab_types::store::wire::{Command, Edit, Reply};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_server(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces().clone();
+    workspaces.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    declare_app(
+        &host,
+        "so.tilo.chat",
+        tilo_surface_compile::compile(CHAT_SURFACE)
+            .expect("the surface compiles")
+            .as_bytes(),
+    );
+    let workspace = workspaces.create("Chat").await.unwrap().workspace;
+    let person = hex::encode(cert.user_public_key);
+    save_signed(
+        &workspaces,
+        &workspace,
+        crate::agents::triggered::triggers("scout", &person, "Scout"),
+        (&key, &cert),
+    )
+    .await;
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    let mut writes = workspaces.document_writes();
+
+    // What Chat's window writes for a message that mentions the person's assistant: the item,
+    // and its rich body with the mention's mark, as `MemberId::mark_value` writes it.
+    let stamp = Stamp {
+        // Chat's own `send`, the verb its surface declares for a message it writes.
+        verb: "send".into(),
+        invoker: Stamp::by(&tilo_action_policy::Actor::Member(
+            tilo_action_policy::MemberId::person(person.clone()),
+        )),
+        invocation: "i-1".into(),
+        at: jiff::Timestamp::now().to_string(),
+        ..Stamp::default()
+    };
+    let member = tilo_action_policy::MemberId::agent("scout", person.clone()).mark_value();
+    let body = json!({"blocks": [{
+        "text": "@Scout Remind me in a moment",
+        "marks": [{"start": 0, "end": 6, "name": "mention", "value": {"Str": member}}],
+    }]});
+    let wrote = workspaces
+        .own_resource_command(
+            &workspace,
+            "so.tilo.chat",
+            Command::Batch(vec![
+                Command::Put {
+                    kind: "tl.so.tilo.chat.Message".into(),
+                    id: "m-1".into(),
+                    resource: Resource {
+                        readers: "*".into(),
+                        parent: None,
+                        order: None,
+                        fields: std::collections::BTreeMap::new(),
+                    },
+                    stamp: stamp.clone(),
+                },
+                Command::Edit {
+                    kind: "tl.so.tilo.chat.Message".into(),
+                    id: "m-1".into(),
+                    edits: vec![Edit::Set {
+                        field: "body".into(),
+                        value: body,
+                    }],
+                    stamp,
+                },
+            ]),
+            Vec::new(),
+        )
+        .await
+        .expect("the app's write lands");
+    assert!(
+        matches!(wrote, Reply::Written),
+        "the write landed: {wrote:?}"
+    );
+
+    let mut since = Vec::new();
+    while let Ok(write) = writes.try_recv() {
+        since.push(write);
+    }
+    runner.pass(since).await;
+    assert_eq!(
+        started.0.lock().unwrap().len(),
+        1,
+        "the mention fires the agent's trigger"
+    );
+    host.shutdown().await;
+}
