@@ -360,7 +360,7 @@ fn pin_x(a: Layout, s: LayoutStrip, p: LayoutPlace) -> Int {
 view canvas_place(a: Layout, p: LayoutPlace, lists: Bool) {
     if composed(p) {
         ui.Place(
-            name: content_title(p),
+            name: place_own_title(p),
             carries: p.resource,
             target: placed_resource(p.resource),
             fill,
@@ -375,15 +375,6 @@ view canvas_place(a: Layout, p: LayoutPlace, lists: Bool) {
     } else {
         framed_place(a, p, lists)
     }
-}
-
-/// What a place on the canvas is called on its handle: what it shows, by its own title (an
-/// answer by its question, an inbox as Inbox). It is content, not a window, so its app's name is
-/// not joined to it as a window's title is (`place_title`); a place with no title of its own goes
-/// by that one.
-fn content_title(p: LayoutPlace) -> Text {
-    // A place showing a resource carries that resource's title (a turn's is its question).
-    if p.title != "" { p.title } else { place_title(p) }
 }
 
 /// Whether the place `p` draws its view itself — its resource's view, or the query it stands for

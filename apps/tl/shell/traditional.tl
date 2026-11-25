@@ -121,6 +121,14 @@ fn place_title(p: LayoutPlace) -> Text {
     } else if p.title != "" { p.title } else if p.shows != "" { p.shows } else { "Window" }
 }
 
+/// What a place says of itself, without the app's name joined after it: what it shows, by its own
+/// title (an answer by its question, an inbox as Inbox), or the window's name where it has none.
+/// A tab is called by these words, though its pill names the whole window, and a canvas handle
+/// carries them under the place itself.
+fn place_own_title(p: LayoutPlace) -> Text {
+    if p.title != "" { p.title } else { place_title(p) }
+}
+
 /// A frame's controls: its window's one menu, which lists the actions the place's resource
 /// publishes and then the way to carry the place to another row, and close. Each is one action of
 /// the app's or one arranging action of the session's (`shell:layout`), so a press, a

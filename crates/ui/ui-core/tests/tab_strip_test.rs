@@ -11,6 +11,7 @@ fn tab(key: &str, title: &str) -> TabItemProps {
         key: key.to_owned(),
         item: Some(ResourceId(format!("@notes.Note:{key}"))),
         title: Some(title.to_owned()),
+        name: None,
         icon: Some(tilo_ui::icons::Icon::FileText),
         attention: false,
         modified: false,

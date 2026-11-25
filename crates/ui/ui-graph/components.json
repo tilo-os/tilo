@@ -11427,6 +11427,13 @@
           }
         },
         {
+          "name": "name",
+          "doc": "What the tab itself is called, where the pill says its window's name instead: a window named for its title and app (`Groceries — Notes`) whose tab is the one showing `Groceries`. A reader hears the pill as its title, and a caller finds this tab here by its own name.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "icon",
           "doc": "A glyph before the title, from the resource's type.",
           "type": {
