@@ -948,16 +948,15 @@ impl Environments {
         let asking = self.asking().map_err(|not_run| not_run.to_string())?;
         // The machine's daemon dialled this host when it logged in, and the host answers it back
         // over that link: a VM behind its host's network is reached there, never dialled.
-        let machine = match asking.actions.remote_held(device, workspace) {
-            Some(held) => Arc::new(held),
-            None => {
-                let id = EndpointId::from_bytes(&device).map_err(|error| error.to_string())?;
-                Arc::new(
-                    asking
-                        .actions
-                        .remote(&asking.endpoint, &EndpointAddr::new(id), workspace),
-                )
-            }
+        let machine = if let Some(held) = asking.actions.remote_held(device, workspace) {
+            Arc::new(held)
+        } else {
+            let id = EndpointId::from_bytes(&device).map_err(|error| error.to_string())?;
+            Arc::new(
+                asking
+                    .actions
+                    .remote(&asking.endpoint, &EndpointAddr::new(id), workspace),
+            )
         };
         let mut request = InvokeRequest::plain(vm::target(action), serde_json::Map::new());
         request.argument = vm::argument(argument);

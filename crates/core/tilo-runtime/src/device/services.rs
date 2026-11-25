@@ -2213,7 +2213,7 @@ impl Daemon {
         let shortcuts: Arc<dyn ShortcutLibraryServices> =
             Arc::new(super::shortcuts::Shortcuts::new(
                 workspaces.copies().clone(),
-                workspaces.device_cert().clone(),
+                workspaces.device_cert(),
                 workspaces.signer(),
             )?);
         let initiative = serve_initiative(&workspaces, &shortcuts);
@@ -4101,11 +4101,13 @@ impl tilo_api::session::Here for Daemon {
     fn join(&self, invite: &str) -> tilo_api::session::Asked<'_, String> {
         let invite = invite.trim().to_owned();
         Box::pin(async move {
-            self.workspaces
-                .copies()
-                .join_member_as(&invite, person_name().as_deref())
-                .await
-                .map(|workspace| workspace.to_string())
+            Box::pin(
+                self.workspaces
+                    .copies()
+                    .join_member_as(&invite, person_name().as_deref()),
+            )
+            .await
+            .map(|workspace| workspace.to_string())
         })
     }
 
@@ -5830,30 +5832,8 @@ impl ActionProvider for RuntimeActionProvider {
         }
         // The device's own records: its settings, written through the same actions before the
         // person's services ran and after, once the device is theirs.
-        if request.target.provider == super::records::PROVIDER
-            && request.target.address.resource == super::records::RESOURCE
-            && let Some(records) = self.workspaces.device_records()
-        {
-            // A device placed for records of one workspace keeps no settings of its own: its
-            // host keeps them in the workspace's environment record, deciding the write as this
-            // placed device.
-            if self.workspaces.confined().is_some() {
-                return match super::confined::forwarded(&self.workspaces, None) {
-                    Ok(host) => host.invoke(caller, request),
-                    Err(reason) => Pending::ready(Err(ActionCallError::Unavailable {
-                        reason: reason.into(),
-                    })),
-                };
-            }
-            // The device's own person, on the dispatch this device admitted them to, writes as the
-            // device their certificate names: what their desktop keeps for its next session.
-            let cert = self.workspaces.device_cert();
-            let as_device = (self.is_the_person(caller)
-                && caller.acting().person_id() == Some(hex::encode(cert.user_public_key).as_str()))
-            .then(|| Caller::authenticated(cert.user_public_key, cert.device_public_key));
-            return Pending::ready(Ok(
-                records.receipt_for(as_device.as_ref().unwrap_or(caller), &request)
-            ));
+        if let Some(answered) = self.device_records(caller, &request) {
+            return answered;
         }
         if let Some(answered) = self.machines(caller, &request) {
             return answered;
@@ -5866,26 +5846,8 @@ impl ActionProvider for RuntimeActionProvider {
         }
         // The person's shell runtime on this computer, for the Terminal windows it serves: never
         // an agent that runs elsewhere, nor an app.
-        if super::shell_runtime::asks(&request) {
-            if !self.is_own_client(caller) {
-                return Pending::ready(Err(ActionCallError::Refused {
-                    reason: "only the person's own shell runtime on this computer asks for \
-                             Terminal's environments and shells"
-                        .into(),
-                }));
-            }
-            let Some(person) = self.admission_caller() else {
-                return Pending::ready(Err(ActionCallError::NotPermitted));
-            };
-            return super::shell_runtime::answer(
-                &super::shell_runtime::Asked {
-                    workspaces: &self.workspaces,
-                    dispatch: self.clone(),
-                    person,
-                    handed: self.handed.as_deref(),
-                },
-                &request,
-            );
+        if let Some(answered) = self.shell_runtime_asks(caller, &request) {
+            return answered;
         }
         if let Some(tickets) = &self.tickets
             && Tickets::answers(&request)
@@ -6246,6 +6208,74 @@ impl ActionProvider for RuntimeActionProvider {
             workspaces: Arc::clone(&self.workspaces),
             content: tilo_workspace_service::content::shelf_gets(self.workspaces.content_shelf()?),
         }))
+    }
+}
+
+impl RuntimeActionProvider {
+    /// The device's own records, answer to `request`: its settings, written through the same
+    /// actions before the person's services ran and after, once the device is theirs. `None` when
+    /// the request is not one of them.
+    fn device_records(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
+        if request.target.provider != super::records::PROVIDER
+            || request.target.address.resource != super::records::RESOURCE
+        {
+            return None;
+        }
+        let records = self.workspaces.device_records()?;
+        // A device placed for records of one workspace keeps no settings of its own: its host
+        // keeps them in the workspace's environment record, deciding the write as this placed
+        // device.
+        if self.workspaces.confined().is_some() {
+            return Some(match super::confined::forwarded(&self.workspaces, None) {
+                Ok(host) => host.invoke(caller, request.clone()),
+                Err(reason) => Pending::ready(Err(ActionCallError::Unavailable { reason })),
+            });
+        }
+        // The device's own person, on the dispatch this device admitted them to, writes as the
+        // device their certificate names: what their desktop keeps for its next session.
+        let cert = self.workspaces.device_cert();
+        let as_device = (self.is_the_person(caller)
+            && caller.acting().person_id() == Some(hex::encode(cert.user_public_key).as_str()))
+        .then(|| Caller::authenticated(cert.user_public_key, cert.device_public_key));
+        Some(Pending::ready(Ok(
+            records.receipt_for(as_device.as_ref().unwrap_or(caller), request)
+        )))
+    }
+
+    /// The person's shell runtime on this computer's answer to `request`, for the Terminal windows
+    /// it serves: `None` when the request is no ask of its, and the refusal of a caller that is not
+    /// the person's own shell runtime.
+    fn shell_runtime_asks(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
+        if !super::shell_runtime::asks(request) {
+            return None;
+        }
+        if !self.is_own_client(caller) {
+            return Some(Pending::ready(Err(ActionCallError::Refused {
+                reason: "only the person's own shell runtime on this computer asks for \
+                         Terminal's environments and shells"
+                    .into(),
+            })));
+        }
+        let Some(person) = self.admission_caller() else {
+            return Some(Pending::ready(Err(ActionCallError::NotPermitted)));
+        };
+        Some(super::shell_runtime::answer(
+            &super::shell_runtime::Asked {
+                workspaces: &self.workspaces,
+                dispatch: self.clone(),
+                person,
+                handed: self.handed.as_deref(),
+            },
+            request,
+        ))
     }
 }
 
@@ -6701,10 +6731,9 @@ fn start_notices(
 ) {
     use tilo_workspace_service::apps::wakeups::{self, Wakeups};
     let copies = workspaces.copies().clone();
-    let cert = workspaces.device_cert().clone();
+    let cert = workspaces.device_cert();
     let apps = Arc::clone(apps);
     tilo_rt::app().handle().spawn(async move {
-        use tilo_workspace_service::tl_records::Package;
         let mut notices = serves_pages.then(|| {
             tilo_workspace_service::apps::served_notices::ServedNotices::new(
                 copies.clone(),
@@ -6721,11 +6750,11 @@ fn start_notices(
             )
         });
         // The buttons the person presses on a wakeup that rang, as the platform reports them.
-        let (pressed, mut presses) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (buttons, mut pressed) = tokio::sync::mpsc::unbounded_channel::<String>();
         let mut listening = wakeups.is_some();
         if listening {
             wakeups::set_activation_handler(wakeups::ACTIVATION, move |uri| {
-                let _ = pressed.send(uri.to_owned());
+                let _ = buttons.send(uri.to_owned());
             });
         }
         let mut writes = copies.document_writes();
@@ -6734,12 +6763,7 @@ fn start_notices(
         let mut pending: std::collections::BTreeSet<(String, String)> =
             std::collections::BTreeSet::new();
         let mut seeded = false;
-        // The package each app's record is read through here, by workspace and app: verified once
-        // and kept, since an app's install does not change under a running daemon.
-        let mut packages: std::collections::BTreeMap<
-            (String, String),
-            tilo_workspace_service::tl_records::Package,
-        > = std::collections::BTreeMap::new();
+        let mut packages = Packages::new();
         // What one pass looks at: every app record written since the last, and the ones the
         // workspaces hold the first time. A pass runs on the tick, so a burst of writes to one
         // record is read once, and an answer the person gave is carried out within the tick.
@@ -6748,9 +6772,9 @@ fn start_notices(
         loop {
             tokio::select! {
                 _ = tick.tick() => {}
-                press = presses.recv(), if listening => {
+                clicked = pressed.recv(), if listening => {
                     // A daemon started after this one hears the buttons from here on.
-                    let Some(uri) = press else {
+                    let Some(uri) = clicked else {
                         listening = false;
                         continue;
                     };
@@ -6774,15 +6798,7 @@ fn start_notices(
             }
             if !seeded {
                 seeded = true;
-                for workspace in copies.list().await {
-                    for (app, _) in copies
-                        .records(&workspace.workspace)
-                        .await
-                        .unwrap_or_default()
-                    {
-                        pending.insert((workspace.workspace.clone(), app));
-                    }
-                }
+                pending.extend(records_held(&copies).await);
             }
             let now = tilo_clock::unix_now_ms_i64();
             // What rang here on its own since the last pass is not told again when it arrives.
@@ -6792,57 +6808,17 @@ fn start_notices(
                     notices.rang_here(rang);
                 }
             }
-            for (workspace, app) in std::mem::take(&mut pending) {
-                let package = packages
-                    .entry((workspace.clone(), app.clone()))
-                    .or_insert_with(|| {
-                        match super::package_runs::runs_in_process(&app)
-                            .then(|| super::package_runs::verified_installed(&workspace, &app))
-                        {
-                            Some(Ok(verified)) => Package::Installed(verified.module),
-                            _ => Package::BuiltIn,
-                        }
-                    })
-                    .clone();
-                // An app this device neither installed nor carries runs nowhere here, so its
-                // record holds no notice this device could read.
-                let readable = !matches!(package, Package::BuiltIn)
-                    || copies
-                        .tilolang()
-                        .is_some_and(|tilolang| tilolang.records.built_in(&app));
-                if !readable {
-                    continue;
-                }
-                let name = apps.display_name(&app);
-                if let Some(wakeups) = wakeups.as_mut()
-                    && let Err(error) = wakeups
-                        .arm(
-                            &workspace,
-                            (app.as_str(), name.as_str()),
-                            Some(&package),
-                            now,
-                        )
-                        .await
-                {
-                    tracing::warn!(
-                        %workspace,
-                        %app,
-                        %error,
-                        "an app's moments on this device are not armed"
-                    );
-                }
-                if let Some(notices) = notices.as_mut()
-                    && let Err(error) = notices
-                        .project(&workspace, &app, &name, Some(&package), now)
-                        .await
-                {
-                    tracing::warn!(
-                        %workspace,
-                        %app,
-                        %error,
-                        "an app's notices are not shown on the person's devices"
-                    );
-                }
+            for record in std::mem::take(&mut pending) {
+                answer_a_record(
+                    record,
+                    &mut packages,
+                    &copies,
+                    &apps,
+                    wakeups.as_mut(),
+                    notices.as_mut(),
+                    now,
+                )
+                .await;
             }
             if let Some(notices) = notices.as_mut()
                 && let Err(error) = notices.follow(now).await
@@ -6856,6 +6832,94 @@ fn start_notices(
             }
         }
     });
+}
+
+/// The package each app's record is read through, by workspace and app: verified once and kept,
+/// since an app's install does not change under a running daemon.
+#[cfg(not(windows))]
+type Packages =
+    std::collections::BTreeMap<(String, String), tilo_workspace_service::tl_records::Package>;
+
+/// Every app record the workspaces hold, as the first pass reads them.
+#[cfg(not(windows))]
+async fn records_held(
+    copies: &tilo_workspace_service::workspaces::Workspaces,
+) -> std::collections::BTreeSet<(String, String)> {
+    let mut held = std::collections::BTreeSet::new();
+    for workspace in copies.list().await {
+        for (app, _) in copies
+            .records(&workspace.workspace)
+            .await
+            .unwrap_or_default()
+        {
+            held.insert((workspace.workspace.clone(), app));
+        }
+    }
+    held
+}
+
+/// Answer one app record a pass found: arm the moments its triggers land here on, and carry its
+/// notices into the record of the person's devices. An app this device neither installed nor
+/// carries runs nowhere here, so its record holds no notice this device could read.
+#[cfg(not(windows))]
+async fn answer_a_record(
+    (workspace, app): (String, String),
+    packages: &mut Packages,
+    copies: &tilo_workspace_service::workspaces::Workspaces,
+    apps: &apps::Apps,
+    wakeups: Option<&mut tilo_workspace_service::apps::wakeups::Wakeups>,
+    notices: Option<&mut tilo_workspace_service::apps::served_notices::ServedNotices>,
+    now: i64,
+) {
+    use tilo_workspace_service::tl_records::Package;
+    let package = packages
+        .entry((workspace.clone(), app.clone()))
+        .or_insert_with(|| {
+            match super::package_runs::runs_in_process(&app)
+                .then(|| super::package_runs::verified_installed(&workspace, &app))
+            {
+                Some(Ok(verified)) => Package::Installed(verified.module),
+                _ => Package::BuiltIn,
+            }
+        })
+        .clone();
+    let readable = !matches!(package, Package::BuiltIn)
+        || copies
+            .tilolang()
+            .is_some_and(|tilolang| tilolang.records.built_in(&app));
+    if !readable {
+        return;
+    }
+    let name = apps.display_name(&app);
+    if let Some(wakeups) = wakeups
+        && let Err(error) = wakeups
+            .arm(
+                &workspace,
+                (app.as_str(), name.as_str()),
+                Some(&package),
+                now,
+            )
+            .await
+    {
+        tracing::warn!(
+            %workspace,
+            %app,
+            %error,
+            "an app's moments on this device are not armed"
+        );
+    }
+    if let Some(notices) = notices
+        && let Err(error) = notices
+            .project(&workspace, &app, &name, Some(&package), now)
+            .await
+    {
+        tracing::warn!(
+            %workspace,
+            %app,
+            %error,
+            "an app's notices are not shown on the person's devices"
+        );
+    }
 }
 
 /// Answer the person's keys from the broker from now on, and serve the workspaces' pages

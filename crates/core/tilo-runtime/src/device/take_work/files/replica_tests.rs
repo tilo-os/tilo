@@ -48,7 +48,7 @@ fn run<T>(future: impl std::future::Future<Output = T>) -> T {
 fn join(device: &Daemon, invitation: &str) -> String {
     let workspaces = std::sync::Arc::clone(device.serving());
     let (workspace, name) = run(async move {
-        let workspace = workspaces.copies().join_member(invitation).await?;
+        let workspace = Box::pin(workspaces.copies().join_member(invitation)).await?;
         let name = workspaces
             .copies()
             .member_copy(workspace)

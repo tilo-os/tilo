@@ -59,7 +59,7 @@ where
 }
 
 /// Walk the catalogue into `search` every `every` while `part` lives, and end with it.
-pub(crate) async fn feed<P>(search: &OsSearch, part: &Weak<P>, every: Duration) {
+pub(crate) async fn feed<P: Send + Sync>(search: &OsSearch, part: &Weak<P>, every: Duration) {
     while part.strong_count() > 0 {
         match search.refresh().await {
             Ok(changes) => publish(&changes),

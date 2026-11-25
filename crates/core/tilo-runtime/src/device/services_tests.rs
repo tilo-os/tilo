@@ -918,7 +918,7 @@ tilo_test_env::scenario! {
             workspaces: Arc::downgrade(&workspaces),
         };
         let workspace = uuid::Uuid::parse_str(&placed.to_string()).unwrap();
-        let cert = workspaces.device_cert().clone();
+        let cert = workspaces.device_cert();
         assert_eq!(certificates.authorize(workspace, &cert), Ok(()));
         assert!(
             certificates
@@ -1510,7 +1510,7 @@ fn the_desktop_keeps_what_its_device_says_of_itself_in_the_devices_record() {
     };
     let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
     let socket = session.broker.app_socket().to_path_buf();
-    let cert = session.workspaces.device_cert().clone();
+    let cert = session.workspaces.device_cert();
     let workspace = tilo_action_policy::roles::person_workspace_id(&cert.user_public_key);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -1556,7 +1556,7 @@ fn the_desktop_keeps_what_its_device_says_of_itself_in_the_devices_record() {
                     provider: format!("record:{}:{}", DEVICES.0, DEVICES.1),
                     address: keep.address(),
                 },
-                argument: InvokeArgument::Json(keep.arguments.clone()),
+                argument: InvokeArgument::Json(keep.arguments),
                 context: None,
                 confirmation: None,
                 revision: None,

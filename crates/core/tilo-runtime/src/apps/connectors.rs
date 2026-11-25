@@ -85,10 +85,6 @@ impl Connectors {
     ///
     /// # Errors
     /// The connector cannot be started, or takes no connection.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the lock is held across a start, so two readers never start two processes"
-    )]
     pub(crate) fn attach(
         &self,
         (app, origin, workspace): (&str, &str, &str),
@@ -96,6 +92,7 @@ impl Connectors {
         start: &dyn Fn(&Descriptor) -> Result<Process, String>,
     ) -> Result<(), String> {
         let key = (app.to_owned(), origin.to_owned(), workspace.to_owned());
+        // The lock is held across a start, so two readers never start two processes.
         let mut running = self.running.lock_recover();
         if let Some(connector) = running.get(&key) {
             match origin_connector::send_attachment(&connector.socket, theirs) {

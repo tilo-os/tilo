@@ -799,7 +799,7 @@ pub(crate) fn hear_stops(stop: Stop, within: Duration, native: PathBuf) -> Resul
                         // here as its own close would.
                         let _ = std::fs::remove_file(&native);
                     }
-                    std::process::exit(if serving { 1 } else { 0 });
+                    std::process::exit(i32::from(serving));
                 }
             });
         })?;

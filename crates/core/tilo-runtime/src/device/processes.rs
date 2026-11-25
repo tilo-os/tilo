@@ -1823,16 +1823,16 @@ mod tests {
             let Some(says) = std::env::var_os(LAUNCHED_ENV) else {
                 return;
             };
-            let link = std::io::stdin().as_fd().try_clone_to_owned().unwrap();
+            let stdin_link = std::io::stdin().as_fd().try_clone_to_owned().unwrap();
             let mut daemon_line = false;
             let (request, fds) = loop {
-                match ToProcess::receive(&link).unwrap() {
-                    Some(ToProcess::Daemon { line }) => {
+                match ToProcess::receive(&stdin_link).unwrap() {
+                    Some(ToProcess::Daemon { line: carried }) => {
                         assert!(!daemon_line, "the line is handed once");
                         daemon_line = true;
                         // Said on the line, so the test reads that it is the daemon's end's.
-                        let mut line = std::os::unix::net::UnixStream::from(line);
-                        std::io::Write::write_all(&mut line, b"own\n").unwrap();
+                        let mut stream = std::os::unix::net::UnixStream::from(carried);
+                        std::io::Write::write_all(&mut stream, b"own\n").unwrap();
                     }
                     Some(ToProcess::Instance { request, fds }) => break (request, fds),
                     other => panic!("the process is handed an instance first: {other:?}"),
@@ -2041,16 +2041,21 @@ mod tests {
             // The process of the app's own instances is handed its daemon line over its link,
             // before its first instance, made for that app and workspace alone.
             assert!(handed.daemon_line, "the app's own process holds its line");
-            let mut lines = device.lines.lock().unwrap();
-            let [(app, workspace, ours)] = &mut lines[..] else {
-                panic!("one line is made, for the one process");
+            // The other end of the one line the device made, taken while it is held: the read
+            // below waits on the process, and the record itself is not held for that.
+            let ours = {
+                let mut lines = device.lines.lock().unwrap();
+                let [(app, workspace, ours)] = &mut lines[..] else {
+                    panic!("one line is made, for the one process");
+                };
+                assert_eq!((app.as_str(), workspace.as_str()), (NOTES, WORKSPACE));
+                let ours = ours.try_clone().unwrap();
+                drop(lines);
+                ours
             };
-            assert_eq!((app.as_str(), workspace.as_str()), (NOTES, WORKSPACE));
             let mut said = String::new();
             std::io::BufRead::read_line(
-                &mut std::io::BufReader::new(std::os::unix::net::UnixStream::from(
-                    ours.try_clone().unwrap(),
-                )),
+                &mut std::io::BufReader::new(std::os::unix::net::UnixStream::from(ours)),
                 &mut said,
             )
             .unwrap();
@@ -2590,22 +2595,16 @@ mod tests {
         );
     }
 
-    /// A view shown on a web page gets a window of its own, started through the launcher's
-    /// tilolang process on the runtimes the app's package names, granted none of what the app
-    /// kept, and holding the view's patch connection and the page's link. The device answers its
-    /// end of that link, the window answers on it, and closing it ends the window.
+    /// A launcher that says what it was asked to start, then stands in for the window: it answers
+    /// on the view's patch connection and on the page's link, and reads the link until the device
+    /// lets go of it. What it was asked goes to `asked`.
     #[cfg(target_os = "linux")]
-    #[test]
-    fn a_page_window_starts_through_the_launcher_and_ends_with_its_link() {
-        use std::io::{Read as _, Write as _};
+    fn standing_in_for_a_window(
+        home: &std::path::Path,
+        asked: &std::path::Path,
+    ) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
-        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a2";
-        let home = tempfile::tempdir().expect("a device's home");
-        // A launcher that says what it was asked to start, then stands in for the window: it
-        // answers on the view's patch connection and on the page's link, and reads the link
-        // until the device lets go of it.
-        let asked = home.path().join("asked");
-        let launcher = home.path().join("tilo-launcher");
+        let launcher = home.join("tilo-launcher");
         std::fs::write(
             &launcher,
             format!(
@@ -2616,6 +2615,21 @@ mod tests {
         .expect("the launcher is written");
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
             .expect("the launcher runs");
+        launcher
+    }
+
+    /// A view shown on a web page gets a window of its own, started through the launcher's
+    /// tilolang process on the runtimes the app's package names, granted none of what the app
+    /// kept, and holding the view's patch connection and the page's link. The device answers its
+    /// end of that link, the window answers on it, and closing it ends the window.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_page_window_starts_through_the_launcher_and_ends_with_its_link() {
+        use std::io::{Read as _, Write as _};
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a2";
+        let home = tempfile::tempdir().expect("a device's home");
+        let asked = home.path().join("asked");
+        let launcher = standing_in_for_a_window(home.path(), &asked);
         let opened = Arc::new(Mutex::new(Vec::new()));
         let processes = Processes::recording(
             home.path().to_path_buf(),

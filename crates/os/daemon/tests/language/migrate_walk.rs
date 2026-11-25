@@ -43,7 +43,7 @@ async fn step(steps: &Arc<Steps>, action: &str, args: Value, asks: Asks) -> Step
     let mut prompt = |question: &Asked| -> anyhow::Result<bool> {
         panic!("nobody is at a terminal here: {}", question_said(question))
     };
-    let answer = steps
+    let stepped = match steps
         .step(
             action,
             args,
@@ -54,8 +54,11 @@ async fn step(steps: &Arc<Steps>, action: &str, args: Value, asks: Asks) -> Step
             },
         )
         .await
-        .unwrap_or_else(|error| panic!("{action} reaches the device: {error:#}"))
-        .unwrap_or_else(|failure| panic!("{action} runs: {failure:?}"));
+    {
+        Ok(stepped) => stepped,
+        Err(error) => panic!("{action} reaches the device: {error:#}"),
+    };
+    let answer = stepped.unwrap_or_else(|failure| panic!("{action} runs: {failure:?}"));
     let said = said.lock().unwrap().clone();
     Stepped { answer, said }
 }

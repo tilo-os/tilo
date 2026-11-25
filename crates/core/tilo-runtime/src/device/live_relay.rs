@@ -864,7 +864,7 @@ impl Live {
         let shared = Arc::new(Shared {
             workspaces: Arc::clone(workspaces),
             device: workspaces.device_cert().device_public_key,
-            cert: workspaces.device_cert().clone(),
+            cert: workspaces.device_cert(),
             person: std::sync::OnceLock::new(),
             epochs: Mutex::default(),
             rosters: Mutex::default(),

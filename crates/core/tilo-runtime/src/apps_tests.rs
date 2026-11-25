@@ -905,7 +905,7 @@ view value(v: Value) {
             .expect("the staged build starts");
         assert_eq!(
             apps.attested(launch.pid),
-            Some((id.clone(), WORKSPACE.to_owned())),
+            Some((id, WORKSPACE.to_owned())),
             "it runs under its own id, not the app's"
         );
         assert!(

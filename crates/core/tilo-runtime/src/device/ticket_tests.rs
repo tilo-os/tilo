@@ -787,49 +787,18 @@ pub(super) fn serve(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_workspace_it_founded()
 {
-    let workspace = tilo_desktop_model::WorkspaceId::new();
-    let (issuer, state, issuer_key, issuer_cert, _paths) =
-        super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;
-    let place = tilo_device_identity::login::Place::at(
-        state.path().join("issuer"),
-        tilo_device_identity::IdentityPaths::under(state.path().join("issuer-keys")),
-    );
-    let root = root_in(state.path().to_path_buf());
-    let mut foreign = issuer_cert.clone();
-    foreign.capabilities.foreign = true;
-    sign_device_cert(&mut foreign, &root().unwrap().unwrap()).unwrap();
-    let actions = issuer.copies().action_service();
-    let tickets = Tickets::new(
-        (issuer_key.clone(), foreign),
-        issuer.endpoint(),
-        None,
-        root,
-        Some(FirstWorkspace::founded(Arc::clone(&issuer), workspace)),
-        Some(Arc::clone(&issuer)),
-        place,
-        actions.clone(),
-    );
-    let router = serve(&issuer, actions);
+    let Issuing {
+        workspace,
+        issuer,
+        state,
+        issuer_cert,
+        tickets,
+        router,
+    } = issuing().await;
 
     // A device a host placed for a record of the workspace, certified by that host,
     // asks for a ticket as nobody: it is refused, and no ticket is served.
-    let placed = tilo_actions::remote::Caller::placed(
-        [0x77; 32],
-        issuer_cert.user_public_key,
-        workspace.to_string(),
-        [[0x33; 32]],
-    );
-    for action in [
-        ISSUE,
-        tilo_actions::remote::device_tickets::RENAME,
-        tilo_actions::remote::device_tickets::REVOKE,
-    ] {
-        assert_eq!(
-            asked_as(&tickets, &placed, action).await,
-            Err(ActionCallError::NotPermitted),
-            "a placed device asks for no {action}"
-        );
-    }
+    a_placed_device_is_refused(&tickets, &issuer_cert, &workspace).await;
 
     let printed = ask_device(&tickets, ISSUE, json!({}))
         .await
@@ -914,6 +883,79 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
     );
     entered.close();
     let _ = router.shutdown().await;
+}
+
+/// A device a host placed for a record of `workspace`, certified by that host's root as the
+/// person's: it asks for a ticket as nobody, and is refused.
+async fn a_placed_device_is_refused(
+    tickets: &Tickets,
+    issuer_cert: &DeviceCert,
+    workspace: &tilo_desktop_model::WorkspaceId,
+) {
+    let placed = tilo_actions::remote::Caller::placed(
+        [0x77; 32],
+        issuer_cert.user_public_key,
+        workspace.to_string(),
+        [[0x33; 32]],
+    );
+    for action in [
+        ISSUE,
+        tilo_actions::remote::device_tickets::RENAME,
+        tilo_actions::remote::device_tickets::REVOKE,
+    ] {
+        assert_eq!(
+            asked_as(tickets, &placed, action).await,
+            Err(ActionCallError::NotPermitted),
+            "a placed device asks for no {action}"
+        );
+    }
+}
+
+/// A daemon of the person's device with no login, governing the workspace it founded, whose
+/// certificate is the foreign device its person's root placed for it: its tickets, and the endpoint
+/// they are asked on.
+struct Issuing {
+    workspace: tilo_desktop_model::WorkspaceId,
+    issuer: Arc<super::workspaces::ServiceWorkspaces>,
+    state: tempfile::TempDir,
+    issuer_cert: DeviceCert,
+    tickets: Tickets,
+    router: iroh::protocol::Router,
+}
+
+/// [`Issuing`], serving its tickets on its own endpoint.
+async fn issuing() -> Issuing {
+    let workspace = tilo_desktop_model::WorkspaceId::new();
+    let (issuer, state, issuer_key, issuer_cert, _paths) =
+        super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;
+    let place = tilo_device_identity::login::Place::at(
+        state.path().join("issuer"),
+        tilo_device_identity::IdentityPaths::under(state.path().join("issuer-keys")),
+    );
+    let root = root_in(state.path().to_path_buf());
+    let mut foreign = issuer_cert.clone();
+    foreign.capabilities.foreign = true;
+    sign_device_cert(&mut foreign, &root().unwrap().unwrap()).unwrap();
+    let actions = issuer.copies().action_service();
+    let tickets = Tickets::new(
+        (issuer_key, foreign),
+        issuer.endpoint(),
+        None,
+        root,
+        Some(FirstWorkspace::founded(Arc::clone(&issuer), workspace)),
+        Some(Arc::clone(&issuer)),
+        place,
+        actions.clone(),
+    );
+    let router = serve(&issuer, actions);
+    Issuing {
+        workspace,
+        issuer,
+        state,
+        issuer_cert,
+        tickets,
+        router,
+    }
 }
 
 /// A person's founding answers the tickets their first device asked for, issued as their own

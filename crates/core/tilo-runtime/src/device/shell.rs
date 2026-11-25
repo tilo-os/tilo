@@ -71,7 +71,7 @@ pub(crate) fn services(
     } = serving;
     let standing = Standing::new(
         workspaces.copies().clone(),
-        workspaces.device_cert().clone(),
+        workspaces.device_cert(),
         workspaces.signer(),
     );
     standing.follow();
@@ -409,7 +409,7 @@ async fn ask(
         let arguments = named(request.argument)?;
         // The person's workspace list: founding one here, and joining one.
         if address.resource == LIST {
-            return listed(workspaces, &address.action, &arguments).await;
+            return Box::pin(listed(workspaces, &address.action, &arguments)).await;
         }
         // The host's own operations are this device's workspace service's.
         return workspaces
@@ -504,10 +504,7 @@ async fn listed(
             Ok(Value::String(workspace.to_string()))
         }
         JOIN => Ok(Value::String(
-            workspaces
-                .copies()
-                .join_member(text("invite")?)
-                .await?
+            Box::pin(workspaces.copies().join_member(text("invite")?)).await?
                 .to_string(),
         )),
         BRANCH => {

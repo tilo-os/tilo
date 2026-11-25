@@ -613,7 +613,9 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
              their server",
             GAINS_A_SERVER_BOUND.as_secs()
         );
-        std::process::exit(101);
+        // SAFETY: `_exit` ends this process at once, as the test's bound means: no destructor
+        // of the step that hung runs, and 101 is the status a failed test ends with.
+        unsafe { libc::_exit(101) };
     });
     let environment = isolated_environment();
     let keys = tilo_api::calls::device_keys();

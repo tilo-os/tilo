@@ -2388,44 +2388,45 @@ fn root_reaches_the_person_in_their_own_daemon_and_the_device_under_the_system_u
     );
 }
 
-/// A connection to a person's own daemon is admitted as whoever the kernel says is at its other
-/// end ([`crate::seats::Peer`]): the person's own account reaches their services, and another
-/// account on the same computer is answered the device's own actions alone, never the person's.
-/// A process the daemon started is the app it runs and is served that app's actions, never the
-/// person's, whichever account it runs as.
-#[test]
-fn a_plain_socket_peer_is_the_person_only_from_the_persons_own_account() {
-    use std::os::unix::net::UnixStream;
-    use std::sync::atomic::{AtomicU32, Ordering};
+/// The account and process a test's next connection comes from, as the kernel reads them.
+static KERNEL_UID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static KERNEL_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The kernel's answer for a connection's other end, as [`KERNEL_UID`] and [`KERNEL_PID`] stand
+/// in for it: a test's next connection is the account and process they name.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it stands in for the kernel's answer, which can fail"
+)]
+fn kernel_peer(_: &std::os::unix::net::UnixStream) -> io::Result<crate::seats::Peer> {
+    use std::sync::atomic::Ordering;
+    Ok(crate::seats::Peer {
+        uid: KERNEL_UID.load(Ordering::SeqCst),
+        pid: Some(KERNEL_PID.load(Ordering::SeqCst)),
+    })
+}
+
+/// A person's own daemon in `dir`, serving their services as the workspace `home`, which serves
+/// the account `own` as its person and no other: every connection is admitted as whoever
+/// [`kernel_peer`] says is at its other end, and the process `launched` is followed as the app it
+/// runs. The socket it answers on.
+fn person_served_as_the_kernel_says(
+    dir: &std::path::Path,
+    launched: u32,
+    own: u32,
+) -> std::path::PathBuf {
     use tilo_api::daemon::admission::Admission;
 
-    /// The account and process a test's next connection comes from, as the daemon reads them.
-    static UID: AtomicU32 = AtomicU32::new(0);
-    static PID: AtomicU32 = AtomicU32::new(0);
-
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "it stands in for the kernel's answer, which can fail"
-    )]
-    fn peer(_: &UnixStream) -> io::Result<crate::seats::Peer> {
-        Ok(crate::seats::Peer {
-            uid: UID.load(Ordering::SeqCst),
-            pid: Some(PID.load(Ordering::SeqCst)),
-        })
-    }
-
-    let dir = tempfile::tempdir().unwrap();
-    let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+    let keys = tilo_device_identity::IdentityPaths::under(dir.join("identity"));
     keys.ensure_directories().unwrap();
     let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
     let answers = crate::device::unclaimed::DeviceOnly::new(
         key,
-        tilo_device_identity::login::Place::at(dir.path().join("login"), keys),
+        tilo_device_identity::login::Place::at(dir.join("login"), keys),
     );
     // A person's own daemon: it serves its own account and root, and no other.
-    let own = rustix::process::geteuid().as_raw();
     let admission: &'static Admission = Box::leak(Box::new(Admission::new(own, false)));
-    let native = std::sync::Arc::new(super::Native::new(answers.clone(), peer, admission));
+    let native = std::sync::Arc::new(super::Native::new(answers.clone(), kernel_peer, admission));
     // The person's services run, answering as the workspace `home`.
     let frames = crate::device::local::Frames::of_the_device(answers.clone());
     native.serve_the_person(super::Endpoint {
@@ -2452,52 +2453,68 @@ fn a_plain_socket_peer_is_the_person_only_from_the_persons_own_account() {
         connections: None,
     });
     // A process the daemon started is the app it runs.
-    let launched = 424_242;
     native
         .seats
         .follow_launches(std::sync::Arc::new(move |pid| {
             (pid == launched).then(|| ("so.tilo.notes".to_owned(), "a-workspace".to_owned()))
         }));
-    let socket = dir.path().join("native.sock");
+    let socket = dir.join("native.sock");
     let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
     {
         let native = std::sync::Arc::clone(&native);
         std::thread::spawn(move || native.accept(&listener));
     }
-    // One request on a connection of `uid`'s from process `pid`, and its answer.
-    let ask = |uid: u32, pid: u32| {
-        use std::io::{BufRead as _, Write as _};
-        use std::sync::atomic::Ordering;
-        UID.store(uid, Ordering::SeqCst);
-        PID.store(pid, Ordering::SeqCst);
-        let stream = UnixStream::connect(&socket).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        writeln!(&stream, "{}", serde_json::json!({"native": "status"})).unwrap();
-        let mut line = String::new();
-        io::BufReader::new(stream)
-            .read_line(&mut line)
-            .expect("the daemon answers");
-        serde_json::from_str::<serde_json::Value>(&line).unwrap()
-    };
+    socket
+}
+
+/// One request on a connection of `uid`'s from process `pid`, and its answer.
+fn asked_as(socket: &std::path::Path, uid: u32, pid: u32) -> serde_json::Value {
+    use std::io::{BufRead as _, Write as _};
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::Ordering;
+
+    KERNEL_UID.store(uid, Ordering::SeqCst);
+    KERNEL_PID.store(pid, Ordering::SeqCst);
+    let stream = UnixStream::connect(socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    writeln!(&stream, "{}", serde_json::json!({"native": "status"})).unwrap();
+    let mut line = String::new();
+    io::BufReader::new(stream)
+        .read_line(&mut line)
+        .expect("the daemon answers");
+    serde_json::from_str(&line).unwrap()
+}
+
+/// A connection to a person's own daemon is admitted as whoever the kernel says is at its other
+/// end ([`crate::seats::Peer`]): the person's own account reaches their services, and another
+/// account on the same computer is answered the device's own actions alone, never the person's.
+/// A process the daemon started is the app it runs and is served that app's actions, never the
+/// person's, whichever account it runs as.
+#[test]
+fn a_plain_socket_peer_is_the_person_only_from_the_persons_own_account() {
+    let dir = tempfile::tempdir().unwrap();
+    let launched = 424_242;
+    let own = rustix::process::geteuid().as_raw();
+    let socket = person_served_as_the_kernel_says(dir.path(), launched, own);
     let unrelated = 1_000_000;
 
     // The person's own account is the person: their services answer it.
     assert_eq!(
-        ask(own, unrelated)["workspace"],
+        asked_as(&socket, own, unrelated)["workspace"],
         "home",
         "the person's own account reaches their services"
     );
     // Another account on the same computer is answered the device's own actions alone.
     let stranger = own.wrapping_add(1);
     assert_eq!(
-        ask(stranger, unrelated)["workspace"],
+        asked_as(&socket, stranger, unrelated)["workspace"],
         "",
         "another account on the same computer is refused the person's services"
     );
     // A process the daemon started is the app it runs, and is served that app's actions alone.
-    let app = ask(own, launched);
+    let app = asked_as(&socket, own, launched);
     assert_eq!(
         app["err"]["code"], "not_permitted",
         "an app's process is no person: {app}"
@@ -2819,10 +2836,6 @@ fn a_session_that_cannot_be_made_is_refused_within_seconds() {
 /// person through the same endpoint, and root's next sign-in answers a person. An action that
 /// needs a person before one exists is refused at once.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the first sign-in on a fresh computer, its founding and what it refuses, read top to bottom"
-)]
 fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
     use io::{BufRead as _, Write as _};
     use serde_json::{Value, json};
@@ -2841,7 +2854,7 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
         Box::leak(Box::new(tilo_api::daemon::admission::Admission::new(DAEMON, true)));
     let answers = crate::device::unclaimed::DeviceOnly::at(key, place, root.clone(), DAEMON);
     let native = std::sync::Arc::new(super::Native::new(
-        answers.clone(),
+        answers,
         founding_peer,
         admission,
     ));

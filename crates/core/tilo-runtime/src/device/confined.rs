@@ -188,7 +188,6 @@ pub(crate) fn placed_cert(
 
 /// [`placed_cert`], ending `lasts` ns from now.
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "a test's fixture")]
 pub(crate) fn placed_cert_until(
     root: &dyn tilo_user_identity::StatementSigner,
     device: [u8; 32],
@@ -197,11 +196,16 @@ pub(crate) fn placed_cert_until(
     lasts: u64,
 ) -> DeviceCert {
     let now = tilo_clock::unix_now_ns();
-    let (issued, until) = (now - 1_000_000_000, now + lasts);
-    let issuer = ed25519_dalek::SigningKey::from_bytes(&[0x5a; 32]);
+    let issued = now
+        .checked_sub(1_000_000_000)
+        .expect("a second before now fits the clock");
+    let until = now
+        .checked_add(lasts)
+        .expect("the certificate's end fits the clock");
+    let host_key = ed25519_dalek::SigningKey::from_bytes(&[0x5a; 32]);
     let mut grant = tilo_user_identity::prepare_placing_grant(
         root.public_key(),
-        issuer.verifying_key().to_bytes(),
+        host_key.verifying_key().to_bytes(),
         records.clone(),
         "The host",
         issued,
@@ -211,7 +215,7 @@ pub(crate) fn placed_cert_until(
     let mut cert = tilo_user_identity::prepare_placed_device_cert(
         &grant, device, records, label, issued, until,
     );
-    tilo_user_identity::sign_device_cert(&mut cert, &issuer).expect("its issuer signs");
+    tilo_user_identity::sign_device_cert(&mut cert, &host_key).expect("its issuer signs");
     cert
 }
 

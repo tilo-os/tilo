@@ -54,7 +54,7 @@ impl Held {
         let (workspaces, directory) = ServiceWorkspaces::test_hosting(placed).await;
         let library = Shortcuts::new(
             workspaces.copies().clone(),
-            workspaces.device_cert().clone(),
+            workspaces.device_cert(),
             workspaces.signer(),
         )
         .expect("a runtime for shortcut runs");

@@ -52,21 +52,24 @@ static ASKED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 /// Keeps every page the agent surface asks the host for in [`ASKED`].
 struct Counted;
 
+/// The `message` field of a traced event, as the line it was written as.
+#[derive(Default)]
+struct Message {
+    text: Option<String>,
+}
+
+impl tracing::field::Visit for Message {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.text = Some(format!("{value:?}"));
+        }
+    }
+}
+
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Counted {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
         if event.metadata().target() != "tilo_mcp::timing" {
             return;
-        }
-        #[derive(Default)]
-        struct Message {
-            text: Option<String>,
-        }
-        impl tracing::field::Visit for Message {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "message" {
-                    self.text = Some(format!("{value:?}"));
-                }
-            }
         }
         let mut message = Message::default();
         event.record(&mut message);

@@ -576,11 +576,11 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
         later,
         "the VM holds its renewed certificate"
     );
-    let proved = tilo_test_env::within("the VM proves itself again", placing.certificate())
+    let proven_cert = tilo_test_env::within("the VM proves itself again", placing.certificate())
         .await
         .expect("the VM answers its certificate");
     assert_eq!(
-        proved, later,
+        proven_cert, later,
         "the next link proves the renewed certificate"
     );
 

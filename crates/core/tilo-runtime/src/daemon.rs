@@ -776,22 +776,7 @@ fn serve_device(
             return Ok(());
         }
         stop.waiting_on("the wait between its person's parts");
-        // In a build that is not a release, a test can hold the daemon between its parts, where
-        // a step of the part that ended does not return: what a folder that will not unmount
-        // does. The stop must still end the daemon there.
-        #[cfg(debug_assertions)]
-        {
-            if !stop.told()
-                && let Some(block) = std::env::var_os("TILO_TEST_HOLD_BETWEEN_PARTS_MS")
-                    .and_then(|ms| ms.to_str().and_then(|ms| ms.parse::<u64>().ok()))
-            {
-                tracing::info!(
-                    ms = block,
-                    "a test holds the daemon between its person's parts"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(block));
-            }
-        }
+        hold_between_parts(stop);
         // Each stage is the work under way until the next begins: a start that hangs is named
         // by the stage it hangs in, in the stall's report.
         let mut watched = None;
@@ -827,44 +812,7 @@ fn serve_device(
         };
         drop(watched);
         tracing::info!("this daemon's person's part started");
-        // The origin connectors this device starts reach the one dispatch on the connection
-        // handed them, admitted as the app the launch record says they run.
-        session.hand_actions_to_connectors();
-        // Migrations run on the device that holds the data they read.
-        session.serve_migrations();
-        // The secrets the apps the move carried over kept in this device's old keeper are the
-        // person's vault items from now on: walked once per start, as the person, and taken out
-        // of the keeper in the same step.
-        session.adopt_kept_secrets();
-        // A computer that just logged in takes its workspace in while the device is held (below):
-        // nothing is admitted to the workspace before then. The endpoint admits each connection as
-        // it comes, and host search starts once the workspace is here, rather than the daemon
-        // ending before it could take the workspace in.
-        // The person's and their agents' task programs run here, in this daemon's processes.
-        #[cfg(target_os = "linux")]
-        session.serve_task_programs();
-        let search = Arc::new(OnceLock::new());
-        search_once_held(&session, &search)?;
-        // A person who signs in from now on has their workspace here (the one their desktop
-        // hands over, or one founded for them now) and a link their shell is admitted by.
-        native.seats.follow_launches(app_of(&session));
-        native.serve_apps(app_take(&session));
-        #[cfg(unix)]
-        session.apps().serve_own_lines(own_lines(&session));
-        native
-            .seats
-            .serve(Arc::new(PersonShells(Arc::downgrade(&session))));
-        // A workspace VM's tenant reaches the same workspace as the person's unnamed agent, at
-        // the socket its keeper made for it alone.
-        if let Some(tenant) = native.tenant.get() {
-            tenant.serve(the_tenant(&session));
-        }
-        native.serve_the_person(the_persons(&session, search));
-        native.serve_keys(key_endpoint(&session));
-        // A workspace VM's daemon runs the VM's sessions as its shells.
-        #[cfg(target_os = "linux")]
-        crate::device::vm_environment::serve(&session, stop);
-        person.set(Some(&session));
+        serve_the_started(&session, native, person, stop)?;
         // A part serves from here: a stop told now is the part's to take up, with its folders to
         // unmount and its trees to keep.
         stop.serving(true);
@@ -919,6 +867,79 @@ fn serve_device(
         }
         tracing::info!("this daemon's person's part starts again");
     }
+}
+
+/// In a build that is not a release, a test can hold the daemon between its person's parts, where
+/// a step of the part that ended does not return: what a folder that will not unmount does. The
+/// stop must still end the daemon there, so it is the stop's own wait, never a part's.
+#[cfg(debug_assertions)]
+fn hold_between_parts(stop: &crate::device::serve::Stop) {
+    if !stop.told()
+        && let Some(block) = std::env::var_os("TILO_TEST_HOLD_BETWEEN_PARTS_MS")
+            .and_then(|ms| ms.to_str().and_then(|ms| ms.parse::<u64>().ok()))
+    {
+        tracing::info!(
+            ms = block,
+            "a test holds the daemon between its person's parts"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(block));
+    }
+}
+
+/// A release build holds nothing between its person's parts.
+#[cfg(not(debug_assertions))]
+fn hold_between_parts(_: &crate::device::serve::Stop) {}
+
+/// Serve the part that started, from this daemon's own native endpoint: what its apps run and kept
+/// from the move, the apps themselves, the person's shells, their services and their keys, and the
+/// search over their workspace once the device is held.
+fn serve_the_started(
+    session: &Arc<Daemon>,
+    native: &Native,
+    person: &Person,
+    stop: &crate::device::serve::Stop,
+) -> io::Result<()> {
+    // The origin connectors this device starts reach the one dispatch on the connection
+    // handed them, admitted as the app the launch record says they run.
+    session.hand_actions_to_connectors();
+    // Migrations run on the device that holds the data they read.
+    session.serve_migrations();
+    // The secrets the apps the move carried over kept in this device's old keeper are the
+    // person's vault items from now on: walked once per start, as the person, and taken out
+    // of the keeper in the same step.
+    session.adopt_kept_secrets();
+    // A computer that just logged in takes its workspace in while the device is held: nothing is
+    // admitted to the workspace before then. The endpoint admits each connection as it comes, and
+    // host search starts once the workspace is here, rather than the daemon ending before it could
+    // take the workspace in.
+    // The person's and their agents' task programs run here, in this daemon's processes.
+    #[cfg(target_os = "linux")]
+    session.serve_task_programs();
+    let search = Arc::new(OnceLock::new());
+    search_once_held(session, &search)?;
+    // A person who signs in from now on has their workspace here (the one their desktop hands
+    // over, or one founded for them now) and a link their shell is admitted by.
+    native.seats.follow_launches(app_of(session));
+    native.serve_apps(app_take(session));
+    #[cfg(unix)]
+    session.apps().serve_own_lines(own_lines(session));
+    native
+        .seats
+        .serve(Arc::new(PersonShells(Arc::downgrade(session))));
+    // A workspace VM's tenant reaches the same workspace as the person's unnamed agent, at the
+    // socket its keeper made for it alone.
+    if let Some(tenant) = native.tenant.get() {
+        tenant.serve(the_tenant(session));
+    }
+    native.serve_the_person(the_persons(session, search));
+    native.serve_keys(key_endpoint(session));
+    // A workspace VM's daemon runs the VM's sessions as its shells.
+    #[cfg(target_os = "linux")]
+    crate::device::vm_environment::serve(session, stop);
+    #[cfg(not(target_os = "linux"))]
+    let _ = stop;
+    person.set(Some(session));
+    Ok(())
 }
 
 /// What the native endpoint says `session` serves: asking founds nothing, so a desktop about to
@@ -1888,7 +1909,7 @@ fn admit_within<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>
         })
         .map_err(io::Error::other)?;
     match answer.recv_timeout(ADMIT_WITHIN) {
-        Ok(made) => made,
+        Ok(admitted) => admitted,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
             "this computer has no person signed in yet: its daemon admitted no session in time",

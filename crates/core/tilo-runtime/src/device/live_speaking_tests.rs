@@ -52,7 +52,9 @@ fn carry(correlation: u64) -> RemoteActionMessage {
 
 /// Wait until `check` holds, or fail saying `what` did not happen.
 fn until(what: &str, mut check: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    let deadline = std::time::Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .expect("the hang bound fits the clock");
     while !check() {
         assert!(
             std::time::Instant::now() < deadline,
@@ -140,48 +142,11 @@ fn an_app_granted_the_call_joins_it_with_no_window_and_carries_audio_without_a_k
     // The same over the app's own connection, as the daemon serves the process it started and
     // the app's SDK reaches it: the carry is refused with the reason, and the device joins
     // nothing.
-    let app = app_connection(&daemon, &at);
-    assert_eq!(
-        app.carry_call(Some(BridgedCall {
-            outside: OUTSIDE.into(),
-            tilo: CALL.into(),
-        })),
-        Err(tilo_actions::remote::ActionCallError::Refused {
-            reason: super::join_asked_first(APP)
-        })
-    );
-    app.report_call(CallReport::default())
-        .expect("a report is taken from an app the device carries no call for");
-    assert!(app.said_call().is_empty());
-    assert_eq!(app.asked_call(), None);
-    assert_eq!(
-        session.speaker().call(),
-        None,
-        "a refused app joins nothing"
-    );
-    drop(app);
+    the_apps_connection_joins_nothing(&daemon, &at, &session);
 
     // The person grants the app the device's live sessions: the grant names the app, never
     // them, so only the app acting by itself holds it.
-    let person = hex::encode(live.person());
-    let grant = tilo_action_policy::Grant::new(
-        "discord-joins-calls",
-        tilo_action_policy::Grantee::app(APP),
-        tilo_action_policy::TreePath::workspace(&workspace).app(super::PROVIDER),
-        tilo_action_policy::KindSet::ALL,
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person(person),
-    );
-    tilo_rt::app()
-        .block_on(live.workspaces().copies().commit_own_change(
-            &workspace,
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
-                change: tilo_action_policy::Change::Grant(grant),
-            },
-            None,
-        ))
-        .expect("the runtime runs the change")
-        .expect("the owner's grant is committed");
+    grant_the_app(&live, &workspace, "discord-joins-calls");
 
     let joined = result_of(lane.take(&carry(2)));
     assert_eq!(joined, serde_json::json!({ "Ok": null }), "{joined}");
@@ -196,60 +161,7 @@ fn an_app_granted_the_call_joins_it_with_no_window_and_carries_audio_without_a_k
         .expect("the device holds the call's media");
     assert_eq!(wanted, CALL);
 
-    // The app is in the outside call with Dana in it: the bridge carries her into the call as
-    // a participant of her own, and what she says is sealed under the call's keys the daemon
-    // holds. Nobody here asks for the device's voice yet, so the frame is unwanted rather than
-    // withheld: the device may speak in the call and seals for it.
-    let reported = result_of(lane.take(&RemoteActionMessage::CallReport {
-        correlation: 3,
-        report: CallReport {
-            calls: vec![OutsideCall {
-                call: OUTSIDE.into(),
-                people: vec![OutsidePerson {
-                    account: DANA.into(),
-                    name: "Dana".into(),
-                    ..OutsidePerson::default()
-                }],
-            }],
-            link: CallLink::Joined {
-                call: OUTSIDE.into(),
-            },
-            status: String::new(),
-        },
-    }));
-    assert_eq!(reported, serde_json::json!({ "Ok": null }), "{reported}");
-    until("Dana carried into the call", || {
-        session
-            .speaker()
-            .bridged()
-            .iter()
-            .any(|member| member.bridged.account == DANA && member.call.call.channel == CALL)
-    });
-    let frame = vec![0xF8, 0xFF, 0xFE];
-    assert!(matches!(
-        lane.take(&RemoteActionMessage::CallHeard(CallAudio {
-            speaker: DANA.into(),
-            opus: frame.clone(),
-            skipped: 0,
-        })),
-        Take::Silent
-    ));
-    let voice = VoiceObject {
-        sequence: 0,
-        timestamp: 0,
-        duration: FRAME_SAMPLES,
-        speaker: None,
-        payload: frame,
-    };
-    assert!(
-        matches!(
-            session
-                .session()
-                .publish(Track::Audio, 0, &voice.encode().unwrap()),
-            Err(LiveError::Unwanted)
-        ),
-        "the device speaks in the call with the keys it holds"
-    );
+    dana_is_carried_into_the_call(&lane, &session);
 
     // No line the app was handed carries a key.
     until("the bridge saying its place to the app", || {
@@ -383,9 +295,173 @@ fn answer(
 fn an_app_with_no_grant_asks_its_person_once_to_join_calls() {
     use tilo_actions::remote::asked::Offer;
 
-    let Some(root) = isolated_root(ASKED_JOIN_TEST) else {
+    let Some(Asking {
+        daemon,
+        workspace,
+        live,
+        session,
+        workspaces,
+        store,
+        person,
+        at,
+    }) = asking()
+    else {
         return;
     };
+    let _entered = tilo_rt::app().handle().enter();
+    let in_call = || session.speaker().call().map(|call| call.call.channel);
+
+    // Asked once: the second join finds the question waiting and writes no other.
+    assert_eq!(refused(&a_join(&daemon, &at, 1)), Some(super::join_asked_first(APP)));
+    assert_eq!(refused(&a_join(&daemon, &at, 2)), Some(super::join_asked_first(APP)));
+    assert_eq!(store.waiting_in(&workspace).len(), 1);
+    assert_eq!(in_call(), None, "an asked join joins nothing");
+
+    // Approve lets one join through; the next is asked again.
+    the_persons_answer(&workspaces, &store, &person, &workspace, Offer::Approve);
+    let joined = a_join(&daemon, &at, 3);
+    assert_eq!(joined, serde_json::json!({ "Ok": null }), "{joined}");
+    assert_eq!(in_call(), Some(CALL.to_owned()));
+    the_device_leaves(&live, &workspace);
+    until("the join given once spent", || {
+        tilo_rt::app()
+            .block_on(workspaces.policy_of(&workspace))
+            .unwrap()
+            .is_some_and(|policy| {
+                !policy
+                    .grants
+                    .iter()
+                    .any(|grant| grant.grantee == tilo_action_policy::Grantee::app(APP))
+            })
+    });
+    assert_eq!(refused(&a_join(&daemon, &at, 4)), Some(super::join_asked_first(APP)));
+
+    // Approve and grant lets every join through, unasked.
+    the_persons_answer(
+        &workspaces,
+        &store,
+        &person,
+        &workspace,
+        Offer::ApproveAndGrant,
+    );
+    until("the granted join", || {
+        a_join(&daemon, &at, 5) == serde_json::json!({ "Ok": null })
+    });
+    the_device_leaves(&live, &workspace);
+    assert_eq!(a_join(&daemon, &at, 6), serde_json::json!({ "Ok": null }));
+    assert!(store.waiting_in(&workspace).is_empty(), "nobody is asked");
+    the_device_leaves(&live, &workspace);
+
+    // Taken back where the app's permissions are, the next join asks; declined, every join is
+    // refused saying so, and nobody is asked again; then they change their mind there, and the
+    // same grant, allowed, takes its place.
+    taken_back_and_declined(
+        &daemon,
+        &at,
+        &session,
+        &workspaces,
+        &store,
+        &person,
+        &workspace,
+    );
+}
+
+/// The reason `answer` refuses a join, when it refuses one.
+fn refused(answer: &serde_json::Value) -> Option<String> {
+    answer
+        .pointer("/Err/Refused/reason")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// The grant taken back where the app's permissions are: the next join asks; declined, every join
+/// is refused saying so and nobody is asked again; then they change their mind there, the same
+/// grant allowed takes its place.
+fn taken_back_and_declined(
+    daemon: &Arc<Daemon>,
+    at: &crate::seats::AppAt,
+    session: &crate::device::live_call::CallSession,
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    store: &tilo_actions::remote::asked::AskedStore,
+    person: &tilo_actions::remote::Caller,
+    workspace: &str,
+) {
+    let policy = tilo_rt::app()
+        .block_on(workspaces.policy_of(workspace))
+        .unwrap()
+        .unwrap();
+    let granted = policy
+        .grants
+        .iter()
+        .find(|grant| grant.grantee == tilo_action_policy::Grantee::app(APP))
+        .expect("the grant names the app")
+        .clone();
+    tilo_rt::app()
+        .block_on(workspaces.commit_own_change(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Revoke(granted.id.clone()),
+            },
+            None,
+        ))
+        .unwrap()
+        .unwrap();
+    until("the join asked again", || {
+        refused(&a_join(daemon, at, 7)) == Some(super::join_asked_first(APP))
+    });
+    the_persons_answer(
+        workspaces,
+        store,
+        person,
+        workspace,
+        tilo_actions::remote::asked::Offer::Decline,
+    );
+    let declined = tilo_workspace_service::workspaces::vault_release::declined_by_person(APP);
+    until("the decline written", || {
+        refused(&a_join(daemon, at, 8)) == Some(declined.clone())
+    });
+    assert_eq!(refused(&a_join(daemon, at, 9)), Some(declined));
+    assert!(store.waiting_in(workspace).is_empty(), "nobody is asked again");
+    assert_eq!(session.speaker().call(), None);
+    // They change their mind where the app's permissions are: the refusal goes, and the same
+    // grant, allowed, takes its place.
+    for change in [
+        tilo_action_policy::Change::Revoke(granted.id.clone()),
+        tilo_action_policy::Change::Grant(granted),
+    ] {
+        tilo_rt::app()
+            .block_on(workspaces.commit_own_change(
+                workspace,
+                tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                    change,
+                },
+                None,
+            ))
+            .unwrap()
+            .unwrap();
+    }
+    until("the allowed join", || {
+        a_join(daemon, at, 10) == serde_json::json!({ "Ok": null })
+    });
+    assert!(store.waiting_in(workspace).is_empty());
+}
+
+/// The device's daemon with its live session running, and what asks its person about an app's
+/// join on it: the app's place, the asked store, and the person who answers.
+struct Asking {
+    daemon: Arc<Daemon>,
+    workspace: String,
+    live: Arc<crate::device::live_relay::Live>,
+    session: Arc<crate::device::live_call::CallSession>,
+    workspaces: tilo_workspace_service::workspaces::Workspaces,
+    store: Arc<tilo_actions::remote::asked::AskedStore>,
+    person: tilo_actions::remote::Caller,
+    at: crate::seats::AppAt,
+}
+
+/// [`Asking`], from a device started reporting with its live session up.
+fn asking() -> Option<Asking> {
+    let root = isolated_root(ASKED_JOIN_TEST)?;
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
     let workspace = daemon.workspace().expect("the person's workspace");
     let id = WorkspaceId::parse(&workspace).expect("a workspace id");
@@ -399,152 +475,189 @@ fn an_app_with_no_grant_asks_its_person_once_to_join_calls() {
     let store = workspaces
         .asked_store()
         .expect("the device keeps asked records");
-    let cert = workspaces.device_cert().clone();
+    let cert = workspaces.device_cert();
     let person =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
             .in_workspace(&workspace);
-    let _entered = tilo_rt::app().handle().enter();
     let at = crate::seats::AppAt {
         app: APP.to_owned(),
         workspace: workspace.clone(),
         pid: std::process::id(),
     };
-    let join = |correlation| {
-        let out = Arc::new(|_: String| {}) as tilo_live::app_call::Out;
-        let lane = tilo_live::app_call::AppLane::new(daemon.app_call_setup(&at), out);
-        result_of(lane.take(&carry(correlation)))
-    };
-    let refused = |answer: &serde_json::Value| {
-        answer
-            .pointer("/Err/Refused/reason")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-    };
-    let resolve = |offer| {
-        let waiting = store.waiting_in(&workspace);
-        assert_eq!(waiting.len(), 1, "one question waits");
-        assert_eq!(
-            waiting[0].asked.offers,
-            vec![Offer::Approve, Offer::ApproveAndGrant, Offer::Decline]
-        );
-        let answered = tilo_rt::app()
-            .block_on(async {
-                workspaces
-                    .resolve_asked(&person, &answer(&waiting[0].asked.record, offer))
-                    .await
-            })
-            .expect("the runtime answers")
-            .expect("the answer is answered")
-            .expect("their answer is taken");
-        assert!(
-            matches!(
-                answered.status,
-                tilo_actions::remote::ReceiptStatus::Completed { .. }
-            ),
-            "{answered:?}"
-        );
-    };
-    let in_call = || session.speaker().call().map(|call| call.call.channel);
-    let leave = || {
-        tilo_rt::app()
-            .block_on(live.join_in(&workspace, None))
-            .expect("the runtime runs the leave")
-            .expect("the device leaves the call");
-    };
+    Some(Asking {
+        daemon,
+        workspace,
+        live,
+        session,
+        workspaces,
+        store,
+        person,
+        at,
+    })
+}
 
-    // Asked once: the second join finds the question waiting and writes no other.
-    assert_eq!(refused(&join(1)), Some(super::join_asked_first(APP)));
-    assert_eq!(refused(&join(2)), Some(super::join_asked_first(APP)));
-    assert_eq!(store.waiting_in(&workspace).len(), 1);
-    assert_eq!(in_call(), None, "an asked join joins nothing");
+/// The app's lane joining the call as `correlation`'s carry asks: the answer it was given.
+fn a_join(daemon: &Arc<Daemon>, at: &crate::seats::AppAt, correlation: u64) -> serde_json::Value {
+    let out = Arc::new(|_: String| {}) as tilo_live::app_call::Out;
+    let lane = tilo_live::app_call::AppLane::new(daemon.app_call_setup(at), out);
+    result_of(lane.take(&carry(correlation)))
+}
 
-    // Approve lets one join through; the next is asked again.
-    resolve(Offer::Approve);
-    let joined = join(3);
-    assert_eq!(joined, serde_json::json!({ "Ok": null }), "{joined}");
-    assert_eq!(in_call(), Some(CALL.to_owned()));
-    leave();
-    until("the join given once spent", || {
-        tilo_rt::app()
-            .block_on(workspaces.policy_of(&workspace))
-            .unwrap()
-            .is_some_and(|policy| {
-                !policy
-                    .grants
-                    .iter()
-                    .any(|grant| grant.grantee == tilo_action_policy::Grantee::app(APP))
-            })
-    });
-    assert_eq!(refused(&join(4)), Some(super::join_asked_first(APP)));
+/// The person's answer `offer` to the one question waiting in `workspace`, taken as `person`.
+fn the_persons_answer(
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    store: &tilo_actions::remote::asked::AskedStore,
+    person: &tilo_actions::remote::Caller,
+    workspace: &str,
+    offer: tilo_actions::remote::asked::Offer,
+) {
+    let waiting = store.waiting_in(workspace);
+    assert_eq!(waiting.len(), 1, "one question waits");
+    assert_eq!(
+        waiting[0].asked.offers,
+        vec![
+            tilo_actions::remote::asked::Offer::Approve,
+            tilo_actions::remote::asked::Offer::ApproveAndGrant,
+            tilo_actions::remote::asked::Offer::Decline
+        ]
+    );
+    let answered = tilo_rt::app()
+        .block_on(async {
+            workspaces
+                .resolve_asked(person, &answer(&waiting[0].asked.record, offer))
+                .await
+        })
+        .expect("the runtime answers")
+        .expect("the answer is answered")
+        .expect("their answer is taken");
+    assert!(
+        matches!(
+            answered.status,
+            tilo_actions::remote::ReceiptStatus::Completed { .. }
+        ),
+        "{answered:?}"
+    );
+}
 
-    // Approve and grant lets every join through, unasked.
-    resolve(Offer::ApproveAndGrant);
-    until("the granted join", || {
-        join(5) == serde_json::json!({ "Ok": null })
-    });
-    leave();
-    assert_eq!(join(6), serde_json::json!({ "Ok": null }));
-    assert!(store.waiting_in(&workspace).is_empty(), "nobody is asked");
-    leave();
-
-    // Taken back where the app's permissions are, the next join asks; declined, every join is
-    // refused saying so, and nobody is asked again.
-    let policy = tilo_rt::app()
-        .block_on(workspaces.policy_of(&workspace))
-        .unwrap()
-        .unwrap();
-    let granted = policy
-        .grants
-        .iter()
-        .find(|grant| grant.grantee == tilo_action_policy::Grantee::app(APP))
-        .expect("the grant names the app")
-        .clone();
+/// The device leaves the call in `workspace`, as a person's answer or a session's end does.
+fn the_device_leaves(live: &crate::device::live_relay::Live, workspace: &str) {
     tilo_rt::app()
-        .block_on(workspaces.commit_own_change(
-            &workspace,
+        .block_on(live.join_in(workspace, None))
+        .expect("the runtime runs the leave")
+        .expect("the device leaves the call");
+}
+
+/// The same join over the app's own connection, as the daemon serves the process it started and
+/// the app's SDK reaches it: the carry is refused with the reason, a report is taken although the
+/// device carries no call for it, and the device joins nothing.
+fn the_apps_connection_joins_nothing(
+    daemon: &Arc<Daemon>,
+    at: &crate::seats::AppAt,
+    session: &crate::device::live_call::CallSession,
+) {
+    let app = app_connection(daemon, at);
+    assert_eq!(
+        app.carry_call(Some(BridgedCall {
+            outside: OUTSIDE.into(),
+            tilo: CALL.into(),
+        })),
+        Err(tilo_actions::remote::ActionCallError::Refused {
+            reason: super::join_asked_first(APP)
+        })
+    );
+    app.report_call(CallReport::default())
+        .expect("a report is taken from an app the device carries no call for");
+    assert!(app.said_call().is_empty());
+    assert_eq!(app.asked_call(), None);
+    assert_eq!(
+        session.speaker().call(),
+        None,
+        "a refused app joins nothing"
+    );
+}
+
+/// The person's grant `id` naming [`APP`] on this device's live sessions in `workspace`: the app,
+/// never the person, holds it.
+fn grant_the_app(live: &crate::device::live_relay::Live, workspace: &str, id: &str) {
+    let person = hex::encode(live.person());
+    let grant = tilo_action_policy::Grant::new(
+        id,
+        tilo_action_policy::Grantee::app(APP),
+        tilo_action_policy::TreePath::workspace(workspace).app(super::PROVIDER),
+        tilo_action_policy::KindSet::ALL,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(person),
+    );
+    tilo_rt::app()
+        .block_on(live.workspaces().copies().commit_own_change(
+            workspace,
             tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
-                change: tilo_action_policy::Change::Revoke(granted.id.clone()),
+                change: tilo_action_policy::Change::Grant(grant),
             },
             None,
         ))
-        .unwrap()
-        .unwrap();
-    until("the join asked again", || {
-        refused(&join(7)) == Some(super::join_asked_first(APP))
-    });
-    resolve(Offer::Decline);
-    let declined = tilo_workspace_service::workspaces::vault_release::declined_by_person(APP);
-    until("the decline written", || {
-        refused(&join(8)) == Some(declined.clone())
-    });
-    assert_eq!(refused(&join(9)), Some(declined.clone()));
-    assert!(
-        store.waiting_in(&workspace).is_empty(),
-        "nobody is asked again"
-    );
-    assert_eq!(in_call(), None);
+        .expect("the runtime runs the change")
+        .expect("the owner's grant is committed");
+}
 
-    // They change their mind where the app's permissions are: the refusal goes, and the same
-    // grant, allowed, takes its place.
-    for change in [
-        tilo_action_policy::Change::Revoke(granted.id.clone()),
-        tilo_action_policy::Change::Grant(granted),
-    ] {
-        tilo_rt::app()
-            .block_on(workspaces.commit_own_change(
-                &workspace,
-                tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
-                    change,
-                },
-                None,
-            ))
-            .unwrap()
-            .unwrap();
-    }
-    until("the allowed join", || {
-        join(10) == serde_json::json!({ "Ok": null })
+/// The app reports its outside call with Dana in it: the bridge carries her into the device's call
+/// as a participant of her own, and what she says is sealed under the call's keys the daemon holds.
+/// Nobody here asks for the device's voice yet, so the frame is unwanted rather than withheld: the
+/// device may speak in the call and seals for it.
+fn dana_is_carried_into_the_call(
+    lane: &tilo_live::app_call::AppLane,
+    session: &crate::device::live_call::CallSession,
+) {
+    let reported = result_of(lane.take(&RemoteActionMessage::CallReport {
+        correlation: 3,
+        report: CallReport {
+            calls: vec![OutsideCall {
+                call: OUTSIDE.into(),
+                people: vec![OutsidePerson {
+                    account: DANA.into(),
+                    name: "Dana".into(),
+                    ..OutsidePerson::default()
+                }],
+            }],
+            link: CallLink::Joined {
+                call: OUTSIDE.into(),
+            },
+            status: String::new(),
+        },
+    }));
+    assert_eq!(reported, serde_json::json!({ "Ok": null }), "{reported}");
+    until("Dana carried into the call", || {
+        session
+            .speaker()
+            .bridged()
+            .iter()
+            .any(|member| member.bridged.account == DANA && member.call.call.channel == CALL)
     });
-    assert!(store.waiting_in(&workspace).is_empty());
+    let frame = vec![0xF8, 0xFF, 0xFE];
+    assert!(matches!(
+        lane.take(&RemoteActionMessage::CallHeard(CallAudio {
+            speaker: DANA.into(),
+            opus: frame.clone(),
+            skipped: 0,
+        })),
+        Take::Silent
+    ));
+    let voice = VoiceObject {
+        sequence: 0,
+        timestamp: 0,
+        duration: FRAME_SAMPLES,
+        speaker: None,
+        payload: frame,
+    };
+    assert!(
+        matches!(
+            session
+                .session()
+                .publish(Track::Audio, 0, &voice.encode().unwrap()),
+            Err(LiveError::Unwanted)
+        ),
+        "the device speaks in the call with the keys it holds"
+    );
 }
 
 /// The connection the daemon serves an app it started at `at`, as the line wire's client the
