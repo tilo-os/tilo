@@ -58,7 +58,7 @@ impl Workspace for Recorded {
             .push((run.id.clone(), action.to_owned(), args.clone()));
         if action == "workspace/mail-accounts#add" {
             return self
-                .add_account(args)
+                .add_account(&args)
                 .map(|account| Answer::of(Some(account)));
         }
         Ok(Answer::of(None))
@@ -73,7 +73,7 @@ impl Workspace for Recorded {
         anyhow::ensure!(path == thunderbird::MAIL_ACCOUNTS, "asked {path}");
         match action {
             "list" => Ok(serde_json::json!({"accounts": self.kept})),
-            "add" => self.add_account(args),
+            "add" => self.add_account(&args),
             other => anyhow::bail!("no workspace/mail-accounts#{other}"),
         }
     }
@@ -88,7 +88,7 @@ impl Recorded {
     /// `workspace/mail-accounts#add`, whether a run asks it as a step or the person asks it
     /// themselves: kept as the asked record its person answers, which the fake answers as their
     /// terminal, their shell or an agent's caller would.
-    fn add_account(&mut self, args: Value) -> Result<Value> {
+    fn add_account(&mut self, args: &Value) -> Result<Value> {
         self.added.push(args.clone());
         match self.answer {
             Answered::Yes => {}

@@ -4413,6 +4413,7 @@ impl TicketLink {
                     .await?,
             );
         }
+        drop(kept);
         Ok(())
     }
 
