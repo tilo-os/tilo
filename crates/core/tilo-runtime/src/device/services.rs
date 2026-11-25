@@ -5579,27 +5579,33 @@ impl RuntimeActionProvider {
                 delegated_agent(&agent).map_err(io::Error::other)?,
             )
             .map_err(io::Error::other)?;
-        let run = Self {
+        let run = self.run_as(AdmittedRuntimeSession {
+            policy_time: policy_time.clone(),
+            provider: Arc::new(Signed::new(delegated, Some(signer))),
+            admission,
+            agent: Some(agent),
+            projection: None,
+            pressed: None,
+            own_shell: false,
+        });
+        Ok((run, caller))
+    }
+
+    /// This device's runtime, answering as `session`: the agent's run keeps the device's
+    /// tickets, invocations and asked records, since it acts for the device's own person.
+    fn run_as(&self, session: AdmittedRuntimeSession) -> Self {
+        Self {
             broker: self.broker.clone(),
             workspace: self.workspace.clone(),
             workspaces: self.workspaces.clone(),
             apps: self.apps.clone(),
-            session: Some(Arc::new(AdmittedRuntimeSession {
-                policy_time: policy_time.clone(),
-                provider: Arc::new(Signed::new(delegated, Some(signer))),
-                admission,
-                agent: Some(agent),
-                projection: None,
-                pressed: None,
-                own_shell: false,
-            })),
+            session: Some(Arc::new(session)),
             tickets: self.tickets.clone(),
             invocations: Arc::clone(&self.invocations),
             kept: Arc::clone(&self.kept),
             asked: self.asked.clone(),
             handed: self.handed.clone(),
-        };
-        Ok((run, caller))
+        }
     }
 
     /// A run of another member's device `key` in `workspace`, which this device holds: its calls
