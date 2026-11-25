@@ -118,7 +118,7 @@ fn compact_windows_navigate_between_full_width_panes() {
 /// Only sections hold notes; the grouping nodes refuse edits.
 #[test]
 fn only_sections_take_notes() {
-    let mut notebook = Replica::<Notebook>::new();
+    let mut notebook = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
     let notes = Notebook::section_paths(6).notes.replace("Walked the dog.");
     notebook
         .apply(Invoke::edit(&notes).expect("an edit"))

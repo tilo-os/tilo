@@ -12,18 +12,19 @@ use poker::game::{BUY_IN, Street};
 use poker::{App, Table};
 use tilo_app_test_host::TestApp;
 use ui::prelude::{Invoke, Replica};
+use ui::tilo_resource::AppNamed;
 
 /// Everyone at the table, each with their own replica of it: an action is applied by its
 /// player's replica and synced to the others, as the workspace delivers it.
 struct Workspace {
-    replicas: Vec<Replica<Table>>,
+    replicas: Vec<Replica<Table, AppNamed>>,
     names: Vec<&'static str>,
     now: i64,
 }
 
 impl Workspace {
     fn new(names: &[&'static str]) -> Self {
-        let mut first = Replica::<Table>::new();
+        let mut first = Replica::<Table>::new().in_app("so.tilo.model", "Model");
         let replicas = names
             .iter()
             .map(|name| first.fork().as_author(name))

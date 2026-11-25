@@ -21,7 +21,7 @@ pub(crate) fn table(scenario: &str, me: &str) -> Table {
     let now = ui::time::unix_now_ms_i64();
     let other = "Grace";
     let mine = scenario == "your-turn";
-    let mut replica = Replica::<Table>::new();
+    let mut replica = Replica::<Table>::new().in_app(crate::APP_ID, "Poker");
     let mut at = now.saturating_sub(SPAN_MS);
     for _ in 0..MOVES {
         let Ok(table) = replica.state() else {

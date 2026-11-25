@@ -51,6 +51,7 @@
 //! the entry of the device it names, and an entry anything else signed is no
 //! revocation and every reader leaves it out.
 
+#[cfg(test)]
 use tilo_resource::AppNamed;
 use tilo_resource::{Collection, Id, Model, Refusal, resource};
 use tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;

@@ -16,7 +16,7 @@ fn semantics_of(node: &InspectionNode, id: &str) -> Option<AccessNode> {
 
 #[test]
 fn opening_rows_keeps_the_most_recent_first() {
-    let mut review = Replica::<Review>::new();
+    let mut review = Replica::<Review>::new().in_app("so.tilo.model", "Model");
     for id in [3, 7, 3] {
         review.apply(Review::OPEN_ROW.with(id)).expect("open a row");
     }
