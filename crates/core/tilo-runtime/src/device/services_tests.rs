@@ -1252,9 +1252,31 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
     let Some(root) = isolated_root(SHELL_TEST) else {
         return;
     };
-    let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    let session = std::sync::Arc::new(Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap());
     let socket = session.broker.app_socket().to_path_buf();
     let workspace = session.workspace().unwrap();
+    // The shell the daemon starts asks for its link on the daemon's own socket. This daemon
+    // serves its services alone, so its endpoint is made here, admitting the seat and answering
+    // `shells#link` from the daemon that made the token.
+    let native_socket = root.join("native.sock");
+    let listener = tilo_files::native::private::bind_socket(&native_socket).unwrap();
+    let keys = tilo_device_identity::IdentityPaths::under(root.join("identity"));
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let native = std::sync::Arc::new(crate::daemon::Native::new(
+        crate::device::unclaimed::DeviceOnly::new(
+            key,
+            tilo_device_identity::login::Place::at(root.join("login"), keys),
+        ),
+        crate::seats::peer_of,
+        tilo_api::daemon::admission::here(crate::seats::own_account),
+    ));
+    native
+        .seats
+        .serve(std::sync::Arc::new(ShellsOf(std::sync::Arc::clone(&session))));
+    {
+        let native = std::sync::Arc::clone(&native);
+        std::thread::spawn(move || native.accept(&listener));
+    }
     let link = session.shell_link().unwrap();
     runtime().block_on(async {
         link.set_nonblocking(true).unwrap();
@@ -1395,7 +1417,7 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
     #[cfg(target_os = "linux")]
     {
         let shell = std::process::Command::new(std::env::current_exe().unwrap());
-        let (command, log) = shell_child(&root, &native, shell, "shell");
+        let (command, log) = shell_child(&root, &native_socket, shell, "shell");
         let status = session.start_shell(command, None).unwrap().wait().unwrap();
         let logs = std::fs::read_to_string(&log).unwrap_or_default();
         assert!(
@@ -1657,6 +1679,55 @@ fn the_desktop_keeps_what_its_device_says_of_itself_in_the_devices_record() {
     );
 }
 
+/// The daemon's shells as this test's native endpoint serves them: the daemon makes the token
+/// and the link; the endpoint admits the connection and answers `shells#link`.
+struct ShellsOf(std::sync::Arc<Daemon>);
+
+#[cfg(unix)]
+impl crate::seats::Shells for ShellsOf {
+    fn token(&self, _: bool) -> std::io::Result<[u8; 32]> {
+        Err(std::io::Error::other("a test starts no shell at a sign-in"))
+    }
+
+    fn token_holder(&self, token: &[u8; 32]) -> Option<[u8; 32]> {
+        self.0.shell_token_holder(token)
+    }
+
+    fn redeem(
+        &self,
+        secret: [u8; 32],
+        seat: u64,
+    ) -> std::io::Result<std::os::unix::net::UnixStream> {
+        self.0.shell_redeem(secret, seat)
+    }
+
+    fn link_for(
+        &self,
+        person: [u8; 32],
+        seat: u64,
+    ) -> std::io::Result<std::os::unix::net::UnixStream> {
+        let secret = self.0.shell_token_for(person, seat)?;
+        self.0.shell_link_of(secret)
+    }
+
+    fn live(&self, seat: u64) -> bool {
+        self.0.shell_live(seat)
+    }
+
+    fn serves(&self, person: [u8; 32]) -> bool {
+        self.0.serves(person)
+    }
+
+    fn start(
+        &self,
+        _: Vec<std::ffi::OsString>,
+        _: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+        _: Option<std::os::fd::OwnedFd>,
+    ) -> std::io::Result<std::process::Child> {
+        Err(std::io::Error::other("a test's endpoint starts no shell"))
+    }
+}
+
 /// `command` running [`SHELL_TEST`] as the child `role`, and the file its output goes to.
 fn shell_child(
     root: &Path,
@@ -1675,7 +1746,13 @@ fn shell_child(
         .env(tilo_test_env::hang::HANG_BOUND_ENV, helper_hang_bound())
         .stdin(Stdio::null())
         .stdout(Stdio::from(std::fs::File::create(&log).unwrap()))
-        .stderr(Stdio::null());
+        // A helper that fails says why where the test that started it reads it.
+        .stderr(Stdio::from(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log)
+                .unwrap(),
+        ));
     (command, log)
 }
 

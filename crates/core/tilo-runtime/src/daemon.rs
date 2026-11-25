@@ -1094,6 +1094,10 @@ impl crate::seats::Shells for PersonShells {
         self.daemon().is_ok_and(|daemon| daemon.shell_live(seat))
     }
 
+    fn serves(&self, person: [u8; 32]) -> bool {
+        self.daemon().is_ok_and(|daemon| daemon.serves(person))
+    }
+
     #[cfg(target_os = "linux")]
     fn start(
         &self,
@@ -1434,10 +1438,10 @@ type KeyTake = Box<
 /// is answered with the device's own actions at once; one on a set-up device while its person's
 /// services start waits on its own thread until they run, so an app is never served the device
 /// alone for its life. The listener itself never waits.
-struct Native {
+pub(crate) struct Native {
     answers: crate::device::unclaimed::DeviceOnly,
     /// Who each connection is, and the device's answers about it.
-    seats: Arc<Seats>,
+    pub(crate) seats: Arc<Seats>,
     /// The person's endpoint, while their services run.
     person: Mutex<Option<Arc<Take>>>,
     /// What answers a connection from an app the daemon started, while the person's services
@@ -1457,7 +1461,7 @@ struct Native {
 impl Native {
     /// The endpoint of `device`, reading each connection's account with `peer_of` and admitting
     /// it by `admission`.
-    fn new(
+    pub(crate) fn new(
         device: crate::device::unclaimed::DeviceOnly,
         peer_of: crate::seats::PeerOf,
         admission: &'static tilo_api::daemon::admission::Admission,
@@ -1571,7 +1575,7 @@ impl Native {
 
     /// Serve each connection to `listener` as whatever answers when it comes ([`accept`]): an
     /// account the daemon does not serve is answered the device's own actions alone.
-    fn accept(self: &Arc<Self>, listener: &Listener) -> io::Result<()> {
+    pub(crate) fn accept(self: &Arc<Self>, listener: &Listener) -> io::Result<()> {
         accept(listener, |stream, slot| {
             if self.closing.load(Ordering::Relaxed) {
                 return Err(io::Error::new(
@@ -1850,7 +1854,7 @@ impl TenantServing {
 
     /// Take each connection: the tenant's account is served once the person's services run, as
     /// the person's unnamed agent, and every other account is told this socket is not theirs.
-    fn accept(self: &Arc<Self>, listener: &Listener) -> io::Result<()> {
+    pub(crate) fn accept(self: &Arc<Self>, listener: &Listener) -> io::Result<()> {
         accept(listener, |stream, slot| {
             if self.closing.load(Ordering::Relaxed) {
                 return Err(io::Error::new(

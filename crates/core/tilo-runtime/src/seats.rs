@@ -333,6 +333,11 @@ pub(crate) trait Shells: Send + Sync {
     /// Whether the seat has a shell link standing now.
     fn live(&self, seat: u64) -> bool;
 
+    /// Whether this daemon acts for `person`: the person whose link it makes and whose services
+    /// it runs. The token it makes names that person, so the device's own account (and root)
+    /// redeems it as the person this daemon serves, never as another.
+    fn serves(&self, person: [u8; 32]) -> bool;
+
     /// Start the person's shell with `args` and `env`, handed its link and, when the session that
     /// asked sent one (`window`), the connection it draws its window on.
     ///
@@ -634,7 +639,7 @@ impl Seats {
                             .to_owned(),
                     );
                 };
-                if !seats.acts_as(uid, admitted, holder) {
+                if !Self::acts_as(&shells, admitted, holder) {
                     return refusal(
                         "this account does not act as the person this token was made for"
                             .to_owned(),
@@ -648,7 +653,7 @@ impl Seats {
                             .to_owned(),
                     );
                 };
-                if !seats.acts_as(uid, admitted, person) {
+                if !Self::acts_as(&shells, admitted, person) {
                     return refusal(
                         "this account does not act as the seat's person now".to_owned(),
                     );
@@ -674,13 +679,15 @@ impl Seats {
         }))
     }
 
-    /// Whether the connection `uid` (admitted as `admitted`) acts as `person` now: the same word
-    /// the daemon makes its links under, so a link for a person is only handed to their account.
-    fn acts_as(&self, _uid: u32, admitted: Admitted, person: [u8; 32]) -> bool {
+    /// Whether a connection admitted as `admitted` acts as `person` now, as `shells` serves them:
+    /// a link for a person is only handed to that person's account, or to the device itself,
+    /// which makes the token for the person it serves.
+    fn acts_as(shells: &Arc<dyn Shells>, admitted: Admitted, person: [u8; 32]) -> bool {
         match admitted {
             Admitted::Person(held) | Admitted::Key { person: held, .. } => held == person,
-            // The account a person's own daemon runs as is that person's.
-            Admitted::Device => !self.admission.system() && self.device.person() == Some(person),
+            // The daemon's own account, and root, are the device: it acts as the person its own
+            // services run for, which is the person it made the token for.
+            Admitted::Device => shells.serves(person),
             Admitted::Stranger => false,
         }
     }

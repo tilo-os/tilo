@@ -1218,6 +1218,12 @@ impl Daemon {
         self.shell_links.live(seat)
     }
 
+    /// Whether this daemon acts for `person`: the person whose certificate names this device,
+    /// whose workspaces its services keep, and for whom its shell links are made.
+    pub(crate) fn serves(&self, person: [u8; 32]) -> bool {
+        self.workspaces.device_cert().user_public_key == person
+    }
+
     /// The connection `secret` admits on this daemon's dispatch: the shell's end of a link the
     /// daemon made.
     ///

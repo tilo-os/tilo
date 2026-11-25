@@ -1883,6 +1883,10 @@ impl crate::seats::Shells for Linked {
         false
     }
 
+    fn serves(&self, person: [u8; 32]) -> bool {
+        *self.person.lock().unwrap() == Some(person)
+    }
+
     fn start(
         &self,
         args: Vec<std::ffi::OsString>,
@@ -2246,6 +2250,10 @@ impl crate::seats::Shells for NestedShells {
         self.0
             .upgrade()
             .is_some_and(|daemon| daemon.shell_live(seat))
+    }
+
+    fn serves(&self, person: [u8; 32]) -> bool {
+        self.0.upgrade().is_some_and(|daemon| daemon.serves(person))
     }
 
     fn start(
