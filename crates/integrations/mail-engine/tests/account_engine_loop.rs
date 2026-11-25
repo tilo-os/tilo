@@ -73,7 +73,8 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     };
     cfg.password = "app-password".into();
     let account = mail_engine::account::Account::new(cfg);
-    let mut replica = tilo_resource::Replica::<accounts::person::AccountList>::new();
+    let mut replica = tilo_resource::Replica::<accounts::person::AccountList>::new()
+        .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
     replica
         .apply(accounts::person::AccountList::saving(&account.to_stored()))
         .expect("the record keeps the account");

@@ -1,5 +1,6 @@
 use super::{EmojiImage, MAX_EMOJI, MAX_IMAGE_BYTES, WorkspaceEmoji, workspace_emoji};
 use tilo_action_policy::{ActionKind, Answer, Authority, Context, Role, WorkspacePolicy, roles};
+use tilo_resource::AppNamed;
 use tilo_resource::{Model as _, Replica, Resource as _};
 
 const ALICE: &str = "a11ce";
@@ -47,8 +48,10 @@ fn rename_any(name: &str, to: &str) -> tilo_resource::Invoke<WorkspaceEmoji> {
     })
 }
 
-fn as_person(person: &str) -> Replica<WorkspaceEmoji> {
-    Replica::<WorkspaceEmoji>::new().as_author(person)
+fn as_person(person: &str) -> Replica<WorkspaceEmoji, AppNamed> {
+    Replica::<WorkspaceEmoji>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author(person)
 }
 
 #[test]
@@ -275,7 +278,9 @@ fn a_stored_picture_reads_back_as_bytes_and_base64() {
     let mut record = as_person(ALICE);
     record.apply(add("kept", image.bytes())).unwrap();
     let saved = record.save();
-    let loaded = Replica::<WorkspaceEmoji>::load(&saved).unwrap();
+    let loaded = Replica::<WorkspaceEmoji>::load(&saved)
+        .unwrap()
+        .in_app("so.tilo.model", "Model");
     assert_eq!(loaded.state().unwrap().get("kept").unwrap().image, image);
 }
 

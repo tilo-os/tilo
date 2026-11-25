@@ -97,7 +97,7 @@ fn example(schema: &Value, full: bool) -> Value {
 }
 
 fn published() -> tilo_actions::ResourceSpec {
-    let replica = tilo_resource::Replica::<RichText>::new();
+    let replica = tilo_resource::Replica::<RichText>::new().in_app("so.tilo.model", "Model");
     tilo_resource::publish::<RichText>("doc", "Doc", &replica.state().unwrap())
 }
 

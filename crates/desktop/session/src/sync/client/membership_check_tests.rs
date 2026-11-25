@@ -24,6 +24,7 @@ use tilo_workspace_service::service::ServiceSlot;
 use tilo_workspace_service::workspaces::MemberDevice;
 use tilo_workspace_service::workspaces::fixtures::{TestHost, test_host_in_the_clear};
 
+use tilo_resource::AppNamed;
 use tilo_resource::Replica;
 use tilo_user_identity::WorkspaceList;
 
@@ -264,12 +265,14 @@ fn a_person_s_further_device_enters_their_workspace_at_its_host() {
 
 /// The session a fresh device starts from: one workspace of its own, nothing of the person's.
 /// The person's list as a device of theirs holds it, with nothing listed yet.
-fn empty_list() -> Replica<WorkspaceList> {
-    Replica::new().as_invoker("person")
+fn empty_list() -> Replica<WorkspaceList, AppNamed> {
+    Replica::new()
+        .in_app("so.tilo.model", "Model")
+        .as_invoker("person")
 }
 
 /// Make `writes` on `list`, as the device's daemon makes a session's, and answer how it stands.
-fn written(list: &mut Replica<WorkspaceList>, writes: Vec<ListWrite>) -> WorkspaceList {
+fn written(list: &mut Replica<WorkspaceList, AppNamed>, writes: Vec<ListWrite>) -> WorkspaceList {
     for write in writes {
         list.apply(write)
             .expect("the list takes the session's write");

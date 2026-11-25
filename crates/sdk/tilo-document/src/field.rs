@@ -465,6 +465,7 @@ impl Model for RichText {
 #[cfg(test)]
 mod tests {
     use automerge::{ROOT, ReadDoc};
+    use tilo_resource::AppNamed;
     use tilo_resource::{Invoke, Model, Replica, resource};
 
     use super::*;
@@ -485,14 +486,14 @@ mod tests {
         }
     }
 
-    fn body_text(replica: &Replica<Note>) -> String {
+    fn body_text(replica: &Replica<Note, AppNamed>) -> String {
         let Ok(Some((_, body))) = replica.doc().get(ROOT, "body") else {
             return String::new();
         };
         RichText::plain_text_under(replica.doc(), &body).unwrap_or_default()
     }
 
-    fn append(replica: &mut Replica<Note>, text: &str) {
+    fn append(replica: &mut Replica<Note, AppNamed>, text: &str) {
         let edit = Note::paths()
             .body
             .perform(&RichTextAction::AppendParagraph { text: text.into() })
@@ -502,7 +503,7 @@ mod tests {
 
     #[test]
     fn rich_text_is_a_field_edited_at_its_path() {
-        let mut note = Replica::<Note>::new();
+        let mut note = Replica::<Note>::new().in_app("so.tilo.model", "Model");
         assert!(note.state().unwrap().body.state().is_some());
         note.apply(Note::WRITE.with("hello")).unwrap();
         assert_eq!(body_text(&note), "hello");
@@ -543,7 +544,7 @@ mod tests {
         assert!(!Note::coalesces(&splice(0, "h "), &splice(2, "i")));
         assert!(Note::continuable(&splice(0, "h")));
 
-        let mut note = Replica::<Note>::new();
+        let mut note = Replica::<Note>::new().in_app("so.tilo.model", "Model");
         note.apply(Note::WRITE.with("hello")).unwrap();
         let state = note.state().unwrap();
         let block = state
@@ -618,7 +619,7 @@ mod tests {
     #[test]
     fn a_read_gives_the_markdown_back() {
         let markdown = "## Plan\n\n**bold** and a [link](https://example.com)\n\n- one\n- two";
-        let mut card = Replica::<Card>::new();
+        let mut card = Replica::<Card>::new().in_app("so.tilo.model", "Model");
         card.apply(Card::WRITE.with(markdown)).unwrap();
         let read = card.state().unwrap().body.to_json();
         let read = read.as_str().unwrap();
@@ -692,7 +693,7 @@ mod tests {
     /// see every paragraph, not only the ones a view asked for.
     #[test]
     fn a_whole_field_reads_every_paragraph() {
-        let mut card = Replica::<Card>::new();
+        let mut card = Replica::<Card>::new().in_app("so.tilo.model", "Model");
         card.apply(Card::WRITE.with("one\n\ntwo")).unwrap();
         let state = card.state().unwrap();
         assert_eq!(state.body.text(), "one\ntwo");

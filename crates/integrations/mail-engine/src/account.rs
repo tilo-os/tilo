@@ -160,7 +160,8 @@ mod tests {
             ..AccountConfig::default()
         };
         let account = Account::new(config);
-        let mut replica = tilo_resource::Replica::<AccountList>::new();
+        let mut replica =
+            tilo_resource::Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
         replica
             .apply(AccountList::saving(&account.to_stored()))
             .unwrap();

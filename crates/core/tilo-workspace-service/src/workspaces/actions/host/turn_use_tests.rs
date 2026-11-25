@@ -166,6 +166,7 @@ pub(super) async fn listed(
         .unwrap()
         .is_some_and(|bytes| {
             Replica::<WorkspaceAgents>::load(&bytes)
+                .map(|r| r.in_app("so.tilo.model", "Model"))
                 .and_then(|record| record.state())
                 .unwrap()
                 .agents

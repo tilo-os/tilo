@@ -554,7 +554,7 @@ mod tests {
 
         phase a_record_of_its_own_text_replays_its_edits;
         {
-            let mut replica = Replica::<PlainText>::new();
+            let mut replica = Replica::<PlainText>::new().in_app("so.tilo.model", "Model");
             replica
                 .apply(
                     crate::Invoke::<PlainText>::apply(&TextEdit::Splice {

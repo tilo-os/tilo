@@ -26,7 +26,7 @@ use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::ActionCallError::{self, UnknownAction};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_lock::MutexRecover as _;
-use tilo_resource::{Id, NonBlank, Replica};
+use tilo_resource::{AppNamed, Id, NonBlank, Replica};
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_agent::learned::{Learned, learned};
 
@@ -266,7 +266,7 @@ impl Workspaces {
         person: &[u8; 32],
         workspace: &str,
         by: Option<&str>,
-        change: impl FnOnce(&mut Replica<Learned>) -> Result<R, String>,
+        change: impl FnOnce(&mut Replica<Learned, AppNamed>) -> Result<R, String>,
     ) -> Result<R, String> {
         let path = self.learned_at(workspace)?;
         let acts_for = hex::encode(person);
@@ -378,7 +378,7 @@ impl Workspaces {
         let bound = ActionArgs::bind_json(&descriptor.params, arguments)
             .map_err(|error| ActionCallError::invalid_request(error.to_string()))?;
         let text = || said(bound.text("text").unwrap_or_default());
-        let fact = |resource: &Replica<Learned>| {
+        let fact = |resource: &Replica<Learned, AppNamed>| {
             named_fact(
                 &state(resource)?,
                 person,
@@ -455,7 +455,7 @@ fn applied<T>(ended: Result<T, tilo_actions::ApiError>) -> Result<(), String> {
 }
 
 /// What `resource` holds now.
-fn state(resource: &Replica<Learned>) -> Result<Learned, String> {
+fn state<A>(resource: &Replica<Learned, A>) -> Result<Learned, String> {
     resource.state().map_err(|error| error.to_string())
 }
 

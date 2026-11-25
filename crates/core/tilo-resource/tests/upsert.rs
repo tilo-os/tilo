@@ -2,6 +2,7 @@
 //! neighbour (`at`), in every kind of collection.
 
 use serde_json::json;
+use tilo_resource::AppNamed;
 use tilo_resource::{
     At, Collection, Edit, EditOp, Id, Identified, Invoke, Keyed, Model, Replica, resource,
 };
@@ -42,14 +43,14 @@ fn upsert(matching: &serde_json::Value, value: serde_json::Value) -> Edit<Party>
         .upsert_by(matching.as_object().unwrap().clone(), value)
 }
 
-fn apply(replica: &mut Replica<Party>, edit: &Edit<Party>) -> Result<(), String> {
+fn apply(replica: &mut Replica<Party, AppNamed>, edit: &Edit<Party>) -> Result<(), String> {
     replica
         .apply(Invoke::edit(edit).map_err(|error| error.to_string())?)
         .map(drop)
         .map_err(|error| error.to_string())
 }
 
-fn guests(replica: &Replica<Party>) -> Vec<(String, String, i64)> {
+fn guests(replica: &Replica<Party, AppNamed>) -> Vec<(String, String, i64)> {
     replica
         .state()
         .unwrap()
@@ -68,7 +69,7 @@ tilo_test_env::scenario! {
 
     phase an_upsert_updates_the_one_item_that_matches_else_appends;
     {
-        let mut party = Replica::<Party>::new();
+        let mut party = Replica::<Party>::new().in_app("so.tilo.model", "Model");
         apply(
             &mut party,
             &upsert(&json!({"name": "Ana"}), json!({"team": "Ops", "seats": 2})),
@@ -103,7 +104,7 @@ tilo_test_env::scenario! {
 
     phase an_upsert_run_again_changes_nothing;
     {
-        let mut party = Replica::<Party>::new();
+        let mut party = Replica::<Party>::new().in_app("so.tilo.model", "Model");
         let edit = upsert(&json!({"name": "Ana"}), json!({"team": "Ops", "seats": 2}));
         apply(&mut party, &edit).unwrap();
         let heads = party.doc_mut().get_heads();
@@ -117,7 +118,7 @@ tilo_test_env::scenario! {
 
     phase an_upsert_matching_two_items_is_refused_naming_them;
     {
-        let mut party = Replica::<Party>::new();
+        let mut party = Replica::<Party>::new().in_app("so.tilo.model", "Model");
         apply(
             &mut party,
             &upsert(&json!({"name": "Ana"}), json!({"team": "Ops"})),
@@ -139,7 +140,7 @@ tilo_test_env::scenario! {
 
     phase upserts_of_different_keys_from_two_replicas_both_land;
     {
-        let mut party = Replica::<Party>::new();
+        let mut party = Replica::<Party>::new().in_app("so.tilo.model", "Model");
         apply(
             &mut party,
             &upsert(&json!({"name": "Ana"}), json!({"seats": 1})),
@@ -177,7 +178,7 @@ tilo_test_env::scenario! {
 
     phase one_key_upserted_on_two_replicas_at_once_is_one_item;
     {
-        let mut party = Replica::<Party>::new();
+        let mut party = Replica::<Party>::new().in_app("so.tilo.model", "Model");
         let mut other = party.fork();
         apply(
             &mut party,
@@ -195,7 +196,7 @@ tilo_test_env::scenario! {
 
     phase a_keyed_collection_upserts_by_its_fields_too;
     {
-        let mut party = Replica::<Party>::new();
+        let mut party = Replica::<Party>::new().in_app("so.tilo.model", "Model");
         let badges = Party::paths().badges;
         let edit = |matching: serde_json::Value, value: serde_json::Value| {
             badges.edit(EditOp::UpsertItem {
@@ -222,7 +223,7 @@ tilo_test_env::scenario! {
 
     phase insert_and_move_place_an_item_beside_another_or_at_the_end;
     {
-        let mut party = Replica::<Party>::new();
+        let mut party = Replica::<Party>::new().in_app("so.tilo.model", "Model");
         let paths = Party::paths().guests;
         let named = |name: &str| json!({"name": name, "team": "", "seats": 0});
         let insert = |id: &str, at: At, name: &str| {
@@ -236,7 +237,7 @@ tilo_test_env::scenario! {
         apply(&mut party, &insert("c", At::End, "c")).unwrap();
         apply(&mut party, &insert("b", At::After(Id::from_raw("a")), "b")).unwrap();
         apply(&mut party, &insert("z", At::Before(Id::from_raw("a")), "z")).unwrap();
-        let order = |party: &Replica<Party>| {
+        let order = |party: &Replica<Party, AppNamed>| {
             guests(party)
                 .into_iter()
                 .map(|(name, _, _)| name)
@@ -263,7 +264,7 @@ tilo_test_env::scenario! {
 
     phase an_agent_upserts_through_the_published_field_edit_alone;
     {
-        let mut party = Replica::<Party>::new();
+        let mut party = Replica::<Party>::new().in_app("so.tilo.model", "Model");
         let published = party.published().unwrap();
         let spec = published
             .actions

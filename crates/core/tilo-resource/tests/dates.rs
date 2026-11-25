@@ -26,7 +26,7 @@ tilo_test_env::scenario! {
     // A date, a time and a moment are stored as their text, set whole and
     // merged last writer wins.
     {
-        let mut diary = Replica::<Diary>::new();
+        let mut diary = Replica::<Diary>::new().in_app("so.tilo.model", "Model");
         let day = date(2026, 10, 9);
         let at = day.at(9, 30, 0, 0);
         let alarm = time(7, 0, 0, 0);
@@ -54,7 +54,7 @@ tilo_test_env::scenario! {
     phase a_verb_takes_dates_and_times_as_their_text;
     // A verb takes a date and a moment as their text, as its schema says.
     {
-        let mut diary = Replica::<Diary>::new();
+        let mut diary = Replica::<Diary>::new().in_app("so.tilo.model", "Model");
         let day = date(2026, 10, 9);
         let at = day.at(9, 30, 0, 0);
         let plan = Diary::PLAN.with(diary::Plan { at, day });

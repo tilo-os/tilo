@@ -136,7 +136,8 @@ fn every_kept_setting_is_declared() {
 fn a_kept_setting_holds_only_what_it_declares() {
     use ui::tilo_resource::Replica;
     let paths = crate::prefs::AppearancePrefs::paths();
-    let mut appearance = Replica::<crate::prefs::AppearancePrefs>::new();
+    let mut appearance =
+        Replica::<crate::prefs::AppearancePrefs>::new().in_app("so.tilo.model", "Model");
     appearance.apply(paths.density.set(1.25)).unwrap();
     let refused = format!(
         "{:?}",

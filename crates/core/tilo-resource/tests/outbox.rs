@@ -3,6 +3,7 @@
 //! verb queueing its compensation.
 
 use tilo_actions::{Action as _, ActionKind, ChangeKind};
+use tilo_resource::AppNamed;
 use tilo_resource::{
     ActionCx, Collection, Edit, Id, Invoke, Model, Outbox, Refusal, Replica, Resource, Settled,
     Undoing, resource,
@@ -92,14 +93,17 @@ impl Files {
     }
 }
 
-fn edit(replica: &mut Replica<Files>, edit: Edit<Files>) -> ChangeKind {
+fn edit(replica: &mut Replica<Files, AppNamed>, edit: Edit<Files>) -> ChangeKind {
     let action = Files::edit_action(edit).unwrap();
     let change = action.change_kind();
     replica.apply_action(&action).unwrap();
     change
 }
 
-fn trashed(replica: &mut Replica<Files>, name: &str) -> (Id, tilo_actions::ActionEnvelope) {
+fn trashed(
+    replica: &mut Replica<Files, AppNamed>,
+    name: &str,
+) -> (Id, tilo_actions::ActionEnvelope) {
     let envelope = replica.apply(Files::TRASH.with(name)).unwrap().clone();
     let state = replica.state().unwrap();
     let (id, _) = state
@@ -115,7 +119,7 @@ tilo_test_env::scenario! {
 
     phase an_entry_settles_with_its_result_as_nobodys_step;
     {
-        let mut files = Replica::<Files>::new();
+        let mut files = Replica::<Files>::new().in_app("so.tilo.model", "Model");
         let (id, envelope) = trashed(&mut files, "a.txt");
         assert_eq!(
             envelope.context.as_ref().unwrap().kind,
@@ -157,7 +161,7 @@ tilo_test_env::scenario! {
 
     phase undoing_a_queueing_verb_queues_its_compensation_for_the_entry_it_minted;
     {
-        let mut files = Replica::<Files>::new();
+        let mut files = Replica::<Files>::new().in_app("so.tilo.model", "Model");
         let (id, envelope) = trashed(&mut files, "a.txt");
         let compensation = envelope
             .context
@@ -200,7 +204,7 @@ tilo_test_env::scenario! {
 
     phase undoing_before_the_owner_ran_it_cancels_the_entry;
     {
-        let mut files = Replica::<Files>::new();
+        let mut files = Replica::<Files>::new().in_app("so.tilo.model", "Model");
         let (id, envelope) = trashed(&mut files, "a.txt");
         let compensation = envelope.context.unwrap().compensation.unwrap();
         let undo: <Files as Resource>::Action = serde_json::from_slice(&compensation.payload).unwrap();
@@ -210,7 +214,7 @@ tilo_test_env::scenario! {
 
     phase a_verb_settles_and_prunes_and_an_entry_verb_is_no_item_verb;
     {
-        let mut files = Replica::<Files>::new();
+        let mut files = Replica::<Files>::new().in_app("so.tilo.model", "Model");
         files.apply(Files::ADD_NOTE.with("first")).unwrap();
         let (a, _) = trashed(&mut files, "a.txt");
         let (b, _) = trashed(&mut files, "b.txt");
@@ -249,7 +253,7 @@ tilo_test_env::scenario! {
 
     phase every_change_of_a_record_that_queues_reaches_outside_and_undoes_through_apply;
     {
-        let mut planner = Replica::<Planner>::new();
+        let mut planner = Replica::<Planner>::new().in_app("so.tilo.model", "Model");
         let added = planner
             .apply(Planner::ADD_EVENT.with(("Standup".to_owned(), true)))
             .unwrap()
@@ -315,7 +319,7 @@ tilo_test_env::scenario! {
 
     phase content_from_outside_compensates_nothing_however_much_it_wrote;
     {
-        let mut planner = Replica::<Planner>::new();
+        let mut planner = Replica::<Planner>::new().in_app("so.tilo.model", "Model");
         let titles: Vec<String> = (0..3000)
             .map(|n| format!("Pulled event number {n}"))
             .collect();
@@ -330,7 +334,7 @@ tilo_test_env::scenario! {
 
     phase a_read_only_outbox_takes_its_settlement;
     {
-        let mut runs = Replica::<Runs>::new();
+        let mut runs = Replica::<Runs>::new().in_app("so.tilo.model", "Model");
         runs.apply(Runs::RUN.with("ls")).unwrap();
         let entry = runs
             .state()
@@ -473,7 +477,7 @@ impl Planner {
     }
 }
 
-fn uploads(planner: &Replica<Planner>) -> Vec<String> {
+fn uploads(planner: &Replica<Planner, AppNamed>) -> Vec<String> {
     planner
         .state()
         .unwrap()
@@ -501,7 +505,7 @@ impl Runs {
 
 #[test]
 fn a_change_too_large_to_record_its_restoring_edits_still_undoes_through_apply() {
-    let mut planner = Replica::<Planner>::new();
+    let mut planner = Replica::<Planner>::new().in_app("so.tilo.model", "Model");
     let mut peer = planner.fork();
     let titles: Vec<String> = (0..3000)
         .map(|n| format!("Imported event {n:04}"))

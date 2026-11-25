@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
     // when submitted now as a group: one change, one entry in history.
     {
         use tilo_app::framework::testing::detached_dispatcher;
-        let mut mixer = Replica::<Mixer>::new();
+        let mut mixer = Replica::<Mixer>::new().in_app("so.tilo.model", "Model");
         let dispatcher = detached_dispatcher::<Mixer>(&MemberId::person("ada"));
         let p = Mixer::paths();
         let doc = mixer.doc_mut();

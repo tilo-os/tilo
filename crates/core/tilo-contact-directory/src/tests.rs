@@ -3,6 +3,7 @@
 
 use super::{ContactDirectory, Projected};
 use crate::routing::{SenderAccount, routes};
+use tilo_resource::AppNamed;
 use tilo_resource::{Id, Replica};
 
 fn first() -> Id {
@@ -16,8 +17,8 @@ fn third() -> Id {
 }
 
 /// Two people of the same name.
-fn fixture() -> Replica<ContactDirectory> {
-    let mut record = Replica::<ContactDirectory>::new();
+fn fixture() -> Replica<ContactDirectory, AppNamed> {
+    let mut record = Replica::<ContactDirectory>::new().in_app("so.tilo.model", "Model");
     record
         .apply(ContactDirectory::PROJECT_CONTACT.with((first(), "Alex".into())))
         .expect("projects");
@@ -29,7 +30,7 @@ fn fixture() -> Replica<ContactDirectory> {
 
 /// The person confirms `recipient` on `service` as theirs, under the association `id`.
 fn endpoint(
-    record: &mut Replica<ContactDirectory>,
+    record: &mut Replica<ContactDirectory, AppNamed>,
     person: Id,
     id: &str,
     service: &str,
@@ -48,7 +49,7 @@ fn endpoint(
 
 /// The person confirms the account `subject` at `revision` in `scope` of `service` as theirs.
 fn account(
-    record: &mut Replica<ContactDirectory>,
+    record: &mut Replica<ContactDirectory, AppNamed>,
     person: Id,
     id: &str,
     (service, scope, subject): (&str, &str, &str),
@@ -67,7 +68,7 @@ fn account(
         .map_err(|refused| refused.to_string())
 }
 
-fn forget(record: &mut Replica<ContactDirectory>, person: Id, id: &str) {
+fn forget(record: &mut Replica<ContactDirectory, AppNamed>, person: Id, id: &str) {
     record
         .apply_confirmed(ContactDirectory::FORGET_ENDPOINT.with((person, Id::from_raw(id))))
         .expect("revocation succeeds");

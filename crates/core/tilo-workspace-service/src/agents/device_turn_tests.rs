@@ -50,6 +50,7 @@ async fn scout_on_a_device(scratch: &std::path::Path) -> (TestHost, String, Stri
     workspaces
         .author_agents(&workspace, |doc| {
             let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                .in_app("so.tilo.model", "Model")
                 .as_author(&person)
                 .in_app(tilo_workspace_agent::OWNER, "Workspace");
             made.apply(

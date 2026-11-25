@@ -374,7 +374,10 @@ fn apply_record(
 ) -> Result<(), String> {
     let mut held = record.lock().unwrap();
     let current = std::mem::replace(&mut *held, automerge::AutoCommit::new());
-    let mut replica = tilo_resource::Replica::<Devices>::from_doc(current);
+    let mut replica = tilo_resource::Replica::<Devices>::from_doc(current).in_app(
+        tilo_workspace_service::workspaces::person_workspace::devices::DEVICES.0,
+        "Devices",
+    );
     replica.apply(action).map_err(|error| error.to_string())?;
     *held = std::mem::replace(replica.doc_mut(), automerge::AutoCommit::new());
     Ok(())
@@ -383,6 +386,7 @@ fn apply_record(
 /// The record `record` holds, as the person's devices read it.
 fn read_record(record: &Arc<Mutex<automerge::AutoCommit>>) -> Option<Devices> {
     tilo_resource::Replica::<Devices>::from_doc(record.lock().unwrap().clone())
+        .in_app("so.tilo.model", "Model")
         .state()
         .ok()
 }

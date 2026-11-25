@@ -94,7 +94,7 @@ mod tests {
     /// language is kept apart from it, and removing one leaves the rest.
     #[test]
     fn a_word_is_added_in_its_language_and_removed_as_written() {
-        let mut dictionary = Replica::<PersonalDictionary>::new();
+        let mut dictionary = Replica::<PersonalDictionary>::new().in_app("so.tilo.model", "Model");
         dictionary
             .apply(PersonalDictionary::ADD.with(("Tilo".to_owned(), None)))
             .unwrap();
@@ -121,7 +121,7 @@ mod tests {
     /// A word that cannot be one is refused, naming why, and nothing changes.
     #[test]
     fn a_word_that_is_no_word_is_refused() {
-        let mut dictionary = Replica::<PersonalDictionary>::new();
+        let mut dictionary = Replica::<PersonalDictionary>::new().in_app("so.tilo.model", "Model");
         let refused = dictionary
             .apply(PersonalDictionary::ADD.with(("two words".to_owned(), None)))
             .unwrap_err();

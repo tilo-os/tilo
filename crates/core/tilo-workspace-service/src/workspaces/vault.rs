@@ -30,7 +30,7 @@ use accounts::{SecretId, SecretItem};
 use tilo_action_policy::Acting;
 use tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT;
 use tilo_actions::remote::{CallAllowed, InvokeRequest, SignedCall};
-use tilo_resource::{Id, Replica};
+use tilo_resource::{AppNamed, Id, Replica};
 use zeroize::Zeroizing;
 
 use super::Workspaces;
@@ -952,13 +952,15 @@ pub(super) fn served_call(
 
 /// `replica` writing as Passwords does: each change claims Passwords' verb, which every member
 /// decides against Passwords' surface.
-fn in_passwords(replica: Replica<WorkspaceVaultEntries>) -> Replica<WorkspaceVaultEntries> {
+fn in_passwords(
+    replica: Replica<WorkspaceVaultEntries>,
+) -> Replica<WorkspaceVaultEntries, AppNamed> {
     replica.in_app(APP, "Passwords")
 }
 
 /// Apply `changes` to `replica`, each entry and its uses sealed under `keys`.
 fn apply_changes(
-    replica: &mut Replica<WorkspaceVaultEntries>,
+    replica: &mut Replica<WorkspaceVaultEntries, AppNamed>,
     keys: &key_group::ContentKeys,
     changes: Vec<VaultChange>,
 ) -> Result<(), String> {

@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use collab_types::WorkspaceId;
+use tilo_resource::AppNamed;
 use tilo_resource::{ActionCx, Collection, Id, Model, Refusal, resource};
 
 /// The app the list is a resource of.
@@ -265,8 +266,10 @@ pub fn kind() -> tilo_resource::ResourceKind {
 mod tests {
     use super::*;
 
-    fn replica() -> tilo_resource::Replica<WorkspaceList> {
-        tilo_resource::Replica::new().as_invoker("person")
+    fn replica() -> tilo_resource::Replica<WorkspaceList, AppNamed> {
+        tilo_resource::Replica::new()
+            .in_app("so.tilo.model", "Model")
+            .as_invoker("person")
     }
 
     const A: &str = "00000000-0000-0000-0000-00000000000a";
@@ -331,13 +334,14 @@ mod tests {
             .apply(WorkspaceList::LIST_WORKSPACE.with((A.to_owned(), "Notes".to_owned())))
             .unwrap();
         let mut second = first.fork();
-        let listed = |list: &tilo_resource::Replica<WorkspaceList>| -> Vec<(String, String)> {
-            list.state()
-                .unwrap()
-                .listed()
-                .map(|(id, entry)| (id.to_string(), entry.name.clone()))
-                .collect()
-        };
+        let listed =
+            |list: &tilo_resource::Replica<WorkspaceList, AppNamed>| -> Vec<(String, String)> {
+                list.state()
+                    .unwrap()
+                    .listed()
+                    .map(|(id, entry)| (id.to_string(), entry.name.clone()))
+                    .collect()
+            };
         first.sync_with(&mut second).unwrap();
         assert_eq!(
             listed(&second),

@@ -18,7 +18,7 @@ tilo_test_env::scenario! {
     phase the_reading_a_host_publishes_rebuilds_the_state_its_view_reads;
     {
         // The host's record: a board two actions moved.
-        let mut replica = Replica::<Board>::new();
+        let mut replica = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         replica.apply(Board::RENAME.with("Launch")).unwrap();
         replica.apply(Board::ADD_CARD.with("Ship it")).unwrap();
         let host_state = replica.state().unwrap();

@@ -9,14 +9,15 @@
 
 use super::*;
 use crate::action::{RegionKind, Span};
+use tilo_resource::AppNamed;
 use tilo_resource::Replica;
 
 fn body_ids(state: &RichTextState) -> Vec<String> {
     state.body().all().map(str::to_owned).collect()
 }
 
-fn document(paragraphs: usize) -> Replica<RichText> {
-    let mut replica = Replica::<RichText>::new();
+fn document(paragraphs: usize) -> Replica<RichText, AppNamed> {
+    let mut replica = Replica::<RichText>::new().in_app("so.tilo.model", "Model");
     for n in 0..paragraphs {
         let last = replica
             .state()
@@ -48,7 +49,7 @@ impl Lcg {
     }
 }
 
-fn random_edit(replica: &mut Replica<RichText>, rng: &mut Lcg, step: usize) {
+fn random_edit(replica: &mut Replica<RichText, AppNamed>, rng: &mut Lcg, step: usize) {
     let state = replica.state().unwrap();
     let ids = body_ids(&state);
     let id = ids[rng.next(ids.len())].clone();
@@ -303,7 +304,7 @@ fn rich_text_under_a_field_is_edited_and_refreshed_in_place() {
 }
 
 /// The cells of every table in the body, in order: `(table, row, col, id, text)`.
-fn table_cells(replica: &Replica<RichText>) -> Vec<(String, i64, i64, String, String)> {
+fn table_cells(replica: &Replica<RichText, AppNamed>) -> Vec<(String, i64, i64, String, String)> {
     let c = replica.state().unwrap().containers().clone();
     model::materialize(replica.doc(), &c)
         .blocks
@@ -713,7 +714,7 @@ fn a_field_paragraph_forgotten_leaves_no_objects_behind() {
 /// Apply `action` as a window does for `writer`: the envelope pins who
 /// invoked it.
 fn apply_as(
-    replica: &mut Replica<RichText>,
+    replica: &mut Replica<RichText, AppNamed>,
     action: &RichTextAction,
     writer: &str,
 ) -> tilo_actions::ActionEnvelope {
@@ -732,7 +733,7 @@ fn apply_as(
 }
 
 /// Every author run in the body: the paragraph's position, the run, whose.
-fn author_runs(replica: &Replica<RichText>) -> Vec<(usize, usize, usize, String)> {
+fn author_runs(replica: &Replica<RichText, AppNamed>) -> Vec<(usize, usize, usize, String)> {
     let doc = replica.doc();
     let c = model::open(doc, &automerge::ROOT).unwrap();
     model::materialize(doc, &c)
@@ -821,7 +822,7 @@ fn text_typed_in_carries_its_invokers_name_from_the_one_change_that_wrote_it() {
 /// [`apply_as`] from a device of the writer's own, so two writers can edit
 /// concurrently.
 fn apply_on(
-    replica: &mut Replica<RichText>,
+    replica: &mut Replica<RichText, AppNamed>,
     action: &RichTextAction,
     writer: &str,
     device: &[u8],
@@ -841,7 +842,7 @@ fn apply_on(
 }
 
 /// The mark anchors the last change wrote, as `(is the begin, expands)`.
-fn last_change_mark_anchors(replica: &mut Replica<RichText>) -> Vec<(bool, bool)> {
+fn last_change_mark_anchors(replica: &mut Replica<RichText, AppNamed>) -> Vec<(bool, bool)> {
     let changes = replica.doc_mut().get_changes(&[]);
     changes
         .last()
@@ -1241,7 +1242,7 @@ fn the_document_remembers_its_file_and_the_work_the_file_has_not_taken() {
 }
 
 /// The body's blocks as `(id, kind, alt)`.
-fn block_alts(replica: &Replica<RichText>) -> Vec<(String, String, Option<String>)> {
+fn block_alts(replica: &Replica<RichText, AppNamed>) -> Vec<(String, String, Option<String>)> {
     let c = replica.state().unwrap().containers().clone();
     model::materialize(replica.doc(), &c)
         .blocks
@@ -1447,7 +1448,7 @@ fn one_objects(doc: &Doc, field: &ObjId, ids: &[String]) -> usize {
 }
 
 /// What a body reads as, block by block: kind, text, marks and attributes.
-fn body_views(replica: &Replica<RichText>) -> Vec<(String, String, String, String)> {
+fn body_views(replica: &Replica<RichText, AppNamed>) -> Vec<(String, String, String, String)> {
     let c = replica.state().unwrap().containers().clone();
     model::materialize(replica.doc(), &c)
         .blocks
@@ -1507,7 +1508,7 @@ fn a_staged_import_writes_on_every_replica_what_reading_the_file_writes() {
             .iter()
             .any(|(kind, _, _, attrs)| kind == "image" && attrs.contains(&reference))
     );
-    let blobs = |replica: &Replica<RichText>| {
+    let blobs = |replica: &Replica<RichText, AppNamed>| {
         model::referenced_content(replica.doc(), replica.state().unwrap().containers())
     };
     assert!(blobs(&origin).contains(&reference));

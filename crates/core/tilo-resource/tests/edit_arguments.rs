@@ -86,7 +86,7 @@ impl Log {
 
 #[test]
 fn every_published_action_says_what_it_reads() {
-    let replica = Replica::<Log>::new();
+    let replica = Replica::<Log>::new().in_app("so.tilo.model", "Model");
     let unstated =
         tilo_resource::schema_check::unstated_arguments::<Log>(&replica.state().unwrap());
     assert!(unstated.is_empty(), "{unstated:#?}");
@@ -94,7 +94,7 @@ fn every_published_action_says_what_it_reads() {
 
 #[test]
 fn removing_an_item_by_the_published_listing_works() {
-    let mut replica = Replica::<Log>::new();
+    let mut replica = Replica::<Log>::new().in_app("so.tilo.model", "Model");
     let published = replica.published().unwrap();
     let edit_spec = published
         .actions

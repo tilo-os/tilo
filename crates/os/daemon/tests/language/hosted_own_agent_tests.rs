@@ -797,6 +797,7 @@ async fn an_agent_the_server_adds_is_answered_without_a_restart() {
     let person = hex::encode(hosted.ada_cert.user_public_key);
     adas.author_agents(&workspace, |doc| {
         let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+            .in_app("so.tilo.model", "Model")
             .as_author(&person)
             .in_app(tilo_workspace_agent::OWNER, "Workspace");
         made.apply(WorkspaceAgents::CREATE_AGENT.with(

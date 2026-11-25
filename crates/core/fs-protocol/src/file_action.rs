@@ -436,7 +436,9 @@ mod tests {
     #[test]
     fn an_agent_moves_a_file_by_its_key_and_the_change_names_the_verb_and_the_agent() {
         let (doc, _, plan) = tree_with_a_file();
-        let mut replica = Replica::<FilesTree>::from_doc(doc).as_agent_for("helper", "ada");
+        let mut replica = Replica::<FilesTree>::from_doc(doc)
+            .in_app("so.tilo.model", "Model")
+            .as_agent_for("helper", "ada");
         let moved = declared(
             verbs::MOVE,
             &json!({"node": plan, "parent": ROOT_ID, "name": "final.md"}),
@@ -471,7 +473,9 @@ mod tests {
     #[test]
     fn trash_and_restore_put_a_folder_back_where_it_was() {
         let (doc, docs, plan) = tree_with_a_file();
-        let mut replica = Replica::<FilesTree>::from_doc(doc).as_author("ada");
+        let mut replica = Replica::<FilesTree>::from_doc(doc)
+            .in_app("so.tilo.model", "Model")
+            .as_author("ada");
         replica
             .apply_action(&declared(verbs::TRASH, &json!({"node": docs})))
             .unwrap();

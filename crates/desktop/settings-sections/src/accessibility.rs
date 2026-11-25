@@ -111,7 +111,7 @@ mod tests {
     /// back.
     #[test]
     fn the_magnifier_steps_back_to_the_zoom_last_in_use() {
-        let mut access = Replica::<AccessibilitySettings>::new();
+        let mut access = Replica::<AccessibilitySettings>::new().in_app("so.tilo.model", "Model");
         let mut step = |step: &str| {
             access.apply(AccessibilitySettings::STEP.with(step.to_owned()))?;
             Ok::<_, ui::tilo_actions::ApiError>(access.state().unwrap().magnifier_zoom)

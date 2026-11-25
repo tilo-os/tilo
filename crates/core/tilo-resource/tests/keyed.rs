@@ -5,6 +5,7 @@
 )]
 
 use serde::{Deserialize, Serialize};
+use tilo_resource::AppNamed;
 use tilo_resource::{
     Collection, Counter, Fields, Id, Identified, Invoke, Keyed, Model, Ordered, Path, Replica,
     Resource, Set, resource,
@@ -79,7 +80,7 @@ fn clip(id: &str, start: f64) -> Clip {
     }
 }
 
-fn submit(timeline: &mut Replica<Timeline>, edits: &[tilo_resource::Edit<Timeline>]) {
+fn submit(timeline: &mut Replica<Timeline, AppNamed>, edits: &[tilo_resource::Edit<Timeline>]) {
     let members = edits
         .iter()
         .map(|edit| Invoke::edit(edit).unwrap())
@@ -93,7 +94,7 @@ tilo_test_env::scenario! {
 
     phase keyed_items_sit_under_their_ids_and_merge_per_field;
     {
-        let mut timeline = Replica::<Timeline>::new();
+        let mut timeline = Replica::<Timeline>::new().in_app("so.tilo.model", "Model");
         timeline
             .apply(Timeline::ADD_CLIP.with(("b".to_owned(), "B".to_owned(), 1.0)))
             .unwrap();
@@ -131,7 +132,7 @@ tilo_test_env::scenario! {
 
     phase the_edits_between_two_values_turn_one_into_the_other;
     {
-        let mut timeline = Replica::<Timeline>::new();
+        let mut timeline = Replica::<Timeline>::new().in_app("so.tilo.model", "Model");
         let before = timeline.state().unwrap();
         let mut after = before.clone();
         after.name = "Cut".into();
@@ -168,7 +169,7 @@ tilo_test_env::scenario! {
 
     phase ids_made_inside_a_verb_replay_identically_and_surfaces_bind_verbs;
     {
-        let mut origin = Replica::<Timeline>::new();
+        let mut origin = Replica::<Timeline>::new().in_app("so.tilo.model", "Model");
         let mut peer = origin.fork();
         origin.apply(Timeline::ADD_GENERATED.with(1.0)).unwrap();
         origin.apply(Timeline::ADD_GENERATED.with(2.0)).unwrap();
@@ -232,7 +233,7 @@ tilo_test_env::scenario! {
     // The item a verb added under an id it was handed, as with an id it made, is what its
     // change is about: History reads "Added the clip “Intro”", not a change of the timeline.
     {
-        let entry = Replica::<Timeline>::new()
+        let entry = Replica::<Timeline>::new().in_app("so.tilo.model", "Model")
             .apply(Timeline::ADD_CLIP.with(("intro".to_owned(), "Intro".to_owned(), 0.0)))
             .unwrap()
             .context
@@ -244,7 +245,7 @@ tilo_test_env::scenario! {
 
     phase ordered_items_keep_the_arranged_order_and_merge_by_identity;
     {
-        let mut timeline = Replica::<Timeline>::new();
+        let mut timeline = Replica::<Timeline>::new().in_app("so.tilo.model", "Model");
         let paths = Timeline::paths();
         submit(
             &mut timeline,

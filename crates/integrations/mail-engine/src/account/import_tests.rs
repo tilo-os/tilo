@@ -16,7 +16,7 @@ fn a_pending_import_shows_its_metadata_and_stays_pending_once_mail_keeps_it() {
     // The record keeps the account without a name of its own: Mail saves it.
     let mut stored = StoredAccount::new(id.clone(), accounts::thunderbird::PENDING_TYPE);
     stored.set_config(&config);
-    let mut record = tilo_resource::Replica::<AccountList>::new();
+    let mut record = tilo_resource::Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
     record.apply(AccountList::saving(&stored)).unwrap();
     let person = record.state().unwrap();
 

@@ -164,7 +164,7 @@ mod tests {
             .unwrap()
         };
 
-        let mut device = Replica::<AgentProviders>::new();
+        let mut device = Replica::<AgentProviders>::new().in_app("so.tilo.model", "Model");
         assert!(
             device
                 .apply(AgentProviders::SET_PROVIDERS.with(config(vec![hosted.clone()])))
@@ -183,7 +183,7 @@ mod tests {
             .unwrap();
         assert_eq!(device.state().unwrap().config.profiles, [followed]);
 
-        let mut person = Replica::<HostedAgentProviders>::new();
+        let mut person = Replica::<HostedAgentProviders>::new().in_app("so.tilo.model", "Model");
         let profiles = |profiles: Vec<ProviderProfile>| {
             serde_json::to_value(HostedProfiles { profiles }).unwrap()
         };

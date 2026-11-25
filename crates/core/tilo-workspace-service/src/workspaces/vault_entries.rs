@@ -203,7 +203,7 @@ mod tests {
     fn an_import_preserves_workspace_edits_and_deletions() {
         let key = "login".to_owned();
         let id = Id::from(key.clone());
-        let mut vault = Replica::<WorkspaceVaultEntries>::new();
+        let mut vault = Replica::<WorkspaceVaultEntries>::new().in_app("so.tilo.model", "Model");
         vault
             .apply(WorkspaceVaultEntries::IMPORT_SEALED.with((key.clone(), "ab".to_owned())))
             .unwrap();
@@ -230,7 +230,8 @@ mod tests {
     fn a_workspace_write_wins_over_a_concurrent_import() {
         let key = "login".to_owned();
         let id = Id::from(key.clone());
-        let mut workspace = Replica::<WorkspaceVaultEntries>::new();
+        let mut workspace =
+            Replica::<WorkspaceVaultEntries>::new().in_app("so.tilo.model", "Model");
         let mut importer = workspace.fork();
         workspace
             .apply(WorkspaceVaultEntries::KEEP_SEALED.with((key.clone(), "ab".to_owned())))

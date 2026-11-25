@@ -1673,6 +1673,7 @@ pub async fn count_spend(
             |doc| {
                 let mut counting =
                     tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                        .in_app("so.tilo.model", "Model")
                         .as_author(&keeper)
                         .in_app(AGENTS_OWNER, "Workspace");
                 let applied = counting

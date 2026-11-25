@@ -384,7 +384,7 @@ mod tests {
             issuer: None,
         };
         sign_device_cert(&mut vm, &root).unwrap();
-        let mut record = tilo_resource::Replica::<Devices>::new();
+        let mut record = tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
         record.apply(Devices::keeping(&vm).unwrap()).unwrap();
         let read = BlockedKeys::revoking(&record.state().unwrap(), &person);
         assert!(read.certified(&vm.device_public_key));

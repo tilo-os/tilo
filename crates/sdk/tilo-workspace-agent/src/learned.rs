@@ -284,6 +284,7 @@ fn check_source(source: &str) -> Result<(), Refusal> {
 
 #[cfg(test)]
 mod tests {
+    use tilo_resource::AppNamed;
     use tilo_resource::{Model as _, Replica};
 
     use super::*;
@@ -310,7 +311,7 @@ mod tests {
         Learned::FORGET.with(learned::Forget { fact: fact.clone() })
     }
 
-    fn facts(record: &Replica<Learned>) -> Vec<(Id, Fact)> {
+    fn facts(record: &Replica<Learned, AppNamed>) -> Vec<(Id, Fact)> {
         record
             .state()
             .unwrap()
@@ -324,7 +325,9 @@ mod tests {
     /// the person takes it away again: one list, written by both through the same verbs.
     #[test]
     fn a_fact_is_kept_with_its_source_corrected_and_forgotten() {
-        let mut person = Replica::<Learned>::new().as_author(ADA);
+        let mut person = Replica::<Learned>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_author(ADA);
         let mut agent = person.fork().as_agent_for(ASSISTANT, ADA);
         agent.set_now_ms(1_000);
         agent
@@ -395,7 +398,9 @@ mod tests {
     #[test]
     fn a_fact_is_read_and_changed_only_for_the_person_it_is_about() {
         const BO: &str = "bo";
-        let mut for_ada = Replica::<Learned>::new().as_agent_for(ASSISTANT, ADA);
+        let mut for_ada = Replica::<Learned>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_agent_for(ASSISTANT, ADA);
         for_ada
             .apply(learn("Takes coffee black.", "They said so"))
             .unwrap();
@@ -424,8 +429,9 @@ mod tests {
 
         // An agent that names no person, as in a person's own record on their device, keeps
         // facts about nobody else: it changes them, and nobody named reads or changes them.
-        let mut own =
-            Replica::<Learned>::new().as_acting(tilo_actions::Acting::agent(ASSISTANT).handed());
+        let mut own = Replica::<Learned>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_acting(tilo_actions::Acting::agent(ASSISTANT).handed());
         own.apply(learn("Works from Graz.", "They said so"))
             .unwrap();
         let (graz, kept) = facts(&own).remove(0);
@@ -440,7 +446,9 @@ mod tests {
     /// A fact is one bounded line with a source, and the list is bounded.
     #[test]
     fn a_fact_is_one_bounded_line_and_the_list_is_bounded() {
-        let mut record = Replica::<Learned>::new().as_author(ADA);
+        let mut record = Replica::<Learned>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_author(ADA);
         for (text, source) in [
             ("x".repeat(MAX_FACT + 1), "They said so".to_owned()),
             ("two\nlines".to_owned(), "They said so".to_owned()),
@@ -466,7 +474,9 @@ mod tests {
     /// What the record holds reads back as it was written, by its fields.
     #[test]
     fn the_record_reads_back_as_it_was_written() {
-        let mut record = Replica::<Learned>::new().as_author(ADA);
+        let mut record = Replica::<Learned>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_author(ADA);
         record.set_now_ms(1_700_000_000_000);
         record
             .apply(learn("Works from Graz.", "They said so"))

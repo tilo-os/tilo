@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
 
     phase an_atom_is_written_whole_and_the_last_writer_wins;
     {
-        let mut a = Replica::<Board>::new();
+        let mut a = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         a.apply(Board::paths().layer.set("layer-1".into())).unwrap();
         let mut b = a.fork();
         a.apply(Board::paths().layer.set("layer-2".into())).unwrap();
@@ -175,7 +175,7 @@ tilo_test_env::scenario! {
     // The field edit's description is the listing an agent reads before it changes anything:
     // the paths it may address and the operations each field's shape takes.
     {
-        let published = Replica::<Board>::new().published().unwrap();
+        let published = Replica::<Board>::new().in_app("so.tilo.model", "Model").published().unwrap();
         let schema = field_edit(&published).params()[0]
             .schema
             .as_deref()
@@ -200,7 +200,7 @@ tilo_test_env::scenario! {
 
     phase a_skipped_field_reads_as_the_containing_types_default;
     {
-        let replica = Replica::<Board>::new();
+        let replica = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         assert!(replica.state().unwrap().admin);
     }
 
@@ -285,7 +285,7 @@ tilo_test_env::scenario! {
     // and through a verb alike; within it, it applies.
     {
         let paths = Comfort::paths();
-        let mut comfort = Replica::<Comfort>::new();
+        let mut comfort = Replica::<Comfort>::new().in_app("so.tilo.model", "Model");
         comfort.apply(paths.text_scale.set(2.0)).unwrap();
         let refused = format!(
             "{:?}",
@@ -337,7 +337,7 @@ tilo_test_env::scenario! {
             "one outline, not a mix: {:?}",
             merged.outline
         );
-        let mut replica = Replica::<Swatch>::new();
+        let mut replica = Replica::<Swatch>::new().in_app("so.tilo.model", "Model");
         replica
             .apply(paths.colour.set(Some("#123456".into())))
             .unwrap();
@@ -401,7 +401,7 @@ tilo_test_env::scenario! {
     // A record's fields are set one at a time through the field edit: the
     // unpublished inner fields are addressed by a path below the record.
     {
-        let published = Replica::<Frame>::new().published().unwrap();
+        let published = Replica::<Frame>::new().in_app("so.tilo.model", "Model").published().unwrap();
         let spec = field_edit(&published);
         let schema = spec.params()[0].schema.as_deref().unwrap().clone();
         let edit = serde_json::json!({
@@ -411,7 +411,7 @@ tilo_test_env::scenario! {
         });
         tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the schema");
         let edit: tilo_resource::Edit<Frame> = serde_json::from_value(edit).unwrap();
-        let mut frame = Replica::<Frame>::new();
+        let mut frame = Replica::<Frame>::new().in_app("so.tilo.model", "Model");
         frame.apply(edit).unwrap();
         assert_eq!(frame.state().unwrap().look.width, 2.0);
     }
@@ -424,7 +424,7 @@ tilo_test_env::scenario! {
     // A destructive verb of the record is undoable, so it applies at once:
     // nobody is asked first.
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board.apply(Board::ADD_CARD.with(())).unwrap();
         board.apply(Board::CLEAR.with(())).unwrap();
         assert_eq!(board.state().unwrap().cards, 0);
@@ -432,7 +432,7 @@ tilo_test_env::scenario! {
 
     phase a_replicas_author_is_the_invoker_its_verbs_see;
     {
-        let mut board = Replica::<Board>::new().as_author("ada");
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model").as_author("ada");
         board.apply(Board::ADD_CARD.with(())).unwrap();
         assert_eq!(board.state().unwrap().author, "ada");
         // An edit converts into an invocation where one is expected.
@@ -460,7 +460,7 @@ tilo_test_env::scenario! {
                 ("cards".to_owned(), false, tilo_actions::ParamType::Integer),
             ]
         );
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board
             .apply(Board::RESTYLE.with(BoardStyle {
                 title: "Sprint".into(),
@@ -535,14 +535,14 @@ tilo_test_env::scenario! {
         let action = decl
             .build_action(&tilo_actions::ActionArgs::default(), 0)
             .expect("it builds");
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board.apply_action(&action).unwrap();
         assert_eq!(board.state().unwrap().title, "Sprint");
     }
 
     phase a_group_is_checked_once_at_its_end;
     {
-        let mut pair = Replica::<Pair>::new();
+        let mut pair = Replica::<Pair>::new().in_app("so.tilo.model", "Model");
         let paths = Pair::paths();
         assert!(
             pair.apply(paths.left.set(1)).is_err(),
@@ -575,7 +575,7 @@ tilo_test_env::scenario! {
     // group; when it is one, it records that action alone, so an edit in it
     // continues the undo step of the edit before as the edit itself would.
     {
-        let mut pair = Replica::<Pair>::new();
+        let mut pair = Replica::<Pair>::new().in_app("so.tilo.model", "Model");
         let paths = Pair::paths();
         let alone = pair
             .apply(Pair::MOVE_LEFT.with(0))
@@ -601,7 +601,7 @@ tilo_test_env::scenario! {
 
     phase a_verb_reads_who_its_invoker_acted_for;
     {
-        let mut board = Replica::<Board>::new().as_agent_for("claude", "ada");
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model").as_agent_for("claude", "ada");
         board.apply(Board::ADD_CARD_FOR.with(())).unwrap();
         assert_eq!(board.state().unwrap().author, "Agent for ada");
     }
@@ -616,7 +616,7 @@ tilo_test_env::scenario! {
 
     phase a_verb_prepares_its_arguments_once_where_it_is_invoked;
     {
-        let mut origin = Replica::<Board>::new();
+        let mut origin = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         let mut peer = origin.fork();
         origin.apply(Board::SHOUT.with("sprint")).unwrap();
         assert_eq!(origin.state().unwrap().title, "SPRINT");
@@ -647,7 +647,7 @@ tilo_test_env::scenario! {
     // A field edit changes only the record: removing an item, of any
     // collection, is undoable and asks nothing.
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         let paths = Board::paths();
         let note = Id::from_raw("n");
         board
@@ -668,7 +668,7 @@ tilo_test_env::scenario! {
     // undoable, so none asks, whatever it removes.
     {
         use tilo_actions::ConfirmationPolicy;
-        let board = Replica::<Board>::new();
+        let board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         let published = board.published().unwrap();
         let spec = field_edit(&published);
         let paths = Board::paths();
@@ -708,7 +708,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(paths.label.set("Tower".to_owned()).risk(), RiskLevel::Low);
 
-        let mut lock = Replica::<Lock>::new();
+        let mut lock = Replica::<Lock>::new().in_app("so.tilo.model", "Model");
         assert!(matches!(
             lock.apply(paths.minutes.set(0)),
             Err(tilo_actions::ApiError::ConfirmationRequired)
@@ -760,7 +760,7 @@ tilo_test_env::scenario! {
     // last part of its kind, or its label) edits the field after it, through
     // the published field edit and when built from JSON alike.
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board.apply(set_at(&["board", "title"], "Plan")).unwrap();
         board.apply(set_at(&["Board", "author"], "Ada")).unwrap();
         let state = board.state().unwrap();
@@ -784,7 +784,7 @@ tilo_test_env::scenario! {
     // A field edit naming no field, nor the record, still says which fields
     // there are; one naming the record alone says to start at a field.
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         let unknown = format!(
             "{:?}",
             board.apply(set_at(&["deck", "title"], "Plan")).unwrap_err()
@@ -814,7 +814,7 @@ tilo_test_env::scenario! {
     // field under the record's name is not edited, but sent again from the
     // root, where the API sees which field it is.
     {
-        let mut lock = Replica::<Lock>::new();
+        let mut lock = Replica::<Lock>::new().in_app("so.tilo.model", "Model");
         for field in ["minutes", "shown_name"] {
             let refused = format!(
                 "{:?}",
@@ -844,7 +844,7 @@ tilo_test_env::scenario! {
             "without the value now, any change counts as weakening"
         );
 
-        let mut screen = Replica::<Screen>::new();
+        let mut screen = Replica::<Screen>::new().in_app("so.tilo.model", "Model");
         screen
             .apply(paths.lock_minutes.set(10))
             .expect("from never, a delay is stricter");
@@ -926,7 +926,7 @@ tilo_test_env::scenario! {
 
     phase a_path_names_the_object_its_value_is_stored_in;
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         let paths = Board::paths();
         let note = Id::from_raw("n");
         board
@@ -953,7 +953,7 @@ tilo_test_env::scenario! {
 
     phase an_agent_builds_a_field_edit_from_the_published_descriptor_alone;
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board
             .apply(
                 Board::paths()
@@ -995,7 +995,7 @@ tilo_test_env::scenario! {
     // field is optional, never for a number, a flag or a text.
     {
         use tilo_resource::{Edit, EditOp, Segment};
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         for field in ["cards", "title", "layer"] {
             let edit = Edit::<Board>::new(
                 vec![Segment::Field(field.into())],
@@ -1125,14 +1125,14 @@ tilo_test_env::scenario! {
             .unwrap();
         let action: <Board as tilo_resource::Resource>::Action =
             serde_json::from_slice(&encoded.payload).unwrap();
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board.apply_action(&action).unwrap();
         assert_eq!(board.state().unwrap().title, "Sprint 12");
     }
 
     phase an_item_resource_offers_the_field_edits_of_its_item;
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board
             .apply(Board::paths().notes.insert_as(
                 &Id::from_raw("n1"),
@@ -1163,7 +1163,7 @@ tilo_test_env::scenario! {
 
     phase an_answering_verb_published_on_its_item_still_answers;
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board
             .apply(Board::paths().notes.insert_as(
                 &Id::from_raw("n1"),
@@ -1215,7 +1215,7 @@ tilo_test_env::scenario! {
 
     phase items_of_a_nested_collection_are_resources_of_their_own;
     {
-        let mut deck = Replica::<Deck>::new();
+        let mut deck = Replica::<Deck>::new().in_app("so.tilo.model", "Model");
         let mut slide = Slide {
             title: "Intro".into(),
             ..Slide::default()
@@ -1534,7 +1534,7 @@ fn path(d: &str, colour: &str, points: &[[f64; 2]], width: f64) -> Glyph {
 /// Two replicas set `ours` and `theirs` at once from `first`; both read the
 /// merged state.
 fn merged_swatch(first: Invoke<Swatch>, ours: Invoke<Swatch>, theirs: Invoke<Swatch>) -> Swatch {
-    let mut a = Replica::<Swatch>::new();
+    let mut a = Replica::<Swatch>::new().in_app("so.tilo.model", "Model");
     a.apply(first).unwrap();
     let mut b = a.fork();
     a.apply(ours).unwrap();

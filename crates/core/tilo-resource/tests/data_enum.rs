@@ -166,7 +166,7 @@ tilo_test_env::scenario! {
 
     phase a_data_enum_round_trips_through_the_document_and_json;
     {
-        let mut replica = Replica::<Rules>::new();
+        let mut replica = Replica::<Rules>::new().in_app("so.tilo.model", "Model");
         let host = Matcher::Host {
             name: "example.org".into(),
             port: 443,
@@ -200,10 +200,10 @@ tilo_test_env::scenario! {
 
     phase concurrent_edits_of_one_variant_merge_field_by_field;
     {
-        let mut left = Replica::<Rules>::new();
+        let mut left = Replica::<Rules>::new().in_app("so.tilo.model", "Model");
         left.apply(Rules::MATCH_HOST.with(("example.org".to_owned(), 80_u16)))
             .unwrap();
-        let mut right = Replica::<Rules>::from_doc(left.doc_mut().fork());
+        let mut right = Replica::<Rules>::from_doc(left.doc_mut().fork()).in_app("so.tilo.model", "Model");
         left.apply(Rules::RENAME_HOST.with("tilo.example".to_owned()))
             .unwrap();
         right.apply(Rules::SET_PORT.with(8080_u16)).unwrap();
@@ -221,7 +221,7 @@ tilo_test_env::scenario! {
 
     phase changing_the_variant_removes_the_fields_of_the_old_one;
     {
-        let mut replica = Replica::<Rules>::new();
+        let mut replica = Replica::<Rules>::new().in_app("so.tilo.model", "Model");
         replica
             .apply(Rules::MATCH_HOST.with(("example.org".to_owned(), 80_u16)))
             .unwrap();
@@ -272,9 +272,9 @@ tilo_test_env::scenario! {
     // type that leaves the document unreadable.
     {
         let merged = |first: Invoke<Card>, ours: Invoke<Card>, theirs: Invoke<Card>| {
-            let mut left = Replica::<Card>::new();
+            let mut left = Replica::<Card>::new().in_app("so.tilo.model", "Model");
             left.apply(first).unwrap();
-            let mut right = Replica::<Card>::from_doc(left.doc_mut().fork());
+            let mut right = Replica::<Card>::from_doc(left.doc_mut().fork()).in_app("so.tilo.model", "Model");
             left.apply(ours).unwrap();
             right.apply(theirs).unwrap();
             tilo_automerge::ApplyIncoming::merge_incoming(left.doc_mut(), right.doc_mut()).unwrap();

@@ -579,7 +579,7 @@ mod tests {
     /// resetting and forgetting are the person's.
     #[test]
     fn the_count_is_counted_reset_and_forgotten_through_the_verbs() {
-        let mut usage = Replica::<NetworkUsage>::new();
+        let mut usage = Replica::<NetworkUsage>::new().in_app("so.tilo.model", "Model");
         for (total, at) in [(1_000, MARCH_14), (1_250, MARCH_14 + 60)] {
             usage
                 .apply(NetworkUsage::COUNT_DATA_USED.with((

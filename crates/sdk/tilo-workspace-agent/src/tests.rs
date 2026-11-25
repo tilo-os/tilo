@@ -1,4 +1,5 @@
 use super::{Agent, AgentState, KIND, MAX_AGENTS, WorkspaceAgents, workspace_agents};
+use tilo_resource::AppNamed;
 use tilo_resource::{Id, Model as _, NonBlank, Replica};
 
 const ADA: &str = "ada";
@@ -70,8 +71,10 @@ fn resume(agent: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
     WorkspaceAgents::RESUME_AGENT.with(workspace_agents::ResumeAgent { agent: id(agent) })
 }
 
-fn as_person(person: &str) -> Replica<WorkspaceAgents> {
-    Replica::<WorkspaceAgents>::new().as_author(person)
+fn as_person(person: &str) -> Replica<WorkspaceAgents, AppNamed> {
+    Replica::<WorkspaceAgents>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author(person)
 }
 
 fn only(state: &WorkspaceAgents) -> &Agent {
@@ -297,7 +300,9 @@ fn stored_agents_read_back_as_they_were() {
         .unwrap();
     assert_eq!(made_by_grace, "claude-code", "the agent retired");
     let before = record.state().unwrap();
-    let loaded = Replica::<WorkspaceAgents>::load(&record.save()).unwrap();
+    let loaded = Replica::<WorkspaceAgents>::load(&record.save())
+        .unwrap()
+        .in_app("so.tilo.model", "Model");
     let after = loaded.state().unwrap();
     assert_eq!(after, before);
     assert!(after.valid().is_ok());

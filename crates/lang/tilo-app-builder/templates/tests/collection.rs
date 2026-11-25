@@ -21,7 +21,7 @@ fn first_id(items: &Items) -> Id {
 
 #[test]
 fn items_are_added_edited_and_removed() {
-    let mut items = Replica::<Items>::new();
+    let mut items = Replica::<Items>::new().in_app("so.tilo.model", "Model");
     assert!(items.apply(Items::ADD.with(" ")).is_err(), "no empty items");
     items.apply(Items::ADD.with("Buy milk")).expect("add");
     let state = items.state().expect("items");

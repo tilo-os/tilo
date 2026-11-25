@@ -18,6 +18,7 @@ use automerge::{ObjId, ObjType, ROOT, ReadDoc as _, ScalarValue};
 use tilo_automerge::ApplyIncoming as _;
 
 use tilo_resource::__private::{Value, forget_all};
+use tilo_resource::AppNamed;
 use tilo_resource::{
     ActionCx, Collection, Doc, Fields, Grid, Id, Model, ModelError, Replica, Slot, resource,
 };
@@ -166,13 +167,13 @@ impl Checklist {
 /// The API publishes from the view state the replica keeps current; it
 /// follows the document here, as an open window does between actions, so
 /// what [`counted`] then sees is the action's own reading and writing.
-fn follow(replica: &mut Replica<Checklist>) {
+fn follow(replica: &mut Replica<Checklist, AppNamed>) {
     replica.live().unwrap();
 }
 
 /// A checklist of `count` tasks, written straight into a new document.
-fn seeded(count: usize) -> Replica<Checklist> {
-    let mut replica = Replica::<Checklist>::new();
+fn seeded(count: usize) -> Replica<Checklist, AppNamed> {
+    let mut replica = Replica::<Checklist>::new().in_app("so.tilo.model", "Model");
     let mut record = Checklist::default();
     for n in 0..count {
         record.tasks.push(
@@ -271,7 +272,7 @@ impl Lcg {
 }
 
 fn random_invoke(
-    replica: &Replica<Checklist>,
+    replica: &Replica<Checklist, AppNamed>,
     rng: &mut Lcg,
     step: usize,
 ) -> Option<tilo_resource::Invoke<Checklist>> {
@@ -456,7 +457,7 @@ impl Texts {
 /// which must still see the text rather than write over it.
 #[test]
 fn a_record_kept_across_a_merged_slot_does_not_lose_it() {
-    let mut texts = Replica::<Texts>::new();
+    let mut texts = Replica::<Texts>::new().in_app("so.tilo.model", "Model");
     // A record kept from this action is what the next one would start from.
     texts.apply(Texts::BUMP.invoke()).unwrap();
     let keep = |key: &str, text: &str| Texts::KEEP_TEXT.with((key.to_owned(), text.to_owned()));
@@ -519,7 +520,7 @@ impl Table {
 }
 
 fn random_table_invoke(
-    replica: &Replica<Table>,
+    replica: &Replica<Table, AppNamed>,
     rng: &mut Lcg,
     step: usize,
 ) -> tilo_resource::Invoke<Table> {
@@ -553,7 +554,7 @@ fn random_table_invoke(
 #[test]
 fn cached_grid_apply_is_replay_identical() {
     let mut rng = Lcg(31);
-    let mut live = Replica::<Table>::new();
+    let mut live = Replica::<Table>::new().in_app("so.tilo.model", "Model");
     let mut cold = live.fork();
     let mut remote = live.fork();
     let mut replayed = 0;
@@ -585,7 +586,7 @@ fn cached_grid_apply_is_replay_identical() {
 
 #[test]
 fn writing_one_cell_writes_only_that_cell() {
-    let mut replica = Replica::<Table>::new();
+    let mut replica = Replica::<Table>::new().in_app("so.tilo.model", "Model");
     replica.apply(Table::ADD_COLUMN.with(())).unwrap();
     for _ in 0..100 {
         replica.apply(Table::ADD_ROW.with(())).unwrap();
@@ -816,7 +817,7 @@ fn draft_loads<T>(act: impl FnOnce() -> T) -> (T, usize) {
 /// kept makes.
 #[test]
 fn items_that_read_back_otherwise_are_kept_as_they_read_back() {
-    let mut live = Replica::<Notebook>::new();
+    let mut live = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
     live.apply(Notebook::WRITE_PAGES.with(vec!["first".into()]))
         .unwrap();
     let mut cold = live.fork();

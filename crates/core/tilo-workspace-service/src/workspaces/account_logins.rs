@@ -550,10 +550,11 @@ impl Workspaces {
         };
         let (changes, answer) = {
             let replica = match &bytes {
-                Some(bytes) => {
-                    Replica::<AccountList>::load(bytes).map_err(|error| error.to_string())?
-                }
-                None => Replica::from_doc(founding_accounts(workspace)?),
+                Some(bytes) => Replica::<AccountList>::load(bytes)
+                    .map_err(|error| error.to_string())?
+                    .in_app("so.tilo.model", "Model"),
+                None => Replica::from_doc(founding_accounts(workspace)?)
+                    .in_app("so.tilo.model", "Model"),
             }
             .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
             // A write for a member's call keeps the call it serves, which names who asked;

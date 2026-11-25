@@ -1324,6 +1324,7 @@ impl TwoDevices {
             return 0;
         };
         tilo_resource::Replica::<Devices>::from_doc(doc.clone())
+            .in_app("so.tilo.model", "Model")
             .state()
             .map_or(0, |devices| devices.notices.len())
     }

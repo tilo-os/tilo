@@ -2,6 +2,7 @@
 //! incoming-message trigger fires on it without knowing the app's schema.
 
 use tilo_actions::{INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG};
+use tilo_resource::AppNamed;
 use tilo_resource::{Invoke, Model, Replica, Resource, resource};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -24,7 +25,7 @@ impl Inbox {
     }
 }
 
-fn marked(replica: &mut Replica<Inbox>) -> bool {
+fn marked(replica: &mut Replica<Inbox, AppNamed>) -> bool {
     replica.versions().last().is_some_and(|version| {
         version.context.as_ref().is_some_and(|context| {
             context
@@ -43,7 +44,7 @@ fn a_flagged_verb_marks_its_change_and_its_declaration() {
     let note = declarations.iter().find(|d| d.id == "note").unwrap();
     assert!(!note.tags.iter().any(|tag| tag == INCOMING_MESSAGE_TAG));
 
-    let mut inbox = Replica::<Inbox>::new();
+    let mut inbox = Replica::<Inbox>::new().in_app("so.tilo.model", "Model");
     inbox.apply(Inbox::RECEIVE.with("hi")).unwrap();
     assert!(marked(&mut inbox));
     inbox.apply(Inbox::NOTE.with("x")).unwrap();

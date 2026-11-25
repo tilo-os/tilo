@@ -1,5 +1,6 @@
 use super::sub::{DEFAULT_AT_ONCE, MAX_DEPTH, MAX_LINE, MAX_NOTES, MAX_SUB_AGENTS};
 use super::{Agent, AgentState, NewSubAgent, Stands, Sub, WorkspaceAgents, workspace_agents};
+use tilo_resource::AppNamed;
 use tilo_resource::{Id, Invoke, Model as _, NonBlank, Replica};
 
 pub(super) const ADA: &str = "ada";
@@ -13,8 +14,10 @@ pub(super) fn id(text: &str) -> Id {
 }
 
 /// The record with Ada's own agent in it, as she made it.
-pub(super) fn with_main() -> Replica<WorkspaceAgents> {
-    let mut record = Replica::<WorkspaceAgents>::new().as_author(ADA);
+pub(super) fn with_main() -> Replica<WorkspaceAgents, AppNamed> {
+    let mut record = Replica::<WorkspaceAgents>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author(ADA);
     record.set_now_ms(THEN);
     record
         .apply(
@@ -79,7 +82,7 @@ pub(super) fn sub_of<'a>(state: &'a WorkspaceAgents, agent: &str) -> &'a Sub {
 }
 
 /// A lead under Ada's agent with a worker of its own, and a second sub-agent beside the lead.
-pub(super) fn team() -> Replica<WorkspaceAgents> {
+pub(super) fn team() -> Replica<WorkspaceAgents, AppNamed> {
     let mut record = with_main();
     record.apply(limits(MAIN, Some(2), None)).unwrap();
     let mut record = record.as_agent_for(MAIN, ADA);

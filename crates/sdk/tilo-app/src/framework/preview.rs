@@ -6,6 +6,7 @@
 //! document, builds the view again with editing disabled, and lays it out in
 //! History mode's preview pane. Restoring a version is equally generic: the
 //! restore schema comes from the resource's stored [`Shape`].
+use tilo_resource::AppNamed;
 
 use std::any::TypeId;
 
@@ -567,7 +568,7 @@ mod tests {
         }
     }
 
-    fn restore(replica: &mut Replica<Shelf>, target: &[ui_core::automerge::ChangeHash]) {
+    fn restore(replica: &mut Replica<Shelf, AppNamed>, target: &[ui_core::automerge::ChangeHash]) {
         use ui_core::history_mode::restore::{
             RestoreOutcome, apply_prepared_content_restore, prepare_content_restore,
         };
@@ -580,7 +581,7 @@ mod tests {
             RestoreOutcome::Changed
         );
         doc.commit();
-        *replica = Replica::from_doc(doc);
+        *replica = Replica::from_doc(doc).in_app("so.tilo.model", "Model");
     }
 
     tilo_test_env::scenario! {
@@ -588,7 +589,7 @@ mod tests {
 
         phase a_record_restores_a_past_version_field_by_field_and_item_by_item;
         {
-            let mut shelf = Replica::<Shelf>::new();
+            let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
             shelf.apply(Shelf::RENAME.with("Reading")).unwrap();
             shelf.apply(Shelf::ADD.with("Dune")).unwrap();
             shelf.apply(Shelf::ADD.with("Emma")).unwrap();
@@ -638,7 +639,7 @@ mod tests {
 
         phase a_past_version_renders_through_the_apps_own_view_read_only;
         {
-            let mut page = Replica::<Page>::new();
+            let mut page = Replica::<Page>::new().in_app("so.tilo.model", "Model");
             page.apply(Page::SET_HEADING.with("First draft")).unwrap();
             let past = page.heads();
             page.apply(Page::SET_HEADING.with("Final")).unwrap();

@@ -9,7 +9,7 @@ fn body(text: &str) -> Invoke<Document> {
 
 #[test]
 fn concurrent_edits_converge() {
-    let mut left = Replica::<Document>::new();
+    let mut left = Replica::<Document>::new().in_app("so.tilo.model", "Model");
     left.apply(body("hello world")).expect("seed");
     let mut right = left.fork();
     left.apply(body("hello brave world")).expect("left edit");

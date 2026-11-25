@@ -16,6 +16,7 @@ use std::rc::Rc;
 use tilo_automerge::ApplyIncoming;
 
 use tilo_resource::__private::{ObjId, Value};
+use tilo_resource::AppNamed;
 use tilo_resource::history;
 use tilo_resource::{
     ActionCx, Collection, Doc, Grid, Id, Identified, Keyed, Map, Model, ModelError, Ordered,
@@ -167,7 +168,7 @@ impl Lcg {
     }
 }
 
-fn random_action(replica: &mut Replica<Notebook>, rng: &mut Lcg, step: usize) {
+fn random_action(replica: &mut Replica<Notebook, AppNamed>, rng: &mut Lcg, step: usize) {
     let ids: Vec<Id> = replica.state().unwrap().notes.ids().cloned().collect();
     let pick = |rng: &mut Lcg| ids.get(rng.next(ids.len())).cloned();
     let result = match rng.next(9) {
@@ -208,7 +209,7 @@ tilo_test_env::scenario! {
     phase the_refreshed_state_equals_a_full_read_after_every_action;
     {
         let mut rng = Lcg(7);
-        let mut replica = Replica::<Notebook>::new();
+        let mut replica = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
         replica.live().unwrap();
         for step in 0..400 {
             random_action(&mut replica, &mut rng, step);
@@ -220,7 +221,7 @@ tilo_test_env::scenario! {
     phase the_refreshed_state_follows_merged_members_and_raw_changes;
     {
         let mut rng = Lcg(11);
-        let mut left = Replica::<Notebook>::new();
+        let mut left = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
         for step in 0..20 {
             random_action(&mut left, &mut rng, step);
         }
@@ -251,7 +252,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_reader_whose_state_a_view_holds_copies_only_the_touched_item() {
-    let mut replica = Replica::<Notebook>::new();
+    let mut replica = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
     for n in 0..1000 {
         replica
             .apply(Notebook::ADD.with(format!("note {n}")))
@@ -293,12 +294,12 @@ fn a_reader_whose_state_a_view_holds_copies_only_the_touched_item() {
 fn held_states_follow_the_reader<R: Resource>(
     seed: u64,
     steps: std::ops::Range<usize>,
-    change: fn(&mut Replica<R>, &mut Lcg, usize),
+    change: fn(&mut Replica<R, AppNamed>, &mut Lcg, usize),
 ) where
     R::State: PartialEq + std::fmt::Debug,
 {
     let mut rng = Lcg(seed);
-    let mut replica = Replica::<R>::new();
+    let mut replica = Replica::<R>::new().in_app("so.tilo.model", "Model");
     for step in 0..steps.start {
         change(&mut replica, &mut rng, step);
     }
@@ -336,7 +337,7 @@ tilo_test_env::scenario! {
     {
         let ids = |notebook: &Notebook| notebook.notes.ids().cloned().collect::<Vec<_>>();
         let mut rng = Lcg(23);
-        let mut replica = Replica::<Notebook>::new();
+        let mut replica = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
         let live = replica.live().unwrap();
         let mut last = (live.notes.membership(), ids(live));
         let mut kept = 0_usize;
@@ -395,7 +396,7 @@ tilo_test_env::scenario! {
 
     phase reading_a_document_whole_again_presents_a_new_state_only_once_per_change;
     {
-        let mut replica = Replica::<Notebook>::new();
+        let mut replica = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
         replica
             .apply(Notebook::ADD.with("first".to_owned()))
             .unwrap();
@@ -422,7 +423,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn editing_one_note_of_many_reads_only_that_note() {
-    let mut replica = Replica::<Notebook>::new();
+    let mut replica = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
     for n in 0..500 {
         replica
             .apply(Notebook::ADD.with(format!("note {n}")))
@@ -467,7 +468,7 @@ fn editing_one_note_of_many_reads_only_that_note() {
 
 #[test]
 fn history_pages_newest_first_and_lists_every_change_once() {
-    let mut left = Replica::<Notebook>::new();
+    let mut left = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
     left.apply(Notebook::ADD.with("shared")).unwrap();
     let mut right = left.fork();
     let mut rng = Lcg(3);
@@ -521,7 +522,7 @@ fn history_pages_newest_first_and_lists_every_change_once() {
 
 #[test]
 fn the_first_page_of_a_long_history_is_its_newest_end() {
-    let mut replica = Replica::<Notebook>::new();
+    let mut replica = Replica::<Notebook>::new().in_app("so.tilo.model", "Model");
     for n in 0..2_000 {
         replica
             .apply(Notebook::TAG.with(format!("t{}", n % 7)))
@@ -593,7 +594,7 @@ fn cell(row: &Id, column: &Id) -> (String, String) {
     (row.as_str().to_owned(), column.as_str().to_owned())
 }
 
-fn random_sheet_action(replica: &mut Replica<Sheet>, rng: &mut Lcg, step: usize) {
+fn random_sheet_action(replica: &mut Replica<Sheet, AppNamed>, rng: &mut Lcg, step: usize) {
     let state = replica.state().unwrap();
     let rows: Vec<Id> = state.grid.rows().cloned().collect();
     let columns: Vec<Id> = state.grid.columns().cloned().collect();
@@ -621,7 +622,7 @@ tilo_test_env::scenario! {
     phase the_refreshed_grid_equals_a_full_read_after_every_action;
     {
         let mut rng = Lcg(5);
-        let mut replica = Replica::<Sheet>::new();
+        let mut replica = Replica::<Sheet>::new().in_app("so.tilo.model", "Model");
         replica.live().unwrap();
         for step in 0..300 {
             random_sheet_action(&mut replica, &mut rng, step);
@@ -632,7 +633,7 @@ tilo_test_env::scenario! {
 
     phase writing_one_cell_of_many_reads_only_that_cell;
     {
-        let mut replica = Replica::<Sheet>::new();
+        let mut replica = Replica::<Sheet>::new().in_app("so.tilo.model", "Model");
         replica.apply(Sheet::ADD_COLUMN.with(())).unwrap();
         for _ in 0..200 {
             replica.apply(Sheet::ADD_ROW.with(())).unwrap();
@@ -657,7 +658,7 @@ tilo_test_env::scenario! {
 
     phase a_one_item_change_asks_only_the_items_it_touched_for_their_ids;
     {
-        let mut replica = Replica::<Track>::new();
+        let mut replica = Replica::<Track>::new().in_app("so.tilo.model", "Model");
         for n in 0..600 {
             replica.apply(Track::ADD_CUE.with(n * 10)).unwrap();
         }
@@ -720,7 +721,7 @@ tilo_test_env::scenario! {
 
     phase the_edits_between_two_keyed_values_ask_each_item_once;
     {
-        let mut replica = Replica::<Track>::new();
+        let mut replica = Replica::<Track>::new().in_app("so.tilo.model", "Model");
         for n in 0..300 {
             replica.apply(Track::ADD_CUE.with(n)).unwrap();
         }
@@ -741,7 +742,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_reader_whose_state_a_view_holds_copies_one_chunk_of_a_grid() {
-    let mut replica = Replica::<Sheet>::new();
+    let mut replica = Replica::<Sheet>::new().in_app("so.tilo.model", "Model");
     replica.apply(Sheet::ADD_COLUMN.with(())).unwrap();
     for _ in 0..1000 {
         replica.apply(Sheet::ADD_ROW.with(())).unwrap();
@@ -872,7 +873,7 @@ impl Board {
     }
 }
 
-fn random_board_action(replica: &mut Replica<Board>, rng: &mut Lcg, step: usize) {
+fn random_board_action(replica: &mut Replica<Board, AppNamed>, rng: &mut Lcg, step: usize) {
     let state = replica.state().unwrap();
     let ids: Vec<Id> = state
         .cards
@@ -900,7 +901,7 @@ fn random_board_action(replica: &mut Replica<Board>, rng: &mut Lcg, step: usize)
 
 #[test]
 fn a_reader_whose_state_a_view_holds_copies_only_the_touched_items() {
-    let mut replica = Replica::<Board>::new();
+    let mut replica = Replica::<Board>::new().in_app("so.tilo.model", "Model");
     for n in 0..300 {
         replica
             .apply(Board::ADD_CARD.with((format!("card {n}"), n % 2 == 1)))
@@ -1007,7 +1008,7 @@ fn cue_ids(track: &Track) -> Vec<Id> {
 
 /// Add, move, rewrite or remove a cue; places collide often, so cues at one
 /// place sort by id.
-fn random_cue_action(replica: &mut Replica<Track>, rng: &mut Lcg) {
+fn random_cue_action(replica: &mut Replica<Track, AppNamed>, rng: &mut Lcg) {
     let ids = cue_ids(&replica.state().unwrap());
     let cues = Track::paths().cues;
     let place = u32::try_from(rng.next(12)).unwrap();
@@ -1032,7 +1033,7 @@ fn random_cue_action(replica: &mut Replica<Track>, rng: &mut Lcg) {
 #[test]
 fn keyed_items_a_reader_follows_sort_as_a_full_read_does() {
     let mut rng = Lcg(37);
-    let mut replica = Replica::<Track>::new();
+    let mut replica = Replica::<Track>::new().in_app("so.tilo.model", "Model");
     for _ in 0..40 {
         random_cue_action(&mut replica, &mut rng);
     }
@@ -1089,7 +1090,7 @@ fn book(n: usize) -> String {
     format!("book {n:04}")
 }
 
-fn random_shelf_action(replica: &mut Replica<Shelf>, rng: &mut Lcg, step: usize) {
+fn random_shelf_action(replica: &mut Replica<Shelf, AppNamed>, rng: &mut Lcg, step: usize) {
     let result = match rng.next(8) {
         0 => replica.apply(Shelf::RETITLE.with(format!("shelf {step}"))),
         1 | 2 => replica.apply(Shelf::FORGET.with(book(rng.next(150)))),
@@ -1100,7 +1101,7 @@ fn random_shelf_action(replica: &mut Replica<Shelf>, rng: &mut Lcg, step: usize)
 
 #[test]
 fn a_reader_whose_state_a_view_holds_copies_one_chunk_of_a_map() {
-    let mut replica = Replica::<Shelf>::new();
+    let mut replica = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
     for n in 0..1000 {
         replica
             .apply(Shelf::MARK.with((book(n), format!("page {n}"))))

@@ -421,6 +421,7 @@ mod tests {
     use super::Chart;
     use crate::actions::{Draw, NewMark};
     use crate::model::{Artwork, Shape};
+    use tilo_resource::AppNamed;
     use tilo_resource::Replica;
 
     fn rect_of(art: &Artwork, id: &str) -> [f64; 4] {
@@ -436,7 +437,7 @@ mod tests {
         }
     }
 
-    fn chart(art: &mut Replica<Artwork>, chart: Chart) -> Result<(), String> {
+    fn chart(art: &mut Replica<Artwork, AppNamed>, chart: Chart) -> Result<(), String> {
         art.apply(Artwork::CHART.with(chart))
             .map(|_| ())
             .map_err(|error| error.to_string())
@@ -444,7 +445,7 @@ mod tests {
 
     #[test]
     fn bars_are_proportional_equal_and_stand_on_one_baseline() {
-        let mut art = Replica::<Artwork>::new();
+        let mut art = Replica::<Artwork>::new().in_app("so.tilo.model", "Model");
         chart(
             &mut art,
             Chart {
@@ -484,7 +485,7 @@ mod tests {
 
     #[test]
     fn mismatched_or_invalid_chart_input_is_refused_saying_which() {
-        let mut art = Replica::<Artwork>::new();
+        let mut art = Replica::<Artwork>::new().in_app("so.tilo.model", "Model");
         let mismatch = chart(
             &mut art,
             Chart {
@@ -520,7 +521,7 @@ mod tests {
 
     #[test]
     fn a_second_chart_takes_the_next_free_prefix_and_hbar_runs_along_x() {
-        let mut art = Replica::<Artwork>::new();
+        let mut art = Replica::<Artwork>::new().in_app("so.tilo.model", "Model");
         chart(
             &mut art,
             Chart {
@@ -547,7 +548,7 @@ mod tests {
     }
 
     fn draw(marks: Vec<NewMark>) -> Result<Artwork, String> {
-        let mut art = Replica::<Artwork>::new();
+        let mut art = Replica::<Artwork>::new().in_app("so.tilo.model", "Model");
         art.apply(Artwork::DRAW.with(crate::resource::artwork::Draw {
             shapes: Draw { layer: None, marks },
         }))

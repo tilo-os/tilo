@@ -38,7 +38,7 @@ pub use tilo_environment::files::{
     AppendFileOp, CopyOp, FileAction, FileTask, LinkOp, MakeDirOp, MoveOp, RemoveDirOp, RemoveOp,
     RestoreOp, RevertOp, TruncateOp, UndoEntry, WriteOp, anchored, normalize,
 };
-use tilo_resource::{Id, Invoke, Replica, Settled};
+use tilo_resource::{AppNamed, Id, Invoke, Replica, Settled};
 
 use crate::audit::{AuditEntry, AuditLog};
 use crate::broker::{BrokerState, EnvironmentHandle, Response};
@@ -740,7 +740,7 @@ pub fn invoke(
 }
 
 pub fn drain(
-    replica: &mut Replica<Environment>,
+    replica: &mut Replica<Environment, AppNamed>,
     device: &str,
     store: &Recoverable,
     content: &ContentStore,

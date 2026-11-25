@@ -6,6 +6,7 @@
 //! stored as the one splice that turns the current text into the new one,
 //! and Automerge never mixes the characters of two concurrent insertions.
 
+use crate::AppNamed;
 use crate::text::splice_between;
 use crate::{ActionCx, Collection, Edit, Id, Invoke, Model, Replica, resource};
 
@@ -29,18 +30,18 @@ impl Pad {
     }
 }
 
-fn apply(replica: &mut Replica<Pad>, edit: &Edit<Pad>) {
+fn apply(replica: &mut Replica<Pad, AppNamed>, edit: &Edit<Pad>) {
     replica.apply(Invoke::edit(edit).unwrap()).unwrap();
 }
 
-fn body(replica: &Replica<Pad>) -> String {
+fn body(replica: &Replica<Pad, AppNamed>) -> String {
     replica.state().unwrap().body
 }
 
 /// Two peers forked from a pad whose body is `base`, each setting the body
 /// whole, merged.
 fn merged_sets(base: &str, left: &str, right: &str) -> String {
-    let mut origin = Replica::<Pad>::new();
+    let mut origin = Replica::<Pad>::new().in_app("so.tilo.model", "Model");
     apply(&mut origin, &Pad::paths().body.set(base.to_owned()));
     let mut ada = origin.fork();
     let mut bo = origin.fork();
@@ -116,7 +117,7 @@ enum Field<'a> {
 }
 
 impl Field<'_> {
-    fn read(self, replica: &Replica<Pad>) -> String {
+    fn read(self, replica: &Replica<Pad, AppNamed>) -> String {
         let state = replica.state().unwrap();
         match self {
             Self::Body => state.body,
@@ -135,7 +136,12 @@ impl Field<'_> {
 /// One random write by a peer typing from `alphabet`: a whole-value `set`
 /// or `replace` of the text with one or two spans rewritten, or a `splice`.
 /// Returns the text it inserted, which must come through in one piece.
-fn write(rng: &mut Rng, replica: &mut Replica<Pad>, field: Field<'_>, alphabet: &[char]) -> String {
+fn write(
+    rng: &mut Rng,
+    replica: &mut Replica<Pad, AppNamed>,
+    field: Field<'_>,
+    alphabet: &[char],
+) -> String {
     let current: Vec<char> = field.read(replica).chars().collect();
     let rewrite = |text: &[char], rng: &mut Rng| {
         let start = rng.below(text.len().saturating_add(1));
@@ -183,7 +189,7 @@ fn concurrent_sets_and_splices_never_interleave() {
     let bo_types: Vec<char> = ('n'..='z').chain([' ']).collect();
     for seed in 0..400_u64 {
         let mut rng = Rng(seed);
-        let mut origin = Replica::<Pad>::new();
+        let mut origin = Replica::<Pad>::new().in_app("so.tilo.model", "Model");
         apply(
             &mut origin,
             &Pad::paths().body.set("0123 4567 89".to_owned()),

@@ -8,6 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use tilo_resource::AppNamed;
 use tilo_resource::{ReactionGroup, Reactor, Replica};
 use tilo_workspace_emoji::{EmojiImage, WorkspaceEmoji as Record, workspace_emoji};
 use tilolang_runtime::rich::RichValue;
@@ -94,7 +95,7 @@ fn reactions(row: &UiNode) -> Vec<(String, Vec<Actor>)> {
 /// reaction strip draw from, and where the picker's "Add emoji" adds through the record's
 /// typed action, as the person.
 struct Held {
-    record: RefCell<Replica<Record>>,
+    record: RefCell<Replica<Record, AppNamed>>,
     revision: Cell<u64>,
 }
 
@@ -193,7 +194,12 @@ fn pill_widths(emoji: &[&str]) -> Vec<f64> {
 fn a_workspace_emoji_is_added_reacted_with_drawn_offered_and_kept_from_others() {
     // Ada adds the picture as `:party_parrot:` through the record's action.
     let held = Rc::new(Held {
-        record: RefCell::new(Replica::<Record>::new().as_author("ada")),
+        record: RefCell::new(
+            Replica::<Record>::new()
+                .in_app("so.tilo.model", "Model")
+                .as_author("ada")
+                .in_app(tilo_workspace_emoji::OWNER, "Chat"),
+        ),
         revision: Cell::new(0),
     });
     held.add("party_parrot", &picture()).expect("Ada adds it");

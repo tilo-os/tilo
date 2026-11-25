@@ -14,7 +14,7 @@ tilo_test_env::scenario! {
 
     phase a_kind_reads_and_publishes_what_the_typed_resource_does;
     {
-        let mut replica = Replica::<Board>::new();
+        let mut replica = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         replica.apply(Board::RENAME.with("Launch")).unwrap();
         let kinds = kinds();
         let board = kinds.get("test.board").expect("registered by kind");
@@ -49,7 +49,7 @@ tilo_test_env::scenario! {
                 .downcast_ref::<Board>()
                 .map(|board| board.title.clone())
         }
-        let mut replica = Replica::<Board>::new();
+        let mut replica = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         replica.apply(Board::RENAME.with("Roadmap")).unwrap();
         let board = ResourceKind::of::<Board>().named(titled);
         assert_eq!(
@@ -86,7 +86,7 @@ tilo_test_env::scenario! {
 
     phase typed_and_erased_publications_declare_the_original_resource_identity;
     {
-        let replica = Replica::<Board>::new();
+        let replica = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         let id = "opened-board";
         let expected = tilo_actions::ResourceSemanticIdentity::new(Board::KIND, id);
         let typed = tilo_resource::publish::<Board>(id, "Board", &replica.state().unwrap());

@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
 
     phase a_verb_writes_only_the_units_it_declares;
     {
-        let mut review = Replica::<Review>::new();
+        let mut review = Replica::<Review>::new().in_app("so.tilo.model", "Model");
         review
             .apply(Review::START_THREAD.with("Typos"))
             .expect("a declared unit");
@@ -98,7 +98,7 @@ tilo_test_env::scenario! {
 
     phase a_change_names_the_units_it_touched_from_the_documents_index;
     {
-        let mut review = Replica::<Review>::new();
+        let mut review = Replica::<Review>::new().in_app("so.tilo.model", "Model");
         review.apply(Review::START_THREAD.with("Typos")).unwrap();
         let thread = review
             .state()
