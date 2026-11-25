@@ -16,7 +16,7 @@ mode="${1:?build or run}"
 
 case "$mode" in
   build)
-    sdk="${2:?SDK archive}" runtime="${3:?the runtime build's directory}" out="${4:?output directory}"
+    sdk="${2:?SDK archive}" runtime="${3:?the directory the runtime build made}" out="${4:?output directory}"
     . "$here/xwin-env.sh"
     target="$(windows_target x86_64)"
     use_windows_sdk x86_64 "$sdk"
@@ -40,7 +40,7 @@ case "$mode" in
     [ -f "$out/apps/video.tapp" ] || { printf 'apps/tl/video built no video.tapp\n' >&2; exit 1; }
     ;;
   run)
-    walk="${2:?the walk build's directory}" out="${3:?output directory}"
+    walk="${2:?the directory the walk build made}" out="${3:?output directory}"
     export WINEPREFIX="${TMPDIR:-/tmp}/tilo-walk-wine"
     rm -rf -- "$WINEPREFIX"
     bash "$here/wine-prefix.sh"
