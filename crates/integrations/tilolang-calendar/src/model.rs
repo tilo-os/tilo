@@ -616,9 +616,8 @@ impl Event {
             .filter_map(|code| weekday_of(code))
             .collect();
         Some(match (days.is_empty(), self.recurrence) {
-            (true, _) => rule,
             (false, Recurrence::Weekly | Recurrence::Weekdays) => rule.with_by_day(days),
-            (false, _) => rule,
+            _ => rule,
         })
     }
 
