@@ -139,8 +139,10 @@ never changes an id that grants and records already name.
   readable by that member alone and sealed under their keys, in the same
   workspace. There is no per-person store.
 - What an app's code may reach (paths, devices, network hosts) is a separate
-  grant, given at install or through a picker. An app acting for a person
-  does only what both may.
+  grant, given at install or through a picker. Installing an app into a workspace
+  grants it its own records, the resources under its app id, as a recorded grant the
+  members see and may revoke; anything beyond them it asks for. An app acting for a
+  person does only what both may.
 - A visitor with no identity (joining a wait list, reading a public
   directory) is a caller too: the page makes a key on the visitor's device
   and signs each call with it, and a grant to any key names exactly the
