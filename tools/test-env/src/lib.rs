@@ -294,6 +294,53 @@ impl Drop for EnvLock {
     }
 }
 
+/// How long [`SpawnUnderEnvLock::output_locked`] reads a program's streams after it ended.
+const OUTLIVED_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A stream read to its end on a thread of its own, into a buffer the reader can take early.
+struct Drained {
+    read: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    ended: std::sync::mpsc::Receiver<()>,
+}
+
+impl Drained {
+    fn read(stream: Option<impl io::Read + Send + 'static>) -> Self {
+        let read = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (done, ended) = std::sync::mpsc::channel();
+        if let Some(mut stream) = stream {
+            let into = std::sync::Arc::clone(&read);
+            std::thread::spawn(move || {
+                let mut chunk = [0_u8; 8192];
+                while let Ok(n) = stream.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    into.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .extend_from_slice(chunk.get(..n).unwrap_or_default());
+                }
+                let _ = done.send(());
+            });
+        } else {
+            let _ = done.send(());
+        }
+        Self { read, ended }
+    }
+
+    /// What was read by [`OUTLIVED_AFTER`] after `since`, and whether the stream ended by then.
+    fn take(self, since: std::time::Instant) -> (Vec<u8>, bool) {
+        let left = OUTLIVED_AFTER.saturating_sub(since.elapsed());
+        let ended = self.ended.recv_timeout(left).is_ok();
+        let read = std::mem::take(
+            &mut *self
+                .read
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        (read, ended)
+    }
+}
+
 pub trait SpawnUnderEnvLock {
     fn spawn_locked(&mut self) -> io::Result<std::process::Child>;
     fn output_locked(&mut self) -> io::Result<std::process::Output>;
@@ -347,10 +394,35 @@ impl SpawnUnderEnvLock for std::process::Command {
         self.spawn()
     }
 
+    /// The program's answer once it ends. Its streams are read until it ends and then for a
+    /// short while longer: a program it started that outlives it and keeps the streams open
+    /// would otherwise keep the test waiting for an end that never comes, without a word. Its
+    /// output then says so, after what it said.
     fn output_locked(&mut self) -> io::Result<std::process::Output> {
         self.stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        self.spawn_locked()?.wait_with_output()
+        let mut child = self.spawn_locked()?;
+        let stdout = Drained::read(child.stdout.take());
+        let stderr = Drained::read(child.stderr.take());
+        let status = child.wait()?;
+        let ended = std::time::Instant::now();
+        let (stdout, out_ended) = stdout.take(ended);
+        let (mut stderr, err_ended) = stderr.take(ended);
+        if !(out_ended && err_ended) {
+            stderr.extend_from_slice(
+                format!(
+                    "\n[the program ended, and a program it started still holds its output {} s \
+                     later: it outlived it]\n",
+                    OUTLIVED_AFTER.as_secs()
+                )
+                .as_bytes(),
+            );
+        }
+        Ok(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
     }
 
     fn status_locked(&mut self) -> io::Result<std::process::ExitStatus> {
