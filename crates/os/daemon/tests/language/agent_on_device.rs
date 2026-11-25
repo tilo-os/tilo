@@ -81,16 +81,21 @@ fn a_restarted_computers_first_calls_go_through() {
 }
 
 /// A computer's agent is one of the workspace's agents from its first call there: the workspace's
-/// own list of its agents names it, once, as its person's, under the one id its runs share, and
-/// both its row and the session it is here in read as the client connects.
+/// own record of its agents names it, once, as its person's, under the one id its runs share, and
+/// both its row and the session it is here in read as the client connects. `tilo_ls` with no path
+/// lists the workspace's apps, so its row is read where it lives, in the workspace's agents.
 #[test]
 fn a_computers_agent_is_listed_once_where_it_acts() {
     host::run(|host| async move {
         let agent = host.agent();
-        let (listed, failed) = ls(&agent, None).await;
+        let (listed, failed) = said(
+            &agent
+                .tool("tilo_read", &json!({"path": "workspace/agents"}))
+                .await,
+        );
         assert!(
             !failed,
-            "the computer's agent lists the workspace: {listed}"
+            "the computer's agent reads the workspace's agents: {listed}"
         );
 
         // One agent, whatever client connects to it: a client names its session, never the
