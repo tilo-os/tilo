@@ -1,10 +1,8 @@
-//! What one look finds, with no model asked: what came in for the person,
-//! what changed in the workspace's documents, which tasks became due, and
-//! what is open.
+//! What one look finds, with no model asked: what changed in the
+//! workspace's documents, which tasks became due, and what is open.
 //!
 //! A look compares the workspace with where the last look left it
-//! ([`Seen`]): every document's heads, the newest mail arrival, the tasks it
-//! already said were due. The first look only notes where everything
+//! ([`Seen`]): every document's heads, the tasks it already said were due. The first look only notes where everything
 //! stands, as a bot starts at a document's heads: the workspace's past is
 //! not news. What the assistant did itself is not news to it either: its
 //! own changes, the look-round's own asks, what is said in its own thread
@@ -38,8 +36,6 @@ pub(super) struct Seen {
     looked: bool,
     /// Each document's heads, by `app/document`.
     documents: BTreeMap<String, Vec<String>>,
-    /// The newest place of the person's arrival log a look has counted.
-    mail_seq: u64,
     /// The tasks a look already said were due, each by its id and its due
     /// time, so a task is said once and again when its date moves.
     due: BTreeSet<String>,
@@ -135,7 +131,6 @@ pub(super) async fn gather(
     let mut next = Seen {
         looked: true,
         documents: seen.documents.clone(),
-        mail_seq: seen.mail_seq,
         due: BTreeSet::new(),
     };
     let mut found = Found::default();
@@ -190,24 +185,7 @@ pub(super) async fn gather(
         .await
         .map_err(|error| format!("the workspace's tasks do not read: {error}"))?;
     tasks_in(&tasks, &against, &mut found, &mut due, &mut next);
-    // The first look starts at the newest arrival: mail from before it is
-    // where the inbox stands.
-    let id = collab_types::WorkspaceId::parse(workspace)
-        .ok_or_else(|| format!("{workspace} is no workspace id"))?;
-    let arrivals = workspaces
-        .mail_arrivals_for(id, person, seen.mail_seq)
-        .await
-        .arrivals;
-    next.mail_seq = arrivals
-        .iter()
-        .map(|arrival| arrival.seq)
-        .max()
-        .unwrap_or(seen.mail_seq);
-    if seen.looked {
-        found.came_in = u64::try_from(arrivals.len()).unwrap_or(u64::MAX);
-    }
     let findings = json!({
-        "cameIn": { "mail": found.came_in },
         "changed": { "documents": found.changed, "named": changed },
         "due": { "tasks": found.due, "named": due },
         "open": { "tasks": found.open },

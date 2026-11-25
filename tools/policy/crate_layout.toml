@@ -124,7 +124,6 @@ core = [
     "tilo-workspace-service -> tilo-environment",
     "tilo-workspace-service -> tilo-formats",
     "tilo-workspace-service -> tilo-history",
-    "tilo-workspace-service -> tilo-mail-session",
     "tilo-workspace-service -> tilo-model-gateway",
     "tilo-workspace-service -> tilo-oauth",
     "tilo-workspace-service -> tilo-settings-store",

@@ -1703,13 +1703,9 @@ mod connections_tests;
 #[cfg(test)]
 mod formats_tests;
 #[cfg(test)]
-mod mail_assistant_tests;
-#[cfg(test)]
 mod mail_reach_tests;
 #[cfg(all(test, feature = "agents"))]
 mod mail_sign_in_tests;
-#[cfg(all(test, feature = "agents"))]
-mod mail_turn_tests;
 #[cfg(test)]
 mod own_tests;
 #[cfg(all(test, feature = "agents"))]

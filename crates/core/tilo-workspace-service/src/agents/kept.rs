@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, InvokeRequest, RemoteActionTarget,
-    person_accounts, person_connections,
+    person_connections,
 };
 
 use super::turn_provider::{Ending, Rows};
@@ -101,30 +101,18 @@ impl TurnProvider for TurnKept {
         hosted_use::takes(target)
     }
 
-    /// What a message holds was written by whoever sent it, an entry of a calendar by whoever
-    /// made it, and what a connected service answers or says of itself by that service.
+    /// What a connected service answers or says of itself was written by that service.
     fn carries_untrusted(&self, target: &RemoteActionTarget) -> bool {
-        let action = target.address.action.as_str();
-        if target.provider == person_connections::PROVIDER {
-            return matches!(
-                action,
-                person_connections::CALL
-                    | person_connections::LIST
-                    | person_connections::LOOK
-                    | person_connections::REFRESH
-            );
-        }
-        if target.provider != person_accounts::PROVIDER {
+        if target.provider != person_connections::PROVIDER {
             return false;
         }
-        target.address.resource == person_accounts::RESOURCE
-            && matches!(
-                action,
-                person_accounts::ARRIVED
-                    | person_accounts::FETCH
-                    | person_accounts::READ
-                    | person_accounts::SEARCH
-            )
+        matches!(
+            target.address.action.as_str(),
+            person_connections::CALL
+                | person_connections::LIST
+                | person_connections::LOOK
+                | person_connections::REFRESH
+        )
     }
 
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {

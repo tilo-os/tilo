@@ -447,14 +447,13 @@ async fn the_accounts_reading_lists_an_account_connected_signed_in_again_and_rem
     assert_eq!(reading(&setup).await["accounts"], json!([]));
 }
 
-/// An account added in Settings is one Mail reads: its row lists it, and its
-/// inbox is what the server holds, read through the same provider. The
-/// stand-in server takes one made-up login and speaks IMAP and SMTP over real
-/// loopback sockets.
+/// An account added in Settings is kept with the servers its person wrote once the server took
+/// its sign-in, and its listing says what it feeds; removing it in Settings takes it from Mail.
+/// The stand-in server takes one made-up login and speaks IMAP and SMTP over real loopback
+/// sockets.
 #[tokio::test]
-async fn an_account_added_in_settings_is_read_in_mail() {
+async fn an_account_added_in_settings_is_kept_for_mail_and_removed_with_it() {
     use tilo_account_probe::stand_in;
-    use tilo_actions::remote::person_accounts::FetchedMail;
 
     const ADDRESS: &str = "team@example.test";
     const PASSWORD: &str = "made-up team password";
@@ -495,35 +494,18 @@ async fn an_account_added_in_settings_is_read_in_mail() {
         .await
         .expect("its server took the sign-in");
 
-    // Mail reads the account from the same provider, and its inbox from the
-    // server.
+    // The account is kept, without its password, with the servers its sign-in belongs to: what
+    // the mail connector signs in to.
     let listed = setup.listed().await;
     assert_eq!(listed.accounts.len(), 1, "{listed:?}");
     assert_eq!(listed.accounts[0].id, ADDRESS);
-    let fetched: FetchedMail = setup
-        .ask_as(
-            &setup.owner,
-            person_accounts::RESOURCE,
-            person_accounts::FETCH,
-            json!({"account": ADDRESS, "folder": "inbox"}),
-        )
-        .await
-        .map(|answer| serde_json::from_value(answer).expect("a folder reads"))
-        .expect("Mail reads the account's inbox");
-    let mut subjects: Vec<&str> = fetched
-        .messages
-        .iter()
-        .map(|message| message.subject.as_str())
-        .collect();
-    subjects.sort_unstable();
-    assert_eq!(
-        subjects,
-        ["Lunch on Friday?", "Quarterly plan", "Welcome to the lab"],
-        "the inbox holds what its server does"
+    assert!(listed.accounts[0].has_secret);
+    assert!(
+        !serde_json::to_string(&listed).unwrap().contains(PASSWORD),
+        "a listing carries no password"
     );
 
-    // Removing it in Settings takes it from Mail: its listing no longer has it, and its
-    // inbox is not read.
+    // Removing it in Settings takes it from Mail: its listing no longer has it.
     setup
         .ask(
             person_accounts::RESOURCE,
@@ -535,19 +517,6 @@ async fn an_account_added_in_settings_is_read_in_mail() {
     assert!(
         setup.listed().await.accounts.is_empty(),
         "Mail lists no account that Settings removed"
-    );
-    let refused = setup
-        .ask_as(
-            &setup.owner,
-            person_accounts::RESOURCE,
-            person_accounts::FETCH,
-            json!({"account": ADDRESS, "folder": "inbox"}),
-        )
-        .await
-        .expect_err("Mail reads no inbox of an account that is gone");
-    assert!(
-        matches!(&refused, ActionCallError::Refused { reason } if reason.contains("not kept here")),
-        "{refused:?}"
     );
 }
 

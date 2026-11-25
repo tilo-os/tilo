@@ -4,15 +4,13 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "A mail account's session with its servers, carried by the machine that runs a person's workspace: what a page's Mail reads, sends and marks."
+description = "A mail account's session with its servers: what Mail reads, sends and marks over IMAP and SMTP, in the app's connector."
 
 [dependencies]
 # The account and secret shapes the session reads; nothing here keeps either.
 accounts = { package = "tilo-accounts", path = "../accounts" }
 # The same clients Mail uses: async-imap, the message codecs, and the SMTP
-# client (lettre). Mail's own engine library carries them for the app; this
-# crate carries them for the machine that runs a person's workspace, where
-# no app runs.
+# client (lettre).
 async-imap.workspace = true
 mail-parser = "0.11.4"
 mail-builder = "0.4.4"
@@ -27,9 +25,8 @@ rustls.workspace = true
 # The sessions' own runtime has workers of its own: a session kept between
 # two requests lives on it, whichever thread asks.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
-# The vocabulary a page's mail actions carry: what a folder read answers and
-# what a send is told.
-tilo-actions = { path = "../../core/actions" }
+# The shapes a folder read, a search and a send are asked and answered in.
+serde = { workspace = true, features = ["derive"] }
 futures-util.workspace = true
 serde_json.workspace = true
 # A deadline that is the same clock on every machine, a page included.

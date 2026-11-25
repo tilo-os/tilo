@@ -28,7 +28,6 @@ use account_credentials::{
     Authorization, CredentialStore, OAuthCloud, OAuthIssuer, icloud_secret, oauth_secret,
 };
 use serde_json::{Value, json};
-use tilo_account_probe::AccountTester as _;
 use tilo_actions::remote::person_accounts::{
     BeginCloudSignIn, BeginSignIn, CancelSignIn, CloudKind, Provider, Services, SignInStep,
     SigningIn, SubmitSignInCode,
@@ -419,13 +418,15 @@ impl Workspaces {
                             &workspace,
                             &tilo_action_policy::Acting::person(hex::encode(person)),
                         ),
-                        &store,
+                        Grant {
+                            store: &store,
+                            tokens: &tokens,
+                        },
                         issuer,
                         &name,
                         &address,
                         &replace,
                         services,
-                        &tokens,
                         tester,
                     ))
                     .await
@@ -1068,33 +1069,35 @@ async fn keep_oauth_account(
     vault.keep_account(&account).await
 }
 
+/// A provider's grant, and the store that reads what it is for.
+#[derive(Clone, Copy)]
+struct Grant<'a> {
+    store: &'a CredentialStore,
+    tokens: &'a account_credentials::TokenSet,
+}
+
 /// Keep a mailbox the provider's page signed in: its grant in the workspace's
 /// vault, its account, and the servers its provider's mail lives at.
 ///
 /// Google says which mailbox the grant is for; Microsoft's mail scopes read no
 /// profile, so the address the person typed is the one kept, proved by
 /// signing in at both its servers with the grant.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one sign-in: what it is for, whom it names, where it is kept and what proves it"
-)]
 async fn keep_oauth_mail(
     vault: VaultAt<'_>,
-    store: &CredentialStore,
+    grant: Grant<'_>,
     issuer: OAuthIssuer,
     name: &str,
     typed: &str,
     replace: &str,
     services: Services,
-    tokens: &account_credentials::TokenSet,
     tester: std::sync::Arc<dyn tilo_account_probe::AccountTester>,
 ) -> Result<(), String> {
     let email = match issuer {
         // Asking Google which mailbox a grant is for is a blocking call, on a thread of its
         // own as every other call a person waits on here is.
         OAuthIssuer::Google => {
-            let store = store.clone();
-            let tokens = tokens.clone();
+            let store = grant.store.clone();
+            let tokens = grant.tokens.clone();
             tokio::task::spawn_blocking(move || store.gmail_identity(&tokens))
                 .await
                 .map_err(|_| "the mailbox was not read to the end".to_owned())?
@@ -1147,7 +1150,7 @@ async fn keep_oauth_mail(
     // Microsoft's address is the person's word until its servers take the grant: signing
     // in at both proves it, as a typed password is proved.
     if issuer == OAuthIssuer::Microsoft {
-        let secret = accounts::Secret::password(tokens.access_token.clone());
+        let secret = accounts::Secret::password(grant.tokens.access_token.clone());
         let checking = account.clone();
         tokio::task::spawn_blocking(move || tester.test(&checking, &secret))
             .await
@@ -1164,7 +1167,7 @@ async fn keep_oauth_mail(
             &id,
             (accounts::vault_items::ItemKind::Login, places_of(&account)?),
             &config.username,
-            Zeroizing::new(oauth_secret(tokens).token.unwrap_or_default()),
+            Zeroizing::new(oauth_secret(grant.tokens).token.unwrap_or_default()),
             before.as_ref(),
         )
         .await?;

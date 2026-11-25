@@ -1,6 +1,6 @@
-//! A mail account's session with its servers, where the account is kept and
-//! no app runs: the machine that runs a person's workspace when their page
-//! reaches no mail server (crates/core/tilo-workspace-service).
+//! A mail account's session with its servers: Mail's engine over IMAP and
+//! SMTP, for the app's connector, which runs where the network and the
+//! account's sign-in are.
 //!
 //! It reads a folder as a mail program does (the newest page of
 //! messages, what arrived since the newest one the reader holds, or the
@@ -10,26 +10,24 @@
 //! account's signed-in session is kept for its next request, so a reader
 //! that asks often signs in once. Every step is bounded, and nothing here
 //! keeps a secret or answers one.
-//!
-//! What it answers fits the frame an action's answer travels in: a message
-//! whose words would not fit is answered by its start, and says so.
 
 mod leaving;
 pub mod server;
+mod shapes;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
-use tilo_actions::remote::person_accounts::{
-    FetchMail, FetchedMail, FetchedMessage, FoundFolder, FoundMail, MAX_FOUND, MailAddress,
-    MailAttachment, MarkMail, ReadMail, SearchMail, SendMail, SentMail,
-};
 use tokio::time::timeout;
 use web_time::Instant;
 
 pub use crate::leaving::{Leaving, Recipient};
 use crate::server::{ImapSession, PAGE, Raw};
+pub use crate::shapes::{
+    FetchMail, FetchedMail, FetchedMessage, FoundFolder, FoundMail, MAX_FOUND, MailAddress,
+    MailAttachment, MailFlag, MarkMail, ReadMail, SearchMail, SendMail, SentMail,
+};
 /// How far behind the reader's newest message a read still catches up one
 /// message at a time instead of starting the folder over.
 const CATCH_UP_LIMIT: u32 = 200;

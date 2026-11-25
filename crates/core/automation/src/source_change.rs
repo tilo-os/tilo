@@ -4,11 +4,10 @@
 //! told of it.
 //!
 //! A source holds things its person wants answered as they come, and is no
-//! resource of the workspace: the mail their accounts receive is the first
-//! one read. Whoever keeps the automation is told by the source, or looks at
-//! it, and names each thing found there by a key that stays the same however
-//! often it is found ([`Found`]). What was taken in before is kept
-//! ([`Seen`]), and from that follows all of it:
+//! resource of the workspace. Whoever keeps the automation is told by the
+//! source, or looks at it, and names each thing found there by a key that
+//! stays the same however often it is found ([`Found`]). What was taken in
+//! before is kept ([`Seen`]), and from that follows all of it:
 //!
 //! - what the source held before the trigger was first seen is never new:
 //!   an automation answers what comes from when it was set up, not
@@ -36,12 +35,6 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-
-/// The kind a trigger names for the mail a person's accounts receive, as the
-/// holder that keeps those accounts hears it arrive. `at` names one account
-/// by its id, and is empty for every account. What is new is one message,
-/// with the fields an arrival is compared by.
-pub const PERSON_MAIL: &str = "tilo.accounts.mail";
 
 /// The kind a trigger names for a feed on the web, RSS, Atom or JSON: `at`
 /// is its address, and what is new is one entry, named by the id the feed
@@ -583,7 +576,7 @@ pub fn look_refusal(kind: &str, at: &str, every_secs: Option<u64>) -> Option<Str
 pub fn refusal(kind: &str, at: &str) -> Option<String> {
     if kind.trim().is_empty() {
         return Some(format!(
-            "a source is named by its kind: `when something new is in \"{PERSON_MAIL}\"`"
+            "a source is named by its kind: `when something new is in \"{WEB_FEED}\"`"
         ));
     }
     if kind.len() > MAX_NAME_BYTES || at.len() > MAX_NAME_BYTES {
@@ -601,15 +594,15 @@ mod tests {
     #[test]
     fn what_is_new_is_told_as_its_own_fields_under_the_source_it_was_found_in() {
         let found = Found {
-            key: "ada@example.com:7:4".into(),
-            at: "ada@example.com".into(),
+            key: "entry-1".into(),
+            at: "https://example.org/feed.xml".into(),
             at_ms: 1_800_000_000_000,
             facts: Map::from_iter([("from".to_owned(), json!("bo@example.com"))]),
         };
         assert_eq!(
-            Value::Object(told(PERSON_MAIL, &found)),
+            Value::Object(told(WEB_FEED, &found)),
             json!({
-                "kind": "tilo.accounts.mail",
+                "kind": "tilo.web.feed",
                 "at": "ada@example.com",
                 "item": "ada@example.com:7:4",
                 "found_ms": 1_800_000_000_000_i64,
@@ -844,7 +837,7 @@ mod tests {
     #[test]
     fn a_source_looked_at_is_named_by_its_address_and_looked_at_within_its_bounds() {
         let feed = "https://example.org/feed.xml";
-        assert!(looked_at(WEB_FEED) && looked_at(WEB_PAGE) && !looked_at(PERSON_MAIL));
+        assert!(looked_at(WEB_FEED) && looked_at(WEB_PAGE));
         assert_eq!(look_refusal(WEB_FEED, feed, None), None);
         assert_eq!(
             look_refusal(WEB_PAGE, "http://example.org/", Some(300)),
@@ -869,20 +862,15 @@ mod tests {
                 "{seconds}"
             );
         }
-        assert_eq!(look_refusal(PERSON_MAIL, "", None), None);
-        assert!(
-            look_refusal(PERSON_MAIL, "", Some(600)).is_some_and(|why| why.contains("clock")),
-            "mail is heard as it arrives"
-        );
     }
 
     #[test]
     fn a_source_with_no_kind_or_a_name_past_its_bound_is_refused_in_words() {
-        assert_eq!(refusal(PERSON_MAIL, ""), None);
-        assert_eq!(refusal(PERSON_MAIL, "ada@example.com"), None);
-        assert!(refusal(" ", "").is_some_and(|why| why.contains(PERSON_MAIL)));
+        let feed = "https://example.org/feed.xml";
+        assert_eq!(refusal(WEB_FEED, feed), None);
+        assert!(refusal(" ", "").is_some_and(|why| why.contains(WEB_FEED)));
         let long = "x".repeat(MAX_NAME_BYTES + 1);
         assert!(refusal(&long, "").is_some_and(|why| why.contains("2048")));
-        assert!(refusal(PERSON_MAIL, &long).is_some_and(|why| why.contains("2048")));
+        assert!(refusal(WEB_FEED, &long).is_some_and(|why| why.contains("2048")));
     }
 }

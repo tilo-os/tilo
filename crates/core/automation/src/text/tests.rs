@@ -432,12 +432,6 @@ tilo_test_env::scenario! {
                 filter: serde_json::Map::new(),
             },
             TriggerSpec::SourceChanged {
-                kind: crate::source_change::PERSON_MAIL.into(),
-                at: String::new(),
-                every_secs: None,
-                filter: serde_json::Map::new(),
-            },
-            TriggerSpec::SourceChanged {
                 kind: crate::source_change::WEB_FEED.into(),
                 at: "https://example.org/feed.xml".into(),
                 every_secs: Some(3600),
@@ -445,15 +439,6 @@ tilo_test_env::scenario! {
                     "author".to_owned(),
                     Value::from("Ada"),
                 )]),
-            },
-            TriggerSpec::SourceChanged {
-                kind: crate::source_change::PERSON_MAIL.into(),
-                at: "ada@example.com".into(),
-                every_secs: None,
-                filter: serde_json::Map::from_iter([
-                    ("from".to_owned(), Value::from("bo@example.com")),
-                    ("hasAttachments".to_owned(), Value::Bool(true)),
-                ]),
             },
         ];
         let shortcut = Shortcut {
@@ -499,13 +484,7 @@ tilo_test_env::scenario! {
             "a moment is a date and a time, not a word"
         );
         assert!(
-            text.contains(
-                r#"when something new is in "tilo.accounts.mail" at "ada@example.com" where from is "bo@example.com" where hasAttachments is yes"#
-            ),
-            "something new in a source names its kind, which one, and what narrows it: {text}"
-        );
-        assert!(
-            trigger::trigger_of(r#"when something new is in "tilo.accounts.mail" sometimes"#)
+            trigger::trigger_of(r#"when something new is in "tilo.web.feed" sometimes"#)
                 .is_err(),
             "nothing follows a source but which one and what narrows it"
         );

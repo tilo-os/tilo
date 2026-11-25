@@ -2,12 +2,12 @@
 //! thunderbird` hands the account's servers, the other address it sends as and the password
 //! Thunderbird saved to the workspace as the person's own request
 //! (`workspace/mail-accounts#add` over `/v1`), and the host signs in before it keeps anything.
-//! Mail then reads the account's inbox from its mail server through the host, signed in with the
-//! password the vault keeps; nothing is delivered from a cache.
+//! Mail then reads the account with the password the vault keeps, its connector signed in where
+//! the account is: nothing is delivered from a cache.
 //!
-//! The person's laptop reads the inbox over the device link, as a page of theirs does. The mail
+//! The person's laptop reads the accounts over the device link, as a page of hers does. The mail
 //! server itself is not stood in for here: the fixture's stand-in speaks a session type this
-//! crate cannot name, so the read reaches the address the account names and stops there.
+//! crate cannot name, so the sign-in reaches the address the account names and stops there.
 
 use serde_json::{Value, json};
 use tilo_actions::InvocationUpdate;
@@ -45,11 +45,11 @@ async fn act(key: &host::Key, workspace: &str, action: &str, args: &Value) -> (u
     .await
 }
 
-/// A migrated account is connected and its mail is read from its server: a sign-in the mail
-/// server refuses is no account, the saved password signs in and is kept with its servers and
-/// its other address, and the inbox reads from the server through the host, not a cache.
+/// A migrated account is connected: a sign-in the mail server refuses is no account, and the
+/// saved password signs in and is kept with its servers and its other address for Mail's
+/// connector to read the account with.
 #[test]
-fn a_migrated_account_is_connected_and_its_mail_is_read_from_its_server() {
+fn a_migrated_account_is_connected_and_kept_for_mail() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
         let daemon = host.daemon();
@@ -112,32 +112,27 @@ fn a_migrated_account_is_connected_and_its_mail_is_read_from_its_server() {
         );
         assert!(!listed.to_string().contains(SAVED));
 
-        // Mail reads the inbox from the mail server through the host, as a page of hers does:
-        // signed in with the password the vault keeps, no copy of a cache in between.
+        // The account a member's device reads is the one her vault signs in with: the very
+        // account and entry Mail's connector is handed.
         let laptop = host.member("Ada's laptop", &workspace).await;
-        let target = person_accounts::target(person_accounts::FETCH);
-        let read = laptop
+        let kept = laptop
             .call(
-                &target.provider,
-                target.address,
-                &json!({"account": ADDRESS, "folder": "inbox"}),
+                person_accounts::PROVIDER,
+                person_accounts::target(person_accounts::LIST).address,
+                &json!({}),
             )
             .await
-            .unwrap_or_else(|refused| panic!("the inbox is read: {refused:?}"));
-        let InvocationUpdate::Succeeded { output, .. } = &read else {
-            panic!("the inbox is read: {read:?}");
+            .unwrap_or_else(|refused| panic!("the accounts are listed: {refused:?}"));
+        let InvocationUpdate::Succeeded { output, .. } = &kept else {
+            panic!("the accounts are listed: {kept:?}");
         };
-        let read = output.value.clone().unwrap_or_default();
-        let subjects: Vec<&str> = read["messages"]
+        let kept = output.value.clone().unwrap_or_default();
+        let accounts = kept["accounts"]
             .as_array()
-            .unwrap_or_else(|| panic!("{read}"))
-            .iter()
-            .map(|message| message["subject"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            subjects,
-            ["On the server 1", "On the server 2", "On the server 3"]
-        );
+            .unwrap_or_else(|| panic!("{kept}"));
+        assert_eq!(accounts.len(), 1, "{kept}");
+        assert_eq!(accounts[0]["id"], ADDRESS, "{kept}");
+        assert_eq!(accounts[0]["hasSecret"], true, "{kept}");
         let _ = proven;
     });
 }

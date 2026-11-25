@@ -132,14 +132,6 @@ pub use model_providers::OpenAiSignIn;
 mod person_settings;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod this_computer;
-// The inboxes such a host watches for its people, with no window open.
-#[cfg(not(target_arch = "wasm32"))]
-mod mail_watch;
-#[cfg(not(target_arch = "wasm32"))]
-pub use mail_watch::MailListening;
-/// The mail servers a test stands in for, for the tests of what hears the mail.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) use mail_watch::testing as mail_testing;
 // A person's own model, asked for whatever this host runs for them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod model_answers;
@@ -1258,17 +1250,9 @@ struct WorkspacesInner {
     /// provider, model and key ([`model_answers`]).
     #[cfg(not(target_arch = "wasm32"))]
     models: Arc<model_answers::Models>,
-    /// The sessions this host holds with the mail servers of the accounts
-    /// its people keep ([`Workspaces::mail_session`]).
-    #[cfg(not(target_arch = "wasm32"))]
-    mail_session: std::sync::RwLock<person_settings::Session>,
     /// What uses of a vault item by reference keep here ([`hosted_use`]).
     #[cfg(not(target_arch = "wasm32"))]
     vault_uses: hosted_use::Uses,
-    /// The inboxes this host watches, and who listens for them
-    /// ([`mail_watch`]).
-    #[cfg(not(target_arch = "wasm32"))]
-    mail_watches: mail_watch::MailWatches,
     /// What its people call important, one writer at a time
     /// ([`person_telling`]).
     #[cfg(not(target_arch = "wasm32"))]
@@ -1662,11 +1646,7 @@ impl Workspaces {
                 #[cfg(not(target_arch = "wasm32"))]
                 models: Arc::clone(&models),
                 #[cfg(not(target_arch = "wasm32"))]
-                mail_session: std::sync::RwLock::new(Arc::new(models.mail_session())),
-                #[cfg(not(target_arch = "wasm32"))]
                 vault_uses: hosted_use::Uses::proving_within(models.mail_reach()),
-                #[cfg(not(target_arch = "wasm32"))]
-                mail_watches: mail_watch::MailWatches::default(),
                 #[cfg(not(target_arch = "wasm32"))]
                 telling: person_telling::Telling::default(),
                 content: content::ContentSlot::default(),

@@ -612,4 +612,3 @@ impl SealingMember {
         }
     }
 }
-

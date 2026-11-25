@@ -8,7 +8,7 @@
 
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::person_accounts::{self, MailAccounts, MailArrivals};
+use tilo_actions::remote::person_accounts::{self, MailAccounts};
 use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
 };
@@ -120,118 +120,5 @@ async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
             .map(|account| account.address.as_str())
             .collect::<Vec<_>>(),
         ["ada@example.test"]
-    );
-}
-
-/// What a receipt answered, as the arrivals it carries.
-fn arrived(receipt: tilo_actions::remote::InvocationReceipt) -> MailArrivals {
-    let ReceiptStatus::Completed { output } = receipt.status else {
-        panic!("the host answers at once, not {:?}", receipt.status);
-    };
-    serde_json::from_value(output.value.expect("an answer")).expect("the arrivals read")
-}
-
-/// What arrived in a workspace's inboxes is its members' to ask for, and
-/// asking is listening: the host watches its inboxes from then on, with no
-/// window open. A member of another workspace reads their own log, which
-/// holds none of this one's mail, and neither an app nor an agent with no
-/// device behind it reaches it at all.
-#[tokio::test]
-async fn a_member_asks_what_arrived_and_the_host_watches_from_then_on() {
-    use crate::workspaces::mail_watch::testing::{Watched, keep as keep_signed_in, told};
-    use tilo_mail_session::InboxSeen;
-
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces().clone();
-    let servers = std::sync::Arc::new(Watched::default());
-    workspaces.carry_mail_through(servers.clone());
-    let (workspace, workspace_id, host) = governed(&workspaces).await;
-    let ada = admit(&workspaces, &workspace, &owner, 1).await;
-    keep_signed_in(
-        &workspaces,
-        &workspace_id.to_string(),
-        "ada@example.test",
-        "adas-password",
-    )
-    .await;
-    let page = host.device_page(workspace_id, &ada);
-    let ada = caller(&ada);
-    assert!(servers.running().is_empty(), "nobody asked yet");
-
-    let first = arrived(
-        settled(page.invoke(&ada, asking(person_accounts::ARRIVED, json!({}))))
-            .await
-            .unwrap(),
-    );
-    assert!(first.arrivals.is_empty());
-    assert_eq!(first.newest, 0);
-    workspaces.mail_watches_settled().await;
-    assert_eq!(servers.running().len(), 1, "asking is listening");
-
-    servers.heard("ada@example.test").arrived(
-        vec![told(
-            4,
-            "jonas@northzone.example",
-            "Cap table",
-            "Could you send it?",
-        )],
-        InboxSeen {
-            uid_validity: 7,
-            uid: 4,
-        },
-    );
-    let then = arrived(
-        settled(page.invoke(
-            &ada,
-            asking(person_accounts::ARRIVED, json!({"after": first.newest})),
-        ))
-        .await
-        .unwrap(),
-    );
-    assert_eq!(then.arrivals.len(), 1);
-    assert_eq!(then.arrivals[0].subject, "Cap table");
-    assert_eq!(
-        then.arrivals[0].facts()["from"],
-        json!("jonas@northzone.example")
-    );
-    assert_eq!(then.newest, 1);
-    workspaces.mail_watches_settled().await;
-    assert_eq!(
-        servers.running().len(),
-        1,
-        "asking again starts no second watch"
-    );
-
-    // A member of another workspace reads their own log, never this one.
-    let (elsewhere, elsewhere_id, _) = governed(&workspaces).await;
-    let bo = admit(&workspaces, &elsewhere, &owner, 2).await;
-    let elsewhere_page = host.device_page(elsewhere_id, &bo);
-    let theirs = arrived(
-        settled(elsewhere_page.invoke(&caller(&bo), asking(person_accounts::ARRIVED, json!({}))))
-            .await
-            .unwrap(),
-    );
-    assert!(theirs.arrivals.is_empty());
-
-    // An app, and an agent with no device behind it, are nobody here.
-    let asking_arrivals = asking(person_accounts::ARRIVED, json!({}));
-    let app =
-        settled(page.invoke(&Caller::local_app("so.tilo.chat"), asking_arrivals.clone())).await;
-    assert!(
-        matches!(
-            app,
-            Err(tilo_actions::remote::ActionCallError::UnknownAction)
-        ),
-        "{app:?}"
-    );
-    let unowned = settled(page.invoke(&Caller::local_agent("writer"), asking_arrivals)).await;
-    assert!(
-        matches!(
-            unowned,
-            Err(tilo_actions::remote::ActionCallError::UnknownAction)
-        ),
-        "{unowned:?}"
     );
 }

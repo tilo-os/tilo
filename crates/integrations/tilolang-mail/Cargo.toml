@@ -6,6 +6,10 @@ publish.workspace = true
 license.workspace = true
 description = "The mail origin of tilolang packages: the logic that keeps a package's imap types in step with a mail server, and the connector that speaks IMAP and SMTP, run by the system in a process of its own and reached over a socket."
 
+# The renamed self dev-dependency only turns on `test-support` for this package's tests.
+[package.metadata.cargo-machete]
+ignored = ["mail-test-support"]
+
 [dependencies]
 # Mail's model and its IMAP and SMTP engine.
 mail-engine = { path = "../mail-engine", optional = true }
@@ -34,6 +38,11 @@ tilo-doc-codecs = { path = "../../engines/tilo-doc-codecs", default-features = f
 ] }
 uuid.workspace = true
 tracing.workspace = true
+# The language runtime the harness runs the test package on (`test-support`).
+tilolang-runtime = { path = "../../lang/tilolang-runtime", optional = true }
+# The stand-in mail server a test signs in to, with its own certificate (`test-support`).
+tilo-account-probe = { path = "../account-probe", optional = true }
+rustls = { workspace = true, optional = true }
 
 [features]
 default = ["engine"]
@@ -49,6 +58,21 @@ engine = [
     "dep:accounts",
     "dep:tokio",
 ]
+# The harness other tests of the connector run: a package's records over a real store, the
+# origin over the engine, and a stand-in mail server on loopback. Tests and development runs
+# only.
+test-support = [
+    "engine",
+    "dep:tilolang-runtime",
+    "dep:tilo-account-probe",
+    "dep:rustls",
+    "mail-engine/test-support",
+    "tilo-account-probe/test-support",
+]
+
+[dev-dependencies]
+# Turns on `test-support` for this package's own tests. The key must not be the package name.
+mail-test-support = { package = "tilolang-mail", path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

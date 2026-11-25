@@ -598,7 +598,7 @@ tilo_test_env::scenario! {
         let shortcut = program(vec![
             watch_chat(ActorFilter::Anyone),
             TriggerSpec::SourceChanged {
-                kind: crate::source_change::PERSON_MAIL.into(),
+                kind: crate::source_change::WEB_FEED.into(),
                 at: String::new(),
                 every_secs: None,
                 filter: Map::new(),
@@ -607,7 +607,7 @@ tilo_test_env::scenario! {
         let found = SourceEvent {
             workspace: "ws-1".into(),
             trigger: 1,
-            key: "ada@example.com:7:4".into(),
+            key: "entry-1".into(),
             payload: Map::from_iter([("item".to_string(), json!("ada@example.com:7:4"))]),
         };
         let out = dispatch(&saved_as("b1", &shortcut), Event::Source(&found));

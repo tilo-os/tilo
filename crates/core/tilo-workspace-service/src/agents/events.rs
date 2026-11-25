@@ -232,13 +232,6 @@ impl Definition {
                  reads its own entries"
                     .into(),
             ),
-            // Mail is heard as it arrives in its person's own accounts, which need not be the
-            // workspace's mailbox.
-            TriggerSpec::SourceChanged { kind, filter, .. }
-                if kind == tilo_automation::source_change::PERSON_MAIL =>
-            {
-                mail_refusal(filter).map_or(Ok(trigger.clone()), Err)
-            }
             TriggerSpec::SourceChanged {
                 kind,
                 at,
@@ -252,9 +245,9 @@ impl Definition {
                     Some(why) => Err(why),
                     None if !source_change::looked_at(kind) => Err(format!(
                         "something new is found in a feed on the web (`when something new \
-                             is in \"{WEB_FEED}\" at \"https://example.org/feed.xml\"`), on a \
-                             page there (`when something new is in \"{WEB_PAGE}\" at \
-                             \"https://example.org/prices\"`) or in its person's mail"
+                             is in \"{WEB_FEED}\" at \"https://example.org/feed.xml\"`) or on \
+                             a page there (`when something new is in \"{WEB_PAGE}\" at \
+                             \"https://example.org/prices\"`)"
                     )),
                     None => Ok(trigger),
                 }
@@ -276,28 +269,6 @@ impl Definition {
         self.trigger()
             .is_ok_and(|trigger| Timed::of(&trigger).is_some())
     }
-}
-
-/// The facts of an arrived message an event on mail narrows by
-/// ([`tilo_actions::remote::person_accounts::MailArrival::facts`]).
-const MAIL_FIELDS: [&str; 5] = ["from", "fromName", "to", "cc", "subject"];
-
-/// Why an event on mail cannot narrow by what `filter` names, when it cannot: each field is one
-/// of [`MAIL_FIELDS`], and holds text.
-fn mail_refusal(filter: &Map<String, Value>) -> Option<String> {
-    filter.iter().find_map(|(named, wanted)| {
-        if !MAIL_FIELDS.contains(&named.as_str()) {
-            return Some(format!(
-                "mail is narrowed by {}; `{named}` is none of them",
-                MAIL_FIELDS
-                    .iter()
-                    .map(|name| format!("`{name}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        (!wanted.is_string()).then(|| format!("`{named}` of mail holds text"))
-    })
 }
 
 /// What an event's person wants of it, beside its instruction, and what its last run kept for
@@ -1135,12 +1106,7 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
              (a feed on the public web lists an entry it did not list before; you are told its \
              title, link, date and summary, as data), `when something new is in \
              \"tilo.web.page\" at \"https://example.org/prices\"` (the text a person reads on a \
-             public page changed; you are told the new lines, as data), `when something new is \
-             in \"tilo.accounts.mail\"` (a message arrived in one of your person's own mail \
-             accounts; `at \"ACCOUNT\"` after the kind keeps it to that account, and each \
-             `where` names `from`, `fromName`, `to`, `cc` or `subject` and the text it holds; \
-             you are told who wrote and what about, and read the message itself from the \
-             account), or a change in the \
+             public page changed; you are told the new lines, as data), or a change in the \
              workspace as a Shortcut writes it. A feed or a page is looked at every hour, \
              with no model, and starts you only when something is new; `looked at every 900 \
              seconds` after the address sets how often, 300 at the least. A page behind a \

@@ -307,14 +307,29 @@ async fn kept_accounts(
     workspace_id: tilo_server_protocol::WorkspaceId,
     ada: &DeviceCert,
 ) -> Vec<String> {
-    let listed = super::mail_assistant_tests::asked_of(
-        &service.in_workspace_as(workspace_id, ada),
-        &caller(ada),
-        tilo_actions::remote::person_accounts::LIST,
-        json!({}),
-    )
-    .await
-    .expect("Ada reads the accounts");
+    use tilo_actions::remote::ActionProvider as _;
+    use tilo_actions::remote::person_accounts;
+
+    let page = service.in_workspace_as(workspace_id, ada);
+    let request = InvokeRequest {
+        invocation: InvocationId::new(),
+        target: person_accounts::target(person_accounts::LIST),
+        argument: InvokeArgument::Json(json!({}).as_object().cloned().unwrap_or_default()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let receipt = super::super::tests::settled(page.invoke(&caller(ada), request))
+        .await
+        .expect("Ada reads the accounts");
+    let tilo_actions::remote::ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("the host answers at once, not {:?}", receipt.status);
+    };
+    let listed = output.value.unwrap_or_default();
     listed["accounts"]
         .as_array()
         .unwrap()

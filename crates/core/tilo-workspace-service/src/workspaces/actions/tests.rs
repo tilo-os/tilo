@@ -880,13 +880,13 @@ async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
         super::models::models_action(&add_provider),
         Some((workspace.as_str(), model_providers::ADD_PROVIDER))
     );
-    let fetch = published(WORKSPACE_MAIL_ACCOUNTS, person_accounts::FETCH, 5);
+    let add = published(WORKSPACE_MAIL_ACCOUNTS, person_accounts::ADD_MAIL, 5);
     assert_eq!(
-        super::mail::account_action(&fetch),
-        Some((workspace.as_str(), person_accounts::FETCH))
+        super::mail::account_action(&add),
+        Some((workspace.as_str(), person_accounts::ADD_MAIL))
     );
     // Asking one is handed to its provider, never refused as unknown here.
-    for address in [listed, add_provider, fetch] {
+    for address in [listed, add_provider, add] {
         let request = InvokeRequest {
             invocation: InvocationId::new(),
             target: RemoteActionTarget {

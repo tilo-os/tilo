@@ -15,7 +15,7 @@
 //! message's head cannot hold, refuses it too, whichever field carries it: it
 //! would begin a header of the writer's own.
 
-use tilo_actions::remote::person_accounts::SendMail;
+use crate::shapes::SendMail;
 
 /// One recipient of a message.
 #[derive(Clone, Debug, PartialEq, Eq)]
