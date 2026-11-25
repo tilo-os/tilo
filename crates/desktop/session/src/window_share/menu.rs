@@ -74,14 +74,15 @@ pub(crate) fn reading_for_menus(
 }
 
 /// What the windows' menus asked of the shares since the last pass, as the resource's published
-/// actions: `share` with the tab, or `stop` with it.
+/// actions: `share` with the tab, or `stop` with it, each as the person's press that chose it.
 pub(crate) fn follow_asks(shell: &DesktopHandle) -> Vec<Invocation> {
     shell
         .take_workspace_share_asks()
         .into_iter()
-        .map(|(tab, share)| {
+        .map(|(tab, share, press)| {
             Invocation::new(SHARES_RESOURCE, if share { "share" } else { "stop" })
                 .with("tab", tab.to_string())
+                .pressed(press)
         })
         .collect()
 }

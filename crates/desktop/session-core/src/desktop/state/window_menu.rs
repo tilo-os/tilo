@@ -2404,7 +2404,7 @@ mod tests {
         handle
             .choose_window_menu(tab, SHARE_WITH_WORKSPACE, None)
             .expect("the row is offered, so it is chosen");
-        assert_eq!(handle.take_workspace_share_asks(), vec![(tab, true)]);
+        assert_eq!(handle.take_workspace_share_asks(), vec![(tab, true, None)]);
         assert!(
             handle.take_workspace_share_asks().is_empty(),
             "an ask is taken once"
@@ -2434,7 +2434,7 @@ mod tests {
         handle
             .choose_window_menu(tab, STOP_SHARING_WITH_WORKSPACE, None)
             .expect("a shared window offers the stop");
-        assert_eq!(handle.take_workspace_share_asks(), vec![(tab, false)]);
+        assert_eq!(handle.take_workspace_share_asks(), vec![(tab, false, None)]);
     }
 
     /// On a desktop several people share, a window is its holder's to share: anyone else sees the

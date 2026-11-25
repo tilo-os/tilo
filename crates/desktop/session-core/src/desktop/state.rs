@@ -231,7 +231,8 @@ pub struct Shared {
     pub workspace_shares: Option<WorkspaceShares>,
     /// The windows whose menu asked to be shared with their workspace, or to stop, waiting for
     /// the host ([`DesktopHandle::take_workspace_share_asks`]).
-    pub workspace_share_asks: Vec<(TabId, bool)>,
+    /// Each with the person's press that chose the row, when one did.
+    pub workspace_share_asks: Vec<(TabId, bool, Option<u32>)>,
     /// What the person may change and who made each strip, as the host answers it
     /// ([`DesktopHandle::set_rules`]); with none, nothing is refused.
     pub rules: Option<Rc<dyn crate::desktop::host::contract::DesktopRules>>,

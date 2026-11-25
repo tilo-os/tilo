@@ -196,7 +196,9 @@ pub struct SessionLink {
     /// The view calls whose failure ended — the call ran again and succeeded, each an app and a
     /// view: what the session hears so a style the person chose comes back (`shell.md` §6).
     recovered_calls: RefCell<Vec<(String, String)>>,
-    asked: RefCell<VecDeque<Ask>>,
+    /// What the shell asked, each with the person's press it answered, when one did: the
+    /// compositor's serial, under which the session runs it ([`Self::serve`]).
+    asked: RefCell<VecDeque<(Ask, Option<u32>)>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
     served: Cell<u64>,
@@ -234,11 +236,16 @@ impl SessionLink {
     /// Run what the shell asked through `invoke` (the session's API), keeping each refusal.
     /// Whether anything ran.
     pub fn serve(&self, mut invoke: impl FnMut(&Ask) -> Result<(), String>) -> bool {
-        let asked: Vec<Ask> = self.asked.borrow_mut().drain(..).collect();
+        let asked: Vec<(Ask, Option<u32>)> = self.asked.borrow_mut().drain(..).collect();
         self.served
             .set(self.served.get().wrapping_add(asked.len() as u64));
-        for ask in &asked {
-            let answer = invoke(ask);
+        for (ask, press) in &asked {
+            // What a press of the person's asked runs as that press: an action it calls is their
+            // own act, as the same action picked in the palette is.
+            let answer = tilo_session_core::surface::handling_press(
+                press.or_else(tilo_session_core::surface::handled_press),
+                || invoke(ask),
+            );
             if let Err(why) = &answer {
                 tracing::warn!(?ask, why, "the session refused what the shell asked");
                 self.refused
@@ -256,13 +263,16 @@ impl SessionLink {
     }
 
     /// The shell asks `ask` of the session's API: run on the session's next turn
-    /// ([`Self::serve`]). One of the device's settings a view names is this device's.
+    /// ([`Self::serve`]), as the person's press the part is answering now, when it answers one.
+    /// One of the device's settings a view names is this device's.
     pub fn ask(&self, mut ask: Ask) {
         ask.resource = tilolang_tilo::platform_apps::on_device(
             &ask.resource,
             &ui::settings_device::settings_device(),
         );
-        self.asked.borrow_mut().push_back(ask);
+        self.asked
+            .borrow_mut()
+            .push_back((ask, tilo_session_core::surface::handled_press()));
         self.handed.set(self.handed.get().wrapping_add(1));
     }
 
@@ -560,6 +570,9 @@ pub struct ShellPart {
     origin: Rc<RefCell<SessionOrigin>>,
     /// Input reached the part since its last turn.
     input: bool,
+    /// The person's press that input was, as the compositor serialed it: what the next turn
+    /// answers, so what its views ask runs as that press ([`SessionLink::ask`]).
+    press: Option<u32>,
     /// The last turn changed something: the next looks again, for what that started.
     again: bool,
     work: ShellWork,
@@ -712,6 +725,7 @@ impl ShellPart {
             moved: store.watch(),
             origin,
             input: false,
+            press: None,
             again: true,
             work: ShellWork::default(),
             refusals: Vec::new(),
@@ -1197,9 +1211,18 @@ impl ShellPart {
         true
     }
 
-    /// Let the window and the instance answer each other until neither has more to say.
-    /// Whether the window took anything.
+    /// Let the window and the instance answer each other until neither has more to say, as the
+    /// person's press the part took since its last turn, when it took one. Whether the window
+    /// took anything.
     fn turn(&mut self) -> bool {
+        let press = self
+            .press
+            .take()
+            .or_else(tilo_session_core::surface::handled_press);
+        tilo_session_core::surface::handling_press(press, || self.turn_once())
+    }
+
+    fn turn_once(&mut self) -> bool {
         let started = std::time::Instant::now();
         self.work.turns = self.work.turns.wrapping_add(1);
         let mut shown = false;
@@ -1460,6 +1483,14 @@ impl ShellPart {
 }
 
 impl ShellPart {
+    /// The input the part takes now is the person's press the compositor is answering, when it
+    /// is one: the part's next turn answers it.
+    fn took_press(&mut self) {
+        if let Some(press) = tilo_session_core::surface::handled_press() {
+            self.press = Some(press);
+        }
+    }
+
     /// Ask the session for the surface action `action` with `arguments`: what a key of the part's
     /// own asks, as a press of the views asks through the session's API.
     fn ask(&self, action: &str, arguments: &[(&str, serde_json::Value)]) {

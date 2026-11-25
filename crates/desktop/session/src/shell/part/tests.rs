@@ -273,7 +273,7 @@ fn a_press_on_the_bar_hands_its_effect_to_the_session() {
         part.work(),
         part.refusals()
     );
-    let opening = link.asked.borrow().front().cloned();
+    let opening = link.asked.borrow().front().map(|(ask, _)| ask.clone());
     assert_eq!(
         opening.as_ref().map(|ask| ask.action.clone()),
         Some("show-surface".to_owned())
@@ -338,7 +338,7 @@ fn the_bars_status_reads_the_devices_published_resources() {
     for name in ["Volume, 42%", "Wi-Fi, Station", "71%, charging"] {
         click(&mut part, name);
         assert_eq!(
-            link.asked.borrow_mut().pop_front().map(|ask| ask.action),
+            link.asked.borrow_mut().pop_front().map(|(ask, _)| ask.action),
             Some("show-surface".to_owned()),
             "a press on {name} opens the quick settings: refusals {:?}",
             part.refusals()
@@ -379,7 +379,7 @@ fn the_bars_faces_are_who_is_here_and_the_button_opens_the_roster() {
         );
     }
     click(&mut part, "Mia Clayton and Sam Okafor are here");
-    let ask = link.asked.borrow_mut().pop_front();
+    let ask = link.asked.borrow_mut().pop_front().map(|(ask, _)| ask);
     let ask = ask.unwrap_or_else(|| panic!("the press asks; refusals {:?}", part.refusals()));
     assert_eq!(ask.action, "show", "the button shows who is here");
     assert!(
@@ -515,7 +515,7 @@ fn the_workspaces_menu_stands_while_the_layout_changes_under_it() {
     );
     // And still chooses: the workspace in front is the one the person presses there.
     click(&mut part, "Studio");
-    let asked = link.asked.borrow().front().cloned();
+    let asked = link.asked.borrow().front().map(|(ask, _)| ask.clone());
     assert_eq!(
         asked.map(|ask| (ask.action, ask.arguments)),
         Some((
@@ -537,7 +537,7 @@ fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
         part.draw();
     }
     click(&mut part, "Studio");
-    let asked = link.asked.borrow().front().cloned();
+    let asked = link.asked.borrow().front().map(|(ask, _)| ask.clone());
     assert_eq!(
         asked.map(|ask| (ask.action, ask.arguments)),
         Some((
@@ -606,7 +606,7 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
         "the dock shows Sheets: {labels:?}"
     );
     click(&mut part, "Sheets");
-    let asked: Vec<Ask> = link.asked.borrow().iter().cloned().collect();
+    let asked: Vec<Ask> = link.asked.borrow().iter().map(|(ask, _)| ask.clone()).collect();
     assert_eq!(
         asked,
         vec![Ask {
@@ -1041,7 +1041,7 @@ fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
         }
         click(&mut part, "Close this window");
         assert_eq!(
-            link.asked.borrow().front().cloned(),
+            link.asked.borrow().front().map(|(ask, _)| ask.clone()),
             Some(Ask {
                 resource: "desktop:chrome".to_owned(),
                 action: "close-window".to_owned(),
@@ -1055,6 +1055,74 @@ fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
             "the menu closed with strips {strips:?}"
         );
     }
+}
+
+/// Press `name` as the compositor hands the person's press of `serial` to the shell: the button
+/// going down and coming up are each delivered as that press.
+fn click_pressed(part: &mut ShellPart, name: &str, serial: u32) {
+    let (x, y, w, h) = part
+        .control_bounds(name)
+        .unwrap_or_else(|| panic!("the shell shows {name}: {:?}", part.accessible_labels()));
+    part.pointer_motion(x + w / 2.0, y + h / 2.0);
+    part.prepare_frame();
+    for pressed in [true, false] {
+        tilo_session_core::surface::handling_press(Some(serial), || {
+            part.pointer_button(0x110, pressed);
+        });
+        part.prepare_frame();
+    }
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+}
+
+/// A person's press on a window menu's item runs the item's call as that press, though the call
+/// waits in the shell's queue for the session's next pass: what the call does is the person's own
+/// act, so a call it makes in turn does not ask them again. The same item chosen by no press of
+/// theirs runs as none, and the press of the first choice is not the second's.
+#[test]
+fn a_window_menu_item_the_person_pressed_runs_its_call_as_their_press() {
+    let _settled = ui::motion::testing::settled();
+    let packages = compiled();
+    let (mut part, link) = part_of(&packages, overview_with(&["Main"]), (1280, 800));
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    let mut served = Vec::new();
+    let mut serve = |link: &SessionLink| {
+        link.serve(|ask| {
+            served.push((
+                ask.action.clone(),
+                tilo_session_core::surface::handled_press(),
+            ));
+            Ok(())
+        });
+    };
+    click_pressed(&mut part, "This window", 41);
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    click_pressed(&mut part, "Close this window", 42);
+    serve(&link);
+    // Opened again and chosen by input the compositor attests no press of the person's for.
+    click(&mut part, "This window");
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    click(&mut part, "Close this window");
+    serve(&link);
+    assert_eq!(
+        served,
+        vec![
+            ("close-window".to_owned(), Some(42)),
+            ("close-window".to_owned(), None),
+        ],
+        "refusals {:?}",
+        part.refusals()
+    );
 }
 
 /// A window's menu carries it to another row of its workspace by its place's own `move`, the row
@@ -1085,7 +1153,7 @@ fn moving_a_window_to_another_row_moves_its_place_there() {
     };
     click(&mut part, item);
     assert!(part.refusals().is_empty(), "{:?}", part.refusals());
-    let asked = link.asked.borrow().front().cloned();
+    let asked = link.asked.borrow().front().map(|(ask, _)| ask.clone());
     assert_eq!(
         asked,
         Some(Ask {
@@ -1121,7 +1189,7 @@ fn a_workspace_named_in_the_workspaces_surface_is_made_with_its_name() {
         link.asked
             .borrow()
             .front()
-            .map(|ask| (ask.action.clone(), ask.arguments.clone())),
+            .map(|(ask, _)| (ask.action.clone(), ask.arguments.clone())),
         Some((
             "new-workspace".to_owned(),
             BTreeMap::from([("name".to_owned(), "studio".into())]),
@@ -1171,7 +1239,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
         part.prepare_frame();
     }
     assert_eq!(
-        link.asked.borrow().front().cloned(),
+        link.asked.borrow().front().map(|(ask, _)| ask.clone()),
         Some(Ask {
             resource: "desktop:shell".to_owned(),
             action: "search".to_owned(),
@@ -1352,7 +1420,7 @@ fn the_persons_face_is_pressed_by_the_pointer_on_a_narrow_bar() {
             (x, y, w, h)
         );
         click(&mut part, "Pat: open your card");
-        let asked = link.asked.borrow().front().cloned();
+        let asked = link.asked.borrow().front().map(|(ask, _)| ask.clone());
         assert!(
             asked.as_ref().is_some_and(|ask| ask.action == "show-person"
                 && ask.arguments.get("person") == Some(&"self".into())),

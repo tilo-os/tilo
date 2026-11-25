@@ -89,6 +89,9 @@ pub struct Asked {
     /// Its arguments, by their names. The resource the view acts on is the address's, not an
     /// argument.
     pub arguments: BTreeMap<String, Json>,
+    /// The compositor's serial of the person's press the view answered when it asked, when it
+    /// answered one: the session runs the invocation as that press ([`PartView::serve`]).
+    pub press: Option<u32>,
 }
 
 /// The session's API as the view's invoker: what the view asks waits here for the session's
@@ -167,6 +170,7 @@ impl Invoker for PartInvoker {
             // As the session publishes it: the verb, not the id the package names it by.
             action: name.clone(),
             arguments,
+            press: tilo_session_core::surface::handled_press(),
         });
         // Taken by the session's next pass: what it made reaches the view as its reading.
         Invoked::Done(Value::Unit)
@@ -241,6 +245,9 @@ struct Open {
     asked: Rc<RefCell<Vec<Asked>>>,
     /// A reading the view has not read yet.
     fresh: bool,
+    /// The person's press the view took since it last ran, as the compositor serialed it: what
+    /// its next run answers.
+    press: Option<u32>,
 }
 
 impl Open {
@@ -287,8 +294,24 @@ impl Open {
     }
 
     /// Let the window and the instance answer each other until neither has more to say, and lay
-    /// out what the window took.
+    /// out what the window took, as the person's press the view took since it last ran.
     fn turn(&mut self) {
+        let press = self
+            .press
+            .take()
+            .or_else(tilo_session_core::surface::handled_press);
+        tilo_session_core::surface::handling_press(press, || self.turn_once());
+    }
+
+    /// The input the view takes now is the person's press the compositor is answering, when it
+    /// is one: its next run answers it.
+    fn took_press(&mut self) {
+        if let Some(press) = tilo_session_core::surface::handled_press() {
+            self.press = Some(press);
+        }
+    }
+
+    fn turn_once(&mut self) {
         let mut shown = false;
         for _ in 0..EXCHANGES {
             if let Some(window) = self.window() {
@@ -464,6 +487,7 @@ impl PartView {
             target,
             asked,
             fresh: false,
+            press: None,
         });
         self.place();
         if let Some(open) = self.open.as_mut() {
@@ -531,7 +555,13 @@ impl PartView {
         };
         let asked: Vec<Asked> = open.asked.borrow_mut().drain(..).collect();
         for ask in &asked {
-            if let Err(why) = invoke(ask) {
+            // What the person's press asked runs as that press: an action it calls is their own
+            // act, as the same action picked in the palette is.
+            let answer = tilo_session_core::surface::handling_press(
+                ask.press.or_else(tilo_session_core::surface::handled_press),
+                || invoke(ask),
+            );
+            if let Err(why) = answer {
                 tracing::warn!(?ask, why, "the session refused what a part's view asked");
             }
         }
@@ -630,6 +660,7 @@ impl ShellSurface for PartView {
             self.pressed_outside |= away;
         }
         if let Some(open) = self.open.as_mut() {
+            open.took_press();
             open.widgets.pointer_button(button, pressed);
         }
     }
@@ -680,6 +711,7 @@ impl ShellSurface for PartView {
 
     fn key(&mut self, key: &SurfaceKey) {
         if let Some(open) = self.open.as_mut() {
+            open.took_press();
             open.widgets.key(key);
         }
     }

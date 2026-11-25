@@ -108,6 +108,7 @@ impl ShellSurface for ShellPart {
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
         self.input = true;
+        self.took_press();
         self.widgets.pointer_button(button, pressed);
     }
 
@@ -201,6 +202,7 @@ impl ShellSurface for ShellPart {
 
     fn key(&mut self, key: &SurfaceKey) {
         self.input = true;
+        self.took_press();
         let Some(action) = self.switcher_key(key) else {
             self.widgets.key(key);
             return;

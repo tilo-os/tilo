@@ -49,9 +49,10 @@ impl DesktopHandle {
     }
 
     /// The windows whose menu asked for their share with the workspace since the last call, in
-    /// the order they asked: the tab, and whether to share it (`true`) or stop. The host invokes
-    /// its window share with each.
-    pub fn take_workspace_share_asks(&self) -> Vec<(TabId, bool)> {
+    /// the order they asked: the tab, whether to share it (`true`) or stop, and the compositor's
+    /// serial of the person's press that chose the row, when one did. The host invokes its window
+    /// share with each, as that press.
+    pub fn take_workspace_share_asks(&self) -> Vec<(TabId, bool, Option<u32>)> {
         std::mem::take(&mut self.shared.borrow_mut().workspace_share_asks)
     }
 
@@ -74,7 +75,9 @@ impl DesktopHandle {
     /// host session.
     pub fn ask_workspace_share(&self, tab: TabId, share: bool) {
         let mut shared = self.shared.borrow_mut();
-        shared.workspace_share_asks.push((tab, share));
+        shared
+            .workspace_share_asks
+            .push((tab, share, crate::surface::handled_press()));
         shared.wake.wake();
     }
 }

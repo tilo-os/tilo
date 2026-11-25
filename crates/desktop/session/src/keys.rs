@@ -99,6 +99,14 @@ impl Invocation {
         self
     }
 
+    /// The same, asked by the person's press of `press` , the compositor's serial, when one asked
+    /// for it: a hop that queued it after the press passed carries the press it answers.
+    #[must_use]
+    pub const fn pressed(mut self, press: Option<u32>) -> Self {
+        self.press = press;
+        self
+    }
+
     /// The same, with `name` set to `value` .
     #[must_use]
     pub fn with(mut self, name: &str, value: impl Into<serde_json::Value>) -> Self {
