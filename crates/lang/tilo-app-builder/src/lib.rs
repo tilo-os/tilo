@@ -5015,7 +5015,7 @@ struct AppPackageSpec {
     /// Whether the app depends on the OS toolkit's `runtime-dylib`: an app on the published SDK
     /// does not, since that toolkit is built from a Tilo tree, and always links statically.
     links_toolkit_dylib: bool,
-    /// Whether its Android build takes pushes from a UnifiedPush distributor, as its Cargo
+    /// Whether its Android build takes pushes from a `UnifiedPush` distributor, as its Cargo
     /// metadata declares (`[package.metadata.tilo-app] unified-push = true`).
     unified_push: bool,
 }
