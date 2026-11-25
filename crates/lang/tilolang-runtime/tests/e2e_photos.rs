@@ -1494,8 +1494,13 @@ mod cases {
                 other => panic!("the thumbnail reads {other:?}"),
             };
             assert!(!thumb.is_empty(), "the import kept a thumbnail");
+            let drawn = match card.props.get("picture") {
+                Some(Value::Text(picture)) => Some(picture.clone()),
+                Some(Value::Opt(Some(inner))) => inner.as_text().map(str::to_owned),
+                other => panic!("the card's picture reads {other:?}"),
+            };
             assert_eq!(
-                card.props.get("picture").and_then(Value::as_text),
+                drawn.as_deref(),
                 Some(thumb.as_str()),
                 "the card draws the thumbnail rather than nothing"
             );
