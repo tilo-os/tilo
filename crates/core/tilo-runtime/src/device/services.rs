@@ -5228,11 +5228,12 @@ impl RuntimeActionProvider {
     }
 
     /// The workspace's own tree (`workspace/apps`, `workspace/vault`, `workspace/members`) as
-    /// this device answers it for `caller`, its person: the provider this device registered for
-    /// the workspaces it keeps, asked as this device, whose certificate names them. That is the
-    /// caller a member's other device is there, and what the tree offers is decided by their
-    /// grants. `None` for anyone else, an agent included, or where this device keeps no
-    /// workspace.
+    /// this device answers it for `caller`, and the caller it is asked as: the provider this
+    /// device registered for the workspaces it keeps. The person's own connection has no device
+    /// of its own for the workspace to read, so it is asked as this device, whose certificate
+    /// names them, as their other devices are. A key or an agent of theirs is asked as itself,
+    /// and what the tree offers it is decided by its own grants, never by the device's. `None`
+    /// where this device keeps no workspace, or where `caller` is not a run this runtime serves.
     fn workspace_tree(
         &self,
         caller: &Caller,
@@ -5240,18 +5241,22 @@ impl RuntimeActionProvider {
         tilo_workspace_service::workspaces::providers::Registered,
         Caller,
     )> {
-        if !self.is_the_person(caller) {
+        let session = self.session.as_ref()?;
+        let asked = if self.is_the_person(caller) {
+            let cert = self.workspaces.device_cert();
+            Caller::authenticated(cert.user_public_key, cert.device_public_key)
+                .in_workspace(&self.workspace)
+        } else if session.admits(caller) {
+            session.acting().clone()
+        } else {
             return None;
-        }
+        };
         let tree = self
             .workspaces
             .copies()
             .providers()
             .get(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)?;
-        let cert = self.workspaces.device_cert();
-        let device = Caller::authenticated(cert.user_public_key, cert.device_public_key)
-            .in_workspace(&self.workspace);
-        Some((tree, device))
+        Some((tree, asked))
     }
 
     /// `answer`, with the daemon's own `tilo.device` provider listed beside the workspace's apps,
@@ -5520,6 +5525,7 @@ impl RuntimeActionProvider {
         // app), answered as this device ([`Self::workspace_tree`]) and recorded as theirs, so
         // following it reaches what took it.
         if request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+            && self.is_the_person(caller)
             && let Some((tree, device)) = self.workspace_tree(caller)
         {
             self.invocations.record(
@@ -5913,6 +5919,7 @@ impl ActionProvider for RuntimeActionProvider {
             ));
         }
         if query.provider.as_deref() == Some(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)
+            && self.is_the_person(caller)
             && let Some((tree, device)) = self.workspace_tree(caller)
         {
             return tree.answers.query(&device, query);
@@ -5932,6 +5939,14 @@ impl ActionProvider for RuntimeActionProvider {
             }
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
+            }
+            // A key or an agent of the person's reaches the workspace's own tree as itself
+            // ([`Self::workspace_tree`]): what it offers them is decided by their own grants.
+            if query.provider.as_deref()
+                == Some(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)
+                && let Some((tree, asked)) = self.workspace_tree(caller)
+            {
+                return tree.answers.query(&asked, query);
             }
             if query
                 .provider
