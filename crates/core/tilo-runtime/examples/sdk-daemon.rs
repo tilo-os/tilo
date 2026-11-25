@@ -5,8 +5,9 @@
 //! sdk-daemon <tilo-runtime> -- <command> [args...]
 //! ```
 //!
-//! Sets Tilo up in a new private profile (the person's identity, kept in files there), starts
-//! `<tilo-runtime>` serving that profile, waits until it answers on its native endpoint, and runs
+//! Starts `<tilo-runtime>` serving a new private profile, waits until it answers on its native
+//! endpoint, sets Tilo up there through it (the person's identity, kept in files in the profile),
+//! as `tilo login --new-identity` does, and runs
 //! `<command>` with `TILO_RUNTIME_PROFILE` naming the profile, so `daemon_socket()` finds the
 //! daemon and the command's connections are admitted as the person. The daemon is stopped and the
 //! profile removed when the command ends, whose exit status this answers.
@@ -19,8 +20,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, bail, ensure};
 use serde_json::Value;
 
-/// Names the profile this program, started again, sets Tilo up in.
-const SET_UP: &str = "TILO_SDK_DAEMON_SET_UP";
+/// Names the profile whose daemon's native socket this program, started again, prints.
+const SOCKET_OF: &str = "TILO_SDK_DAEMON_SOCKET_OF";
 /// How long the daemon has to serve its person.
 const START_CAP: Duration = Duration::from_secs(120);
 
@@ -35,8 +36,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<ExitCode> {
-    if let Some(profile) = std::env::var_os(SET_UP) {
-        set_up_here()?;
+    if let Some(profile) = std::env::var_os(SOCKET_OF) {
         let socket = tilo_api::daemon::profile_sockets(Path::new(&profile))
             .map_err(anyhow::Error::msg)?
             .join(tilo_paths::machine::DAEMON_NATIVE);
@@ -79,20 +79,20 @@ fn run() -> Result<ExitCode> {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(profile, std::fs::Permissions::from_mode(0o700))?;
     }
-    // Set up with the profile's own homes, where it also names the daemon's native socket: a
-    // profile's sockets are beside this account's own, named by its path, and finding them reads
-    // the login's directory, which is the profile's here and never this account's.
-    let set_up = with_profile(&mut Command::new(std::env::current_exe()?), profile)
-        .env(SET_UP, profile)
+    // The daemon's native socket, named with the profile's own homes: a profile's sockets are
+    // beside this account's own, named by its path, and finding them reads the login's
+    // directory, which is the profile's here and never this account's.
+    let named = with_profile(&mut Command::new(std::env::current_exe()?), profile)
+        .env(SOCKET_OF, profile)
         .stderr(Stdio::inherit())
         .output()?;
     ensure!(
-        set_up.status.success(),
-        "setting Tilo up in the profile failed: {}",
-        set_up.status
+        named.status.success(),
+        "naming the profile's native socket failed: {}",
+        named.status
     );
     let socket = std::path::PathBuf::from(
-        String::from_utf8(set_up.stdout)
+        String::from_utf8(named.stdout)
             .context("the profile's native socket")?
             .trim_end(),
     );
@@ -108,7 +108,7 @@ fn run() -> Result<ExitCode> {
         .stderr(log)
         .spawn()
         .with_context(|| format!("starting {}", Path::new(&runtime).display()))?;
-    let served = serving(&socket);
+    let served = serving(&socket).and_then(|()| set_up(&socket, profile));
     let code = match served {
         Ok(()) => {
             let status = with_profile(&mut Command::new(program), profile)
@@ -151,15 +151,16 @@ fn with_profile<'a>(command: &'a mut Command, profile: &Path) -> &'a mut Command
         .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
 }
 
-/// Set Tilo up as this process's environment names it: the person's identity, in files.
-fn set_up_here() -> Result<()> {
-    let registry = tilo_identity::store::IdentityRegistryStore::from_env()?;
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        registry.identity_dir(),
-        &tilo_identity::provisioning::collaboration_identity_paths(),
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )?;
-    Ok(())
+/// Set Tilo up in `profile` through its daemon, at `socket`, as `tilo login --new-identity`
+/// does: the daemon takes the device's key and is the one process that signs as the device, so
+/// its founding call makes the person and certifies the device. A daemon that serves a person
+/// already says so, which is no failure here.
+fn set_up(socket: &Path, profile: &Path) -> Result<()> {
+    let sockets = socket.parent().context("the native socket's directory")?;
+    tilo_api::daemon::DaemonPlace::at(sockets, profile)
+        .found(&tilo_api::daemon::Founding::default())
+        .map(drop)
+        .map_err(|why| anyhow::anyhow!("setting Tilo up in the profile: {why}"))
 }
 
 /// Wait until the daemon answers on its native endpoint, `socket`. Its person's workspace is
