@@ -54,11 +54,14 @@ Modes:
                  a registry from them.
   --publish      the same at the release tag's version, then `cargo publish`
                  of every ready crate not yet on crates.io at that version,
-                 in dependency order, with CARGO_REGISTRY_TOKEN. A crate
-                 already there is skipped, so re-running a tag finishes a
-                 release that stopped halfway (crates.io limits how fast new
-                 names are taken: a first release stops on that limit and a
-                 later run carries on).
+                 one at a time in dependency order (the products' crates
+                 first, PRODUCT_ORDER), with CARGO_REGISTRY_TOKEN. crates.io
+                 limits how fast an account takes new names (a burst, then
+                 one every ten minutes): on its 429 the run waits until the
+                 time crates.io names and carries on, logging "N of M".
+                 `--budget SECONDS` stops it before a wait would pass that
+                 long; a crate already there is skipped, so publishing the
+                 same tag again finishes a release that stopped halfway.
 
 `--crates A,B` packages only those crates and the crates of the set they depend on (each
 must be ready), for a proof that needs a few of them (tools/sdk/published_crates_proof.py);
@@ -66,13 +69,16 @@ must be ready), for a proof that needs a few of them (tools/sdk/published_crates
 `--packages` takes.
 
 `--check-names` asks crates.io about every name: one that exists and is not
-ours (its repository is not this one) fails, since a project resolving our
-version would get another owner's crate.
+ours (its repository is not this one, and neither OWNERS nor the token's
+account owns it) fails, since a project resolving our version would get
+another owner's crate.
 """
 
 from __future__ import annotations
 
 import argparse
+import email.utils
+import heapq
 import json
 import os
 import pathlib
@@ -82,6 +88,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -89,6 +96,14 @@ import urllib.request
 REPO = pathlib.Path(__file__).resolve().parents[2]
 REPOSITORY = "https://code.tilo.so/tilo/tilo"
 USER_AGENT = f"tilo-publish-check ({REPOSITORY})"
+# The crates.io accounts that publish our crates: a name one of them owns is ours, whatever
+# repository its manifest credits (a fork names its upstream's). A run with
+# CARGO_REGISTRY_TOKEN also counts the token's own account.
+OWNERS = frozenset(("Quik2007",))
+# What a release publishes first, in this order: each product's crates finish as early as the
+# dependency order allows.
+PRODUCT_ORDER = ("tilolang-lex", "tilolang", "tilolang-runtime", "tilo-ui", "tilo-app",
+                 "tilolang-cli", "tilolang-web")
 # The entry crates: Rust apps depend on `tilo-app` (and the toolkit, `tilo-ui`, for what they
 # draw themselves); tilolang is its compiler, runtime and lexer, the `tilolang` command
 # (tilolang-cli) and the browser build (tilolang-web). A root that is not in the workspace is
@@ -247,14 +262,11 @@ def needed_locals(package: dict, local: set[str]) -> set[str]:
     }
 
 
-def foreign_names(packages: dict[str, dict]) -> set[str]:
-    """Names crates.io holds for a crate whose repository is not this one.
-
-    A crate is ours when crates.io names this repository, or when it names the repository and
-    description our own manifest of that crate declares: a fork (tilo-automerge-fork) credits its
-    upstream's repository, so once a release published it, that is what crates.io says."""
+def foreign_names(packages: dict[str, dict], owners: frozenset[str] = OWNERS) -> set[str]:
+    """Names crates.io holds for another project: a crate whose repository is not this one and
+    that none of OWNERS owns."""
     foreign = set()
-    for name, package in sorted(packages.items()):
+    for name in sorted(packages):
         crate = crates_io(f"/crates/{name}")
         if crate is None:
             continue
@@ -262,12 +274,40 @@ def foreign_names(packages: dict[str, dict]) -> set[str]:
         if not isinstance(crate, dict) or not isinstance(crate.get("name"), str) or not crate["name"]:
             raise ValueError(f"crates.io returned invalid crate metadata for {name}; "
                              "cannot determine who holds the name")
-        repository = (crate.get("repository") or "").rstrip("/")
-        declared = (package.get("repository") or "").rstrip("/")
-        published_here = repository == declared and crate.get("description") == package.get("description")
-        if repository != REPOSITORY and not published_here:
+        if (crate.get("repository") or "").rstrip("/") == REPOSITORY:
+            continue
+        if not crate_owners(name) & owners:
             foreign.add(name)
     return foreign
+
+
+def crate_owners(name: str) -> set[str]:
+    """The logins of the accounts that own NAME on crates.io."""
+    answer = crates_io(f"/crates/{name}/owners")
+    users = answer.get("users") if isinstance(answer, dict) else None
+    if not isinstance(users, list):
+        raise ValueError(f"crates.io returned no owners for {name}; cannot determine who holds "
+                         "the name")
+    return {user["login"] for user in users if isinstance(user, dict) and user.get("login")}
+
+
+def token_owner() -> str | None:
+    """The crates.io login CARGO_REGISTRY_TOKEN belongs to, where a token is set."""
+    token = os.environ.get("CARGO_REGISTRY_TOKEN")
+    if not token:
+        return None
+    request = urllib.request.Request(
+        "https://crates.io/api/v1/me",
+        headers={"User-Agent": USER_AGENT, "Authorization": token},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)["user"]["login"]
+    except urllib.error.HTTPError as error:
+        # A token scoped to publishing alone may not read its account: OWNERS still applies.
+        if error.code in (401, 403):
+            return None
+        raise
 
 
 def crates_io(path: str) -> dict | None:
@@ -562,6 +602,9 @@ def main() -> int:
                         f"tag's on a tag, else {STAND_IN})")
     parser.add_argument("--crates", help="comma-separated crates to package, with the crates "
                         "of the set they depend on (default: every ready crate)")
+    parser.add_argument("--budget", type=float,
+                        help="with --publish: stop before waiting past this many seconds on "
+                        "crates.io's rate limit, for a later run to carry on")
     parser.add_argument("--crates-out", type=pathlib.Path,
                         help="copy the .crate files made into this directory")
     args = parser.parse_args()
@@ -639,7 +682,8 @@ def main() -> int:
     if unlisted:
         print(f"Patched crates the set needs as published forks: {', '.join(unlisted)}")
     if args.check_names:
-        foreign = foreign_names(sdk)
+        login = token_owner()
+        foreign = foreign_names(sdk, OWNERS | ({login} if login else set()))
         if foreign:
             # Ours would resolve to the other project's wherever our version is asked for, and a
             # release that reaches it stops halfway, after publishing what comes before it.
@@ -676,13 +720,13 @@ def main() -> int:
     target = pathlib.Path(meta["target_directory"])
     work = scratch_tree()
     try:
-        return package(work / "tree", target, ready, version, args)
+        return package(work / "tree", target, ready, needs, version, args)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def package(tree: pathlib.Path, target: pathlib.Path, ready: set[str], version: str,
-            args: argparse.Namespace) -> int:
+def package(tree: pathlib.Path, target: pathlib.Path, ready: set[str],
+            needs: dict[str, set[str]], version: str, args: argparse.Namespace) -> int:
     """Package READY from TREE, a copy of the tree, at VERSION; check each package's size, and
     publish what crates.io lacks with --publish. The builds go to TARGET, the tree's own."""
     os.environ["CARGO_TARGET_DIR"] = str(target)
@@ -727,22 +771,91 @@ def package(tree: pathlib.Path, target: pathlib.Path, ready: set[str], version: 
           f"{MAX_CRATE_BYTES // 1048576} MiB)", flush=True)
     if not args.publish:
         return 0
-    remaining = sorted(name for name in ready if not on_crates_io(name, version))
+    remaining = [name for name in publication_order(ready, needs) if not on_crates_io(name, version)]
     for name in sorted(ready - set(remaining)):
         print(f"{name}@{version} is already on crates.io; skipping it")
     if not remaining:
         print(f"every ready crate is on crates.io at {version}")
         return 0
-    # Cargo publishes several packages in dependency order and waits for each to be in the
-    # index before the next. The token reaches cargo through CARGO_REGISTRY_TOKEN alone.
-    command = ["cargo", "publish", "--allow-dirty", "--no-verify"]
+    return publish_each(tree, remaining, len(ready), version, args.budget)
+
+
+def publication_order(ready: set[str], needs: dict[str, set[str]]) -> list[str]:
+    """READY in an order crates.io takes them (each after the crates of the set it needs), with
+    the products of PRODUCT_ORDER finishing in that order as early as that allows."""
+    rank = {}
+    for position, product in enumerate(PRODUCT_ORDER):
+        pending = [product] if product in ready else []
+        while pending:
+            name = pending.pop()
+            if name not in rank:
+                rank[name] = position
+                pending.extend(needs[name] & ready)
+    later = len(PRODUCT_ORDER)
+    waiting = {name: needs[name] & ready for name in ready}
+    heap = [(rank.get(name, later), name) for name, deps in waiting.items() if not deps]
+    heapq.heapify(heap)
+    order = []
+    while heap:
+        _, name = heapq.heappop(heap)
+        order.append(name)
+        for other, deps in waiting.items():
+            if name in deps:
+                deps.discard(name)
+                if not deps:
+                    heapq.heappush(heap, (rank.get(other, later), other))
+    if len(order) != len(ready):
+        raise ValueError(f"the crates of the set depend on each other in a cycle: "
+                         f"{', '.join(sorted(ready - set(order)))}")
+    return order
+
+
+# What crates.io answers when an account takes new names (or versions) faster than it allows.
+RATE_LIMITED = re.compile(r"try again after (.+? GMT)")
+
+
+def retry_after(output: str) -> float | None:
+    """When crates.io's rate limit in OUTPUT lets the next upload through, as a Unix time."""
+    match = RATE_LIMITED.search(output)
+    if match is None:
+        return None
+    return email.utils.parsedate_to_datetime(match.group(1)).timestamp()
+
+
+def publish_each(tree: pathlib.Path, remaining: list[str], total: int, version: str,
+                 budget: float | None) -> int:
+    """`cargo publish` each of REMAINING in turn, waiting out crates.io's rate limit; stop when
+    BUDGET seconds would be passed by the next wait, so a later run carries on."""
+    started = time.monotonic()
+    done = total - len(remaining)
     for name in remaining:
-        command += ["-p", name]
-    print("$ " + " ".join(command), flush=True)
-    if subprocess.run(command, cwd=tree, check=False).returncode != 0:
-        return 1
-    print(f"{len(remaining)} crates published to crates.io at {version}")
+        while True:
+            command = ["cargo", "publish", "--allow-dirty", "--no-verify", "-p", name]
+            result = subprocess.run(command, cwd=tree, check=False, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            if result.returncode == 0:
+                done += 1
+                print(f"published {name}@{version}: {done} of {total}", flush=True)
+                break
+            until = retry_after(result.stdout)
+            if until is None:
+                print(result.stdout, end="", flush=True)
+                print(f"error: {name}@{version} was not published ({done} of {total} are)",
+                      file=sys.stderr)
+                return 1
+            wait = max(until - time.time(), 0) + 5
+            if budget is not None and time.monotonic() - started + wait > budget:
+                print(f"{done} of {total} crates are on crates.io at {version}; crates.io takes "
+                      f"the next at {time.strftime('%H:%M:%S UTC', time.gmtime(until))}, past "
+                      "this run's budget. Publish again on the same tag to carry on.",
+                      file=sys.stderr)
+                return 1
+            print(f"crates.io's rate limit: {name} waits {wait:.0f} s ({done} of {total} "
+                  "published)", flush=True)
+            time.sleep(wait)
+    print(f"{total} crates on crates.io at {version}")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

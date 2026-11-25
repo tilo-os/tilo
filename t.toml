@@ -1234,7 +1234,11 @@ on = ["main", "dispatch"]
 name = "publish-crates"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "python3 -I tools/sdk/publish_check.py --publish"
+# crates.io takes a new name about every ten minutes after a short burst, so a first release of
+# many crates outlasts one job: each run publishes until its budget, then the same tag is
+# dispatched again (`t dispatch publish-crates --ref tag:vX.Y.Z`) and carries on.
+run = "python3 -I tools/sdk/publish_check.py --publish --budget 6600"
+timeout_secs = 7200
 needs = ["publish-crates-dry-run"]
 requires = ["arch=x86_64"]
 cache = false
