@@ -1052,6 +1052,206 @@ fn a_part_that_starts_again_takes_the_port_the_part_that_ended_bound() {
     drop(environment);
 }
 
+const ANSWERED_BEFORE_RESTART_TEST: &str = "device::founding_tests::a_call_naming_the_persons_server_is_answered_before_its_part_starts_again";
+
+/// How long the whole of [`ANSWERED_BEFORE_RESTART_TEST`] may take: past it the test fails and
+/// its process ends, whatever step it is in, rather than hanging the run.
+const ANSWERED_BEFORE_RESTART_BOUND: Duration = Duration::from_secs(240);
+
+/// A call that names the person's server in their own workspace ends the person's part, which
+/// starts again through it. The call is answered first: the program that placed the server hears
+/// what became of it, rather than the part ending under the call and cutting its answer.
+#[test]
+fn a_call_naming_the_persons_server_is_answered_before_its_part_starts_again() {
+    let Some(profile) = isolated_root(ANSWERED_BEFORE_RESTART_TEST) else {
+        return;
+    };
+    std::thread::spawn(|| {
+        std::thread::sleep(ANSWERED_BEFORE_RESTART_BOUND);
+        eprintln!(
+            "the test did not finish in {}s: the call that named the person's server was not \
+             answered",
+            ANSWERED_BEFORE_RESTART_BOUND.as_secs()
+        );
+        // SAFETY: `_exit` ends this process at once, as the test's bound means: no destructor
+        // of the step that hung runs, and 101 is the status a failed test ends with.
+        unsafe { libc::_exit(101) };
+    });
+    let environment = isolated_environment();
+    let keys = tilo_api::calls::device_keys();
+    reset_identity(&keys);
+    let running = crate::daemon::Running::start(&profile).unwrap();
+    let socket = running.native_socket().to_owned();
+    let made = ask(
+        &socket,
+        &do_request("devices#found", &json!({"name": "Ada"})),
+    );
+    assert_ne!(
+        made["result"]["isError"], true,
+        "no person was made: {made}"
+    );
+    running
+        .wait_for_person(Duration::from_secs(120))
+        .expect("the person's services run");
+    wait_for_the_person_part(&socket);
+    let first = {
+        let services = running.services(Duration::from_secs(120)).unwrap();
+        Arc::downgrade(&services)
+    };
+    // A server of the person's keeps their own workspace from now on.
+    let (serving, _state, server, line) = the_persons_server(0x6c);
+    let person = tilo_identity::store::load_from_path(
+        tilo_identity::store::resolve_active_identity(
+            &tilo_identity::store::account_identity_dir_from_env().unwrap(),
+        )
+        .expect("the founded person's root"),
+    )
+    .unwrap()
+    .group_public_key();
+    let workspace = tilo_server_protocol::servers::person_workspace_id(&person);
+    let named = workspace_call(
+        &socket,
+        &workspace,
+        "server.add",
+        json!({"host": line}),
+        60_000,
+    )
+    .expect("the call that named the person's server is answered");
+    assert!(
+        matches!(named, tilo_actions::remote::ReceiptStatus::Completed { .. }),
+        "the person's server keeps their workspace: {named:?}"
+    );
+    // The part starts again through the server the call named.
+    let started = std::time::Instant::now();
+    let again = loop {
+        if let Ok(services) = running.services(Duration::from_secs(1))
+            && !std::ptr::eq(Arc::as_ptr(&services), first.as_ptr())
+        {
+            break services;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(90),
+            "the person's part did not start again through the server the call named"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    drop(again);
+    running.stop().unwrap();
+    serving.block_on(server.shutdown());
+    drop(environment);
+}
+
+/// A server on this machine the person's root certifies, keeping workspaces: its runtime, its
+/// state, the server, and the line that names it to a device placing a workspace on it.
+fn the_persons_server(
+    seed: u8,
+) -> (
+    tokio::runtime::Runtime,
+    tempfile::TempDir,
+    tilo_server::daemon::Server,
+    String,
+) {
+    let dir = tilo_identity::store::account_identity_dir_from_env().unwrap();
+    let root = tilo_identity::store::load_from_path(
+        tilo_identity::store::resolve_active_identity(&dir).expect("the founded person's root"),
+    )
+    .unwrap();
+    let server_key = SigningKey::from_bytes(&[seed; 32]);
+    let mut server_cert = tilo_user_identity::DeviceCert {
+        user_public_key: root.group_public_key(),
+        device_public_key: server_key.verifying_key().to_bytes(),
+        device_label: "home-server".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut server_cert, &root).unwrap();
+    let serving = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let server = serving
+        .block_on(tilo_server::daemon::Server::start_with_relay_mode(
+            tilo_server::ServerConfig {
+                state_root: state.path().join("server"),
+                ..Default::default()
+            },
+            tilo_server::daemon::ServerIdentity {
+                user_public_key: root.group_public_key(),
+                device_signing_key: server_key,
+                device_cert: server_cert.clone(),
+                revocations: tilo_user_identity::RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        ))
+        .unwrap();
+    let line = serde_json::to_string(&tilo_server_protocol::web::PageHost {
+        server_cert,
+        address: Some(tilo_server_protocol::web::PageHostAddress {
+            endpoint_addr: server.node_addr(),
+            relay_url: None,
+            web: None,
+        }),
+        origin: None,
+    })
+    .unwrap();
+    (serving, state, server, line)
+}
+
+/// The workspace's own `action` on its servers, called over the frame wire as a client of this
+/// computer does, in the person's own workspace: its receipt, or none when the daemon closed the
+/// connection without one.
+fn workspace_call(
+    socket: &Path,
+    workspace: &str,
+    action: &str,
+    args: Value,
+    wait_ms: u32,
+) -> Option<tilo_actions::remote::ReceiptStatus> {
+    use tilo_actions::remote::{
+        InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    };
+    let Value::Object(argument) = args else {
+        panic!("a workspace action is called with its arguments");
+    };
+    let request = RemoteActionMessage::Invoke(InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+            address: tilo_actions::remote::workspace_governance_address(workspace, action),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: Some(wait_ms),
+        appearance: None,
+        signed: None,
+    });
+    let stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let frame = RemoteActionFrame::new(request).in_workspace(Some(workspace.to_owned()));
+    writer.write_all(&frame.encode().unwrap()).unwrap();
+    writer.write_all(b"\n").unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(stream).read_line(&mut line).ok()?;
+    match RemoteActionFrame::decode(line.trim_end().as_bytes())
+        .ok()?
+        .message
+    {
+        RemoteActionMessage::Receipt(receipt) => Some(receipt.status),
+        other => panic!("a call is answered with a receipt, not {other:?}"),
+    }
+}
+
 /// The device's own `action` with `args`, called over the frame wire every client reaches it
 /// with, and the receipt's status.
 fn device_call(socket: &Path, action: &str, args: Value) -> tilo_actions::remote::ReceiptStatus {
@@ -1144,6 +1344,27 @@ fn reset_identity(keys: &tilo_device_identity::IdentityPaths) {
     }
     if let Some(certs) = keys.device_cert_for_user(&[0; 32]).parent() {
         let _ = std::fs::remove_dir_all(certs);
+    }
+}
+
+/// Wait until the person's part of the daemon serves: its status answers as theirs from then on,
+/// where the device's own actions answer alone before. A computer founded here names no server
+/// until one is placed on its workspace, so no device is waited for.
+fn wait_for_the_person_part(socket: &Path) -> Value {
+    let started = std::time::Instant::now();
+    loop {
+        let status = ask(
+            socket,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": tilo_api::daemon::PEER_STATUS}),
+        );
+        if status["result"]["session"] != json!("starting") {
+            return status;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "the person's part does not serve: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 

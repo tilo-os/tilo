@@ -319,6 +319,10 @@ pub(crate) fn ending_step(
     }
 }
 
+/// How long a part that ends waits for the calls it serves to be answered before it ends: a
+/// call that named the server it starts again through is a person's, and its answer is theirs.
+const ANSWERING: Duration = Duration::from_secs(10);
+
 /// How often a step of the person's part ending looks whether the daemon was told to stop while
 /// it waits for the step.
 const ENDING_POLL: Duration = Duration::from_millis(100);
@@ -519,6 +523,21 @@ async fn serve_device(
         ),
     };
     tracing::error!("this daemon's person's part ends: {why}");
+    // The calls this part serves are answered before it ends: the one that named the server it
+    // starts again through, or placed a workspace on one, hears its answer rather than being
+    // cut by the part ending under it. A stop is not waited on: the daemon ends, and its calls
+    // with it.
+    tokio::select! {
+        answered = daemon.connections().answered(ANSWERING) => {
+            if !answered {
+                tracing::warn!(
+                    waited_ms = ANSWERING.as_millis(),
+                    "a call this part served did not answer before this part ends"
+                );
+            }
+        }
+        () = stop.heard() => {}
+    }
     // No agent's connection is handed here from now on: one that comes waits for the person's
     // part that starts next, or is told why it is not served.
     daemon.agents().withdraw();

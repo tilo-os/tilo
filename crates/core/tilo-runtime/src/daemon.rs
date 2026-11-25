@@ -1274,7 +1274,7 @@ fn serve_as_app(
                 );
                 return;
             }
-            frames.serve(stream, &line, reader);
+            frames.serve(stream, &line, reader, None);
         })?;
     Ok(())
 }
@@ -2117,7 +2117,8 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         }
         if crate::device::local::is_frame(line) {
             let input = BufReader::new(io::Cursor::new(rest).chain(follow));
-            return self.frames.serve(stream, line, input);
+            let answering = self.connections.as_ref().map(|connections| connections.call());
+            return self.frames.serve(stream, line, input, answering);
         }
         if line == tilo_api::daemon::AGENT_LINE.as_bytes() {
             if let Some(agents) = &self.to_agents {
@@ -2190,6 +2191,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             &self.search,
             seated,
             self.agents.as_ref(),
+            self.connections.as_deref(),
         ) {
             tracing::debug!(%error, "native runtime client disconnected");
         }
@@ -2204,6 +2206,51 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
 pub(crate) struct Connections {
     open: Mutex<std::collections::BTreeMap<u64, Stream>>,
     next: std::sync::atomic::AtomicU64,
+    /// The requests this part is answering now, each a call some program waits on.
+    answering: Answering,
+}
+
+/// The calls a part of the daemon is answering now, counted while each answer runs: a part that
+/// ends lets the calls it serves hear their answer first, rather than cutting the one that made
+/// the change it ends for.
+#[derive(Clone)]
+pub(crate) struct Answering(Arc<tokio::sync::watch::Sender<usize>>);
+
+impl Default for Answering {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::watch::channel(0).0))
+    }
+}
+
+impl Answering {
+    /// Count one call being answered until the returned guard is dropped.
+    fn began(&self) -> AnsweringCall {
+        self.0
+            .send_modify(|answering| *answering = answering.saturating_add(1));
+        AnsweringCall(Arc::clone(&self.0))
+    }
+
+    /// Wait at most `within` for every call being answered to have its answer: whether they all
+    /// did.
+    pub(crate) async fn answered(&self, within: Duration) -> bool {
+        let mut answering = self.0.subscribe();
+        if *answering.borrow_and_update() == 0 {
+            return true;
+        }
+        tokio::time::timeout(within, answering.wait_for(|answering| *answering == 0))
+            .await
+            .is_ok()
+    }
+}
+
+/// The count of one call being answered, for as long as the answer runs.
+pub(crate) struct AnsweringCall(Arc<tokio::sync::watch::Sender<usize>>);
+
+impl Drop for AnsweringCall {
+    fn drop(&mut self) {
+        self.0
+            .send_modify(|answering| *answering = answering.saturating_sub(1));
+    }
 }
 
 impl Connections {
@@ -2235,6 +2282,38 @@ impl Connections {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
         open.len()
+    }
+
+    /// Wait at most `within` for the calls the part serves to be answered: whether they all
+    /// were.
+    pub(crate) async fn answered(&self, within: Duration) -> bool {
+        self.answering.answered(within).await
+    }
+
+    /// A call this part serves, counted until the returned guard is dropped: a connection's
+    /// first answer, or a request the far end waits on.
+    pub(crate) fn call(&self) -> AnsweringCall {
+        self.answering.began()
+    }
+
+    /// `answer`, counted among the calls this part serves until it answered.
+    fn counting<'a>(&self, answer: Answer<'a>) -> Answer<'a> {
+        match answer {
+            Answer::InOrder(answer) => {
+                let answering = self.answering.began();
+                Answer::InOrder(Box::pin(async move {
+                    let _answering = answering;
+                    answer.await
+                }))
+            }
+            Answer::Overlapping(answer) => {
+                let answering = self.answering.began();
+                Answer::Overlapping(Box::pin(async move {
+                    let _answering = answering;
+                    answer.await
+                }))
+            }
+        }
     }
 }
 
@@ -2415,6 +2494,7 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     search: &OnceLock<Arc<tilo_os_search::OsSearch>>,
     seated: Option<&Seated>,
     agent: Option<&Arc<Presence>>,
+    connections: Option<&Connections>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -2429,7 +2509,7 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     // The session this connection reaches, admitted by the first request that needs one: what
     // this device is is answered without it, so asking founds no workspace and waits for none.
     let mut session: Option<Arc<McpServer<H>>> = None;
-    let answer = |value: Value| {
+    let mut unanswered = |value: Value| {
         if let Some(answer) = seated.and_then(|seated| seated.answer(&value)) {
             return answer;
         }
@@ -2487,6 +2567,12 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
                 };
             }
         })
+    };
+    // Each call the part answers is counted until its answer: a part that ends waits for them,
+    // so the call that made the change it ends for hears its answer.
+    let answer = |value: Value| match connections {
+        Some(connections) => connections.counting(unanswered(value)),
+        None => unanswered(value),
     };
     // Each answer is written whole, so a descriptor it carries (the link `seats#signed-in` hands
     // root) goes with its line.

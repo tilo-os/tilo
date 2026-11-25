@@ -136,6 +136,7 @@ tilo_test_env::scenario! {
                         &std::sync::OnceLock::from(std::sync::Arc::clone(&search)),
                         None,
                         None,
+                        None,
                     )
                     .unwrap();
                 }
@@ -190,6 +191,7 @@ tilo_test_env::scenario! {
                         workspace: "workspace".into(),
                     },
                     &std::sync::OnceLock::from(std::sync::Arc::clone(&search)),
+                    None,
                     None,
                     None,
                 )

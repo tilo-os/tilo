@@ -179,8 +179,16 @@ impl Frames {
 
     /// Answer `stream`'s frames, `first` and then each line `input` reads, until it ends
     /// ([`remote::serve_lines`]), each in the workspace it names: admitted there once, on its
-    /// first frame.
-    pub(crate) fn serve(&self, mut stream: Stream, first: &[u8], input: impl BufRead) {
+    /// first frame. `answering`, when the part counts it, is the call the connection's first
+    /// answer is: a part that ends waits for that answer, never for the connection a shell
+    /// keeps open after it.
+    pub(crate) fn serve(
+        &self,
+        mut stream: Stream,
+        first: &[u8],
+        input: impl BufRead,
+        answering: Option<crate::daemon::AnsweringCall>,
+    ) {
         // The tree's actions run their steps on the process's runtime, as they do for MCP.
         let _runtime = tilo_rt::app().handle().enter();
         let own = match (self.tree)(None) {
@@ -255,11 +263,37 @@ impl Frames {
             &self.uploads,
             Some(first.to_vec()),
             input,
-            stream,
+            AnsweredOnce {
+                inner: stream,
+                answering,
+            },
             SLACK,
             lane.as_ref()
                 .map(|lane| lane.as_ref() as &dyn remote::CallLanes),
         );
+    }
+}
+
+/// A connection's answer, counted as the call the part serves until its first bytes are out: what
+/// a part that ends waits for is the call, not the connection a client keeps open after it.
+struct AnsweredOnce<W> {
+    inner: W,
+    answering: Option<crate::daemon::AnsweringCall>,
+}
+
+impl<W: std::io::Write> std::io::Write for AnsweredOnce<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(bytes)?;
+        if written > 0 {
+            self.answering.take();
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let flushed = self.inner.flush();
+        self.answering.take();
+        flushed
     }
 }
 
@@ -309,7 +343,7 @@ fn serve_app_frames(frames: &Frames, stream: Stream, reader: Stream) {
         return;
     }
     let line = first.strip_suffix(b"\n").unwrap_or(&first).to_vec();
-    frames.serve(stream, &line, reader);
+    frames.serve(stream, &line, reader, None);
 }
 
 #[cfg(feature = "test-support")]

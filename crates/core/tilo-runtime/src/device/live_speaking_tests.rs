@@ -734,7 +734,7 @@ fn app_connection(
             .read_until(b'\n', &mut first)
             .unwrap();
         let line = first.strip_suffix(b"\n").unwrap_or(&first).to_vec();
-        frames.serve(served, &line, reader);
+        frames.serve(served, &line, reader, None);
     });
     tilo_actions::remote::LineClient::of_stream(held).unwrap()
 }
