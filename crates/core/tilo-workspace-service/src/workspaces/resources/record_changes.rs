@@ -355,6 +355,17 @@ impl Workspaces {
                     });
                 stamp.device = hex::encode(device.device());
                 stamp.device_name.clone_from(&device.cert.device_label);
+                // The placement is this device's own write of the record, and names the person
+                // it is for: a store's change that names no invoker is refused wherever it is
+                // read.
+                if stamp.invoker.is_empty() {
+                    stamp.invoker = Stamp::by(
+                        &tilo_action_policy::Acting::person(hex::encode(
+                            device.cert.user_public_key,
+                        ))
+                        .by,
+                    );
+                }
                 // Read by whom its type names, when it names anyone; else by every member.
                 let readers = if store.reads_by_rule(&kind) {
                     ""
@@ -1597,12 +1608,9 @@ mod tests {
         let founded_on = |writer: &str| {
             let mut tag = automerge::AutoCommit::new()
                 .with_actor(automerge::ActorId::from(writer.as_bytes()));
-            tag.apply_incoming([collab_types::document::founding::structure(
-                TAG,
-                "errands",
-                &[],
-            )
-            .unwrap()])
+            tag.apply_incoming([
+                collab_types::document::founding::structure(TAG, "errands", &[]).unwrap(),
+            ])
             .unwrap();
             tag
         };
