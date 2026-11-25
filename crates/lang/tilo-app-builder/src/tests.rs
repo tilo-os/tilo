@@ -5309,14 +5309,6 @@ tilo_test_env::scenario! {
             env(&[("TILO_RUNTIME_BINARY", "/opt/host")]),
             false
         ));
-        assert!(!wants_runtime_host(
-            env(&[("TILO_RUNTIME_STANDALONE", "1")]),
-            false
-        ));
-        assert!(wants_runtime_host(
-            env(&[("TILO_RUNTIME_STANDALONE", "0")]),
-            false
-        ));
 
         let checkout = tempfile::tempdir().expect("checkout");
         let tilo_app = checkout.path().join("crates/sdk/tilo-app/Cargo.toml");

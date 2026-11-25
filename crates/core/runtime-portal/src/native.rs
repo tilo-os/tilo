@@ -38,7 +38,6 @@ pub fn locate_host(program: &std::path::Path) -> io::Result<std::path::PathBuf> 
 }
 
 /// Join the shared native runtime, or retain an inherited launcher connection.
-/// `TILO_RUNTIME_STANDALONE=1` explicitly disables automatic attachment.
 ///
 /// # Errors
 /// Invalid inherited descriptors, unavailable hosts and failed execs are
@@ -51,10 +50,6 @@ pub fn ensure_attached(app_id: &str) -> io::Result<()> {
     #[cfg(not(unix))]
     {
         let _ = app_id;
-        if std::env::var_os("TILO_RUNTIME_STANDALONE").as_deref() == Some(std::ffi::OsStr::new("1"))
-        {
-            return Ok(());
-        }
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "automatic native runtime attachment requires Unix",
@@ -157,36 +152,42 @@ mod unix {
     }
 
     pub(super) fn ensure_attached(app_id: &str) -> io::Result<()> {
-        if inherited()? {
-            if let Some(raw) = env::var_os("TILO_RUNTIME_LAUNCH_GUARD_FD") {
-                let fd = raw
-                    .to_str()
-                    .and_then(|raw| raw.parse::<i32>().ok())
-                    .filter(|fd| *fd >= 3)
-                    .ok_or_else(|| invalid("invalid native launch guard"))?;
-                // SAFETY: this changes only descriptor flags on the inherited
-                // lifetime guard. Keep its lock, but never pass it to an exec child.
-                let changed = unsafe {
-                    let flags = libc::fcntl(fd, libc::F_GETFD);
-                    flags >= 0 && libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) >= 0
-                };
-                if !changed {
-                    return Err(io::Error::last_os_error());
+        // Android has no runtime host to re-exec under: its apps run as they are.
+        #[cfg(target_os = "android")]
+        {
+            let _ = app_id;
+            Ok(())
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            if inherited()? {
+                if let Some(raw) = env::var_os("TILO_RUNTIME_LAUNCH_GUARD_FD") {
+                    let fd = raw
+                        .to_str()
+                        .and_then(|raw| raw.parse::<i32>().ok())
+                        .filter(|fd| *fd >= 3)
+                        .ok_or_else(|| invalid("invalid native launch guard"))?;
+                    // SAFETY: this changes only descriptor flags on the inherited
+                    // lifetime guard. Keep its lock, but never pass it to an exec child.
+                    let changed = unsafe {
+                        let flags = libc::fcntl(fd, libc::F_GETFD);
+                        flags >= 0 && libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) >= 0
+                    };
+                    if !changed {
+                        return Err(io::Error::last_os_error());
+                    }
                 }
+                return Ok(());
             }
-            return Ok(());
+            if app_id.trim().is_empty() || app_id.len() > 4096 {
+                return Err(invalid("invalid application identity"));
+            }
+            let executable = env::current_exe()?;
+            let host = locate_host(&executable)?;
+            // The daemon this computer runs starts the app it has installed: this process names the
+            // app and nothing else, and the host's asking ends it.
+            Err(Command::new(host).arg("--run-app").arg(app_id).exec())
         }
-        if env::var_os("TILO_RUNTIME_STANDALONE").as_deref() == Some(OsStr::new("1")) {
-            return Ok(());
-        }
-        if app_id.trim().is_empty() || app_id.len() > 4096 {
-            return Err(invalid("invalid application identity"));
-        }
-        let executable = env::current_exe()?;
-        let host = locate_host(&executable)?;
-        // The daemon this computer runs starts the app it has installed: this process names the
-        // app and nothing else, and the host's asking ends it.
-        Err(Command::new(host).arg("--run-app").arg(app_id).exec())
     }
 
     fn executable(path: &Path) -> bool {

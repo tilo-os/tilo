@@ -799,7 +799,6 @@
    "STANDALONE_LICENSES",
    "Standalone",
    "StandaloneBundle",
-   "TILO_RUNTIME_STANDALONE",
    "a_tilo_login_relays_to_its_server_and_never_falls_back_to_a_standalone_runtime",
    "an_apk_carries_only_the_standalone_font_catalog",
    "bootstrap_attaches_standalone_inherited_or_through_the_host",

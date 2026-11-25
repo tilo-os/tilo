@@ -6908,7 +6908,6 @@ fn stop_runtime_daemon(runtime: &DevRuntime) {
 fn wants_runtime_host(var: impl Fn(&str) -> Option<OsString>, workspace_member: bool) -> bool {
     !workspace_member
         && var("TILO_RUNTIME_BINARY").is_none()
-        && var("TILO_RUNTIME_STANDALONE").as_deref() != Some("1".as_ref())
         && var("XDG_CURRENT_DESKTOP").as_deref() != Some("tilo".as_ref())
 }
 
@@ -6933,16 +6932,18 @@ fn provide_runtime_host(app_dir: &Path) {
         |name| std::env::var_os(name),
         app_is_workspace_member(app_dir),
     );
-    let host = wanted.then(|| build_runtime_host(app_dir)).and_then(|built| {
-        built
-            .inspect_err(|error| {
-                eprintln!(
-                    "[tilolang] no runtime host for the app: {error:#}\n\
-                     [tilolang] set TILO_RUNTIME_BINARY to one, or TILO_RUNTIME_STANDALONE=1 to run without"
-                );
-            })
-            .ok()
-    });
+    let host = wanted
+        .then(|| build_runtime_host(app_dir))
+        .and_then(|built| {
+            built
+                .inspect_err(|error| {
+                    eprintln!(
+                        "[tilolang] no runtime host for the app: {error:#}\n\
+                     [tilolang] set TILO_RUNTIME_BINARY to one"
+                    );
+                })
+                .ok()
+        });
     let runtime = host.map(|host| {
         let runtime = DevRuntime {
             host,

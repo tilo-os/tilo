@@ -139,7 +139,6 @@ pub fn install_environment_in(files: &std::path::Path) {
         .collect();
     // The process belongs to the activity; there is no runtime host to
     // re-exec under, as a Linux launch would.
-    vars.push(("TILO_RUNTIME_STANDALONE", "1".into()));
     for (name, value) in vars {
         set_var(name, value);
     }
