@@ -43,7 +43,13 @@ pub fn secret_arguments(request: &InvokeRequest, described: Option<Vec<String>>)
     match &request.argument {
         InvokeArgument::None => Vec::new(),
         InvokeArgument::Text(_) => vec![TEXT_ARGUMENT.to_owned()],
-        InvokeArgument::Json(arguments) => arguments.keys().cloned().collect(),
+        // The platform's own fields (`$from`, a call's provenance) are no argument's data: a
+        // call without a descriptor of its action keeps them, and only them.
+        InvokeArgument::Json(arguments) => arguments
+            .keys()
+            .filter(|name| !name.starts_with('$'))
+            .cloned()
+            .collect(),
     }
 }
 
