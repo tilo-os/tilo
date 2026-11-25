@@ -410,3 +410,49 @@ fn what_an_events_firings_did_is_read_from_their_done_rows() {
     assert_eq!((paused.on, paused.next_at_ms), (false, None));
     assert_eq!(paused.by, MemberId::person(PERSON));
 }
+
+/// An event on mail waits on mail arriving in its person's own accounts, which need not be the
+/// workspace's mailbox: its trigger stays one on that source, kept to the account the line names
+/// and narrowed by the sender it names. A field mail is not narrowed by is refused when the event
+/// is set up.
+#[test]
+fn an_event_on_mail_waits_on_its_persons_own_accounts() {
+    let kept = kept(Definition {
+        when: r#"when something new is in "tilo.accounts.mail" at "ada@example.com" where from is "bo@example.com""#.into(),
+        ..reminder()
+    });
+    let shortcut = event_shortcut(&kept).unwrap_or_else(|error| panic!("{error}"));
+    let [
+        TriggerSpec::SourceChanged {
+            kind, at, filter, ..
+        },
+    ] = shortcut.triggers.as_slice()
+    else {
+        panic!("one trigger on a source: {:?}", shortcut.triggers);
+    };
+    assert_eq!(kind, tilo_automation::source_change::PERSON_MAIL);
+    assert_eq!(at, "ada@example.com");
+    let facts = |from: &str| {
+        let Value::Object(facts) = json!({"from": from, "subject": "Lunch?"}) else {
+            unreachable!()
+        };
+        facts
+    };
+    assert!(tilo_automation::resource_time::matches(
+        filter,
+        &facts("bo@example.com")
+    ));
+    assert!(
+        !tilo_automation::resource_time::matches(filter, &facts("cy@example.com")),
+        "another sender"
+    );
+
+    let refused = Definition {
+        when: r#"when something new is in "tilo.accounts.mail" where folder is "INBOX""#.into(),
+        ..reminder()
+    }
+    .checked()
+    .err()
+    .unwrap_or_default();
+    assert!(refused.contains("`folder`"), "{refused}");
+}

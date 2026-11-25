@@ -677,3 +677,81 @@ async fn a_new_message_fires_the_shortcut_watching_mail_once() {
     assert_eq!(heard_mail(&started)[2].1, "Monday");
     host.shutdown().await;
 }
+
+/// A shortcut kept to one of the workspace's accounts hears that account's mail and no other's:
+/// a message arriving in the workspace's other account, its shared mailbox, fires nothing of
+/// hers, and either account's message fires once and not again on the next look.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shortcut_kept_to_her_account_hears_her_mail_and_no_other_account() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_server(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces().clone();
+    workspaces.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    declare_app(&host, "so.tilo.mail", MAIL_SURFACE.as_bytes());
+    let workspace = workspaces.create("Mail").await.unwrap().workspace;
+    let clock = Pinned::at(pinned_at("2026-11-23T08:00:00Z"));
+    let keep_message = async |id: &str, account: &str, received: &str| {
+        keep(
+            &workspaces,
+            &workspace,
+            "so.tilo.mail",
+            "tl.so.tilo.mail.Message",
+            id,
+            vec![
+                ("key", text(id)),
+                ("account", text(account)),
+                ("mailbox", text("inbox")),
+                ("from", text("bo@example.test")),
+                ("from_name", text("Bo")),
+                ("to", text(account)),
+                ("cc", text("")),
+                ("subject", text(id)),
+                ("received", text(received)),
+                ("snippet", text("Friday?")),
+                ("message_id", text(id)),
+                ("unread", Cell::One(Value::Bool(true))),
+            ],
+        )
+        .await;
+    };
+    let kept = shortcut(
+        "my-mail",
+        tilo_automation::TriggerSpec::SourceChanged {
+            kind: "tilo.accounts.mail".into(),
+            at: "ada@example.test".into(),
+            every_secs: None,
+            filter: filter(json!({})),
+        },
+    );
+    save_signed(&workspaces, &workspace, kept, (&key, &cert)).await;
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    pass_at(&clock, &mut runner, "2026-11-23T08:00:00Z").await;
+
+    // Her own account's message fires it; the workspace's other account is no source for it.
+    keep_message("ada-1", "ada@example.test", "2026-11-23T08:10:00Z").await;
+    keep_message("team-1", "team@example.test", "2026-11-23T08:11:00Z").await;
+    pass_at(&clock, &mut runner, "2026-11-23T08:12:00Z").await;
+    let heard = heard_mail(&started);
+    assert_eq!(heard.len(), 1, "only her own account: {heard:?}");
+    assert_eq!(heard[0].2, "tl:so.tilo.mail:ada-1");
+
+    // Looking again fires nothing twice, and what arrives next fires once.
+    pass_at(&clock, &mut runner, "2026-11-23T08:13:00Z").await;
+    assert_eq!(heard_mail(&started).len(), 1, "nothing fires twice");
+    keep_message("ada-2", "ada@example.test", "2026-11-23T08:14:00Z").await;
+    pass_at(&clock, &mut runner, "2026-11-23T08:15:00Z").await;
+    let heard = heard_mail(&started);
+    assert_eq!(heard.len(), 2, "{heard:?}");
+    assert_eq!(heard[1].2, "tl:so.tilo.mail:ada-2");
+    host.shutdown().await;
+}
