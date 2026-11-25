@@ -204,14 +204,17 @@ impl Stamp {
 
     /// The verbs the platform writes under, which no app declares: a call a device carries out
     /// (`$invocation`), an agent's suggestion and the decision on it (`$suggest`,
-    /// `$decide-invocation`), and a block that settles one (`$settle-block`). A store's schema
-    /// declares them, and under them a change may write any field or content of a declared kind,
-    /// so a surface an app ships may declare none of them.
-    pub const PLATFORM_VERBS: [&str; 4] = [
+    /// `$decide-invocation`), a block that settles one (`$settle-block`), and a step taken back or
+    /// brought back ([`Self::UNDO_VERB`], [`Self::RESTORE_VERB`]). A store's schema declares them,
+    /// and under them a change may write any field or content of a declared kind, so a surface an
+    /// app ships may declare none of them.
+    pub const PLATFORM_VERBS: [&str; 6] = [
         "$invocation",
         "$suggest",
         "$decide-invocation",
         "$settle-block",
+        Self::UNDO_VERB,
+        Self::RESTORE_VERB,
     ];
 
     /// The verbs no surface an app ships may declare, whether or not a schema admits them yet:

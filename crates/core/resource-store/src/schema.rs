@@ -44,12 +44,11 @@ pub const ORIGIN_VERB: &str = collab_types::Stamp::ORIGIN_VERB;
 
 /// The verbs the platform writes under, which no app declares
 /// ([`collab_types::Stamp::PLATFORM_VERBS`]): a call a device carries out, an agent's suggestion
-/// and the decision on it, and a block that settles one. Each writes what any field or content of
-/// a declared kind holds, as the move places one of any kind. Every schema has them, as it has the
-/// move, so a store with declared verbs judges the platform's own writes by their kind and not by
-/// a verb no app names. A step taken back or brought back (`$undo`, `$restore`) is reserved the
-/// same way and stays undeclared until its grant check lands.
-pub const PLATFORM_VERBS: [&str; 4] = collab_types::Stamp::PLATFORM_VERBS;
+/// and the decision on it, a block that settles one, and a step taken back or brought back. Each
+/// writes what any field or content of a declared kind holds, as the move places one of any kind.
+/// Every schema has them, as it has the move, so a store with declared verbs judges the platform's
+/// own writes by their kind and not by a verb no app names.
+pub const PLATFORM_VERBS: [&str; 6] = collab_types::Stamp::PLATFORM_VERBS;
 
 /// The verbs no surface an app ships may declare ([`collab_types::Stamp::RESERVED_VERBS`]): the
 /// platform's own, and the two a step back or a version brought back writes under.
