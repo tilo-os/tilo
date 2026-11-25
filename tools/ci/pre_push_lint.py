@@ -55,15 +55,17 @@ the `cargo` on PATH, else t's (`t cargo metadata`). Formatting is checked by the
 `rustfmt` on PATH, which must be the version the toolchain pins, or by t's `fmt`
 check where there is none.
 
-A failure is not the push's own when main has it at the push's base: t compares each failed
+A failure is not the push's own when main has it at the push's base. t compares each failed
 check's findings and tests one by one against the base's verdict of the same key, so a check
-that is red on main for one lint does not hide a second, new one here, and exits 3 when every
-failure is inherited, flaky or already fixed. Such a push passes, saying which of main's reds
-it pushes past and who claimed them; a failure t cannot place - the base has no verdict, or
-the two failures cannot be told apart - is judged against main's board at that base instead:
-the item failing since a commit the base contains, its findings read from main's own log one by
-one, a failed test by name. The push passes only when main has failed it the same way, saying
-whose the red is; a board that cannot be read refuses.
+that is red on main for one lint does not hide a second, new one here. What t cannot place -
+the base has no stored verdict, or the two failures cannot be told apart - is judged against
+main's board at that base: the item failing since a commit the base contains, a failed test by
+name, a finding one by one against main's own log. A check that generates committed files (the
+fleet, the SDK's types) fails naming the files not current, so it is judged by those files: one
+main is stale in too is inherited, one this push newly made stale is refused, naming it and
+`t fix <check>`. A dependants' compile that fails in a package whose build reads nothing the
+push changes is main's too. A push that passes on reds says which, and whose they are; a board
+that cannot be read refuses.
 
 A lint that passed stands for the same change after a rebase that leaves it alone: a pass is
 remembered by the push's own patch (`git patch-id`) and the trees of the linted packages' own
@@ -146,10 +148,17 @@ CARGO_REMARKS = (
 # its first diagnostic, and a failure report cut to its first lines showed nothing else.
 PROGRESS = re.compile(r"^\s*(?:Checking|Compiling|Fresh|Building|Blocking|Downloading|Downloaded"
                       r"|Locking|Updating|Adding|Documenting)\s")
+# t's checks that judge generated, committed output: the fleet catalogue, the SDK's types and
+# the published crates' policy. Their failure names the files that are not current, so it is
+# compared file by file: a file main is stale in too is inherited, a file this push newly makes
+# stale is the push's, whatever t says of the check whole.
+GENERATED_CHECKS = ("app-surfaces", "sdk-policy", "sdk-types")
+# How a generated-output check says a file is not current (`tilo sdk gen --check`,
+# `tilolang -- surfaces`, `generate_catalogue_fleet.py --check`).
+STALE_LINES = (re.compile(r"^\s*not current: (.+?)\s*$"),
+               re.compile(r"^\s*(.+?) is stale(?::|$)"))
+
 ZERO_OID = {"0"}
-# t's exit code when every failure of a run is one that isn't the change's: main has it at the
-# run's base, it is flaky, or t already pushed its fix (t's `ui::output::EXIT_ONLY_INHERITED`).
-EXIT_ONLY_INHERITED = 3
 # Where the passes a later push may stand on are kept, in the repository's common git directory
 # (shared by its worktrees), and how many of the newest are: one line each.
 PASSES = "tilo-pre-push-passes"
@@ -1051,18 +1060,6 @@ def inherited(result: dict) -> bool:
     return isinstance(blame, dict) and "inherited" in blame
 
 
-def not_yours(result: dict) -> bool:
-    """Whether t blamed a failed result on something other than the change.
-
-    t's Blame says main has it at the run's base (`inherited`), the same inputs passed before
-    (`flaky`), or t already pushed the fix. Everything else - new, unknown, uncompared - may be
-    the change's.
-    """
-    if result.get("fixed") is not None:
-        return True
-    return inherited(result) or result.get("blame") == "flaky"
-
-
 def blame_words(result: dict) -> str:
     """Whose failure t says a result is, in words: its Blame, naming the base's red."""
     if result.get("fixed") is not None:
@@ -1120,6 +1117,56 @@ def is_ancestor(root: Path, commit: str, of: str) -> bool | None:
 def finding_key(finding: str) -> str:
     """A finding without the count t adds for a repeated lint in one file (`unused_imports a.rs (2)`)."""
     return re.sub(r" \(\d+\)$", "", finding.strip())
+
+
+def stale_files(text: str) -> set[str]:
+    """The generated files a check's output names as not current, as each command prints it."""
+    found: set[str] = set()
+    for line in text.splitlines():
+        for pattern in STALE_LINES:
+            match = pattern.match(line)
+            if match:
+                found.add(match.group(1).strip())
+                break
+    return found
+
+
+def dependency_closure(packages: dict[str, dict], names: set[str]) -> set[str]:
+    """`names` and every package they reach through a path dependency."""
+    reached: set[str] = set()
+    todo = list(names)
+    while todo:
+        name = todo.pop()
+        if name in reached:
+            continue
+        reached.add(name)
+        for dependency in packages.get(name, {}).get("dependencies", ()):
+            if dependency.get("source") is None:
+                todo.append(dependency["name"])
+    return reached
+
+
+def compile_is_mains(root: Path, push: Push, metadata: dict, output: str) -> list[str] | None:
+    """The failing packages whose build reads nothing the push changes, or None if one may.
+
+    A package's compile is decided by its own directory and the path dependencies it builds; a
+    push that changes none of them compiles it as the base did, so a failure there is main's. A
+    manifest, the lockfile or a build script can reach any build, so one leaves it unknown.
+    """
+    if any(Path(path).name in (*MANIFESTS, "build.rs") for path in push.files):
+        return None
+    failed = set(re.findall(r"error: could not compile `([^`]+)`", output))
+    if not failed:
+        return None
+    packages, by_dir = package_maps(metadata, root)
+    directory_of = {name: directory for directory, name in by_dir.items()}
+    changed = [Path(path) for path in push.files]
+    for name in failed:
+        directories = [directory_of[member]
+                       for member in dependency_closure(packages, {name}) if member in directory_of]
+        if any(path.is_relative_to(directory) for path in changed for directory in directories):
+            return None
+    return sorted(failed)
 
 
 def log_findings(root: Path, log: str) -> set[str] | None:
@@ -1192,11 +1239,13 @@ class Board:
 
     def __init__(self, root: Path, push: Push, items: list[dict] | None = None,
                  logs: dict[str, set[str] | None] | None = None,
+                 texts: dict[str, str | None] | None = None,
                  ancestor: "Callable[[str, str], bool | None] | None" = None):
         self.root = root
         self.base = push.comparisons[0][0] if push.comparisons else None
         self._items = items
         self._logs = logs or {}
+        self._texts = texts or {}
         self._read = items is not None
         self.ancestor = ancestor or (lambda commit, of: is_ancestor(root, commit, of))
 
@@ -1211,6 +1260,67 @@ class Board:
             self._logs[log] = log_findings(self.root, log)
         return self._logs[log]
 
+    def log_text(self, log: str) -> str | None:
+        """A check's whole log as it prints, or None when it cannot be read."""
+        if log not in self._texts:
+            try:
+                answer = subprocess.run(["t", "log", str(log)], cwd=self.root,
+                                        capture_output=True, text=True, check=False)
+            except OSError:
+                return None
+            self._texts[log] = answer.stdout if answer.returncode == 0 else None
+        return self._texts[log]
+
+    def items_at_base(self, check: str) -> tuple[list[dict], str]:
+        """Main's items for `check` whose red the base contains, or why it cannot be said."""
+        items = self.items()
+        if items is None:
+            return [], "main's board cannot be read, so whose failure this is cannot be told"
+        if self.base is None:
+            return [], "this push has no base to compare main's board with"
+        named = [item for item in items if item.get("check") == check]
+        if not named:
+            return [], f"main's board names no red for {check}"
+        at_base = []
+        for item in named:
+            since = item.get("first_bad") or ""
+            before = self.ancestor(since, self.base)
+            if before is None:
+                return [], (f"main's board names {check} red since {since[:12]}, which this "
+                            "checkout does not have")
+            if before:
+                at_base.append(item)
+        if not at_base:
+            return [], f"main began failing {check} after this push's base"
+        return at_base, ""
+
+    def inherit_generated(self, result: dict) -> tuple[dict | None, str]:
+        """Main's item a generated-output failure is, by the files it names, or why not.
+
+        The check on our tree fails with the files main is stale in, and with any this push
+        newly made stale; only the second is the push's to write back.
+        """
+        check = result.get("check")
+        ours = stale_files(str(result.get("excerpt") or ""))
+        at_base, why = self.items_at_base(check)
+        if not at_base:
+            # Main has no red for the check at the base, or none this checkout can place: the
+            # files it names here are the push's to write back.
+            return None, ("new: " + ", ".join(sorted(ours))) if ours else why
+        theirs: set[str] = set()
+        for item in at_base:
+            text = self.log_text(str(item.get("log") or ""))
+            if text is None:
+                return None, f"main's log for {check} cannot be read"
+            theirs |= stale_files(text)
+        extra = sorted(ours - theirs)
+        if extra:
+            return None, "new: " + ", ".join(extra)
+        if not ours and theirs:
+            return None, (f"{check} names no output file here, but main fails on "
+                          + ", ".join(sorted(theirs)))
+        return at_base[0], ""
+
     def judge(self, result: dict) -> tuple[dict | None, str]:
         """Main's item this failure is, at the push's base, or why it cannot be inherited.
 
@@ -1218,26 +1328,10 @@ class Board:
         main's log, so a check red on main for one lint does not hide a new one here. A failure
         naming neither is the whole check's, and inherits another whole one of the same check.
         """
-        items = self.items()
-        if items is None:
-            return None, "main's board cannot be read, so whose failure this is cannot be told"
-        if self.base is None:
-            return None, "this push has no base to compare main's board with"
         check = result.get("check")
-        named = [item for item in items if item.get("check") == check]
-        if not named:
-            return None, f"main's board names no red for {check}"
-        at_base = []
-        for item in named:
-            since = item.get("first_bad") or ""
-            before = self.ancestor(since, self.base)
-            if before is None:
-                return None, (f"main's board names {check} red since {since[:12]}, which this "
-                              "checkout does not have")
-            if before:
-                at_base.append(item)
+        at_base, why = self.items_at_base(check)
         if not at_base:
-            return None, f"main began failing {check} after this push's base"
+            return None, why
         tests = [test for test in result.get("failed_tests") or [] if test]
         findings = [finding_key(finding) for finding in result.get("findings") or [] if finding]
         if tests:
@@ -1266,23 +1360,24 @@ class Board:
 
 
 def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str,
-           fixes: set[str], root: Path, push: Push) -> int:
+           fixes: set[str], root: Path, push: Push, metadata: dict) -> int:
     passed_through: list[dict] = []
     failed = []
     board = Board(root, push)
     for run, status, output in results:
         if not run.t:
-            if status != 0:
-                failed.append((run, output, [], []))
+            if status == 0:
+                continue
+            if run.label.startswith("dependants' compile"):
+                compile_reds = compile_is_mains(root, push, metadata, output)
+                if compile_reds is not None:
+                    say(f"pre-push: pushing past main's dependants' compile: "
+                        f"{', '.join(compile_reds)} (the push changes none of what they build)")
+                    continue
+            failed.append((run, output, [], []))
             continue
         finished, errors = t_outcomes(output)
         say_t_results(output)
-        if status == EXIT_ONLY_INHERITED:
-            # Every failure t found is main's at the push's base (or flaky, or already fixed).
-            passed_through += [result for result in finished if result.get("outcome") == "fail"]
-            continue
-        if status == 0 and not errors:
-            continue
         refused = []
         for result in finished:
             outcome = result.get("outcome")
@@ -1291,21 +1386,32 @@ def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str,
             if outcome != "fail":
                 refused.append((result, ""))
                 continue
-            if not_yours(result):
+            if result.get("fixed") is not None or result.get("blame") == "flaky":
                 passed_through.append(result)
                 continue
-            if result.get("blame") == "new":
-                refused.append((result, blame_words(result)))
+            check = result.get("check")
+            if check in GENERATED_CHECKS:
+                # A generated output is judged by the files it names, whatever t says of the
+                # check whole: a file main is stale in too is not this push's.
+                item, why = board.inherit_generated(result)
+            elif inherited(result):
+                # t compared this failure with the base's verdict and holds it main's.
+                passed_through.append(result)
                 continue
-            # t could not compare it: unknown before a probe answers, or two failures it cannot
-            # tell apart. Main's board can say, finding by finding.
-            item, why = board.judge(result)
+            elif result.get("blame") == "new":
+                item, why = None, blame_words(result)
+            else:
+                # t could not compare it: unknown before a probe answers, or two failures it
+                # cannot tell apart. Main's board can say, finding by finding.
+                item, why = board.judge(result)
             if item is not None:
                 passed_through.append({**result, "blame": item_blame(item)})
             else:
                 refused.append((result, why))
         if refused or errors:
             failed.append((run, output, refused, errors))
+        elif status != 0 and not finished:
+            failed.append((run, output, [], []))
     if not failed:
         if passed_through:
             say_past_reds(passed_through)
@@ -1452,7 +1558,7 @@ def surface_only(root: Path, push: Push, options: argparse.Namespace) -> int:
         return 0
     results, elapsed = run_together(root, runs, options.keep_logs)
     status = report(results, elapsed, f"the app surface's generated files ({' '.join(checks)})",
-                    t_fixes(root), root, push)
+                    t_fixes(root), root, push, {})
     if status == 0 and key is not None:
         remember_pass(root, key, push.tips[0])
     return status
@@ -1585,7 +1691,7 @@ def main(argv: list[str]) -> int:
                   if selection.dependants else ""))
     results, elapsed = run_together(root, runs, options.keep_logs)
     status = report(results, elapsed, checked, t_fixes(root) if lints_through_t() else set(),
-                    root, push)
+                    root, push, selection.metadata)
     if status == 0 and key is not None:
         remember_pass(root, key, push.tips[0])
     return status

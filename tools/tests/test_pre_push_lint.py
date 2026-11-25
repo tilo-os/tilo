@@ -132,6 +132,7 @@ case "$1" in
     shift
     printf 'start %s t cargo %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
     [ -n "${STUB_T_EXCERPT:-}" ] && printf '%s\\n' "$STUB_T_EXCERPT" >&2
+    [ -n "${STUB_T_CARGO_EXIT:-}" ] && exit "$STUB_T_CARGO_EXIT"
     [ "${STUB_T_OUTCOME:-pass}" = pass ]; exit $? ;;
   test)
     shift
@@ -198,6 +199,12 @@ unify = "workspace-unify"
 # The gate over the generated fleet, which declares the fix that writes it back.
 [[check]]
 name = "app-surfaces"
+run = "fixture"
+fix = "fixture"
+
+# The SDK's generated types, judged by the files they name.
+[[check]]
+name = "sdk-types"
 run = "fixture"
 fix = "fixture"
 """
@@ -348,7 +355,7 @@ class PrePushLintTests(unittest.TestCase):
                     agent=False, t_outcome="pass", t_cached=None, t_excerpt="", t_error="",
                     t_scope=None, t_scope_status=2, t_inherited="", t_unknown="", t_new="",
                     t_exit3=False, t_findings=None, t_board=None, t_board_status=0,
-                    t_log="", t_log_status=0) -> dict:
+                    t_log="", t_log_status=0, t_cargo_exit=None) -> dict:
         """The hook's environment: only the stubs, never this machine's toolchain.
 
         `agent` pushes as a coding agent does, whose shell says so in its environment.
@@ -380,7 +387,8 @@ class PrePushLintTests(unittest.TestCase):
                    STUB_T_EXIT3="1" if t_exit3 else "",
                    STUB_T_FINDINGS=json.dumps(t_findings or []),
                    STUB_BOARD=t_board or "", STUB_BOARD_STATUS=str(t_board_status),
-                   STUB_LOG=t_log, STUB_LOG_STATUS=str(t_log_status))
+                   STUB_LOG=t_log, STUB_LOG_STATUS=str(t_log_status),
+                   STUB_T_CARGO_EXIT="" if t_cargo_exit is None else str(t_cargo_exit))
         return env
 
     def push(self, head=None, remote_oid=None, ref="refs/heads/main", cwd=None,
@@ -759,7 +767,55 @@ class PrePushLintTests(unittest.TestCase):
                            t_excerpt="crates/desktop/app-fleet/src/generated.rs is stale")
         self.assertEqual(result.returncode, 1)
         self.assertIn("app-surfaces: fail", result.stderr)
+        self.assertIn("new: crates/desktop/app-fleet/src/generated.rs", result.stderr)
         self.assertIn("write the generated files back with: t fix app-surfaces", result.stderr)
+        self.assertIn("refusing the push", result.stderr)
+
+    def test_a_push_passes_over_generated_files_main_is_stale_in_too(self):
+        self.with_t()
+        self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
+        self.commit("feat: an app's surface file")
+        stale = "not current: sdk/python/src/tilo/types/a.py"
+        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+                           t_excerpt=stale, t_board=self.board(self.base, check="sdk-types",
+                                                               owner="someone"),
+                           t_log=stale)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pushing past 1 red main already has:", result.stderr)
+        self.assertIn(f"sdk-types: main has failed it since {self.base[:12]}, claimed by someone",
+                      result.stderr)
+
+    def test_a_push_that_makes_a_generated_file_stale_is_refused(self):
+        self.with_t()
+        self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
+        self.commit("feat: an app's surface file")
+        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+                           t_excerpt="not current: sdk/a.py\\nnot current: sdk/c.py",
+                           t_board=self.board(self.base, check="sdk-types"),
+                           t_log="not current: sdk/a.py")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("new: sdk/c.py", result.stderr)
+        self.assertIn("write the generated files back with: t fix sdk-types", result.stderr)
+
+    def test_a_compile_failure_in_a_package_the_push_does_not_change_passes(self):
+        self.with_t()
+        self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
+        self.write("native/src/lib.rs", LIB.format(answer=61))
+        self.commit("feat: answer 61")
+        result = self.push(t_cargo_exit=1,
+                           t_excerpt="error: could not compile `wasm-bindgen` (lib)")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pushing past main's dependants' compile: wasm-bindgen", result.stderr)
+
+    def test_a_compile_failure_in_what_the_push_changes_is_refused(self):
+        self.with_t()
+        self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
+        self.write("native/src/lib.rs", LIB.format(answer=62))
+        self.commit("feat: answer 62")
+        result = self.push(t_cargo_exit=1,
+                           t_excerpt="error: could not compile `fixture-native` (lib)")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("dependants' compile (t) failed", result.stderr)
         self.assertIn("refusing the push", result.stderr)
 
     def test_without_a_cargo_t_names_the_packages_and_lints_them(self):
@@ -1326,15 +1382,6 @@ class InheritedRedTests(unittest.TestCase):
             result["fixed"] = fixed
         return result
 
-    def test_only_inherited_flaky_and_fixed_failures_are_not_the_pushes(self):
-        module = pre_push_lint()
-        inherited = self.result({"inherited": {"since": "abcdef0123456789", "claimed_by": None}})
-        for result in (inherited, self.result("flaky"), self.result(fixed={"run": "r1"})):
-            self.assertTrue(module.not_yours(result), result)
-        for result in (self.result("new"), self.result("unknown"),
-                       self.result({"uncompared": None}), self.result()):
-            self.assertFalse(module.not_yours(result), result)
-
     def test_an_inherited_red_names_its_since_and_owner(self):
         module = pre_push_lint()
         result = self.result({"inherited": {"since": "abcdef0123456789", "claimed_by": "quinten"}})
@@ -1359,9 +1406,9 @@ class InheritedRedTests(unittest.TestCase):
         return {"check": "clippy/x", "test": None, "first_bad": since, "log": "l",
                 "claim": {"session": "someone", "note": None}, **extra}
 
-    def board(self, module, items, logs=None, ancestor=None):
+    def board(self, module, items, logs=None, texts=None, ancestor=None):
         return module.Board(ROOT, module.Push(set(), [(self.BASE, self.BASE)], [], []),
-                            items=items, logs=logs, ancestor=ancestor)
+                            items=items, logs=logs, texts=texts, ancestor=ancestor)
 
     def test_the_board_inherits_a_whole_check_red_at_the_base(self):
         module = pre_push_lint()
@@ -1405,6 +1452,72 @@ class InheritedRedTests(unittest.TestCase):
         self.assertIsNone(found)
         self.assertIn("after this push's base", why)
 
+    def test_both_ways_a_generated_file_is_named_are_read(self):
+        module = pre_push_lint()
+        text = ("not current: sdk/python/src/tilo/types/a.py\n"
+                "  crates/desktop/app-fleet/src/generated.rs is stale: run tools/apps/x.py\n")
+        self.assertEqual(module.stale_files(text),
+                         {"sdk/python/src/tilo/types/a.py",
+                          "crates/desktop/app-fleet/src/generated.rs"})
+
+    def generated(self, module, excerpt, main_text, **board):
+        item = self.item("a" * 40, check="sdk-types")
+        return self.board(module, [item], texts={"l": main_text},
+                          ancestor=lambda since, of: True, **board).inherit_generated(
+            {"check": "sdk-types", "outcome": "fail", "excerpt": excerpt})
+
+    def test_a_generated_file_main_is_stale_in_too_is_inherited(self):
+        module = pre_push_lint()
+        found, why = self.generated(module,
+                                    "not current: sdk/a.py\nnot current: sdk/b.py",
+                                    "not current: sdk/a.py\nnot current: sdk/b.py")
+        self.assertIsNotNone(found)
+        self.assertEqual(why, "")
+
+    def test_a_generated_file_the_push_makes_stale_is_refused(self):
+        module = pre_push_lint()
+        found, why = self.generated(module,
+                                    "not current: sdk/a.py\nnot current: sdk/c.py",
+                                    "not current: sdk/a.py")
+        self.assertIsNone(found)
+        self.assertEqual(why, "new: sdk/c.py")
+
+    def test_a_generated_check_naming_no_file_where_main_names_one_is_refused(self):
+        module = pre_push_lint()
+        found, why = self.generated(module, "can't build: something", "not current: sdk/a.py")
+        self.assertIsNone(found)
+        self.assertIn("names no output file here", why)
+
+    def test_a_generated_file_with_no_board_red_is_named_new(self):
+        module = pre_push_lint()
+        board = self.board(module, [], ancestor=lambda since, of: True)
+        found, why = board.inherit_generated({"check": "sdk-types", "outcome": "fail",
+                                             "excerpt": "not current: sdk/c.py"})
+        self.assertIsNone(found)
+        self.assertEqual(why, "new: sdk/c.py")
+
+    def test_a_compile_failure_in_a_package_the_push_does_not_change_is_mains(self):
+        module = pre_push_lint()
+        metadata = {"packages": [
+            {"name": "a", "manifest_path": str(ROOT / "a/Cargo.toml"), "dependencies": []},
+            {"name": "b", "manifest_path": str(ROOT / "b/Cargo.toml"),
+             "dependencies": [{"name": "a", "source": None}]}]}
+        push = module.Push({"b/src/lib.rs"}, [], [], [])
+        self.assertEqual(module.compile_is_mains(ROOT, push, metadata,
+                                                 "error: could not compile `a` (lib)"), ["a"])
+        # A change to what `b` builds makes its failure the push's.
+        push = module.Push({"a/src/lib.rs"}, [], [], [])
+        self.assertIsNone(module.compile_is_mains(ROOT, push, metadata,
+                                                  "error: could not compile `b` (lib)"))
+
+    def test_a_manifest_change_leaves_a_compile_failure_unplaced(self):
+        module = pre_push_lint()
+        metadata = {"packages": [
+            {"name": "a", "manifest_path": str(ROOT / "a/Cargo.toml"), "dependencies": []}]}
+        push = module.Push({"a/Cargo.toml"}, [], [], [])
+        self.assertIsNone(module.compile_is_mains(ROOT, push, metadata,
+                                                  "error: could not compile `a` (lib)"))
+
     def test_a_result_told_twice_is_judged_once(self):
         module = pre_push_lint()
         first = json.dumps({"type": "event", "body": {"finished": {
@@ -1426,8 +1539,8 @@ class InheritedRedTests(unittest.TestCase):
             "blame": {"inherited": {"since": "abcdef0123456789", "claimed_by": None}},
             "excerpt": "warning: unused import"}}}) + "\n"
         push = module.Push(set(), [(self.BASE, self.BASE)], [], [])
-        self.assertEqual(module.report([(run, module.EXIT_ONLY_INHERITED, output)], 1.0,
-                                       "one check", set(), ROOT, push), 0)
+        self.assertEqual(module.report([(run, 3, output)], 1.0, "one check", set(),
+                                       ROOT, push, {}), 0)
 
 
 if __name__ == "__main__":
