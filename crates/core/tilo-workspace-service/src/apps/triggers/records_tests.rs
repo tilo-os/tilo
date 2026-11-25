@@ -15,10 +15,11 @@
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
+use collab_types::store::wire::Command;
+use collab_types::store::{Cell, Resource, Value};
 use serde_json::json;
 use tilo_automation::Shortcut;
-use tilo_resource_store::wire::Command;
-use tilo_resource_store::{Cell, Resource, Stamp, Value};
+use tilo_resource_store::Stamp;
 
 use super::{Order, Runner, StartRun};
 use crate::workspaces::MemberDevice;

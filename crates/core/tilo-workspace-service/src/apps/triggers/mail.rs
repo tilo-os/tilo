@@ -229,7 +229,7 @@ async fn messages_in(
     let found = workspaces
         .store_found(
             workspace,
-            tilo_resource_store::Query::of(MESSAGE, MOST_MESSAGES),
+            collab_types::store::Query::of(MESSAGE, MOST_MESSAGES),
         )
         .await?;
     Ok(found

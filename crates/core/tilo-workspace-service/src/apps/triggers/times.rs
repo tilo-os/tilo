@@ -74,7 +74,7 @@ async fn times_read(
         .workspaces
         .store_found(
             &armed.workspace,
-            tilo_resource_store::Query::of(kind, MOST_RECORDS),
+            collab_types::store::Query::of(kind, MOST_RECORDS),
         )
         .await?;
     let entries: Vec<(String, Map<String, Value>)> = found
