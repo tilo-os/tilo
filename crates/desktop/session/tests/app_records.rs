@@ -6,9 +6,9 @@
 //! action — at the session's API, as the canvas, the REPL and an agent make one — is in that
 //! store, where the REPL's `find` and the app's own window read it.
 //!
-//! The session here is the one `dist/dev/shell-run.sh` starts: it takes part in the collaboration
-//! app wire, founds its workspace on a throwaway identity, and holds its secrets in a file store, so
-//! the workspace's records are sealed with channel keys it has.
+//! The session here is a computer's: the shell of the device's daemon, which keeps the person's
+//! workspace and seals its records with the channel keys it holds. The session takes part in the
+//! collaboration app wire its windows join.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -21,6 +21,7 @@
 )]
 
 use serde_json::json;
+use tilo_compositor::OutputConfig;
 use tilo_session::{AppSocket, Options, Session};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
@@ -39,63 +40,42 @@ const SEEDED_TASK: &str = "Take the bins out";
 /// whichever day it shows.
 const SEEDED_PROJECT: &str = "Move flat";
 
-/// A seeded session as `dist/dev/shell-run.sh` starts one, in `home`: the shell as the whole
-/// screen, the development apps seeded, the MCP server admitting this test's program as the
-/// person, and the workspace it founds on its throwaway identity, its channel keys in the file
-/// store `home` keeps. Answers the session once it holds that workspace.
+/// A seeded session as a computer starts one: the shell of a device daemon of its own
+/// ([`crate::common::on_its_daemon`]), the development apps seeded, the MCP server admitting this
+/// test's program as the person, and its sockets and state at `root`. Answers the session once it
+/// shows the workspace the daemon keeps and the seeded apps' resources are kept there.
 /// It records the apps it started in `launches`: a test that speaks as an app's process says there
 /// that it started it.
 fn session(
-    home: &mut tilo_test_env::TestHome,
     root: &std::path::Path,
     launches: std::sync::Arc<tilo_session::Launches>,
 ) -> (Session, String) {
-    // The account's own store below the identity directory, where every reader looks, and the
-    // person's devices a certificate is checked against before anything signs with it.
-    tilo_identity::sources::test_trust::install();
-    let identity = tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity"));
-    std::fs::create_dir_all(&identity).expect("the identity's directory");
-    let system = home.root().join("system");
-    home.env()
-        .set("TILO_IDENTITY_ROOT", &system)
-        .set("TILO_SECRETS_DIR", secrets());
-    tilo_identity::provisioning::ensure_throwaway_test_identity(
-        &identity,
-        &tilo_identity::provisioning::collaboration_identity_paths(),
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .expect("the throwaway identity");
-    let mut session = crate::common::headless(Options {
-        person: PERSON.to_owned(),
-        collab: true,
-        state: Some(home.state().to_path_buf()),
-        services: crate::common::seeded_apps(),
-        asks: Some(tilo_service::asks::channel()),
-        app_socket: AppSocket::At(root.join("app_wire.sock")),
-        mcp_server: Some(root.join("agent.sock")),
-        api_server: Some(root.join("api.sock")),
-        launches,
-        ..Options::default()
-    });
+    let mut session = crate::common::on_its_daemon_with(
+        &[OutputConfig::new(
+            "HEADLESS-1",
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
+        )],
+        |device| Options {
+            collab: true,
+            state: Some(root.join("state")),
+            services: crate::common::seeded_apps_of(device),
+            asks: Some(tilo_service::asks::channel()),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
+            mcp_server: Some(root.join("agent.sock")),
+            api_server: Some(root.join("api.sock")),
+            launches,
+            ..Options::default()
+        },
+    );
     let workspace = wait_for(&mut session, "the workspace the shell shows", |session| {
         session.handle().read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
         })
     });
+    crate::common::kept_in_workspace(&mut session);
     (session, workspace)
-}
-
-/// The file store this process keeps its secrets in: a process opens the store
-/// `TILO_SECRETS_DIR` names once, so every session of this test binary keeps its channel keys in
-/// the one store, which outlives each test's home.
-fn secrets() -> &'static std::path::Path {
-    static STORE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    STORE.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("tilo-test-secrets-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("the secret store's directory");
-        dir
-    })
 }
 
 /// Who the session runs as: the person its identity certifies, whom the workspace's store names
@@ -282,10 +262,8 @@ fn in_tasks_window<R: Send>(
 fn the_seeded_tasks_are_in_the_store_the_tasks_window_opens() {
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
-    let mut home = tilo_test_env::TestHome::new().expect("a home");
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
-    let (mut session, workspace) =
-        session(&mut home, root.path(), std::sync::Arc::clone(&launches));
+    let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
 
     let shown = in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
         if !tasks_in(host)
@@ -325,10 +303,22 @@ fn lists_task(session: &Session, title: &str) -> bool {
 fn a_fresh_sessions_seeded_tasks_move_into_the_workspace_it_founds_without_going_missing() {
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
-    let mut session = crate::common::headless(Options {
-        services: crate::common::seeded_apps(),
-        ..crate::common::api_options(root.path())
-    });
+    let mut session = crate::common::on_its_daemon_with(
+        &[OutputConfig::new(
+            "HEADLESS-1",
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
+        )],
+        |device| Options {
+            state: Some(root.path().join("state")),
+            services: crate::common::seeded_apps_of(device),
+            asks: Some(tilo_service::asks::channel()),
+            app_socket: AppSocket::At(root.path().join("app_wire.sock")),
+            mcp_server: Some(root.path().join("agent.sock")),
+            api_server: Some(root.path().join("api.sock")),
+            ..Options::default()
+        },
+    );
 
     wait_for(
         &mut session,
@@ -360,10 +350,8 @@ fn a_fresh_sessions_seeded_tasks_move_into_the_workspace_it_founds_without_going
 fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_the_window() {
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
-    let mut home = tilo_test_env::TestHome::new().expect("a home");
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
-    let (mut session, workspace) =
-        session(&mut home, root.path(), std::sync::Arc::clone(&launches));
+    let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
     // The session's Tasks is the workspace's once it holds it: the seeded task is there first.
     in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
         tasks_in(host)
@@ -414,10 +402,8 @@ fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_the_window() {
 fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
-    let mut home = tilo_test_env::TestHome::new().expect("a home");
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
-    let (mut session, workspace) =
-        session(&mut home, root.path(), std::sync::Arc::clone(&launches));
+    let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
 
     // The person checks the task off in the window, as its check box does.
     in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
@@ -503,10 +489,8 @@ fn add_task(host: &Host, me: &tilo_actions::Actor, title: &str) -> Option<()> {
 fn a_task_added_in_the_window_is_the_persons_and_marks_nothing_for_them() {
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
-    let mut home = tilo_test_env::TestHome::new().expect("a home");
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
-    let (mut session, workspace) =
-        session(&mut home, root.path(), std::sync::Arc::clone(&launches));
+    let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
     let me = me();
 
     let (versions, unseen) =
@@ -548,10 +532,8 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
     const TYPED: &str = "Milk and eggs";
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
-    let mut home = tilo_test_env::TestHome::new().expect("a home");
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
-    let (mut session, workspace) =
-        session(&mut home, root.path(), std::sync::Arc::clone(&launches));
+    let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
     let me = me();
 
     let (typed, steps, lead, (placeholder, arrow, beside, said)) =

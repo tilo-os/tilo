@@ -715,7 +715,9 @@ pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
 }
 
 /// A home for a computer of the test's own, set up as one of a person's devices: the identity
-/// directory its daemon keeps the person's root in, and the file secret store beside it.
+/// directory its daemon keeps the person's root in, the file secret store beside it, and the
+/// sealed file store a headless machine keeps its workspace keys' vault key in ([`secrets`]):
+/// without one the daemon holds no group keys, and every record it seals is refused.
 ///
 /// # Panics
 /// The home cannot be made.
@@ -725,8 +727,21 @@ pub fn device_home() -> tilo_test_env::TestHome {
     let identity = home.root().join("identity");
     home.env()
         .set("TILO_IDENTITY_ROOT", &identity)
-        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+        .set("TILO_SECRETS_DIR", secrets());
     home
+}
+
+/// The sealed file store this process keeps its secrets in: a process opens the store
+/// `TILO_SECRETS_DIR` names once, so every device of this test binary keeps its keys in the one
+/// store, which outlives each test's home.
+fn secrets() -> &'static Path {
+    static STORE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("tilo-test-secrets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the secret store's directory");
+        dir
+    })
 }
 
 /// The device's daemon, started in this process over `profile` with the language runtime mounted on
@@ -826,13 +841,31 @@ pub struct Device {
 /// The home, the daemon or the session does not start.
 #[track_caller]
 pub fn on_its_daemon(outputs: &[OutputConfig], options: Options) -> Session {
+    on_its_daemon_with(outputs, |_| options)
+}
+
+/// [`on_its_daemon`] with the options `options` makes for the device once its daemon serves its
+/// person: what the session runs that must be that person's, as the seeded apps are
+/// ([`seeded_apps_of`]).
+///
+/// # Panics
+/// The home, the daemon or the session does not start.
+#[track_caller]
+pub fn on_its_daemon_with(
+    outputs: &[OutputConfig],
+    options: impl FnOnce(&Device) -> Options,
+) -> Session {
+    // What the daemon says of the writes it refuses, at `RUST_LOG`'s word (warnings by default).
+    people::install_log();
     let within = tilo_test_env::hang_bound();
+    let device = device_daemon(device_home(), None);
+    let options = options(&device);
     let Device {
         daemon,
         person,
         home,
         profile,
-    } = device_daemon(device_home(), None);
+    } = device;
     let shell_link = daemon
         .link_shell(within)
         .expect("the daemon makes the session's link");
@@ -946,14 +979,27 @@ pub fn device_in(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
 }
 
 /// The headless session with the shell as the whole screen and the seeded apps published (notes,
-/// tasks, chat and mail), its sockets at `root` ([`api_options`]), and the framed canvas in front.
-/// The apps are the ones installed in this run's app store ([`app_store`]).
+/// tasks, chat and mail), its sockets at `root` as [`api_options`] places them and its state
+/// beside them, and the framed canvas in front. The apps are the ones installed in this run's app store
+/// ([`app_store`]), seeded as the daemon's person. The session is the shell of a device daemon of
+/// its own ([`on_its_daemon`]): the workspace it shows, and the apps' resources kept there, are
+/// the ones that daemon holds.
 pub fn seeded_session(root: &Path) -> Session {
-    let mut session = headless(Options {
-        services: seeded_apps(),
-        test_control: Some(root.join("test-control.sock")),
-        ..api_options(root)
-    });
+    let mut session = on_its_daemon_with(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        // Not `api_options`: its state is a device of another identity's, and the daemon's
+        // identity is the one this session is.
+        |device| Options {
+            services: seeded_apps_of(device),
+            test_control: Some(root.join("test-control.sock")),
+            state: Some(root.join("state")),
+            asks: Some(person_asked()),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
+            mcp_server: Some(root.join("agent.sock")),
+            api_server: Some(root.join("api.sock")),
+            ..Options::default()
+        },
+    );
     // The shell shows the Frames canvas once it says so: what the canvas's own controls are called
     // is the person's language's, so a fixture reads the style, not their words.
     show_preset(&mut session, FRAMES);
@@ -1082,8 +1128,30 @@ pub fn seeded_apps() -> Vec<Box<dyn tilo_service::Service>> {
 /// # Panics
 /// The apps do not load.
 pub fn seeded_apps_in(store: &Path) -> Vec<Box<dyn tilo_service::Service>> {
+    seeded_as(PERSON, None, store)
+}
+
+/// [`seeded_apps`] as `device`'s person and this device seed them, as a computer's session does
+/// (`--seed-apps`): the apps' first scenarios are that person's, made on this device, so the
+/// workspace its daemon keeps takes them as theirs.
+///
+/// # Panics
+/// The apps do not load.
+pub fn seeded_apps_of(device: &Device) -> Vec<Box<dyn tilo_service::Service>> {
+    let (person, own_device) = tilo_session::identity::own_ids(&Options {
+        person: device.person.clone(),
+        ..Options::default()
+    });
+    seeded_as(&person, own_device.as_deref(), app_store())
+}
+
+fn seeded_as(
+    person: &str,
+    device: Option<&str>,
+    store: &Path,
+) -> Vec<Box<dyn tilo_service::Service>> {
     let catalog = package_store::Catalog::at(store, None);
-    tilo_session::seeded_apps::seeded(PERSON, None, &catalog)
+    tilo_session::seeded_apps::seeded(person, device, &catalog)
         .expect("the seeded apps")
         .into_iter()
         .map(|app| Box::new(app) as Box<dyn tilo_service::Service>)
