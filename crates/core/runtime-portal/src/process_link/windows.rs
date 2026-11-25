@@ -483,6 +483,11 @@ mod tests {
             .unwrap();
             FromProcess::Ended(7).send(&link).unwrap();
             eprintln!("said on its error output");
+            // The starter takes a handed handle out of this process, so this process lives until
+            // the starter says it has it.
+            let mut taken = [0_u8; 5];
+            up.read_exact(&mut taken).unwrap();
+            assert_eq!(&taken, b"taken");
             return;
         }
         let mut command = Command::new(std::env::current_exe().unwrap());
@@ -508,9 +513,11 @@ mod tests {
         else {
             panic!("the handle the started process sent up");
         };
+        let up_stream = patch.into_stream().unwrap();
         let mut up = [0_u8; 27];
-        (&patch.into_stream().unwrap()).read_exact(&mut up).unwrap();
+        (&up_stream).read_exact(&mut up).unwrap();
         assert_eq!(&up, b"up from the started process");
+        (&up_stream).write_all(b"taken").unwrap();
         assert_eq!(
             FromProcess::receive(&link).unwrap(),
             Some(FromProcess::Ended(7))
