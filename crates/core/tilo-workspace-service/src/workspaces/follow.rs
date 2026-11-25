@@ -301,9 +301,11 @@ impl GovernedWorkspace {
         };
         let received = {
             let mut peer = self.peer();
-            if !(peer.holds_document(app_id, document_id)
-                || (collab_types::is_store_document(document_id) && envelope.is_whole_resource()))
-            {
+            // A write this copy holds the record of is taken in. So is one that is the record
+            // whole: a sealed checkpoint starts a record, and a replay that skipped it because
+            // this copy held none of the record yet would lose the write the server answered it
+            // kept, and every write after it, from the workspace's copy for good.
+            if !(peer.holds_document(app_id, document_id) || envelope.is_whole_resource()) {
                 return Followed::default();
             }
             peer.receive_from(
