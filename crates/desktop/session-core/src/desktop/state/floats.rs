@@ -1,5 +1,5 @@
 //! Windows floating above the shell: where the workspace's record has them,
-//! and what a drag that lifts or snaps one reports.
+//! and the press that carries one, which snaps it back into its strip when it lets go there.
 //!
 //! The place itself lives in the workspace's layout (`float`, next to
 //! the window's place in its strip), so every member sees the same window
@@ -9,7 +9,8 @@
 
 use std::collections::HashMap;
 
-use tilo_desktop_model::{CanvasPlace, FloatPlace, Layout, StripId, TabId, Workspace};
+use tilo_desktop_model::commands::{DesktopCommand, apply_command};
+use tilo_desktop_model::{CanvasPlace, FloatPlace, GroupId, Layout, StripId, TabId, Workspace};
 use ui::kurbo::{Point, Rect};
 use ui::num::{f64_of_i64, i32_of_f64, u32_of_f64};
 use ui::widget::FLOAT_CARD_SIZE;
@@ -57,6 +58,10 @@ pub struct AskedFloat {
     pub group: u64,
     /// Where it floats; `None` puts it back in its strip.
     pub float: Option<FloatPlace>,
+    /// Where in its strip it goes back, when the person let it go in a gap there: that strip, and
+    /// the window it stands before (by the tab in front of it), or `None` for after the last.
+    /// `None` puts it back where it stands in its strip.
+    pub into: Option<(StripId, Option<TabId>)>,
 }
 
 impl super::DesktopHandle {
@@ -74,6 +79,7 @@ impl super::DesktopHandle {
         let asked = self.take_asked_floats();
         let mut shared = self.shared.borrow_mut();
         for asked in asked {
+            // The move into a gap was made on the tree when the window was let go there.
             for workspace in &mut shared.tree.workspaces {
                 if workspace.tabs().any(|tab| tab.id == asked.tab) {
                     workspace.layout.set_float(asked.group, asked.float);
@@ -107,15 +113,21 @@ pub fn holds(shared: &Shared, strip: StripId, group: u64) -> bool {
 }
 
 /// The windows of the strip `strip` the workspace has floating, each at its rect on the work area
-/// `area` .
+/// `area` . A float the person carries stands where their hand has it, not where the record keeps
+/// it.
 pub fn floats_of(shared: &Shared, strip: StripId, area: CanvasPlace) -> HashMap<u64, Rect> {
+    let carried = shared.carried.filter(|carried| carried.strip == strip);
     workspace_with(&shared.tree, strip)
         .and_then(|workspace| workspace.strips.iter().find(|held| held.id == strip))
         .into_iter()
         .flat_map(|held| &held.window_groups)
         .filter_map(|group| {
             let float = shared.float_of(strip, group.id)?;
-            Some((group.id, rect_of(float.resolved(area))))
+            let at = match carried {
+                Some(carried) if carried.group == group.id => carried.at,
+                _ => rect_of(float.resolved(area)),
+            };
+            Some((group.id, at))
         })
         .collect()
 }
@@ -139,7 +151,12 @@ pub fn set(shared: &mut Shared, strip: StripId, group: u64, float: Option<FloatP
     if shared.float_of(strip, group) == float {
         return false;
     }
-    shared.asked_floats.push(AskedFloat { tab, group, float });
+    shared.asked_floats.push(AskedFloat {
+        tab,
+        group,
+        float,
+        into: None,
+    });
     shared.changed();
     true
 }
@@ -288,4 +305,185 @@ fn share_with_card(shared: &mut Shared, strip: StripId, group: u64, area: Rect) 
         shared.changed();
     }
     id
+}
+
+/// A floating window the person carries with a press: where the hand took it, where the window
+/// stood then and where it stands now, and the strip and work area it floats over.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Carried {
+    pub strip: StripId,
+    pub group: GroupId,
+    pub tab: TabId,
+    /// Where the press took it, in the surface's coordinates.
+    pub grab: Point,
+    /// The whole window, its bar and its content, where it stood when the press took it.
+    pub from: Rect,
+    /// The whole window where the hand has it now.
+    pub at: Rect,
+    /// The work area of the display it floats on.
+    pub area: Rect,
+}
+
+impl super::DesktopHandle {
+    /// A press at `point` (the surface's coordinates) takes the floating window there by its bar,
+    /// or, when `anywhere` (the press was made with Super held), by any point of it: the window
+    /// follows the press ([`Self::carry_to`]) until it is let go ([`Self::put_down`]). Whether a
+    /// floating window stands there to carry.
+    pub fn carry_float_at(&self, point: Point, anywhere: bool) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let taken = shared.shown_tabs.0.iter().rev().find(|shown| {
+            let bar = Rect::new(
+                shown.window.x0,
+                shown.window.y0,
+                shown.window.x1,
+                shown.content.map_or(shown.window.y1, |content| content.y0),
+            );
+            shown.floated
+                && if anywhere {
+                    shown.window.contains(point)
+                } else {
+                    bar.contains(point)
+                }
+        });
+        let Some(&super::shown::ShownTab {
+            tab, group, window, ..
+        }) = taken
+        else {
+            return false;
+        };
+        let Some((strip, area)) = super::shown::section_holding(&shared, group) else {
+            return false;
+        };
+        shared.carried = Some(Carried {
+            strip,
+            group,
+            tab,
+            grab: point,
+            from: window,
+            at: window,
+            area,
+        });
+        true
+    }
+
+    /// The hand carrying a floating window moved to `point`: the window follows it, keeping the
+    /// hold it was taken by.
+    pub fn carry_to(&self, point: Point) {
+        let mut shared = self.shared.borrow_mut();
+        let Some(carried) = shared.carried.as_mut() else {
+            return;
+        };
+        let (dx, dy) = (point.x - carried.grab.x, point.y - carried.grab.y);
+        let from = carried.from;
+        let at = Rect::new(from.x0 + dx, from.y0 + dy, from.x1 + dx, from.y1 + dy);
+        if at != carried.at {
+            carried.at = at;
+            shared.wake.wake();
+        }
+    }
+
+    /// The hand carrying a floating window let it go at `point`. Over the bars of its strip's
+    /// windows it snaps back into the strip, as its own window in the gap it was let go in;
+    /// anywhere else it floats where it was let go, kept on the display. Either is the person's
+    /// arranging action ([`Self::take_asked_floats`]). Whether a window was carried.
+    pub fn put_down(&self, point: Point) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let Some(carried) = shared.carried.take() else {
+            return false;
+        };
+        if let Some(before) = gap_at(&shared, &carried, point) {
+            snap_into(&mut shared, &carried, before);
+            return true;
+        }
+        let at = ui::widget::keep_float_inside(carried.area, carried.at);
+        let place = FloatPlace::of_rect(area_of(carried.area), place_of(at));
+        if !set(&mut shared, carried.strip, carried.group, Some(place)) {
+            // Let go where it was: the window goes back where the record keeps it.
+            shared.wake.wake();
+        }
+        true
+    }
+}
+
+/// Where in its strip the carried window lands when let go at `point`: before the first of the
+/// strip's other windows whose middle is right of the hand (`Some(Some(group))`), after the last
+/// (`Some(None)`), or `None` when the hand is not over the strip's bars.
+#[expect(
+    clippy::option_option,
+    reason = "outer: over the strip or not; inner: before a window or after the last"
+)]
+fn gap_at(shared: &Shared, carried: &Carried, point: Point) -> Option<Option<GroupId>> {
+    let groups: Vec<GroupId> = workspace_with(&shared.tree, carried.strip)?
+        .strips
+        .iter()
+        .find(|held| held.id == carried.strip)?
+        .window_groups
+        .iter()
+        .map(|held| held.id)
+        .filter(|id| *id != carried.group)
+        .collect();
+    let laid: Vec<&super::shown::ShownTab> = groups
+        .iter()
+        .filter_map(|id| {
+            shared
+                .shown_tabs
+                .0
+                .iter()
+                .find(|shown| shown.group == *id && !shown.floated)
+        })
+        .collect();
+    let over_bars = laid.iter().any(|shown| {
+        let bar_bottom = shown.content.map_or(shown.window.y1, |content| content.y0);
+        point.y >= shown.window.y0 && point.y < bar_bottom
+    });
+    if !over_bars || point.x < carried.area.x0 || point.x >= carried.area.x1 {
+        return None;
+    }
+    Some(
+        laid.iter()
+            .find(|shown| point.x < shown.window.center().x)
+            .map(|shown| shown.group),
+    )
+}
+
+/// Snap the carried window back into its strip, as its own window before `before` (or last): the
+/// tree moves it at once, so the strip shows it there, and the record makes the same move as the
+/// person's one arranging action.
+fn snap_into(shared: &mut Shared, carried: &Carried, before: Option<GroupId>) {
+    let before_tab = before.and_then(|before| {
+        workspace_with(&shared.tree, carried.strip)?
+            .strips
+            .iter()
+            .flat_map(|held| &held.window_groups)
+            .find(|held| held.id == before)
+            .map(|held| held.active_tab)
+    });
+    let Shared { tree, minter, .. } = shared;
+    if let Some(workspace) = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.strips.iter().any(|held| held.id == carried.strip))
+    {
+        let moved = apply_command(
+            workspace,
+            &DesktopCommand::MoveGroup {
+                group: carried.group,
+                strip: carried.strip.0,
+                before,
+            },
+            &mut || Ok(minter.mint()),
+            &mut |_, _| Err("a move opens no window".into()),
+        );
+        if let Err(why) = moved {
+            tracing::warn!(why, "the window let go in its strip could not move there");
+        }
+    }
+    shared.tree.set_active_group(carried.strip, carried.group);
+    shared.asked_floats.push(AskedFloat {
+        tab: carried.tab,
+        group: carried.group,
+        float: None,
+        into: Some((carried.strip, before_tab)),
+    });
+    shared.changed();
 }

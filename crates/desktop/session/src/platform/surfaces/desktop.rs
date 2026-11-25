@@ -3,7 +3,8 @@
 //! [`desktop`] makes the [`ShellDesktop`] a session runs the desktop on: the policy that keeps its
 //! windows as tabs of the desktop's workspaces ([`tilo_desktop_policy`]), the desktop's pass, and
 //! the shell's published side. The tilolang shell draws the desktop and its wells place the windows
-//! ([`super::WellPolicy`]), reading the same desktop; nothing of it is drawn here.
+//! ([`super::WellPolicy`]), reading the same desktop; nothing of it is drawn here. A press that
+//! carries a floating window is the desktop's: it moves the window and puts it down.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_compositor::LayoutRect;
 use tilo_compositor::gestures::GestureConfig;
-use tilo_session_core::surface::{ShellSurface, SurfaceLayer};
+use tilo_session_core::surface::{KeyModifiers, ShellSurface, SurfaceLayer};
 
 use tilo_desktop_policy::DesktopPolicy;
 use tilo_desktop_policy::displays::Output;
@@ -41,6 +42,9 @@ struct Desktop {
     primary: Option<String>,
     /// The shell's published side ([`ShellDesktop::run_desktop`]).
     verbs: Option<tilo_session_core::desktop::shell_verbs::ShellVerbs>,
+    /// Whether Super is held with the pointer: a press then carries a floating window by any
+    /// point of it, not only its bar.
+    super_held: bool,
 }
 
 impl Desktop {
@@ -127,6 +131,12 @@ impl Desktop {
     fn ask(&self) {
         self.asked.store(true, Ordering::Release);
     }
+
+    /// The logical point `(x, y)` in the desktop's own coordinates.
+    fn point(&self, x: f64, y: f64) -> ui::kurbo::Point {
+        let (ox, oy) = self.origin;
+        ui::kurbo::Point::new(x - f64::from(ox), y - f64::from(oy))
+    }
 }
 
 /// The desktop under every window; a clone is the same desktop.
@@ -159,6 +169,7 @@ pub fn desktop(salt: u16) -> ShellDesktop {
             monitors: Vec::new(),
             primary: None,
             verbs: None,
+            super_held: false,
         })),
     }
 }
@@ -534,20 +545,51 @@ impl tilo_session_core::surfaces::Published for ShellDesktop {
 
 /// The desktop as the compositor holds it: the tilolang shell draws the strips, their frames and the
 /// places in them, around the wells the windows stand in, so the desktop draws nothing and takes
-/// no pointer and no key. Each frame it takes up its own pass when something asked for one, so a
-/// workspace switched or a window closed is the shell's to draw.
+/// no key, and no pointer but a press that carries a floating window. Each frame it takes up its
+/// own pass when something asked for one, so a workspace switched or a window closed is the
+/// shell's to draw.
 impl ShellSurface for ShellDesktop {
     fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
+    }
+
+    fn below_windows(&self) -> bool {
+        true
     }
 
     fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
         false
     }
 
-    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+    fn pointer_modifiers(&mut self, held: KeyModifiers) {
+        self.desktop.borrow_mut().super_held = held.logo;
+    }
+
+    /// A press on a floating window's bar, or anywhere on it with Super held, carries it: the
+    /// desktop's own carry, which every shell drawn over this desktop shares.
+    fn carries_window_at(&mut self, x: f64, y: f64) -> bool {
+        let desktop = self.desktop.borrow();
+        let point = desktop.point(x, y);
+        desktop
+            .policy
+            .handle()
+            .carry_float_at(point, desktop.super_held)
+    }
+
+    /// The carried window follows the hand.
+    fn pointer_motion(&mut self, x: f64, y: f64) {
+        let desktop = self.desktop.borrow();
+        desktop.policy.handle().carry_to(desktop.point(x, y));
+    }
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    /// The carried window is let go where the hand is: in a gap of its strip it snaps back there,
+    /// anywhere else it floats there.
+    fn press_ended(&mut self, x: f64, y: f64) {
+        let desktop = self.desktop.borrow();
+        desktop.policy.handle().put_down(desktop.point(x, y));
+    }
 
     /// Only what is asked of it brings it a pass: a command queued on its handle, or a change
     /// to its windows. Whether it ran one, so the frame shows what the pass settled.

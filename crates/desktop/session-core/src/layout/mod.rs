@@ -1745,8 +1745,8 @@ impl Layout {
                 },
                 None => LayoutAction::Snap {
                     place: asked.tab,
-                    row: None,
-                    before: None,
+                    row: asked.into.map(|(row, _)| row.0),
+                    before: asked.into.and_then(|(_, before)| before),
                 },
             };
             if let Err(why) = self.ask_person(&action) {
@@ -2142,9 +2142,10 @@ fn float_place(tree: &mut Tree, place: u64, float: FloatPlace) -> Result<bool, S
     Ok(held.layout.set_float(group, Some(float)))
 }
 
-/// Snap the floating place `place` back among its workspace's windows,
-/// moving it into `row` before `before` when a drop named one; left out, it
-/// returns to the strip it stands in, unchanged. Whether the layout changed.
+/// Snap the floating place `place` back among its workspace's windows. When a drop named a row,
+/// its window goes into that row whole, as a window of its own in the gap the drop named: before
+/// the window holding the place `before`, or after the row's last. Left out, it returns to the
+/// strip it stands in, unchanged. Whether the layout changed.
 fn snap_back(
     tree: &mut Tree,
     place: u64,
@@ -2155,9 +2156,78 @@ fn snap_back(
     let (held, group) = holding(tree, place)?;
     let mut changed = held.layout.set_float(group, None);
     if let Some(row) = row {
-        changed |= move_place(tree, place, StripId(row), before, None, by_the_person)?;
+        changed |= move_window(tree, group, StripId(row), before, by_the_person)?;
     }
     Ok(changed)
+}
+
+/// Move the window `group` whole into the row `row` of its workspace, before the window holding
+/// the place `before` or after the row's last, as its own window. A window holding a place the
+/// person pinned stays where it is unless they moved it themselves. Whether it moved.
+fn move_window(
+    tree: &mut Tree,
+    group: GroupId,
+    row: StripId,
+    before: Option<u64>,
+    by_the_person: bool,
+) -> Result<bool, String> {
+    let gone = "that window is not in the layout";
+    let held = tree
+        .workspaces
+        .iter_mut()
+        .find(|held| {
+            held.strips
+                .iter()
+                .any(|strip| strip.window_groups.iter().any(|window| window.id == group))
+        })
+        .ok_or(gone)?;
+    let windows = || held.strips.iter().flat_map(|strip| &strip.window_groups);
+    let pinned = windows()
+        .find(|window| window.id == group)
+        .is_some_and(|window| window.tabs.iter().any(|tab| tab.pinned));
+    if !by_the_person && pinned {
+        return Err("the person pinned that place: it stays where it is".into());
+    }
+    let before = before
+        .map(|place| {
+            windows()
+                .find(|window| window.tabs.iter().any(|tab| tab.id == place))
+                .map(|window| window.id)
+                .ok_or("that place is not in the layout")
+        })
+        .transpose()?;
+    if before == Some(group) {
+        return Ok(false);
+    }
+    let order = |held: &Workspace| -> Vec<(StripId, GroupId)> {
+        held.strips
+            .iter()
+            .flat_map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .map(|window| (strip.id, window.id))
+            })
+            .collect()
+    };
+    let was = order(held);
+    tilo_desktop_model::commands::apply_command(
+        held,
+        &tilo_desktop_model::commands::DesktopCommand::MoveGroup {
+            group,
+            strip: row.0,
+            before,
+        },
+        &mut || Err("a move mints nothing".into()),
+        &mut |_, _| Err("a move opens no window".into()),
+    )?;
+    let moved = order(held) != was;
+    if moved && by_the_person {
+        let workspace = held.id();
+        tree.active_strip.insert(workspace, row);
+        tree.set_active_group(row, group);
+    }
+    Ok(moved)
 }
 
 /// The workspace of `tree` holding the window `place`, and the group it stands in.

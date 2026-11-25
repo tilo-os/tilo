@@ -1673,35 +1673,42 @@ impl State {
         }
     }
 
-    /// A press with Super held over a window: the desktop beneath the windows carries that window
-    /// with the press, as a press on its bar would, and takes the pointer from the window's client
-    /// until the press ends.
+    /// A press over the windows or the shell beneath them: a surface beneath the windows that
+    /// carries a window with it (a floating window by its bar, or any window with Super held) takes
+    /// the pointer from the window's client and the shell until the press ends.
     fn carry_window_under_pointer(&mut self, serial: Serial, time: u32) {
-        let logo = self
-            .seat
-            .get_keyboard()
-            .is_some_and(|keyboard| keyboard.modifier_state().logo);
-        if !logo
-            || self.locked()
-            || self.pointer_target != PointerTarget::Clients
-            || self.window_at(self.pointer).is_none()
+        if self.locked() || self.layer_surface_under(self.pointer, true).is_some() {
+            return;
+        }
+        // A surface over the windows (a panel, a menu) keeps its own press.
+        if let PointerTarget::Surface(index) = self.pointer_target
+            && self
+                .surfaces
+                .get(index)
+                .is_some_and(|surface| !surface.below_windows())
         {
             return;
         }
-        let Some(index) = self
-            .surfaces
-            .iter()
-            .rposition(|surface| surface.below_windows())
-        else {
-            return;
-        };
         let (x, y) = (self.pointer.x, self.pointer.y);
-        let Some(surface) = self.surfaces.get_mut(index) else {
+        let held = self.held_modifiers();
+        let Some(index) = (0..self.surfaces.len()).rev().find(|index| {
+            self.surfaces.get_mut(*index).is_some_and(|surface| {
+                surface.below_windows() && {
+                    surface.pointer_modifiers(held);
+                    surface.carries_window_at(x, y)
+                }
+            })
+        }) else {
             return;
         };
-        surface.pointer_motion(x, y);
-        if !surface.carries_window_at(x, y) {
-            return;
+        if let PointerTarget::Surface(old) = self.pointer_target
+            && old != index
+            && let Some(surface) = self.surfaces.get_mut(old)
+        {
+            surface.pointer_leave();
+        }
+        if let Some(surface) = self.surfaces.get_mut(index) {
+            surface.pointer_motion(x, y);
         }
         self.pointer_target = PointerTarget::Surface(index);
         // The window's client loses the pointer while the desktop carries its window.

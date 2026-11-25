@@ -271,9 +271,9 @@ pub struct Shared {
     pub replaced: bool,
     /// Where each shown window stands and the bounds of the tab it shows, as last laid out.
     pub shown_tabs: ShownTabs,
-    /// Where the next press lands when it carries the window there from anywhere in it, as a
-    /// press on its bar does ([`DesktopHandle::carry_next_press_at`]).
-    pub carry_press: Option<Point>,
+    /// The floating window the person carries with a press, while the press lasts
+    /// ([`DesktopHandle::carry_float_at`]).
+    pub carried: Option<floats::Carried>,
     /// Each window floating over the shell, and what it is drawn whole over the windows under it —
     /// its bar, its body and the shadow that lifts it — as last drawn.
     pub float_covers: Vec<(TabId, Rect)>,

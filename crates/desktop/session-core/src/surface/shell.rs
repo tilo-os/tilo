@@ -808,9 +808,11 @@ pub trait ShellSurface {
     /// A pointer button (evdev code) changed state over the surface.
     fn pointer_button(&mut self, button: u32, pressed: bool);
 
-    /// A press made with Super held over a window at this logical point: whether this surface
-    /// carries that window with the press, as a press on the window's bar would. The press itself
-    /// follows, to this surface, and the pointer stays with it until the press ends.
+    /// A press at this logical point, over the windows or the shell beneath them, on a surface
+    /// beneath the windows: whether this surface carries a window with the press (a floating
+    /// window taken by its bar, or any of it while Super is held, which [`Self::pointer_modifiers`]
+    /// told it just before). The press itself follows, to this surface, and the pointer stays with
+    /// it until the press ends.
     fn carries_window_at(&mut self, _x: f64, _y: f64) -> bool {
         false
     }
