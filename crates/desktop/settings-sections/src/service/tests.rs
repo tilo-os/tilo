@@ -777,6 +777,8 @@ fn every_declared_verb_of_a_section_is_published_where_the_section_stands() {
         }
     }
     assert!(checked > 20, "{checked} declared verbs are published");
+}
+
 /// A painter module for a theme bundle: it declares the SDK's parameters and draws a triangle
 /// whose apex is `dx` from the centre, so a changed module draws a visibly other frame. It is the
 /// module the bundle's document names, compiled by the daemon into the device's store at install.
