@@ -255,30 +255,34 @@ impl StatePeer {
         let artifact = collab_types::document_artifact_id(app, &self.core.workspace, record);
         let attestation = collab_types::document_attestation_id(app, &self.core.workspace, record);
         let surface = self.signed_surface(app);
+        // A record this state holds is never started again, in the clear or sealed: an empty
+        // whole write of it is a second founding. A device the workspace runs records for may
+        // publish a start where one is due, as it may repair a record.
+        if document.is_some()
+            && !self.signed_by_governor(author.as_bytes())
+            && matches!(&mutation, Some(collab_types::DocumentMutation::Snapshot(bytes)) if super::empty_genesis(bytes))
+        {
+            return Err(DraftRefusal::Refused("the record exists already".into()));
+        }
         let Some(seal) = seal else {
             self.check_document_key_scope((app, record), readers, None, now, false)
                 .map_err(DraftRefusal::Refused)?;
             // A device that starts a record is told now when the workspace does not let it
-            // create one, or when the record is there already: a peer's copy of the same start
-            // is held or merged as the nothing it is, but its own write would be answered as
-            // published while no peer ever sees it.
+            // create one: a peer's copy of the same start is held or merged as the nothing it
+            // is, but its own write would be answered as published while no peer ever sees it.
             if matches!(&mutation, Some(collab_types::DocumentMutation::Snapshot(bytes)) if super::empty_genesis(bytes))
                 && !self.signed_by_governor(author.as_bytes())
-            {
-                if document.is_some() {
-                    return Err(DraftRefusal::Refused("the record exists already".into()));
-                }
-                if !self.may_create_document(
+                && !self.may_create_document(
                     &self
                         .membership(*author.as_bytes(), now)
                         .map_err(DraftRefusal::Refused)?,
                     &route,
                     now,
-                ) {
-                    return Err(DraftRefusal::Refused(
-                        "the workspace does not let this device create the record".into(),
-                    ));
-                }
+                )
+            {
+                return Err(DraftRefusal::Refused(
+                    "the workspace does not let this device create the record".into(),
+                ));
             }
             return Ok(SignedOp::new_unsigned(
                 frame.to_vec(),
