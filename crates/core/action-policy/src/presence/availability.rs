@@ -1,6 +1,6 @@
 //! How available a person says they are, beside their face.
 
-use web_time::Duration;
+use tilo_clock::time::Duration;
 
 /// How available a person says they are, beside their face. Emoji-free
 /// presets; idle and away also come on their own (no input for

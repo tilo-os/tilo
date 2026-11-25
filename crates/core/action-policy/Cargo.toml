@@ -25,7 +25,6 @@ serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 # A presence key's digest is the postcard encoding of the key, hashed.
 postcard = { workspace = true, features = ["alloc"] }
-web-time = { version = "1", features = ["serde"] }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 # The hue someone wears until they choose one, as every surface derives it.

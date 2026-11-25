@@ -2,7 +2,7 @@
 //! *where*. Inference is deliberately local and transient; only the resulting short status is fit for
 //! publication, and a manual status always wins.
 
-use web_time::{Duration, SystemTime};
+use tilo_clock::time::{Duration, SystemTime};
 
 /// Automatic summaries go stale quickly.
 pub const INFERRED_STATUS_TTL: Duration = Duration::from_secs(5 * 60);
