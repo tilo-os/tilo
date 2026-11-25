@@ -2428,7 +2428,7 @@ const OWN_INSTALL_TEST: &str =
 /// build's manifest and program from the device's own content store.
 #[test]
 fn a_development_build_installs_on_the_persons_own_connection() {
-    use tilo_actions::remote::{ActionProvider as _, ContentPut as _};
+    use tilo_actions::remote::ActionProvider as _;
 
     let Some(root) = isolated_root(OWN_INSTALL_TEST) else {
         return;
@@ -2451,7 +2451,7 @@ fn a_development_build_installs_on_the_persons_own_connection() {
     let store = tree
         .content_puts_for(Some(&target))
         .expect("this device keeps what its own actions read");
-    let mut put = |bytes: &[u8]| -> String {
+    let put = |bytes: &[u8]| -> String {
         let mut put = store
             .begin(&caller, u64::try_from(bytes.len()).unwrap())
             .expect("the device opens the upload");
