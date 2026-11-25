@@ -172,13 +172,13 @@ fn a_filed_report_reads_back_in_the_feedback_channel_and_its_filer_is_refused_tr
             .unwrap_or_else(|refused| panic!("Chat starts with no window: {refused:?}"));
         for at in 0..2 {
             let (filed, is_error) = said(
-                &owner
-                    .tool(
-                        "tilo_do",
-                        &json!({"path": format!("{CHAT}#report_problem"),
-                                "args": {"body": format!("The book failed to open {at}")}}),
-                    )
-                    .await,
+                &tool_soon(
+                    &owner,
+                    "tilo_do",
+                    &json!({"path": format!("{CHAT}#report_problem"),
+                            "args": {"body": format!("The book failed to open {at}")}}),
+                )
+                .await,
             );
             assert!(!is_error, "report {at} is filed and answered: {filed}");
         }
@@ -186,7 +186,8 @@ fn a_filed_report_reads_back_in_the_feedback_channel_and_its_filer_is_refused_tr
         // Both reports are messages of the workspace's one #feedback channel, which reads them
         // back.
         let channel = feedback_channel(&owner).await;
-        let (read, is_error) = said(&owner.tool("tilo_read", &json!({"path": channel})).await);
+        let (read, is_error) =
+            said(&tool_soon(&owner, "tilo_read", &json!({"path": channel})).await);
         assert!(!is_error, "the feedback channel reads: {read}");
         for at in 0..2 {
             assert!(
@@ -243,15 +244,29 @@ fn a_filed_report_reads_back_in_the_feedback_channel_and_its_filer_is_refused_tr
     });
 }
 
+/// `agent`'s tool `name` with `arguments`, asked again while it fails: an app republishes its
+/// action directory as its record changes, and a call made in that moment answers unavailable.
+async fn tool_soon(agent: &host::Agent, name: &str, arguments: &Value) -> Value {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let reply = agent.tool_structured(name, arguments).await;
+        if reply["isError"] != true {
+            return reply;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{name} {arguments} answers: {reply}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 /// The workspace's #feedback channel, as Chat lists it: its path, asked again until the app
 /// answers with the one channel reports are filed in.
 async fn feedback_channel(agent: &host::Agent) -> String {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let reply = agent
-            .tool_structured("tilo_ls", &json!({"path": CHAT}))
-            .await;
-        assert_ne!(reply["isError"], true, "{reply}");
+        let reply = tool_soon(agent, "tilo_ls", &json!({"path": CHAT})).await;
         let rows = reply["structuredContent"]["rows"]
             .as_array()
             .cloned()
