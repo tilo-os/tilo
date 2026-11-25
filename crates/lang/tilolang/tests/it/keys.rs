@@ -201,3 +201,15 @@ fn two_views_may_each_answer_the_same_key() {
     let got = codes(body);
     assert!(got.is_empty(), "each view answers its own key: {got:?}");
 }
+
+#[test]
+fn a_navigation_places_key_names_the_place_and_is_no_shortcut() {
+    // `key` of a navigation place is what names it, a word like `all`: no shortcut is read
+    // from it, so it is never refused as one.
+    let view = "view v() {\n    state place: Text = \"all\"\n    ui.NavList(selected: place) {\n        ui.NavItem(\"all\", \"All contacts\") {\n            on select: set(place, \"all\")\n        }\n        ui.NavItem(\"F1\", \"Starred\") {\n            on select: set(place, \"F1\")\n        }\n    }\n}\n";
+    let got = codes(view);
+    assert!(
+        got.is_empty(),
+        "a place's key is its name, not a key: {got:?}"
+    );
+}

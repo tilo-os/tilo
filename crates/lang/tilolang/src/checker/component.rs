@@ -607,9 +607,11 @@ impl Checker<'_> {
         }
         if let Some(p) = d.prop(name) {
             // `key:` on a control: a shortcut written as text is checked as an action's is; one
-            // computed where the view runs is typed as the prop below.
+            // computed where the view runs is typed as the prop below. A `key` that names the
+            // element itself (a navigation place's) is its identity, never a shortcut.
             if name == "key"
                 && p.data
+                && !p.identity
                 && matches!(&p.ty, Type::Text | Type::Option(_))
                 && self.shortcut_prop(n, name, value)
             {
