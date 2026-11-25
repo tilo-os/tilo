@@ -117,12 +117,12 @@ view permissions_pane() {
                                 role: .plain,
                             ) {
                                 on press: p.set_secrets_access(
-                                    app: stored.id,
+                                    app: stored.app,
                                     allowed: not stored.allowed,
                                 )
                             }
                             ui.Button("Forget", size: .small, role: .destructive) {
-                                on press: p.forget_secrets(app: stored.id)
+                                on press: p.forget_secrets(app: stored.app)
                             }
                         }
                     }
