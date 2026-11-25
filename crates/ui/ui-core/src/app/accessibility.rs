@@ -71,7 +71,12 @@ impl App {
         // fade), and the composites around it pass the environment on at that same build. A
         // person moving between the mouse and the keys changes neither: the widgets are told, and
         // the tree they stand in is kept, with what the key just opened in it.
-        if !built_alike {
+        if built_alike {
+            // A control told of the change can ask to be measured again (a button sizes its face
+            // by how it is reached): the kept tree is laid out for it, once.
+            self.layout.layout_dirty |=
+                self.root_widget.is_layout_dirty() || self.root_widget.layout_needs_measure();
+        } else {
             self.layout.request_rebuild();
         }
     }
