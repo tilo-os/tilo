@@ -163,11 +163,17 @@ fn command(
 
 /// The host session's Wayland socket, which the launcher binds into the
 /// sandbox as the app's only display.
+///
+/// A daemon started before its login's compositor, as a session's own daemon is, reads the
+/// display the login publishes for the programs beside the session
+/// ([`tilo_paths::login::WAYLAND_DISPLAY_FILE`]), so a headless session's apps open on the
+/// compositor it runs. A daemon a desktop starts already knows the display in its environment.
 fn wayland_socket() -> Result<PathBuf, String> {
     let display = std::env::var_os("WAYLAND_DISPLAY")
         .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(published_display)
         .ok_or("refusing to launch: this session has no Wayland display")?;
-    let display = PathBuf::from(display);
     let socket = if display.is_absolute() {
         display
     } else {
@@ -182,6 +188,14 @@ fn wayland_socket() -> Result<PathBuf, String> {
         ));
     }
     Ok(socket)
+}
+
+/// The display name the session's compositor published to its login, if it published one.
+fn published_display() -> Option<PathBuf> {
+    let dir = tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    let name = std::fs::read_to_string(dir.join(tilo_paths::login::WAYLAND_DISPLAY_FILE)).ok()?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| PathBuf::from(name))
 }
 
 /// Prepare `<sockets>/launch/tilo/services` with the profile's collaboration and
@@ -380,5 +394,40 @@ mod tests {
             std::fs::create_dir_all(&missing[0]).unwrap();
             assert!(resolve_launcher(&missing).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A login publishes the display its session's compositor listens on; a daemon started
+    /// before it reads that, so a headless session's apps open on the compositor it runs.
+    #[test]
+    fn a_daemon_reads_the_display_its_login_published() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = std::fs::canonicalize(dir.path()).unwrap();
+        let login = tilo_paths::login::session_dir(Some(runtime.clone().into_os_string())).unwrap();
+        std::fs::create_dir_all(&login).unwrap();
+        std::fs::write(
+            login.join(tilo_paths::login::WAYLAND_DISPLAY_FILE),
+            "wayland-0\n",
+        )
+        .unwrap();
+        std::fs::write(runtime.join("wayland-0"), b"").unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("XDG_RUNTIME_DIR", &runtime);
+        environment.remove("WAYLAND_DISPLAY");
+        assert_eq!(wayland_socket().unwrap(), runtime.join("wayland-0"));
+    }
+
+    #[test]
+    fn a_launch_with_no_display_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = std::fs::canonicalize(dir.path()).unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("XDG_RUNTIME_DIR", &runtime);
+        environment.remove("WAYLAND_DISPLAY");
+        assert!(wayland_socket().is_err());
     }
 }
