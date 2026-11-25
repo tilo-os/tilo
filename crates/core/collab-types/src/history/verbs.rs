@@ -1269,11 +1269,12 @@ fn entry(
     entry.insert("time_ms".into(), version.time_ms.into());
     // What the change did to the resource it is a version of, read from the change itself as the
     // store reads it, and which resource that was: a watcher is told both beside the change's id
-    // rather than working them out from what it saw before.
+    // rather than working them out from what it saw before. A change its action's context already
+    // names an item for keeps that one.
     if let Some((what, item)) = happened((doc, doc_id), version) {
         entry.insert("happened".into(), what.word().into());
-        if context.is_none()
-            && let Some(item) = item
+        if let Some(item) = item
+            && !entry.contains_key("item")
         {
             entry.insert("item".into(), item.into());
         }

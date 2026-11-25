@@ -312,7 +312,7 @@ mod tests {
 
     /// A record's content is read for the record the feed lists it under: the document it reads
     /// is the record's content, and each change says what it did to the record — the first made
-    /// it, the next edited it, both naming it.
+    /// it, the next, made by an action whose context names no item, edited it, both naming it.
     #[test]
     fn a_records_content_says_what_each_change_did() {
         let mut saved = Saved::default();
@@ -325,7 +325,14 @@ mod tests {
         let mut content = AutoCommit::new();
         write(&mut content, "title", "Plan");
         content.put(automerge::ROOT, "title", "Plan B").unwrap();
-        content.commit();
+        let action = tilo_actions::stamp::Stamp {
+            verb: "edit".into(),
+            invocation: "inv-1".into(),
+            ..tilo_actions::stamp::Stamp::default()
+        };
+        content.commit_with(
+            automerge::transaction::CommitOptions::default().with_message(action.message()),
+        );
         saved.save(&record, &mut content);
         saved.take_into(&mut log);
 
