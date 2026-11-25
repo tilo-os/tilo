@@ -601,13 +601,6 @@ fn invocations_of(command: &Command) -> Vec<String> {
     }
 }
 
-/// The time now, as a version reads it: ISO-8601 UTC to the second.
-fn now_text() -> String {
-    let now = jiff::Timestamp::from_second(tilo_clock::unix_now_i64())
-        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-    now.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()
-}
-
 /// The verb a committed change is stamped with: what the runtime named it, except a bound
 /// control's edit, which the package publishes as `edit-flag` (a checkbox) or `edit-text`.
 fn published_verb(note: &ChangeNote) -> String {
@@ -1134,7 +1127,7 @@ impl ResourceStore {
                     label: run.title,
                 }),
             invocation: uuid::Uuid::new_v4().to_string(),
-            at: now_text(),
+            at: (self.inner.now.borrow())(),
             moment: self.next_moment(None),
             ..Stamp::default()
         }
@@ -3789,12 +3782,16 @@ impl ResourceStore {
     }
 
     /// The moment a write from here is stamped with: the second the change says it was made in
-    /// (the host's clock, else now), and within it the milliseconds the device's clock read as
-    /// it wrote, and then a count of the writes made here in the same millisecond. Two writers'
-    /// changes order as the times they say do, and as they were written within one second; the
-    /// writes of one writer in the order they were made.
+    /// (else the second the host's clock reads now), and within it the milliseconds the device's
+    /// clock read as it wrote, and then a count of the writes made here in the same millisecond.
+    /// Two writers' changes order as the times they say do, and as they were written within one
+    /// second; the writes of one writer in the order they were made. A write that names no time
+    /// (a record the host makes, an undo) is dated by the same clock the app's own writes are,
+    /// so it never stands before or after them by a clock they do not read.
     fn next_moment(&self, at: Option<&str>) -> u64 {
+        let host_now = at.is_none().then(|| (self.inner.now.borrow())());
         let second = at
+            .or(host_now.as_deref())
             .and_then(|at| {
                 tilo_failure::ignored!(
                     "a write with no readable time is ordered by this device's clock",
@@ -3885,7 +3882,10 @@ impl ResourceStore {
             invocation,
             membership: Vec::new(),
             undoes: None,
-            at: note.at.clone().unwrap_or_else(now_text),
+            at: note
+                .at
+                .clone()
+                .unwrap_or_else(|| (self.inner.now.borrow())()),
             from,
             group: note
                 .group
