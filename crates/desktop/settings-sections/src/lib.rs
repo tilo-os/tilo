@@ -128,6 +128,14 @@ pub struct Root {
 /// A resource that holds what a surface file cannot.
 pub fn surface_file() -> Result<String, String> {
     let (resources, roots) = surface();
+    let resources: Vec<serde_json::Value> = resources
+        .iter()
+        .map(|resource| {
+            serde_json::to_value(resource)
+                .map(|value| ui::tilo_resource::surface::file::filed(&value))
+        })
+        .collect::<Result<_, _>>()
+        .map_err(|error| error.to_string())?;
     let mut file = serde_json::Map::new();
     file.insert(
         "format".into(),

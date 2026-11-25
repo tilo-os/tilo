@@ -16272,6 +16272,7 @@ dependencies = [
  "tilo-paths",
  "tilo-presence-types",
  "tilo-resource",
+ "tilo-resource-plain",
  "tilo-surface-compile",
  "tilo-test-env",
  "tracing",
@@ -19509,6 +19510,9 @@ name = "tilo-resource-plain"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "tilo-actions",
+ "tilo-clock",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
