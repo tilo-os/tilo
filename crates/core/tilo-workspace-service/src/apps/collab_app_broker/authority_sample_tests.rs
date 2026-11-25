@@ -155,7 +155,7 @@ fn owned_workspace() -> (Layout, String) {
     workspace.effect_receipts = (0..RECEIPTS)
         .map(|index| tilo_desktop_model::WorkspaceEffectReceipt {
             invocation: tilo_actions::InvocationId::new(),
-            actor: tilo_actions::MemberId::person(format!("{index:064}")),
+            actor: tilo_actions::MemberId::person(format!("{index:064}")).into(),
             context: tilo_actions::ActionContext::default(),
             status: tilo_actions::EffectReceiptStatus::Succeeded,
             completed_at: 0,

@@ -1600,7 +1600,7 @@ async fn a_receipt_the_shell_sends_is_kept_in_the_joined_workspace() {
     let invocation = uuid::Uuid::new_v4();
     let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
         tilo_actions::InvocationId(invocation),
-        &tilo_actions::MemberId::person(hex::encode(member_cert.user_public_key)),
+        &tilo_actions::MemberId::person(hex::encode(member_cert.user_public_key)).into(),
         tilo_actions::ActionContext::for_resource("layout", "desktop", "Layout"),
         tilo_actions::EffectReceiptStatus::Succeeded,
         tilo_clock::unix_now_i64(),

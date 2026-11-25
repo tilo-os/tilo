@@ -499,7 +499,7 @@ tilo_test_env::scenario! {
             .expect("the member is admitted before the agent they run is");
         admit_listed_agent(&kept, &workspace_id, &mut admitted, "scribe")
             .expect("the record lists the agent the member runs");
-        assert_eq!(admitted.broker_actor().member(), &MemberId::agent("scribe"));
+        assert_eq!(admitted.broker_actor().actor(), &tilo_actions::Actor::from(tilo_actions::MemberId::agent("scribe")));
         assert!(admitted.broker_actor().is_agent());
         let answer = |kind| {
             admitted

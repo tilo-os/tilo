@@ -1325,7 +1325,7 @@ pub struct ClipboardFacts {
     pub window: String,
     pub app_id: String,
     pub workspace: String,
-    pub owner: tilo_action_policy::MemberId,
+    pub owner: tilo_action_policy::Actor,
 }
 
 impl From<&FileClipboardContext> for ClipboardFacts {

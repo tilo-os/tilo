@@ -159,7 +159,7 @@ impl tilo_actions::remote::Admits for SettingsSteps {
         // setting opens beside its conversation, the person's own step beside the place in front.
         let beside = crate::mcp_server::service_steps::turn_beside(actor.turn());
         self.steps.invoke_step(
-            actor.member().clone().into(),
+            actor.actor().clone(),
             request.target.address.clone(),
             argument,
             beside,

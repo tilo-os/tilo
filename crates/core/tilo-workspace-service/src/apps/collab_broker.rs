@@ -834,7 +834,7 @@ impl AppActionBroker {
     pub fn record_completion_for_test(
         &self,
         id: u64,
-        actor: &tilo_action_policy::MemberId,
+        actor: &tilo_action_policy::Actor,
         update: tilo_actions::InvocationUpdate,
     ) {
         self.state.record_completion_for_test(id, actor, update);
@@ -880,7 +880,7 @@ impl AppActionBroker {
 
     pub fn statuses(
         &self,
-        actor: &tilo_action_policy::MemberId,
+        actor: &tilo_action_policy::Actor,
     ) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.state
             .while_live(|state| Ok(state.invocation_statuses(actor)))
@@ -890,13 +890,13 @@ impl AppActionBroker {
     /// Request cooperative cancellation for an owned invocation, answered
     /// once the request is durable. Blocks the calling thread for that
     /// write, so never call it on the broker's loop.
-    pub fn cancel(&self, id: u64, actor: &tilo_action_policy::MemberId) -> Result<(), String> {
+    pub fn cancel(&self, id: u64, actor: &tilo_action_policy::Actor) -> Result<(), String> {
         self.state
             .while_live(|state| state.request_cancellation(id, actor))?
             .wait_blocking()
     }
 
-    pub fn can_cancel(&self, id: u64, actor: &tilo_action_policy::MemberId) -> bool {
+    pub fn can_cancel(&self, id: u64, actor: &tilo_action_policy::Actor) -> bool {
         self.state
             .while_live(|state| Ok(state.can_cancel(id, actor)))
             .unwrap_or(false)

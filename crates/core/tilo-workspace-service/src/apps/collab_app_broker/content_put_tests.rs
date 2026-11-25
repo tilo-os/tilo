@@ -184,7 +184,7 @@ tilo_test_env::scenario! {
         // Who put it is kept, without the bytes.
         let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
         assert_eq!(records.len(), 1, "{records:?}");
-        assert_eq!(records[0].actor, tilo_actions::MemberId::person(owner_id()));
+        assert_eq!(records[0].actor, tilo_actions::Actor::from(tilo_actions::MemberId::person(owner_id())));
         assert_eq!(records[0].workspace, fixture.workspace);
         assert_eq!(records[0].hash, hash);
         assert_eq!(records[0].len, 700);

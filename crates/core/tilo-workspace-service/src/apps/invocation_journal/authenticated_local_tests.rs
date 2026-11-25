@@ -50,7 +50,7 @@ tilo_test_env::scenario! {
                     .unwrap()
             );
             let mut owners = vec![
-                json!({"Local":{"actor":{"person":"person"}}}),
+                json!({"Local":{"actor":{"member":{"person":"person"}}}}),
                 json!({"Certified":{"root":vec![1;32],"device":vec![2;32]}}),
                 local_owner(Some("worker-b")),
             ];

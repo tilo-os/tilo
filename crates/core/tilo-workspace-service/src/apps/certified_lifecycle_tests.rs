@@ -40,7 +40,8 @@ async fn certified_jobs_lifecycle_uses_exact_certificate_owner_and_live_session(
             );
             assert!(lifecycle.can_cancel(id));
             // The same actor label, without ownership, still sees no certified job.
-            let actor = tilo_actions::MemberId::person(hex::encode(env.cert.user_public_key));
+            let actor: tilo_actions::Actor =
+                tilo_actions::MemberId::person(hex::encode(env.cert.user_public_key)).into();
             assert!(rig.state.invocation_statuses(&actor).is_empty());
             assert!(!rig.state.can_cancel(id, &actor));
             let (other, other_evidence) = member_device_evidence(&env, 94, false);

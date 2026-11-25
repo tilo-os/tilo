@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tilo_action_policy::MemberId;
+use tilo_action_policy::Actor;
 use tilo_actions::remote::{Admitted, Caller, InvokeRequest, Outcome, Pending, pending};
 use tilo_agent_session::transform::{self, Interaction, TransformModel};
 use tilo_lock::MutexRecover as _;
@@ -55,13 +55,13 @@ impl Transforms {
 /// work.
 #[derive(Clone, Default)]
 struct Running {
-    by_agent: Arc<Mutex<HashMap<MemberId, usize>>>,
+    by_agent: Arc<Mutex<HashMap<Actor, usize>>>,
 }
 
 impl Running {
     /// One of `agent`'s places to run a transform in, or `None` when it already runs as many as
     /// it may. The place is given back when the value is dropped.
-    fn begin(&self, agent: &MemberId) -> Option<Place> {
+    fn begin(&self, agent: &Actor) -> Option<Place> {
         let mut by_agent = self.by_agent.lock_recover();
         let running = by_agent.entry(agent.clone()).or_default();
         if *running >= transform::MAX_RUNNING {
@@ -79,8 +79,8 @@ impl Running {
 /// One agent's place among its transforms that may run at once: dropped, it gives its place
 /// back.
 struct Place {
-    by_agent: Arc<Mutex<HashMap<MemberId, usize>>>,
-    agent: MemberId,
+    by_agent: Arc<Mutex<HashMap<Actor, usize>>>,
+    agent: Actor,
 }
 
 impl Drop for Place {
@@ -134,7 +134,7 @@ impl tilo_actions::remote::Admits for Transforms {
             ));
         }
         let actor = tilo_broker_core::BrokerActor::for_caller(caller);
-        let Some(place) = self.running.begin(actor.member()) else {
+        let Some(place) = self.running.begin(actor.actor()) else {
             return Ok(Pending::ready(Err(Box::new(tilo_actions::ActionFailure {
                 code: transform::code::BUSY.to_owned(),
                 message: "this agent is already running as many transforms as it allows".to_owned(),

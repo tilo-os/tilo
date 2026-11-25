@@ -63,9 +63,9 @@ impl JoinedChannel {
                 .and_then(|caller| caller.current(&self.state))
                 .map(|caller| self.state.caller_actor(&caller, &workspace))
                 .ok_or("original clipboard caller unavailable")?;
-            actor.member().clone()
+            actor.actor().clone()
         } else {
-            self.verified_identity.broker_actor().member().clone()
+            self.verified_identity.broker_actor().actor().clone()
         };
         let local_action = action.to_owned();
         let (peer, admitted) = (self.peer_id, self.verified_identity.clone());

@@ -87,7 +87,7 @@ impl FolderChange {
 pub fn watched_folders(armed: &[Armed]) -> Vec<WatchedFolder> {
     let mut folders = Vec::new();
     for armed in armed {
-        let saver = tilo_actions::MemberId::person(armed.saver.clone());
+        let saver = tilo_actions::Actor::from(tilo_actions::MemberId::person(armed.saver.clone()));
         for trigger in &armed.shortcut.triggers {
             let TriggerSpec::FileChanged { capability } = trigger else {
                 continue;

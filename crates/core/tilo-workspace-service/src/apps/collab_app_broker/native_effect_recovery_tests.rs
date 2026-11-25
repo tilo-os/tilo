@@ -158,7 +158,7 @@ fn prepare(f: &Fixture) -> DurableInvocation {
         .state
         .caller_key(&f.caller, tilo_actions::InvocationId::new())
         .unwrap();
-    let actor = f.caller.admitted.broker_actor().member().clone();
+    let actor = f.caller.admitted.broker_actor().actor().clone();
     let context = tilo_actions::ActionContext::default();
     let contract = tilo_actions::ActionContract {
         kind: tilo_actions::ActionKind::Undoable,

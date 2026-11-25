@@ -4,7 +4,7 @@ struct NativeFacadeHostSteps {
     provider: &'static str,
     resource: &'static str,
     action: &'static str,
-    started: Arc<Mutex<Vec<(String, tilo_actions::MemberId)>>>,
+    started: Arc<Mutex<Vec<(String, tilo_actions::Actor)>>>,
 }
 
 impl tilo_actions::remote::ActionProvider for NativeFacadeHostSteps {
@@ -88,7 +88,7 @@ impl NativeFacadeHostSteps {
         self.started.lock().unwrap().push((
             workspace.into(),
             tilo_broker_core::BrokerActor::for_caller(caller)
-                .member()
+                .actor()
                 .clone(),
         ));
         Ok(tilo_actions::remote::Pending::ready(Ok(
@@ -172,7 +172,9 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
                 *started.lock().unwrap(),
                 vec![(
                     env.route.cluster_id.clone(),
-                    tilo_actions::MemberId::person(original.admitted.actor_key.clone())
+                    tilo_actions::Actor::from(tilo_actions::MemberId::person(
+                        original.admitted.actor_key.clone()
+                    ))
                 )],
             );
             let started_before = started.lock().unwrap().len();

@@ -227,12 +227,29 @@ impl Daemon {
                     serde_json::Value::Object(serde_json::Map::new()),
                 ),
             };
+            let until = tilo_clock::now() + JOIN_WAIT;
             let receipt = tilo_actions::remote::ActionProvider::invoke(&tree, &caller, request)
                 .wait_timeout(JOIN_WAIT)
                 .ok()
                 .flatten()
                 .ok_or("the device did not answer the join in time")?
                 .map_err(|error| error.to_string())?;
+            // An admitted join runs on: it is answered once the device is in the call.
+            let receipt = match receipt.status {
+                tilo_actions::remote::ReceiptStatus::Accepted => tilo_actions::remote::settle_with(
+                    &tree,
+                    &caller,
+                    receipt.invocation,
+                    None,
+                    until,
+                )
+                .wait_timeout(JOIN_WAIT)
+                .ok()
+                .flatten()
+                .flatten()
+                .map_or(receipt, |state| state.receipt()),
+                _ => receipt,
+            };
             match receipt.status {
                 tilo_actions::remote::ReceiptStatus::Completed { output } => match output.value {
                     Some(value) => serde_json::from_value::<super::live_speaking::Joined>(value)

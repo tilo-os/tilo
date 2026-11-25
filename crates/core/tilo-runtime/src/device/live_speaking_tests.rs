@@ -1,39 +1,74 @@
 use std::sync::{Arc, Mutex};
 
-use tilo_actions::remote::call::BridgedCall;
+use tilo_actions::remote::call::{
+    BridgedCall, CallAudio, CallLink, CallReport, OutsideCall, OutsidePerson,
+};
 use tilo_actions::remote::{CallLanes as _, RemoteActionMessage, Take};
 use tilo_desktop_model::WorkspaceId;
+use tilo_live::live::Track;
+use tilo_live::live_session::LiveError;
+use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 
 use crate::RuntimeServices as _;
 use crate::device::services::Daemon;
 use crate::device::services::tests::isolated_root;
 
-const NO_WINDOW_TEST: &str = "device::live_speaking::tests::an_app_with_no_window_reaches_the_daemons_call_and_is_refused_what_it_is_not_granted";
+const GRANTED_JOIN_TEST: &str = "device::live_speaking::tests::an_app_granted_the_call_joins_it_with_no_window_and_carries_audio_without_a_key";
 const SHELL_ENDED_TEST: &str =
     "device::live_speaking::tests::a_shell_that_ends_leaves_the_person_out_of_the_call";
 
-/// The call the app carries, and the outside one it carries it from.
+/// The app that carries the call, the call it carries, and the outside one it carries it from.
+const APP: &str = "so.tilo.discord";
 const CALL: &str = "voice-tl";
 const OUTSIDE: &str = "458";
+/// The outside person the app carries in.
+const DANA: &str = "7001";
 
-/// What `take`, one answer of the lane, says of the carry it answers: `Ok` or the refusal.
+/// What `take`, one answer of the lane, says of the carry or report it answers: `Ok` or the
+/// refusal.
 fn result_of(take: Take) -> serde_json::Value {
     let Take::Answer(line) = take else {
         panic!("the lane answered nothing");
     };
     let line: serde_json::Value = serde_json::from_str(&line).expect("an answer is a line of JSON");
     line.pointer("/message/CallCarryResponse/result")
+        .or_else(|| line.pointer("/message/CallReportResponse/result"))
         .cloned()
         .unwrap_or_else(|| panic!("no call answer: {line}"))
 }
 
+fn carry(correlation: u64) -> RemoteActionMessage {
+    RemoteActionMessage::CallCarryRequest {
+        correlation,
+        pair: Some(BridgedCall {
+            outside: OUTSIDE.into(),
+            tilo: CALL.into(),
+        }),
+    }
+}
+
+/// Wait until `check` holds, or fail saying `what` did not happen.
+fn until(what: &str, mut check: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    while !check() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what} did not happen"
+        );
+        std::thread::park_timeout(std::time::Duration::from_millis(20));
+    }
+}
+
 /// A device's daemon with nobody signed in at it, no desktop and no window: it takes part in its
-/// workspace's live session itself, and an app it runs reaches the workspace's call through it.
-/// The app's join goes through the device's one dispatch, so an app the workspace grants nothing
-/// of the device's calls is refused it, and the device says it is in no call.
+/// workspace's live session itself, and an app it runs reaches the workspace's call through it,
+/// by the typed join of the device's live sessions, decided as the app acting by itself. Before
+/// the workspace grants the app anything there, its join is refused and the device is in no
+/// call; once a grant names the app on the device's live sessions, the same carry joins the call,
+/// the device holds the call's media keys and may speak in it, and the outside person the app
+/// reports is carried in as a participant of their own. No line the app is handed carries a key.
 #[test]
-fn an_app_with_no_window_reaches_the_daemons_call_and_is_refused_what_it_is_not_granted() {
-    let Some(root) = isolated_root(NO_WINDOW_TEST) else {
+fn an_app_granted_the_call_joins_it_with_no_window_and_carries_audio_without_a_key() {
+    let Some(root) = isolated_root(GRANTED_JOIN_TEST) else {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
@@ -59,8 +94,8 @@ fn an_app_with_no_window_reaches_the_daemons_call_and_is_refused_what_it_is_not_
 
     let _entered = tilo_rt::app().handle().enter();
     let at = crate::seats::AppAt {
-        app: "so.tilo.discord".to_owned(),
-        workspace,
+        app: APP.to_owned(),
+        workspace: workspace.clone(),
         pid: std::process::id(),
     };
     let lines: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -75,13 +110,8 @@ fn an_app_with_no_window_reaches_the_daemons_call_and_is_refused_what_it_is_not_
         "the app's workspace has a live session here"
     );
 
-    let refused = result_of(lane.take(&RemoteActionMessage::CallCarryRequest {
-        correlation: 1,
-        pair: Some(BridgedCall {
-            outside: OUTSIDE.into(),
-            tilo: CALL.into(),
-        }),
-    }));
+    // Granted nothing, the app is refused the join, and nothing of the call is the device's.
+    let refused = result_of(lane.take(&carry(1)));
     assert_eq!(
         refused
             .pointer("/Err/Refused/reason")
@@ -100,11 +130,6 @@ fn an_app_with_no_window_reaches_the_daemons_call_and_is_refused_what_it_is_not_
         "the device is held to no call's media"
     );
 
-    // No line the app was handed carries a key.
-    for line in lines.lock().unwrap().iter() {
-        assert!(!line.contains("key"), "{line}");
-    }
-
     // The same over the app's own connection, as the daemon serves the process it started and
     // the app's SDK reaches it: the carry is refused with the reason, and the device joins
     // nothing.
@@ -118,7 +143,7 @@ fn an_app_with_no_window_reaches_the_daemons_call_and_is_refused_what_it_is_not_
             reason: "the caller may not invoke this action".into()
         })
     );
-    app.report_call(tilo_actions::remote::call::CallReport::default())
+    app.report_call(CallReport::default())
         .expect("a report is taken from an app the device carries no call for");
     assert!(app.said_call().is_empty());
     assert_eq!(app.asked_call(), None);
@@ -127,6 +152,104 @@ fn an_app_with_no_window_reaches_the_daemons_call_and_is_refused_what_it_is_not_
         None,
         "a refused app joins nothing"
     );
+    drop(app);
+
+    // The person grants the app the device's live sessions: the grant names the app, never
+    // them, so only the app acting by itself holds it.
+    let person = hex::encode(live.person());
+    let grant = tilo_action_policy::Grant::new(
+        "discord-joins-calls",
+        tilo_action_policy::Grantee::app(APP),
+        tilo_action_policy::TreePath::workspace(&workspace).app(super::PROVIDER),
+        tilo_action_policy::KindSet::ALL,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(person),
+    );
+    tilo_rt::app()
+        .block_on(live.workspaces().copies().commit_own_change(
+            &workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Grant(grant),
+            },
+            None,
+        ))
+        .expect("the runtime runs the change")
+        .expect("the owner's grant is committed");
+
+    let joined = result_of(lane.take(&carry(2)));
+    assert_eq!(joined, serde_json::json!({ "Ok": null }), "{joined}");
+    assert_eq!(
+        session.speaker().call().map(|call| call.call.channel),
+        Some(CALL.to_owned()),
+        "the device is in the call the app carries"
+    );
+    let (wanted, _generation) = session
+        .session()
+        .call_keys_wanted()
+        .expect("the device holds the call's media");
+    assert_eq!(wanted, CALL);
+
+    // The app is in the outside call with Dana in it: the bridge carries her into the call as
+    // a participant of her own, and what she says is sealed under the call's keys the daemon
+    // holds. Nobody here asks for the device's voice yet, so the frame is unwanted rather than
+    // withheld: the device may speak in the call and seals for it.
+    let reported = result_of(lane.take(&RemoteActionMessage::CallReport {
+        correlation: 3,
+        report: CallReport {
+            calls: vec![OutsideCall {
+                call: OUTSIDE.into(),
+                people: vec![OutsidePerson {
+                    account: DANA.into(),
+                    name: "Dana".into(),
+                    ..OutsidePerson::default()
+                }],
+            }],
+            link: CallLink::Joined {
+                call: OUTSIDE.into(),
+            },
+            status: String::new(),
+        },
+    }));
+    assert_eq!(reported, serde_json::json!({ "Ok": null }), "{reported}");
+    until("Dana carried into the call", || {
+        session
+            .speaker()
+            .bridged()
+            .iter()
+            .any(|member| member.bridged.account == DANA && member.call.call.channel == CALL)
+    });
+    let frame = vec![0xF8, 0xFF, 0xFE];
+    assert!(matches!(
+        lane.take(&RemoteActionMessage::CallHeard(CallAudio {
+            speaker: DANA.into(),
+            opus: frame.clone(),
+        })),
+        Take::Silent
+    ));
+    let voice = VoiceObject {
+        sequence: 0,
+        timestamp: 0,
+        duration: FRAME_SAMPLES,
+        speaker: None,
+        payload: frame,
+    };
+    assert!(
+        matches!(
+            session
+                .session()
+                .publish(Track::Audio, 0, &voice.encode().unwrap()),
+            Err(LiveError::Unwanted)
+        ),
+        "the device speaks in the call with the keys it holds"
+    );
+
+    // No line the app was handed carries a key.
+    until("the bridge saying its place to the app", || {
+        !lines.lock().unwrap().is_empty()
+    });
+    for line in lines.lock().unwrap().iter() {
+        assert!(!line.contains("key"), "{line}");
+    }
 }
 
 /// The connection the daemon serves an app it started at `at`, as the line wire's client the

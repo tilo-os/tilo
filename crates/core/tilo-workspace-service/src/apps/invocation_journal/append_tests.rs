@@ -15,7 +15,7 @@ fn key(journal: &InvocationJournal, n: u128) -> InvocationKey {
         workspace: "5ca720b0-7649-4bdc-9c30-77380f7c2be5".into(),
         host: journal.host(),
         owner: InvocationOwner::Local {
-            actor: tilo_actions::MemberId::person("person"),
+            actor: tilo_actions::Actor::from(tilo_actions::MemberId::person("person")),
         },
         invocation: InvocationId(uuid::Uuid::from_u128(0x7000_0000_0000_0000 | n)),
     }
@@ -29,7 +29,7 @@ fn request(argument: &str) -> Value {
 
 fn intent(argument: &str) -> Value {
     json!({"request": request(argument), "contract": tilo_actions::ActionContract::default(),
-        "operation_kind": tilo_actions::OperationKind::Effect, "actor": {"person": "person"},
+        "operation_kind": tilo_actions::OperationKind::Effect, "actor": {"member": {"person": "person"}},
         "app_id": "so.tilo.notes", "resource": "note:1", "action": "write", "revision": null})
 }
 
@@ -373,7 +373,7 @@ tilo_test_env::scenario! {
         );
         let mut foreign = k.clone();
         foreign.owner = InvocationOwner::Local {
-            actor: tilo_actions::MemberId::person("someone else"),
+            actor: tilo_actions::Actor::from(tilo_actions::MemberId::person("someone else")),
         };
         let Err(conflict) = journal.admit(foreign, intent(secret), 2) else {
             panic!("a retired UUID was admitted for another owner")

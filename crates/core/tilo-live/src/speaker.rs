@@ -251,6 +251,12 @@ impl Speaker {
         });
     }
 
+    /// The people this device says it carries into its call from another service.
+    #[must_use]
+    pub fn bridged(&self) -> Vec<BridgedMember> {
+        self.state.lock_recover().own().bridged
+    }
+
     /// The calls in progress here, as those in them say.
     #[must_use]
     pub fn calls(&self) -> Vec<LiveCall> {

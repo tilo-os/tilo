@@ -164,7 +164,7 @@ use collab_types::presence::PresenceKey;
 use collab_types::presence::PresencePayload;
 use runtime_collab::event::CollabEvent;
 use runtime_collab::wire::ContextUpdate;
-use tilo_action_policy::{ActionKind, Answer, MemberId, TreePath, roles};
+use tilo_action_policy::{ActionKind, Answer, TreePath, roles};
 #[cfg(test)]
 use tilo_desktop_model::Layout;
 
@@ -224,7 +224,7 @@ struct PendingInvocation {
     update: tilo_actions::InvocationUpdate,
     prepared_effect: Arc<Mutex<Option<PreparedEffectCommit>>>,
     last_sequence: u64,
-    actor: MemberId,
+    actor: tilo_action_policy::Actor,
     cancellable: bool,
     retryable_on_disconnect: bool,
     execution: tilo_actions::ExecutionMode,
@@ -635,7 +635,7 @@ impl AppBrokerState {
             .filter(|pending| pending.peer_id == peer_id)
             .map(|pending| {
                 let actor = pending.context.invoker.as_ref().map_or_else(
-                    || tilo_actions::Actor::Member(pending.actor.clone()),
+                    || pending.actor.clone(),
                     |invoker| invoker.acting.by.clone(),
                 );
                 (pending.update.invocation(), actor)

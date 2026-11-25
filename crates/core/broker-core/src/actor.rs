@@ -6,7 +6,9 @@
 //! for decide one invocation, and every host decides it the same way — the
 //! Linux broker over its app sockets and the page over the apps it runs.
 
-use tilo_action_policy::{Acting, ActionKind, Answer, Authority, MemberAccess, MemberId, TreePath};
+use tilo_action_policy::{
+    Acting, ActionKind, Actor, Answer, Authority, MemberAccess, MemberId, TreePath,
+};
 use tilo_actions::remote::Caller;
 use tilo_app_id::AppId;
 use tilo_desktop_model::Workspace;
@@ -21,7 +23,8 @@ pub fn person_id_for_root(user_public_key: [u8; 32]) -> String {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BrokerActor {
-    pub member: MemberId,
+    /// Who acts: a member, or an app acting by itself with only the grants that name it.
+    actor: Actor,
     /// A person acting from a foreign device in a workspace it does not govern.
     pub capped: bool,
     /// The person an agent acts for, when one delegated it: the agent then
@@ -60,17 +63,25 @@ impl BrokerActor {
     #[track_caller]
     #[must_use]
     pub fn person(id: impl Into<tilo_action_policy::PersonId>) -> Self {
-        Self::of_member(MemberId::person(id))
+        Self::of_actor(MemberId::person(id).into())
     }
 
     #[must_use]
     pub fn agent(id: impl Into<String>) -> Self {
-        Self::of_member(MemberId::agent(id))
+        Self::of_actor(MemberId::agent(id).into())
     }
 
-    fn of_member(member: MemberId) -> Self {
+    /// App `app` acting by itself: no person is behind it, so it holds only the grants that
+    /// name it, and history names it as the author of what it changes.
+    #[must_use]
+    pub fn app_itself(app: impl Into<AppId>) -> Self {
+        let app = app.into();
+        Self::of_actor(Actor::App(app.clone())).through_app(app)
+    }
+
+    fn of_actor(actor: Actor) -> Self {
         Self {
-            member,
+            actor,
             capped: false,
             for_person: None,
             session_delegated: false,
@@ -88,7 +99,7 @@ impl BrokerActor {
     /// it may do only what both its grant and that person may.
     #[must_use]
     pub fn bot(installation: &str, installer: impl Into<String>) -> Self {
-        Self::of_member(MemberId::bot(installation)).for_person(installer)
+        Self::of_actor(MemberId::bot(installation).into()).for_person(installer)
     }
 
     /// The actor `caller` is, as its transport admitted it: the one admission
@@ -127,8 +138,10 @@ impl BrokerActor {
             };
         }
         if let Some(app) = acting.app() {
-            let person = acting.person_id().unwrap_or_default().to_owned();
-            return Self::person(person).through_app(app.clone());
+            return match acting.person_id() {
+                Some(person) => Self::person(person).through_app(app.clone()),
+                None => Self::app_itself(app.clone()),
+            };
         }
         if let Some(bot) = acting.bot_id() {
             return match acting.acted_for_person() {
@@ -150,7 +163,7 @@ impl BrokerActor {
     /// the person it acts for.
     #[must_use]
     pub fn shown(&self) -> Acting {
-        let shown = Acting::member(self.member.clone());
+        let shown = Acting::from(self.actor.clone());
         match &self.for_person {
             Some(person) if self.is_agent() => shown.acting_for(Acting::person(person.clone())),
             _ => shown,
@@ -214,14 +227,19 @@ impl BrokerActor {
         self.session.as_deref()
     }
 
+    /// The member who acts, when a member does: never an app acting by itself.
     #[must_use]
-    pub fn member(&self) -> &MemberId {
-        &self.member
+    pub fn member_id(&self) -> Option<&MemberId> {
+        self.actor.member_id()
     }
 
     #[must_use]
     pub fn is_agent(&self) -> bool {
-        self.member.is_agent()
+        self.member_id().is_some_and(MemberId::is_agent)
+    }
+
+    fn is_person(&self) -> bool {
+        self.member_id().is_some_and(MemberId::is_person)
     }
 
     /// The app the person acts through, when their session runs one.
@@ -230,7 +248,7 @@ impl BrokerActor {
         self.app.as_ref()
     }
 
-    /// Whether this is an app acting through the person whose session runs it.
+    /// Whether this is an app: acting through the person whose session runs it, or by itself.
     #[must_use]
     pub fn is_app(&self) -> bool {
         self.app.is_some()
@@ -266,13 +284,13 @@ impl BrokerActor {
     /// Who this actor is when it is not a person.
     #[must_use]
     pub fn delegate(&self) -> Option<tilo_action_policy::Actor> {
-        (!self.member.is_person()).then(|| tilo_action_policy::Actor::Member(self.member.clone()))
+        (!self.is_person()).then(|| self.actor.clone())
     }
 
-    /// Who this actor is.
+    /// Who this actor is: the author history names for what it changes.
     #[must_use]
-    pub fn actor(&self) -> tilo_action_policy::Actor {
-        tilo_action_policy::Actor::Member(self.member.clone())
+    pub fn actor(&self) -> &Actor {
+        &self.actor
     }
 
     /// Who this actor's actions are: a person, an agent or bot acting for the
@@ -282,7 +300,7 @@ impl BrokerActor {
     pub fn acting(&self) -> Acting {
         let acting = match (self.delegate(), &self.for_person) {
             (None, Some(person)) => Acting::person(person.clone()),
-            (None, None) => Acting::member(self.member.clone()),
+            (None, None) => Acting::from(self.actor.clone()),
             (Some(tilo_action_policy::Actor::Member(member)), Some(person)) => {
                 let delegate = Acting::member(member);
                 // The delegation a person's own device gives the agent it
@@ -368,7 +386,9 @@ impl BrokerActor {
     /// the only actor a host lets govern a workspace.
     #[must_use]
     pub fn direct_person(&self) -> Option<&str> {
-        self.direct().then(|| self.member.person_id()).flatten()
+        self.direct()
+            .then(|| self.member_id().and_then(MemberId::person_id))
+            .flatten()
     }
 
     /// The answer for an action of `kind` at `node` in `workspace` at `now`.
@@ -532,6 +552,28 @@ impl BrokerActor {
 #[cfg(test)]
 mod tests {
     use super::BrokerActor;
+
+    /// An app on a connection with nobody behind it is admitted as itself: what it does is
+    /// decided by the grants that name it and recorded as the app's, never as a person's.
+    #[test]
+    fn an_app_with_nobody_behind_it_acts_as_itself() {
+        let caller = tilo_actions::remote::Caller::local_app("so.tilo.discord").in_workspace("w");
+        let actor = BrokerActor::for_caller(&caller);
+        let app = tilo_action_policy::Actor::App("so.tilo.discord".into());
+        assert_eq!(actor.actor(), &app);
+        assert_eq!(actor.acting().by, app);
+        assert_eq!(actor.shown().by, app);
+        assert_eq!(actor.direct_person(), None, "an app governs nothing");
+
+        let for_ada = BrokerActor::for_caller(
+            &tilo_actions::remote::Caller::local_app("so.tilo.discord").acting_for("ada"),
+        );
+        assert_eq!(
+            for_ada.actor(),
+            &tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person("ada")),
+            "an app its person runs acts as them"
+        );
+    }
 
     /// A change an agent session makes records the session beside the agent and the person it
     /// acts for.

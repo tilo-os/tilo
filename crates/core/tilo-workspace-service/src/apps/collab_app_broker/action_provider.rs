@@ -666,12 +666,11 @@ impl AppBrokerState {
     ) -> Result<Caller, Box<tilo_actions::remote::RemoteActionMessage>> {
         use tilo_actions::remote::{RemoteActionMessage, refuse};
         let access = self.app_action_access(app_id);
-        let owner = person
-            .acting_for_person()
-            .or_else(|| person.acting().person_id())
-            .unwrap_or_default()
-            .to_owned();
-        let mut as_app = Caller::local_app(app_id).acting_for(owner);
+        // With no person behind the connection, the app acts by itself.
+        let mut as_app = Caller::local_app(app_id);
+        if let Some(owner) = person.acting_for_person().or(person.acting().person_id()) {
+            as_app = as_app.acting_for(owner.to_owned());
+        }
         if let Some(workspace) = person.workspace() {
             as_app = as_app.in_workspace(workspace);
         }
@@ -2455,7 +2454,7 @@ impl AppBrokerState {
                     .is_some_and(|app| app.as_str() == route.app_id),
                 _ => false,
             };
-            if !own_app && expected.member() != actual.member() {
+            if !own_app && expected.actor() != actual.actor() {
                 return Err(ActionCallError::NotPermitted);
             }
         }
@@ -2494,7 +2493,7 @@ impl AppBrokerState {
                 }
                 tracing::warn!(
                     %app_id,
-                    caller = %policy.member(),
+                    caller = %policy.actor(),
                     owner = workspace.policy.owner().unwrap_or("none"),
                     "an app's launch was refused: the workspace does not let the caller open it"
                 );
@@ -2563,7 +2562,7 @@ impl AppBrokerState {
             return LaunchPlace::Focus;
         }
         self.launchable
-            .view_of(workspace, BrokerActor::for_caller(caller).member())
+            .view_of(workspace, BrokerActor::for_caller(caller).actor())
             .map_or(LaunchPlace::Aside, |app_id| LaunchPlace::Beside { app_id })
     }
 
@@ -2845,7 +2844,7 @@ impl AppBrokerState {
         )
         .map(|staged| {
             self.launchable
-                .note_view(&workspace, actor.member(), &app_id);
+                .note_view(&workspace, actor.actor(), &app_id);
             Started::Staged(staged)
         })
         .map_err(super::Refusal::into_call_error)
@@ -2958,7 +2957,7 @@ impl AppBrokerState {
             tilo_action_policy::Answer::Deny => {
                 tracing::warn!(
                     app,
-                    caller = %policy.member(),
+                    caller = %policy.actor(),
                     owner = workspace.policy.owner().unwrap_or("none"),
                     action = %descriptor.address.action,
                     "an action was refused: the workspace does not grant it to the caller"
@@ -3299,7 +3298,7 @@ impl AppBrokerState {
             return Pending::ready(Ok(()));
         }
         answered_when_durable(
-            self.request_cancellation(job, BrokerActor::for_caller(caller).member())
+            self.request_cancellation(job, BrokerActor::for_caller(caller).actor())
                 .map_err(|reason| ActionCallError::NotCancellable { reason }),
         )
     }
@@ -3610,7 +3609,7 @@ mod app_close_tests {
                 workspace,
                 host: journal.host(),
                 owner: super::super::InvocationOwner::Local {
-                    actor: tilo_actions::MemberId::person(hex::encode([31; 32])),
+                    actor: tilo_actions::Actor::from(tilo_actions::MemberId::person(hex::encode([31; 32]))),
                 },
                 invocation: request.invocation,
             };

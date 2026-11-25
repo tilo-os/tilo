@@ -1199,7 +1199,7 @@ mod identity_admin_tests {
     /// asked to start and answers when the test completes it.
     #[derive(Default)]
     struct Host {
-        started: Mutex<Vec<(String, tilo_actions::MemberId, String)>>,
+        started: Mutex<Vec<(String, tilo_actions::Actor, String)>>,
         answers: Mutex<Vec<Completer<Outcome>>>,
         admission_check: Mutex<Option<Box<dyn Fn() + Send>>>,
     }
@@ -1251,7 +1251,7 @@ mod identity_admin_tests {
             self.started.lock().unwrap().push((
                 workspace.to_owned(),
                 tilo_broker_core::BrokerActor::for_caller(caller)
-                    .member()
+                    .actor()
                     .clone(),
                 request.target.address.action.clone(),
             ));
@@ -1814,7 +1814,7 @@ mod identity_admin_tests {
                 *host.started.lock().unwrap(),
                 [(
                     workspace,
-                    tilo_actions::MemberId::person(owner),
+                    tilo_actions::MemberId::person(owner).into(),
                     device_tickets::REMOVE_IDENTITY.to_owned()
                 )]
             );

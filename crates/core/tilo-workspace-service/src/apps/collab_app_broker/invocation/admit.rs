@@ -90,8 +90,8 @@ impl AppBrokerState {
             // for them (an MCP session their device handed over): never
             // another actor.
             let admitted_actor = match &admitted.agent_id {
-                Some(agent) => actor.member().agent_id() == Some(delegated_agent_name(agent)),
-                None => actor.member().person_id() == Some(admitted.actor_key.as_str()),
+                Some(agent) => actor.actor().agent_id() == Some(delegated_agent_name(agent)),
+                None => actor.actor().person_id() == Some(admitted.actor_key.as_str()),
             };
             if caller.workspace != offered.0.route.cluster_id || !admitted_actor {
                 return Err("original caller does not match the invocation route or actor".into());
@@ -111,7 +111,7 @@ impl AppBrokerState {
         {
             self.current_native_person(workspace, certificate)?;
             if workspace != &offered.0.route.cluster_id
-                || actor.member().person_id()
+                || actor.actor().person_id()
                     != Some(person_id_for_root(certificate.user_public_key).as_str())
             {
                 return Err(
@@ -432,7 +432,7 @@ impl AppBrokerState {
                         action: offered.1.action.clone(),
                     },
                     argument: argument.map(str::to_string),
-                    actor: actor.actor(),
+                    actor: actor.actor().clone(),
                     presence: invoker::invoker_presence(context.as_ref()),
                 },
                 offered.0.route.clone(),
@@ -448,7 +448,7 @@ impl AppBrokerState {
             update: tilo_actions::InvocationUpdate::Accepted { invocation },
             prepared_effect: Arc::default(),
             last_sequence: 0,
-            actor: actor.member().clone(),
+            actor: actor.actor().clone(),
             cancellable: offered.1.contract.execution.cancellable(),
             retryable_on_disconnect: matches!(
                 offered.1.contract.retry,
@@ -470,7 +470,7 @@ impl AppBrokerState {
             resource: offered.1.resource,
             action: offered.1.action,
             argument: argument.map(str::to_string),
-            actor: actor.actor(),
+            actor: actor.actor().clone(),
             context,
         };
         Ok(StagedJob {

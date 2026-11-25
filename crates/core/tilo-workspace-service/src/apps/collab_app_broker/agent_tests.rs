@@ -665,7 +665,7 @@ use tilo_actions::remote::{ActionCallError, Caller, InvocationReceipt, InvokeReq
 /// A step that is a turn's (registered for turns): the session's layout, out here.
 #[derive(Default)]
 struct TurnSteps {
-    taken: Mutex<Vec<tilo_actions::MemberId>>,
+    taken: Mutex<Vec<tilo_actions::Actor>>,
     /// The turn each step was taken on, as the session reads it to stand what the step shows
     /// beside the turn that asked.
     on_turns: Mutex<Vec<Option<tilo_action_policy::turn::Turn>>>,
@@ -686,7 +686,7 @@ impl tilo_actions::remote::Admits for TurnSteps {
         _admitted: &tilo_actions::remote::Admitted,
     ) -> Result<tilo_actions::remote::Pending<tilo_actions::remote::Outcome>, String> {
         let actor = tilo_broker_core::BrokerActor::for_caller(caller);
-        self.taken.lock().unwrap().push(actor.member().clone());
+        self.taken.lock().unwrap().push(actor.actor().clone());
         self.on_turns.lock().unwrap().push(actor.turn().cloned());
         Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
     }
@@ -756,7 +756,9 @@ async fn an_agents_session_steps_are_taken_while_it_goes_and_nobody_elses_are() 
             stray_invoke(&f.state, &agent, 92).expect("the session takes the session's step");
             assert_eq!(
                 steps.taken.lock().unwrap().as_slice(),
-                [tilo_actions::MemberId::agent("scribe")],
+                [tilo_actions::Actor::from(tilo_actions::MemberId::agent(
+                    "scribe"
+                ))],
                 "the step ran once, as the session's agent"
             );
 

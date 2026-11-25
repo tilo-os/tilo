@@ -512,7 +512,7 @@ impl AppBrokerState {
         };
         serde_json::json!({ "request": request,
             "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
-            "context": receipt_context, "actor": actor.member(), "app_id": offered.0.app_id,
+            "context": receipt_context, "actor": actor.actor(), "app_id": offered.0.app_id,
             "document_id": offered.0.route.document_id,
             "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
             "action": offered.1.action, "revision": revision })
@@ -746,7 +746,7 @@ impl AppBrokerState {
     }
     pub fn invocation_statuses(
         &self,
-        actor: &MemberId,
+        actor: &tilo_action_policy::Actor,
     ) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.invocation_statuses_for_owner(&InvocationOwner::Local {
             actor: actor.clone(),
@@ -783,7 +783,7 @@ impl AppBrokerState {
     pub(crate) fn request_cancellation(
         &self,
         id: u64,
-        actor: &MemberId,
+        actor: &tilo_action_policy::Actor,
     ) -> Result<invocation_journal::Durable, String> {
         self.request_cancellation_for_owner(
             id,
@@ -840,7 +840,7 @@ impl AppBrokerState {
             .insert(id);
         Ok(durable)
     }
-    pub fn can_cancel(&self, id: u64, actor: &MemberId) -> bool {
+    pub fn can_cancel(&self, id: u64, actor: &tilo_action_policy::Actor) -> bool {
         self.can_cancel_for_owner(
             id,
             &InvocationOwner::Local {

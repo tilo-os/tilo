@@ -461,7 +461,7 @@ impl TestTree {
         ));
         let receipt = WorkspaceEffectReceipt {
             invocation,
-            actor: tilo_actions::MemberId::person(actor),
+            actor: tilo_actions::MemberId::person(actor).into(),
             context,
             status,
             completed_at: tilo_clock::unix_now_i64(),

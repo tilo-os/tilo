@@ -306,7 +306,7 @@ tilo_test_env::scenario! {
             fixture.caller =
                 tilo_actions::remote::Caller::local_person(
                     BrokerActor::for_caller(&fixture.caller)
-                        .member()
+                        .actor()
                         .person_id()
                         .unwrap(),
                 )

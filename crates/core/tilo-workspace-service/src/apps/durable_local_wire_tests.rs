@@ -329,7 +329,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
             assert!(observe(&agent.handle, invocation).await.unwrap().is_some());
             assert!(
                 rig.state
-                    .invocation_statuses(&tilo_actions::MemberId::agent("scribe"))
+                    .invocation_statuses(&tilo_actions::MemberId::agent("scribe").into())
                     .is_empty(),
                 "an actor name alone discloses no authenticated invocation"
             );

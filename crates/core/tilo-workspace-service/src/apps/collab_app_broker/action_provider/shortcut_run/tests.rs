@@ -795,7 +795,7 @@ async fn an_unscoped_broker_api_does_not_invent_native_ownership() {
     );
     let mut key = fixture.key.clone();
     key.owner = InvocationOwner::Local {
-        actor: BrokerActor::for_caller(&fixture.caller).member().clone(),
+        actor: BrokerActor::for_caller(&fixture.caller).actor().clone(),
     };
     assert!(
         fixture

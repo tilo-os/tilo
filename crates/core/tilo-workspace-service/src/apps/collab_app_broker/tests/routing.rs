@@ -286,7 +286,7 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     let admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
     assert_eq!(
         AppBrokerState::member_id(&admitted),
-        MemberId::person(person.clone())
+        tilo_actions::MemberId::person(person.clone())
     );
     let membership = tree.shared();
     let fanout = Arc::new(FanoutState::new());
@@ -827,11 +827,17 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
     assert!(!retained_cancellation.load(Ordering::Acquire));
     assert!(
         state
-            .request_cancellation(refresh.id, &tilo_actions::MemberId::person("stranger"))
+            .request_cancellation(
+                refresh.id,
+                &tilo_actions::Actor::from(tilo_actions::MemberId::person("stranger"))
+            )
             .is_err()
     );
     state
-        .request_cancellation(refresh.id, &tilo_actions::MemberId::person("owner"))
+        .request_cancellation(
+            refresh.id,
+            &tilo_actions::Actor::from(tilo_actions::MemberId::person("owner")),
+        )
         .expect("owner can request cooperative cancellation")
         .wait_blocking()
         .expect("the request is durable");

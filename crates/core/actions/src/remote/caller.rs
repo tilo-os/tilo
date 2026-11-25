@@ -230,10 +230,11 @@ impl Caller {
     /// An application on a connection the provider admitted itself, by the
     /// package id that admission established. It acts as the person whose
     /// session runs it ([`Self::acting_for`]), in that app; with nobody
-    /// behind it, it holds nothing.
+    /// behind it, it acts by itself, with only the grants that name it.
     #[must_use]
     pub fn local_app(app_id: impl Into<String>) -> Self {
-        Self::admitted(Acting::person("").in_app(app_id.into()), None)
+        let app: String = app_id.into();
+        Self::admitted(Acting::by_app(app.clone()).in_app(app), None)
     }
 
     /// A remote agent device whose certificate the transport verified to

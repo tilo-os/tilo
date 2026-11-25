@@ -684,7 +684,7 @@ mod tests {
                 workspace,
                 host: journal.host(),
                 owner: super::super::InvocationOwner::Local {
-                    actor: tilo_actions::MemberId::person(hex::encode([41; 32])),
+                    actor: tilo_actions::Actor::from(tilo_actions::MemberId::person(hex::encode([41; 32]))),
                 },
                 invocation: request.invocation,
             };

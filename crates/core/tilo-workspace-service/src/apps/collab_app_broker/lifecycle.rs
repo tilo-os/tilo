@@ -928,7 +928,7 @@ impl AppBrokerState {
     pub fn record_completion_for_test(
         &self,
         id: u64,
-        actor: &MemberId,
+        actor: &tilo_action_policy::Actor,
         update: tilo_actions::InvocationUpdate,
     ) {
         self.record_completion(

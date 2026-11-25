@@ -33,7 +33,7 @@ pub fn bounded_receipts(receipts: &mut Vec<WorkspaceEffectReceipt>) -> bool {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceEffectReceipt {
     pub invocation: tilo_actions::InvocationId,
-    pub actor: tilo_actions::MemberId,
+    pub actor: tilo_actions::Actor,
     pub context: tilo_actions::ActionContext,
     pub status: tilo_actions::EffectReceiptStatus,
     pub completed_at: i64,
@@ -48,7 +48,7 @@ impl WorkspaceEffectReceipt {
     #[must_use]
     pub fn redacted(
         invocation: tilo_actions::InvocationId,
-        actor: &tilo_actions::MemberId,
+        actor: &tilo_actions::Actor,
         mut context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
         completed_at: i64,
@@ -65,7 +65,7 @@ impl WorkspaceEffectReceipt {
     #[must_use]
     pub fn recorded(
         invocation: tilo_actions::InvocationId,
-        actor: &tilo_actions::MemberId,
+        actor: &tilo_actions::Actor,
         mut context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
         completed_at: i64,
@@ -105,7 +105,7 @@ impl WorkspaceEffectReceipt {
 /// Whether `actor` names someone in no more than 160 characters, none of them control
 /// characters.
 #[must_use]
-pub fn actor_is_bounded(actor: &tilo_actions::MemberId) -> bool {
+pub fn actor_is_bounded(actor: &tilo_actions::Actor) -> bool {
     let id = actor.id();
     !id.is_empty() && id.chars().count() <= 160 && !id.chars().any(char::is_control)
 }
@@ -177,7 +177,7 @@ mod effect_receipt_redaction_tests {
         };
         let receipt = super::WorkspaceEffectReceipt::redacted(
             invocation,
-            &tilo_actions::MemberId::person("person"),
+            &tilo_actions::MemberId::person("person").into(),
             context,
             tilo_actions::EffectReceiptStatus::Succeeded,
             0,
@@ -203,7 +203,7 @@ mod receipt_bound_tests {
     fn receipt(at: i64) -> WorkspaceEffectReceipt {
         WorkspaceEffectReceipt::redacted(
             tilo_actions::InvocationId::new(),
-            &tilo_actions::MemberId::person("owner"),
+            &tilo_actions::MemberId::person("owner").into(),
             tilo_actions::ActionContext::default(),
             tilo_actions::EffectReceiptStatus::Succeeded,
             at,

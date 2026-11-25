@@ -17,7 +17,7 @@ use std::time::Duration;
 use super::{PublishedAction, PublishedSurface};
 use crate::apps::collab_broker::CrdtRoute;
 use crate::apps::services::LaunchPlace;
-use tilo_action_policy::MemberId;
+use tilo_action_policy::Actor;
 use tilo_lock::MutexRecover as _;
 
 /// Prefix of the provider token naming a retained launchable surface.
@@ -146,12 +146,12 @@ const REMEMBERED_ACTORS: usize = 1024;
 #[derive(Default)]
 struct ActorViews {
     /// `(workspace, actor)` → (app, when it was noted).
-    views: HashMap<(String, MemberId), (String, u64)>,
+    views: HashMap<(String, Actor), (String, u64)>,
     clock: u64,
 }
 
 impl ActorViews {
-    fn note(&mut self, workspace: &str, actor: &MemberId, app_id: &str) {
+    fn note(&mut self, workspace: &str, actor: &Actor, app_id: &str) {
         self.clock = self.clock.wrapping_add(1);
         let key = (workspace.to_owned(), actor.clone());
         if !self.views.contains_key(&key) && self.views.len() >= REMEMBERED_ACTORS {
@@ -167,7 +167,7 @@ impl ActorViews {
         self.views.insert(key, (app_id.to_owned(), self.clock));
     }
 
-    fn of(&self, workspace: &str, actor: &MemberId) -> Option<&str> {
+    fn of(&self, workspace: &str, actor: &Actor) -> Option<&str> {
         self.views
             .get(&(workspace.to_owned(), actor.clone()))
             .map(|(app, _)| app.as_str())
@@ -311,12 +311,12 @@ impl LaunchableCatalogue {
 
     /// `actor` just ran an action of `app_id` in `workspace`: that view is
     /// where it works now.
-    pub(super) fn note_view(&self, workspace: &str, actor: &MemberId, app_id: &str) {
+    pub(super) fn note_view(&self, workspace: &str, actor: &Actor, app_id: &str) {
         self.views.lock_recover().note(workspace, actor, app_id);
     }
 
     /// The app whose view `actor` last worked in, in `workspace`.
-    pub(super) fn view_of(&self, workspace: &str, actor: &MemberId) -> Option<String> {
+    pub(super) fn view_of(&self, workspace: &str, actor: &Actor) -> Option<String> {
         self.views
             .lock_recover()
             .of(workspace, actor)
@@ -1004,6 +1004,52 @@ mod tests {
         })
     }
 
+    /// An app acting by itself, with nobody behind it, is decided by the grants that name it and
+    /// is the author of what it does: the app it calls is handed the call as the app's, which the
+    /// change it makes records, and the invocation is the app's own to follow, nobody else's.
+    #[test]
+    fn an_app_acting_by_itself_is_the_author_of_its_own_call() {
+        let chat = tilo_app_id::AppId::new("so.tilo.chat");
+        let ungranted = workspace();
+        let (state, workspace_id) = broker(&ungranted);
+        let mut stream = serve(&state, surface(7, &workspace_id));
+        let app = Caller::local_app(chat.as_str()).in_workspace(&workspace_id);
+        assert!(
+            invoke(&state, &app, "7", "new-window", None).is_err(),
+            "granted nothing, the app takes nothing"
+        );
+        assert!(stream.try_recv().is_err(), "nothing reached Files");
+
+        let mut granted = workspace();
+        {
+            use crate::apps::test_support::{Grants as _, KindSet};
+            granted.allow_app(
+                tilo_action_policy::Grantee::app(chat.as_str()),
+                APP,
+                KindSet::ALL,
+            );
+        }
+        let (state, workspace_id) = broker(&granted);
+        let mut stream = serve(&state, surface(7, &workspace_id));
+        let app = Caller::local_app(chat.as_str()).in_workspace(&workspace_id);
+        let receipt =
+            invoke(&state, &app, "7", "new-window", None).expect("the grant names the app");
+        let delivered = stream.try_recv().expect("the call reached Files");
+        assert_eq!(delivered.actor, tilo_actions::Actor::App(chat.clone()));
+        let own = state.invocation_statuses(&tilo_actions::Actor::App(chat));
+        assert!(
+            own.iter()
+                .any(|(_, update)| update.invocation() == receipt.invocation),
+            "the app follows its own invocation: {own:?}"
+        );
+        assert!(
+            state
+                .invocation_statuses(&tilo_actions::MemberId::person("owner").into())
+                .is_empty(),
+            "the workspace's person owns nothing the app did by itself"
+        );
+    }
+
     tilo_test_env::scenario! {
         fn a_closed_apps_action_launches_it_where_its_actor_is;
 
@@ -1597,7 +1643,10 @@ mod tests {
         invoke(&state, &client, "5", "new-window", None).unwrap();
         let delivered = app.try_recv().unwrap();
         let accepted = events.try_recv().unwrap();
-        assert_eq!(accepted.actor, tilo_actions::MemberId::agent("mcp-1"));
+        assert_eq!(
+            accepted.actor,
+            tilo_actions::Actor::from(tilo_actions::MemberId::agent("mcp-1"))
+        );
         assert!(matches!(
             heard.try_recv().unwrap(),
             CollabEvent::RemotePresenceUpdate {

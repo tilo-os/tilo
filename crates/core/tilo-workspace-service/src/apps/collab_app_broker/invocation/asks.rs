@@ -293,7 +293,7 @@ impl AppBrokerState {
             || grant.resource != action.resource
             || grant.action != action.action
             || grant.argument_digest != argument_digest(inputs.argument)
-            || grant.actor != *inputs.actor.member();
+            || grant.actor != *inputs.actor.actor();
         if mismatched {
             return Err(
                 "the confirmation token is expired or does not match this invocation".into(),

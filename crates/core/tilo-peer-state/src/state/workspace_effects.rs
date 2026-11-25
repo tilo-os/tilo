@@ -108,8 +108,14 @@ impl PeerWorkspaceMut<'_> {
         let redacted = serde_json::to_vec(receipt).map_err(|error| error.to_string())?;
         PeerWorkspace::validate_workspace_effect_receipt_encoding(receipt.invocation.0, &redacted)?;
         let person = hex::encode(caller.user_public_key);
-        if !(receipt.actor.person_id() == Some(person.as_str()) || receipt.actor.is_agent()) {
-            return Err("effect actor is not the recording person or their agent".into());
+        if !(receipt.actor.person_id() == Some(person.as_str())
+            || receipt.actor.agent_id().is_some()
+            || receipt.actor.app().is_some())
+        {
+            return Err(
+                "effect actor is not the recording person, their agent or an app on their device"
+                    .into(),
+            );
         }
         let existing = tilo_desktop_model::projection::workspace_effect_receipts_of(&candidate);
         if let Some(previous) = existing

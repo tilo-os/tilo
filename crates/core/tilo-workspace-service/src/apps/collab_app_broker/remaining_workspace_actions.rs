@@ -23,7 +23,7 @@ fn in_turn_session(actor: BrokerActor, caller: &Caller) -> BrokerActor {
     let acting = caller.acting();
     let same_agent = actor.is_agent()
         && acting.agent_id().is_some()
-        && actor.member().agent_id() == acting.agent_id();
+        && actor.actor().agent_id() == acting.agent_id();
     if !same_agent {
         return actor;
     }
@@ -63,7 +63,7 @@ mod turn_session_tests {
         let connection = BrokerActor::agent("scribe").for_person("person");
         let acting = in_turn_session(connection.clone(), &caller);
         assert_eq!(acting.session(), Some("so.tilo.session/agent-session/s1"));
-        assert_eq!(acting.member().agent_id(), Some("scribe"));
+        assert_eq!(acting.actor().agent_id(), Some("scribe"));
         // On the turn it answers: the session stands what the step opens beside that turn.
         assert_eq!(acting.turn(), Some(&turn));
 
@@ -384,7 +384,7 @@ impl AppBrokerState {
             operation,
             &crate::apps::automation::SaveContext {
                 catalog: &catalog,
-                saver: authority.1.member(),
+                saver: authority.1.actor(),
                 keymap: &keymap,
                 fixed_label: &|fixed| library.fixed_shortcut_label(fixed),
             },
@@ -421,7 +421,7 @@ impl AppBrokerState {
                 operation,
                 &crate::apps::automation::SaveContext {
                     catalog: &catalog,
-                    saver: actor.member(),
+                    saver: actor.actor(),
                     keymap: &keymap,
                     fixed_label: &|fixed| library.fixed_shortcut_label(fixed),
                 },
@@ -502,7 +502,7 @@ impl AppBrokerState {
         };
         let stored = library.store(crate::apps::services::ShortcutLibraryRequest {
             workspace: workspace_id,
-            actor: actor.member().clone(),
+            actor: actor.actor().clone(),
             acting_for: caller.acting_for_person().map(str::to_owned),
             change,
             context: request

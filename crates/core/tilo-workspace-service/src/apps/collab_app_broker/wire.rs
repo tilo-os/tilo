@@ -507,7 +507,7 @@ impl JoinedChannel {
         )
         .with_app(&surface.app_id, &surface.app_id)
         .with_described(tilo_actions::Described::new(what));
-        let actor = current.broker_actor().member().clone();
+        let actor = current.broker_actor().actor().clone();
         if self.state.durable_owner_required
             || self
                 .state

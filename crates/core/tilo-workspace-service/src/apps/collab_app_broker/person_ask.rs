@@ -116,7 +116,7 @@ impl AppBrokerState {
         self.record_completion(
             job,
             InvocationOwner::Local {
-                actor: MemberId::agent(agent),
+                actor: tilo_actions::Actor::from(MemberId::agent(agent)),
             },
             InvocationUpdate::Succeeded {
                 invocation,
