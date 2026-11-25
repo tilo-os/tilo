@@ -3,6 +3,13 @@
 An app ships with every feature `tilo-app` declares except `test-support`, which
 an app enables only from its dev-dependencies; the `all` set is exactly those
 shipping features, so the audit covers what can ship and no test host.
+
+`test-support` must also stay out of a crate a person runs: the published crates
+and the binaries, and everything those reach through normal and build
+dependencies. A test-only crate (unpublished, building no binary, reached only
+from dev-dependencies) and what only it reaches are not part of such a program,
+so what they enable reaches nobody; `test_support_from_normal_dependencies`
+holds that line.
 """
 import argparse
 import json
@@ -52,25 +59,85 @@ def audited_features(manifest):
     return sorted(name for name in manifest.get("features", {}) if name != "test-support")
 
 
-# The generated crate that gives every selection the workspace's whole feature
-# set, dev-dependencies included, so it names test-support by design; it builds
-# nothing and no package depends on it, so it cannot pull a test host into an
-# app.
-UNIFICATION_ONLY = frozenset(("workspace-unify",))
+def _feature(name):
+    return not name.startswith("dep:") and not name.endswith("?")
+
+
+def enabled_features(package, dependencies):
+    """The features the graph enables on `package`: its defaults, what a dependency names (on
+    any edge, so a test build's selection is covered too), and what those features include."""
+    declared = package.get("features") or {}
+    enabled = {name for name in declared.get("default") or () if _feature(name)}
+    for dependency in dependencies:
+        enabled.update(name for name in dependency["features"] if _feature(name))
+    pending = list(enabled)
+    while pending:
+        for included in declared.get(pending.pop(), ()):
+            if _feature(included) and included not in enabled:
+                enabled.add(included)
+                pending.append(included)
+    return enabled
+
+
+def builds_a_binary(package, features):
+    """Whether one of `package`'s binaries has every required feature enabled, so it builds.
+    A generated crate's stub target requires a feature nothing enables, so it builds nothing."""
+    return any(
+        "bin" in target["kind"]
+        and set(target.get("required-features") or ()) <= features
+        for target in package["targets"]
+    )
+
+
+def shipped_packages(metadata):
+    """The crates a person runs, and what they reach through normal and build dependencies.
+
+    A crate a person runs is published (`publish` names registries or anywhere) or builds a
+    binary. Reachability follows normal and build edges only: a test-only crate is unpublished,
+    builds no binary and is reached only from dev-dependencies, so nothing it builds or enables
+    is in such a program.
+    """
+    packages = {package["name"]: package for package in metadata["packages"]}
+    features = {
+        name: enabled_features(package, [
+            dependency
+            for other in packages.values()
+            for dependency in other["dependencies"]
+            if dependency["name"] == name
+        ])
+        for name, package in packages.items()
+    }
+    pending = [
+        name for name, package in packages.items()
+        if package.get("publish") != [] or builds_a_binary(package, features[name])
+    ]
+    shipped = set()
+    while pending:
+        name = pending.pop()
+        if name in shipped:
+            continue
+        shipped.add(name)
+        pending += [
+            dependency["name"]
+            for dependency in packages[name]["dependencies"]
+            if dependency["kind"] != "dev" and dependency["name"] in packages
+        ]
+    return shipped
 
 
 def test_support_from_normal_dependencies(metadata):
-    """Packages a person runs that enable `tilo-app`'s test feature themselves.
+    """Crates a person runs that enable `tilo-app`'s test feature themselves.
 
-    `all` leaves `test-support` out because only dev-dependencies enable it. A
-    normal dependency doing the same would put the test hosts back in the app
-    graph, so it fails the audit instead of hiding behind the exclusion.
+    `all` leaves `test-support` out because only dev-dependencies enable it. A shipped crate
+    doing the same would put the test hosts back in the program's graph, so it fails the audit
+    instead of hiding behind the exclusion. A test-only crate enabling it is where the test host
+    lives, and ships nowhere.
     """
+    packages = {package["name"]: package for package in metadata["packages"]}
     return sorted({
-        f"{package['name']}: enables tilo-app's test-support from a normal dependency"
-        for package in metadata["packages"]
-        if package["name"] not in UNIFICATION_ONLY
-        for dependency in package["dependencies"]
+        f"{name}: enables tilo-app's test-support from a normal dependency"
+        for name in shipped_packages(metadata)
+        for dependency in packages[name]["dependencies"]
         if dependency["name"] == "tilo-app"
         and dependency["kind"] != "dev"
         and "test-support" in dependency["features"]

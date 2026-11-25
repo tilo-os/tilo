@@ -46,25 +46,49 @@ class AppLicenseGraph(unittest.TestCase):
             sdk_licenses.audited_features(manifest), ["default", "mpris", "native"])
         self.assertEqual(sdk_licenses.audited_features({}), [])
 
-    def test_a_normal_dependency_cannot_enable_the_test_feature(self):
+    def test_a_crate_a_person_runs_cannot_enable_the_test_feature(self):
+        def tilo_app(features, kind=None):
+            return {"name": "tilo-app", "kind": kind, "features": features}
+
         metadata = {"packages": [
-            {"name": "ships", "dependencies": [
-                {"name": "tilo-app", "kind": None, "features": ["test-support"]},
-            ]},
-            {"name": "tests", "dependencies": [
-                {"name": "tilo-app", "kind": "dev", "features": ["test-support"]},
-            ]},
-            {"name": "unrelated", "dependencies": [
-                {"name": "other", "kind": None, "features": ["test-support"]},
-            ]},
-            # Hakari's generated unification crate names every feature by design.
-            {"name": "workspace-unify", "dependencies": [
-                {"name": "tilo-app", "kind": None, "features": ["test-support"]},
-            ]},
+            # Published, so it ships to everyone who builds on it.
+            {"name": "published", "publish": None, "features": {}, "targets": [],
+             "dependencies": [tilo_app(["test-support"])]},
+            # A binary a person runs, though unpublished.
+            {"name": "program", "publish": [], "features": {},
+             "targets": [{"kind": ["bin"], "required-features": []}],
+             "dependencies": [tilo_app(["test-support"]),
+                              {"name": "reached", "kind": None, "features": []}]},
+            # A library only a shipped program reaches ships with it.
+            {"name": "reached", "publish": [], "features": {},
+             "targets": [{"kind": ["lib"]}],
+             "dependencies": [tilo_app(["test-support"])]},
+            # The test host: unpublished, no binary, reached only from a dev-dependency.
+            {"name": "test-host", "publish": [], "features": {},
+             "targets": [{"kind": ["lib"]}],
+             "dependencies": [tilo_app(["test-support"])]},
+            # A shipped app dev-depends on the host and enables the feature for its tests only.
+            {"name": "app", "publish": [], "features": {},
+             "targets": [{"kind": ["bin"], "required-features": []}],
+             "dependencies": [tilo_app([]),
+                              {"name": "test-host", "kind": "dev", "features": []},
+                              tilo_app(["test-support"], kind="dev")]},
+            # A generated crate's stub binary requires a feature nothing enables: it builds
+            # nothing, so it ships nothing.
+            {"name": "unify", "publish": [], "features": {"never": []},
+             "targets": [{"kind": ["bin"], "required-features": ["never"]}],
+             "dependencies": [tilo_app(["test-support"])]},
+            # Anything else enabling it is not about tilo-app.
+            {"name": "unrelated", "publish": [], "features": {}, "targets": [],
+             "dependencies": [{"name": "other", "kind": None, "features": ["test-support"]}]},
         ]}
         self.assertEqual(
             sdk_licenses.test_support_from_normal_dependencies(metadata),
-            ["ships: enables tilo-app's test-support from a normal dependency"],
+            [
+                "program: enables tilo-app's test-support from a normal dependency",
+                "published: enables tilo-app's test-support from a normal dependency",
+                "reached: enables tilo-app's test-support from a normal dependency",
+            ],
         )
 
 
