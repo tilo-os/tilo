@@ -769,14 +769,21 @@ mod tests {
         let mut follow = Follow::default();
         follow.owe(
             Some("ada".into()),
-            false,
+            Busy::default(),
             false,
             &[place("ada", Some(7), None)],
             Some(member("ada-person")),
             "work",
         );
         let gone = follow
-            .owe(Some("ada".into()), false, false, &[], None, "elsewhere")
+            .owe(
+                Some("ada".into()),
+                Busy::default(),
+                false,
+                &[],
+                None,
+                "elsewhere",
+            )
             .expect("the pass owes it");
         assert!(gone.ended);
         assert_eq!(gone.step, Step::Gone);
