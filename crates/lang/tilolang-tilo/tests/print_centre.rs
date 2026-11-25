@@ -673,8 +673,14 @@ fn pictures<'a>(tree: &'a UiNode) -> Vec<&'a UiNode> {
 fn a_scanned_page_is_cropped_to_the_part_kept_and_its_text_is_stale() {
     let app = Installed::new();
     app.call("scan_page", vec![app.root_value()]);
-    app.call("poll_scan", vec![app.root_value()]);
-    app.call("poll_scan", vec![app.root_value()]);
+    app.moves(
+        |handlers| handlers.done.clone(),
+        &record(
+            "scan-1",
+            "done",
+            serde_json::json!({"url": "tilo-blob://page1"}),
+        ),
+    );
     let page = first_page(&app);
     app.call("recognize", vec![Value::resource(&page)]);
     let mut window = app.window();
@@ -717,8 +723,14 @@ fn a_scanned_page_is_cropped_to_the_part_kept_and_its_text_is_stale() {
 fn a_new_scanned_document_clears_the_pages_and_is_refused_while_scanning() {
     let app = Installed::new();
     app.call("scan_page", vec![app.root_value()]);
-    app.call("poll_scan", vec![app.root_value()]);
-    app.call("poll_scan", vec![app.root_value()]);
+    app.moves(
+        |handlers| handlers.done.clone(),
+        &record(
+            "scan-1",
+            "done",
+            serde_json::json!({"url": "tilo-blob://page1"}),
+        ),
+    );
     app.call("new_scanned_document", vec![app.root_value()]);
     let mut window = app.window();
     pick(&mut window, "place", Value::text("scan"));
