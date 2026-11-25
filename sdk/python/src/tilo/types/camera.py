@@ -39,7 +39,6 @@ __all__ = [
     "CameraDevice",
     "CamerasAnswer",
     "JobAnswer",
-    "JobState",
     "RecordAsk",
     "RecordAskJob",
     "RecordStopped",
@@ -52,6 +51,7 @@ __all__ = [
     "UrlAnswer",
     "Email",
     "TiloCamera",
+    "ScannedArgs",
     "RegisterCaptureArgs",
     "RecordScanArgs",
     "SetGridArgs",
@@ -77,8 +77,9 @@ __all__ = [
     "ArmTimerArgs",
     "CaptureArgs",
     "StartRecordingArgs",
+    "RecordedArgs",
     "StopRecordingArgs",
-    "PollArgs",
+    "CapturePageArgs",
     "ShutterDueArgs",
     "ImportImageArgs",
     "KeepScanArgs",
@@ -87,7 +88,6 @@ __all__ = [
     "SetScanColourArgs",
     "SetScanSourceArgs",
     "SetOcrLanguageArgs",
-    "CapturePageArgs",
     "SelectPageArgs",
     "RotatePageArgs",
     "RecognizeTextArgs",
@@ -101,6 +101,11 @@ CaptureKind = Literal["photo", "video"]
 
 Facing = Literal["back", "front", "wide"]
 """Which lens the viewfinder shows: the rear one, one facing the person, or the wide one."""
+
+ScannedArgs = TypedDict("ScannedArgs", {
+    "j": "Any",
+})
+"""The arguments of `scanned`."""
 
 RegisterCaptureArgs = TypedDict("RegisterCaptureArgs", {
     "capture": "SharedCapture",
@@ -217,13 +222,18 @@ StartRecordingArgs = TypedDict("StartRecordingArgs", {
 })
 """The arguments of `start_recording`."""
 
+RecordedArgs = TypedDict("RecordedArgs", {
+    "j": "Any",
+})
+"""The arguments of `recorded`."""
+
 StopRecordingArgs = TypedDict("StopRecordingArgs", {
 })
 """The arguments of `stop_recording`."""
 
-PollArgs = TypedDict("PollArgs", {
+CapturePageArgs = TypedDict("CapturePageArgs", {
 })
-"""The arguments of `poll`."""
+"""The arguments of `capture_page`."""
 
 ShutterDueArgs = TypedDict("ShutterDueArgs", {
 })
@@ -263,10 +273,6 @@ SetOcrLanguageArgs = TypedDict("SetOcrLanguageArgs", {
 })
 """The arguments of `set_ocr_language`."""
 
-CapturePageArgs = TypedDict("CapturePageArgs", {
-})
-"""The arguments of `capture_page`."""
-
 SelectPageArgs = TypedDict("SelectPageArgs", {
     "page": "ScannedPage",
 })
@@ -299,7 +305,7 @@ CropPageArgs = TypedDict("CropPageArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -360,14 +366,14 @@ class Notice(Resource):
 
 class ScanEntry(Resource):
     """ScanEntry — `tl.so.tilo.camera.ScanEntry`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     hsfv5zso: str  # raw
     ep2nakxy: str  # ts
 
 
 class SharedCapture(Resource):
     """SharedCapture — `tl.so.tilo.camera.SharedCapture`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     @property
     def _3w536lga(self) -> Any:
         """file (`3w536lga` on the wire)."""
@@ -408,7 +414,7 @@ class SharedCapture(Resource):
 
 class Wifi(Resource):
     """Wifi — `tl.so.tilo.camera.Wifi`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     lzomebum: str  # ssid
     r4cfx2eg: str  # auth
     vjej4gya: str  # password
@@ -417,7 +423,7 @@ class Wifi(Resource):
 
 class Contact(Resource):
     """Contact — `tl.so.tilo.camera.Contact`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     vqb7vg46: str  # name
     m3wjb2ux: str  # phone
     ozre57rz: str  # email
@@ -433,7 +439,7 @@ class Contact(Resource):
 
 class CapturePreferences(Resource):
     """CapturePreferences — `tl.so.tilo.camera.CapturePreferences`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     kbzf222p: str  # resolution
     zqovr7j4: str  # photo_format
     qv6u7j3k: int  # timer
@@ -477,7 +483,7 @@ class CapturePreferences(Resource):
 
 class ScannedPage(Resource):
     """ScannedPage — `tl.so.tilo.camera.ScannedPage`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     @property
     def _5tzdwbr2(self) -> Any:
         """file (`5tzdwbr2` on the wire)."""
@@ -492,7 +498,7 @@ class ScannedPage(Resource):
 
 class ScanSession(Resource):
     """ScanSession — `tl.so.tilo.camera.ScanSession`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     r3wtymsq: str  # scanner
     @property
     def _7wujh6qk(self) -> int:
@@ -524,10 +530,22 @@ class ScanSession(Resource):
         self.edit("7mup54lj", value=value)
     yn4bzy6x: int  # selected
 
+    def scanned(self, *, j: Any) -> None:
+        """The scan ended: its page added to the document, or why none came."""
+        return self.action("scanned", j=j)
+
+    def scanned_many(self, items: list[ScannedArgs]) -> list[dict[str, Any]]:
+        """Runs `scanned` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("scanned", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"scanned", "scanned_many"})
+
 
 class Camera(Resource):
     """Camera — `tl.so.tilo.camera.Camera`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     mbpsgka6: list[Entry[ScanEntry]]  # scans
     rx3qy2lc: SharedCapture | None  # recent
     vdbaklqk: list[Entry[CapturePreferences]]  # preferences
@@ -748,6 +766,14 @@ class Camera(Resource):
         """Runs `start_recording` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("start_recording", items)
 
+    def recorded(self, *, j: Any) -> None:
+        """The recording ended: the clip it made and handed on, or why it made none."""
+        return self.action("recorded", j=j)
+
+    def recorded_many(self, items: list[RecordedArgs]) -> list[dict[str, Any]]:
+        """Runs `recorded` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("recorded", items)
+
     def stop_recording(self) -> None:
         """Stops the clip recording and hands it on once the engine has muxed it."""
         return self.action("stop_recording")
@@ -756,13 +782,13 @@ class Camera(Resource):
         """Runs `stop_recording` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stop_recording", items)
 
-    def poll(self) -> None:
-        """Asks how far the recording and the document scan have got, finishing what is done."""
-        return self.action("poll")
+    def capture_page(self) -> None:
+        """Captures one page with the chosen scanner and settings."""
+        return self.action("capture_page")
 
-    def poll_many(self, items: list[PollArgs]) -> list[dict[str, Any]]:
-        """Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("poll", items)
+    def capture_page_many(self, items: list[CapturePageArgs]) -> list[dict[str, Any]]:
+        """Runs `capture_page` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("capture_page", items)
 
     def shutter_due(self) -> None:
         """The self-timer's moment came: take the photo it counted down to, unless it was cancelled."""
@@ -831,14 +857,6 @@ class Camera(Resource):
     def set_ocr_language_many(self, items: list[SetOcrLanguageArgs]) -> list[dict[str, Any]]:
         """Runs `set_ocr_language` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_ocr_language", items)
-
-    def capture_page(self) -> None:
-        """Captures one page with the chosen scanner and settings."""
-        return self.action("capture_page")
-
-    def capture_page_many(self, items: list[CapturePageArgs]) -> list[dict[str, Any]]:
-        """Runs `capture_page` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("capture_page", items)
 
     def select_page(self, *, page: ScannedPage) -> None:
         """Runs the app's action."""
@@ -912,12 +930,12 @@ class Camera(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"register_capture", "register_capture_many", "record_scan", "record_scan_many", "set_grid", "set_grid_many", "set_level", "set_level_many", "prefs_of", "session_of", "use_mode", "use_mode_many", "use_lens", "use_lens_many", "cycle_lens", "cycle_lens_many", "use_camera", "use_camera_many", "retry_camera", "retry_camera_many", "list_cameras", "list_cameras_many", "set_resolution", "set_resolution_many", "set_photo_format", "set_photo_format_many", "set_timer", "set_timer_many", "set_mirror_front", "set_mirror_front_many", "set_geotag", "set_geotag_many", "set_hdr", "set_hdr_many", "set_default_lens", "set_default_lens_many", "start_look", "start_look_many", "stop_look", "stop_look_many", "look", "look_many", "read_codes", "read_codes_many", "shutter", "shutter_many", "arm_timer", "arm_timer_many", "capture", "capture_many", "start_recording", "start_recording_many", "stop_recording", "stop_recording_many", "poll", "poll_many", "shutter_due", "shutter_due_many", "import_image", "import_image_many", "copy_code", "keep_scan", "keep_scan_many", "set_scanner", "set_scanner_many", "set_scan_resolution", "set_scan_resolution_many", "set_scan_colour", "set_scan_colour_many", "set_scan_source", "set_scan_source_many", "set_ocr_language", "set_ocr_language_many", "capture_page", "capture_page_many", "select_page", "select_page_many", "rotate_page", "rotate_page_many", "recognize_text", "recognize_text_many", "copy_text", "move_page", "move_page_many", "remove_page", "remove_page_many", "crop_source", "crop_page", "crop_page_many", "document_pdf", "open_recent"})
+    __actions__ = frozenset({"register_capture", "register_capture_many", "record_scan", "record_scan_many", "set_grid", "set_grid_many", "set_level", "set_level_many", "prefs_of", "session_of", "use_mode", "use_mode_many", "use_lens", "use_lens_many", "cycle_lens", "cycle_lens_many", "use_camera", "use_camera_many", "retry_camera", "retry_camera_many", "list_cameras", "list_cameras_many", "set_resolution", "set_resolution_many", "set_photo_format", "set_photo_format_many", "set_timer", "set_timer_many", "set_mirror_front", "set_mirror_front_many", "set_geotag", "set_geotag_many", "set_hdr", "set_hdr_many", "set_default_lens", "set_default_lens_many", "start_look", "start_look_many", "stop_look", "stop_look_many", "look", "look_many", "read_codes", "read_codes_many", "shutter", "shutter_many", "arm_timer", "arm_timer_many", "capture", "capture_many", "start_recording", "start_recording_many", "recorded", "recorded_many", "stop_recording", "stop_recording_many", "capture_page", "capture_page_many", "shutter_due", "shutter_due_many", "import_image", "import_image_many", "copy_code", "keep_scan", "keep_scan_many", "set_scanner", "set_scanner_many", "set_scan_resolution", "set_scan_resolution_many", "set_scan_colour", "set_scan_colour_many", "set_scan_source", "set_scan_source_many", "set_ocr_language", "set_ocr_language_many", "select_page", "select_page_many", "rotate_page", "rotate_page_many", "recognize_text", "recognize_text_many", "copy_text", "move_page", "move_page_many", "remove_page", "remove_page_many", "crop_source", "crop_page", "crop_page_many", "document_pdf", "open_recent"})
 
 
 class StillAsk(Resource):
     """StillAsk — `tl.so.tilo.camera.StillAsk`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     tbd3ic3b: str  # device
     ijab2zhm: int  # width
     zyjznh7y: int  # height
@@ -926,7 +944,7 @@ class StillAsk(Resource):
 
 class FrameAsk(Resource):
     """FrameAsk — `tl.so.tilo.camera.FrameAsk`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     ycmsih2o: str  # device
     yvbln5ns: int  # width
     kzl4t5dn: int  # height
@@ -934,14 +952,14 @@ class FrameAsk(Resource):
 
 class CodesAsk(Resource):
     """CodesAsk — `tl.so.tilo.camera.CodesAsk`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     vzfp47qk: str  # url
     v7y3lgcv: int  # width
 
 
 class DecodedCode(Resource):
     """DecodedCode — `tl.so.tilo.camera.DecodedCode`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     fzwv4d4j: str  # text
     lsk2z7xu: float  # x
     ukafx4ho: float  # y
@@ -951,20 +969,20 @@ class DecodedCode(Resource):
 
 class CodesAnswer(Resource):
     """CodesAnswer — `tl.so.tilo.camera.CodesAnswer`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     etfbstke: list[DecodedCode]  # codes
 
 
 class CameraDevice(Resource):
     """CameraDevice — `tl.so.tilo.camera.CameraDevice`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     e6k5e5oe: str  # device
     umm5rpj4: str  # label
 
 
 class CamerasAnswer(Resource):
     """CamerasAnswer — `tl.so.tilo.camera.CamerasAnswer`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     @property
     def _3sxueu6f(self) -> list[CameraDevice]:
         """devices (`3sxueu6f` on the wire)."""
@@ -978,7 +996,7 @@ class CamerasAnswer(Resource):
 
 class JobAnswer(Resource):
     """JobAnswer — `tl.so.tilo.camera.JobAnswer`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     @property
     def _3uzmfe3a(self) -> str:
         """job (`3uzmfe3a` on the wire)."""
@@ -989,24 +1007,9 @@ class JobAnswer(Resource):
         self.edit("3uzmfe3a", value=value)
 
 
-class JobState(Resource):
-    """JobState — `tl.so.tilo.camera.JobState`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
-    @property
-    def _5c2s6yqj(self) -> str:
-        """state (`5c2s6yqj` on the wire)."""
-        return self.fields["5c2s6yqj"]
-
-    @_5c2s6yqj.setter
-    def _5c2s6yqj(self, value: str) -> None:
-        self.edit("5c2s6yqj", value=value)
-    b4mxjneo: str  # url
-    i7ypqcia: str  # error
-
-
 class RecordAsk(Resource):
     """RecordAsk — `tl.so.tilo.camera.RecordAsk`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     zm52cba6: str  # device
     @property
     def _2vmgzw6b(self) -> int:
@@ -1028,19 +1031,19 @@ class RecordAsk(Resource):
 
 class RecordAskJob(Resource):
     """RecordAskJob — `tl.so.tilo.camera.RecordAskJob`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     vkx7nslm: str  # job
 
 
 class RecordStopped(Resource):
     """RecordStopped — `tl.so.tilo.camera.RecordStopped`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     tm6dvkh2: RecordedClip  # video
 
 
 class RecordedClip(Resource):
     """RecordedClip — `tl.so.tilo.camera.RecordedClip`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     tzmimu3l: str  # name
     @property
     def _7znademx(self) -> int:
@@ -1057,7 +1060,7 @@ class RecordedClip(Resource):
 
 class ScanAsk(Resource):
     """ScanAsk — `tl.so.tilo.camera.ScanAsk`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     @property
     def _3m6nff75(self) -> str:
         """scanner (`3m6nff75` on the wire)."""
@@ -1081,7 +1084,7 @@ class ScanAsk(Resource):
 
 class OcrAsk(Resource):
     """OcrAsk — `tl.so.tilo.camera.OcrAsk`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     @property
     def _35d3ajgx(self) -> str:
         """url (`35d3ajgx` on the wire)."""
@@ -1095,7 +1098,7 @@ class OcrAsk(Resource):
 
 class OcrAnswer(Resource):
     """OcrAnswer — `tl.so.tilo.camera.OcrAnswer`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     @property
     def _3hu3iumn(self) -> str:
         """text (`3hu3iumn` on the wire)."""
@@ -1110,34 +1113,34 @@ class OcrAnswer(Resource):
 
 class PdfPage(Resource):
     """PdfPage — `tl.so.tilo.camera.PdfPage`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     siogqny4: str  # url
     anpoq2j7: str  # text
 
 
 class PagesAsk(Resource):
     """PagesAsk — `tl.so.tilo.camera.PagesAsk`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     mmydep5v: list[PdfPage]  # pages
     rclpsfrb: str  # name
 
 
 class UrlAnswer(Resource):
     """UrlAnswer — `tl.so.tilo.camera.UrlAnswer`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     llffazxv: str  # url
 
 
 class Email(Resource):
     """Email — `tl.so.tilo.camera.Email`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     kdi6tquz: str  # address
     odqiiw2m: str  # subject
 
 
 class TiloCamera(Resource):
     """Camera — `tl.so.tilo.camera`."""
-    __surface__ = "so.tilo.camera@0cd26b372352ad7e"
+    __surface__ = "so.tilo.camera@93d0212f06fd7210"
     def open_photos(self) -> None:
         """Opens the library the captures go to."""
         return self.action("open_photos")

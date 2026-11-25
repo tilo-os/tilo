@@ -31,7 +31,6 @@ __all__ = [
     "KeyInfo",
     "IndexInfo",
     "Answer",
-    "Started",
     "Progress",
     "Opened",
     "Secret",
@@ -74,7 +73,7 @@ __all__ = [
     "RefreshCatalogArgs",
     "OrderByArgs",
     "DismissArgs",
-    "CheckArgs",
+    "JobDoneArgs",
     "OpenedArgs",
     "QueriedArgs",
     "ForgetPasswordArgs",
@@ -233,9 +232,10 @@ DismissArgs = TypedDict("DismissArgs", {
 })
 """The arguments of `dismiss`."""
 
-CheckArgs = TypedDict("CheckArgs", {
+JobDoneArgs = TypedDict("JobDoneArgs", {
+    "j": "Any",
 })
-"""The arguments of `check`."""
+"""The arguments of `job_done`."""
 
 OpenedArgs = TypedDict("OpenedArgs", {
     "answer": "str",
@@ -276,7 +276,7 @@ FailedJobArgs = TypedDict("FailedJobArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -337,7 +337,7 @@ class Notice(Resource):
 
 class Connection(Resource):
     """Connection — `tl.so.tilo.db-client.Connection`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     @property
     def _52sa65q7(self) -> str:
         """name (`52sa65q7` on the wire)."""
@@ -371,14 +371,14 @@ class Connection(Resource):
 
 class SavedQuery(Resource):
     """SavedQuery — `tl.so.tilo.db-client.SavedQuery`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     fxmhtvbz: str  # name
     rnkrjcin: str  # sql
 
 
 class Database(Resource):
     """Database — `tl.so.tilo.db-client.Database`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     djghd3ar: list[Entry[Connection]]  # connections
     dbkiebu3: list[Entry[SavedQuery]]  # queries
     r77o5x22: str  # sql
@@ -662,13 +662,13 @@ class Database(Resource):
         """Runs `dismiss` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("dismiss", items)
 
-    def check(self) -> None:
-        """Asks how far the job in flight has got, and folds its answer in. A job this device does not run says so, and leaves the window as it is."""
-        return self.action("check")
+    def job_done(self, *, j: Any) -> None:
+        """The job in flight ended: its answer is read as what it is, or the window says why it failed or was stopped. A job this window no longer runs leaves the window as it is."""
+        return self.action("job_done", j=j)
 
-    def check_many(self, items: list[CheckArgs]) -> list[dict[str, Any]]:
-        """Runs `check` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("check", items)
+    def job_done_many(self, items: list[JobDoneArgs]) -> list[dict[str, Any]]:
+        """Runs `job_done` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("job_done", items)
 
     def opened(self, *, answer: str) -> None:
         """Takes a connection's handle in, once the engine opened it, and reads its catalog."""
@@ -688,12 +688,12 @@ class Database(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"ensure_session", "connect", "connect_many", "disconnect", "disconnect_many", "add_connection", "add_connection_many", "remove_connection", "remove_connection_many", "remember_password", "remember_password_many", "save_query", "save_query_many", "remove_query", "remove_query_many", "load_query", "load_query_many", "load_starter", "load_starter_many", "choose_tab", "choose_tab_many", "show_tab", "show_tab_many", "begin_transaction", "begin_transaction_many", "commit_transaction", "commit_transaction_many", "rollback_transaction", "rollback_transaction_many", "run", "run_many", "confirm_run", "confirm_run_many", "dismiss_run", "dismiss_run_many", "run_query", "run_query_many", "rerun", "rerun_many", "start_statement", "start_statement_many", "cancel", "cancel_many", "browse", "browse_many", "load_structure", "load_structure_many", "load_page", "load_page_many", "next_page", "next_page_many", "previous_page", "previous_page_many", "refresh_catalog", "refresh_catalog_many", "order_by", "order_by_many", "copy_row", "copy_result", "export_csv", "dismiss", "dismiss_many", "check", "check_many", "opened", "opened_many", "queried", "queried_many"})
+    __actions__ = frozenset({"ensure_session", "connect", "connect_many", "disconnect", "disconnect_many", "add_connection", "add_connection_many", "remove_connection", "remove_connection_many", "remember_password", "remember_password_many", "save_query", "save_query_many", "remove_query", "remove_query_many", "load_query", "load_query_many", "load_starter", "load_starter_many", "choose_tab", "choose_tab_many", "show_tab", "show_tab_many", "begin_transaction", "begin_transaction_many", "commit_transaction", "commit_transaction_many", "rollback_transaction", "rollback_transaction_many", "run", "run_many", "confirm_run", "confirm_run_many", "dismiss_run", "dismiss_run_many", "run_query", "run_query_many", "rerun", "rerun_many", "start_statement", "start_statement_many", "cancel", "cancel_many", "browse", "browse_many", "load_structure", "load_structure_many", "load_page", "load_page_many", "next_page", "next_page_many", "previous_page", "previous_page_many", "refresh_catalog", "refresh_catalog_many", "order_by", "order_by_many", "copy_row", "copy_result", "export_csv", "dismiss", "dismiss_many", "job_done", "job_done_many", "opened", "opened_many", "queried", "queried_many"})
 
 
 class TableInfo(Resource):
     """TableInfo — `tl.so.tilo.db-client.TableInfo`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     yofk7dul: str  # schema
     h5zenygt: str  # name
     tbo6xpjg: str  # kind
@@ -709,9 +709,9 @@ class TableInfo(Resource):
 
 class ColumnInfo(Resource):
     """ColumnInfo — `tl.so.tilo.db-client.ColumnInfo`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
-    kdq23jfd: str  # schema
-    wklm2rxq: str  # table
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
+    ybqhn5bv: str  # schema
+    mti4en3a: str  # table
     qmrcvjjn: str  # name
     ffkug4qg: str  # decl_type
     ifa6r5by: bool  # nullable
@@ -728,7 +728,7 @@ class ColumnInfo(Resource):
 
 class KeyInfo(Resource):
     """KeyInfo — `tl.so.tilo.db-client.KeyInfo`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     @property
     def _4sqibo4s(self) -> str:
         """column (`4sqibo4s` on the wire)."""
@@ -743,7 +743,7 @@ class KeyInfo(Resource):
 
 class IndexInfo(Resource):
     """IndexInfo — `tl.so.tilo.db-client.IndexInfo`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     bmcdtfyt: str  # name
     co7n2x5l: bool  # unique
     ws3nxyhc: str  # columns
@@ -751,7 +751,7 @@ class IndexInfo(Resource):
 
 class Answer(Resource):
     """Answer — `tl.so.tilo.db-client.Answer`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     n7guubug: list[str]  # columns
     zmjmvjeu: list[list[str]]  # rows
     ztnqa552: list[list[bool]]  # nulls
@@ -769,29 +769,21 @@ class Answer(Resource):
     qf7pdvx7: str  # truncated
 
 
-class Started(Resource):
-    """Started — `tl.so.tilo.db-client.Started`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
-    ms2izpdh: str  # job
-
-
 class Progress(Resource):
     """Progress — `tl.so.tilo.db-client.Progress`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
-    dday2ali: str  # state
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     bpgwkoxz: str  # result
-    gacluwxm: str  # error
 
 
 class Opened(Resource):
     """Opened — `tl.so.tilo.db-client.Opened`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     yheverkf: int  # connection
 
 
 class Secret(Resource):
     """Secret — `tl.so.tilo.db-client.Secret`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     psin3vp7: str  # connection
     @property
     def _3twvmxwg(self) -> str:
@@ -805,7 +797,7 @@ class Secret(Resource):
 
 class Run(Resource):
     """Run — `tl.so.tilo.db-client.Run`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     @property
     def _6abruthm(self) -> str:
         """connection (`6abruthm` on the wire)."""
@@ -827,14 +819,14 @@ class Run(Resource):
 
 class Row(Resource):
     """Row — `tl.so.tilo.db-client.Row`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     hxhdvye5: list[str]  # cells
     gc6jygal: list[bool]  # nulls
 
 
 class Outcome(Resource):
     """Outcome — `tl.so.tilo.db-client.Outcome`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     qxwjsiht: int  # seq
     rym2yft2: list[str]  # columns
     m6wzfydf: list[bool]  # numeric
@@ -863,7 +855,7 @@ class Outcome(Resource):
 
 class Session(Resource):
     """Session — `tl.so.tilo.db-client.Session`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     elhp2adh: str  # open
     @property
     def _73sz5sht(self) -> str:
@@ -885,7 +877,7 @@ class Session(Resource):
     def _62jlzlao(self, value: list[str]) -> None:
         self.edit("62jlzlao", value=value)
     c5axoen6: list[Entry[TableInfo]]  # tables
-    solxuk72: list[Entry[ColumnInfo]]  # catalog_columns
+    tzehhxal: list[Entry[ColumnInfo]]  # catalog_columns
     p5c7ywkh: list[Entry[KeyInfo]]  # keys
     zb4ttvcb: list[Entry[IndexInfo]]  # indexes
     y5w3id3d: str  # selected_schema
@@ -970,7 +962,7 @@ class Session(Resource):
 
 class OpenAsk(Resource):
     """OpenAsk — `tl.so.tilo.db-client.OpenAsk`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     wr4rh4km: str  # engine
     @property
     def _7ub5mnfo(self) -> str:
@@ -989,7 +981,7 @@ class OpenAsk(Resource):
 
 class QueryAsk(Resource):
     """QueryAsk — `tl.so.tilo.db-client.QueryAsk`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     @property
     def _64plkkzv(self) -> int:
         """connection (`64plkkzv` on the wire)."""
@@ -1003,7 +995,7 @@ class QueryAsk(Resource):
 
 class BrowseAsk(Resource):
     """BrowseAsk — `tl.so.tilo.db-client.BrowseAsk`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     ktmsx6gt: int  # connection
     urg4wtul: str  # schema
     @property
@@ -1020,7 +1012,7 @@ class BrowseAsk(Resource):
 
 class TableAsk(Resource):
     """TableAsk — `tl.so.tilo.db-client.TableAsk`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     fmbqqhio: int  # connection
     @property
     def _2maemw4x(self) -> str:
@@ -1035,11 +1027,11 @@ class TableAsk(Resource):
 
 class Handle(Resource):
     """Handle — `tl.so.tilo.db-client.Handle`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
     qjoudlls: int  # connection
 
 
 class DbClient(Resource):
     """Database Client — `tl.so.tilo.db-client`."""
-    __surface__ = "so.tilo.db-client@fcebe3a45dc48e1c"
+    __surface__ = "so.tilo.db-client@bd20e39fa4ba3423"
 

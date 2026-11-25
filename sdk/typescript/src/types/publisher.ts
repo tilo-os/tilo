@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.publisher@41c7fd9c6c160376";
+export const SURFACE = "so.tilo.publisher@c27aa27c33398317";
 
 /** The arguments of `read_key`. */
 export interface ReadKeyArgs {
@@ -40,8 +40,9 @@ export interface ApplyForNamespacesArgs {
 export interface CheckStatusArgs {
 }
 
-/** The arguments of `poll`. */
-export interface PollArgs {
+/** The arguments of `answered`. */
+export interface AnsweredArgs {
+  j: unknown;
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -114,15 +115,17 @@ export interface Publisher extends tilo.Resource {
   check_status(): Promise<void>;
   /** Runs `check_status` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   check_statusMany(items: CheckStatusArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks the registry how the call under way is doing, once a second while one runs. */
-  poll(): Promise<void>;
-  /** Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  pollMany(items: PollArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The registry answered: what it said about the application, or why it could not. */
+  answered(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `answered` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  answeredMany(items: AnsweredArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Publisher` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PUBLISHER_ACTIONS = ["read_key", "read_keyMany", "create_key", "create_keyMany", "copy_proof", "copy_secret", "export_key", "apply_for_namespaces", "apply_for_namespacesMany", "check_status", "check_statusMany", "poll", "pollMany"] as const;
+export const PUBLISHER_ACTIONS = ["read_key", "read_keyMany", "create_key", "create_keyMany", "copy_proof", "copy_secret", "export_key", "apply_for_namespaces", "apply_for_namespacesMany", "check_status", "check_statusMany", "answered", "answeredMany"] as const;
 
 /** The `tl.so.tilo.publisher.Publisher` kind at `path`. */
 export function publisher(ws: tilo.Workspace, path: string): Publisher {
@@ -189,34 +192,18 @@ export function statusAsk(ws: tilo.Workspace, path: string): StatusAsk {
   return resourceProxy(ws, path, SURFACE, STATUSASK_ACTIONS) as unknown as StatusAsk;
 }
 
-/** JobState — `tl.so.tilo.publisher.JobState`. */
-export interface JobState extends tilo.Resource {
-  jqgcvhvb: string;  // state
-  wu2vhifg: string;  // summary
-  ghygxnrv: string;  // error
+/** RegistryWords — `tl.so.tilo.publisher.RegistryWords`. */
+export interface RegistryWords extends tilo.Resource {
+  "2gablpyd": string;  // summary
 }
 
-/** The actions `JobState` reaches before it is read: `ws` calls them without a
+/** The actions `RegistryWords` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const JOBSTATE_ACTIONS = [] as const;
+export const REGISTRYWORDS_ACTIONS = [] as const;
 
-/** The `tl.so.tilo.publisher.JobState` kind at `path`. */
-export function jobState(ws: tilo.Workspace, path: string): JobState {
-  return resourceProxy(ws, path, SURFACE, JOBSTATE_ACTIONS) as unknown as JobState;
-}
-
-/** JobAnswer — `tl.so.tilo.publisher.JobAnswer`. */
-export interface JobAnswer extends tilo.Resource {
-  q55hkx2s: string;  // job
-}
-
-/** The actions `JobAnswer` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const JOBANSWER_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.publisher.JobAnswer` kind at `path`. */
-export function jobAnswer(ws: tilo.Workspace, path: string): JobAnswer {
-  return resourceProxy(ws, path, SURFACE, JOBANSWER_ACTIONS) as unknown as JobAnswer;
+/** The `tl.so.tilo.publisher.RegistryWords` kind at `path`. */
+export function registryWords(ws: tilo.Workspace, path: string): RegistryWords {
+  return resourceProxy(ws, path, SURFACE, REGISTRYWORDS_ACTIONS) as unknown as RegistryWords;
 }
 
 /** KeyState — `tl.so.tilo.publisher.KeyState`. */

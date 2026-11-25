@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@06bf0e99c12e2856";
+export const SURFACE = "so.tilo.notes@5523ae3d199a6faa";
 
 /** The arguments of `edit-block`. */
 export interface EditBlockArgs {
@@ -299,7 +299,7 @@ export interface Note extends tilo.Resource {
   keep_imageMany(items: KeepImageArgs[]): Promise<tilo.ActionAnswer[]>;
   /** A note as Markdown: its title, then its body, each picture it shows written beside it as `<note>/images/<name>`, a path another reader of the file follows and this app reads again as the address of the picture's bytes. */
   export_markdown(): Promise<string>;
-  /** A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a picture is one zip — `Q3 plan.md` and `Q3 plan/images/fox.png` — because Markdown reaches a picture by a path and by nothing else; a note of words alone is that Markdown itself. */
+  /** A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a picture is one zip — `Q3 plan.md` and `Q3 plan/images/fox.png` — because Markdown reaches a picture by a path and by nothing else; a note of words alone is that Markdown itself. The system's one Export… saves it where the person says. */
   export_note(): Promise<unknown>;
 }
 

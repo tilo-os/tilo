@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.store@b68a7236639baac4";
+export const SURFACE = "so.tilo.store@ca0e0433b7b78ffe";
 
 /** The arguments of `get`. */
 export interface GetArgs {
@@ -56,19 +56,20 @@ export interface SubmitReportArgs {
 export interface AppealArgs {
 }
 
-/** The arguments of `poll`. */
-export interface PollArgs {
+/** The arguments of `reading_moved`. */
+export interface ReadingMovedArgs {
+  j: unknown;
 }
 
-/** The arguments of `follow`. */
-export interface FollowArgs {
+/** The arguments of `reading_done`. */
+export interface ReadingDoneArgs {
+  j: unknown;
+}
+
+/** The arguments of `change_done`. */
+export interface ChangeDoneArgs {
   a: App;
-}
-
-/** The arguments of `begin_reading`. */
-export interface BeginReadingArgs {
-  op: string;
-  ask: string;
+  j: unknown;
 }
 
 /** The arguments of `begin`. */
@@ -300,6 +301,7 @@ export interface App extends tilo.Resource {
   "66hvm5fy": boolean;  // details_read
   "7l5m7ka6": boolean;  // updatable
   awr7kqfn: string;  // trouble
+  qbd5uogv: string;  // failed
   /** Gets an app the workspace does not run yet: the newest version its source offers. */
   get(): Promise<void>;
   /** Runs `get` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -414,6 +416,8 @@ export interface Store extends tilo.Resource {
   a6ibqgbw: Array<tilo.Entry<Block>>;  // blocks
   "72gq3jue": string;  // status
   sotfrvum: string;  // trouble
+  y63chpxh: string;  // flathub_trouble
+  "6udr6hps": string;  // command_trouble
   eubzl4qx: string;  // reading
   e22zgwb6: boolean;  // flatpak
   uxwwy2fl: string;  // flatpak_trouble
@@ -423,23 +427,30 @@ export interface Store extends tilo.Resource {
   "5ynamzdl": string;  // reviewed_app
   vihbdrl7: unknown | null;  // reviewed_file
   // the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
-  /** Asks how far the read or the change running has got, and puts what it found into the workspace. Runs while the window is open. */
-  poll(): Promise<void>;
-  /** Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  pollMany(items: PollArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** The job an app's change is, as far as the engine has got: its row says where it stands, and what it made is read once it ends. */
-  follow(args: {
-    a: App;
+  /** The read moved on: the line the window shows while it runs. */
+  reading_moved(args: {
+    j: unknown;
   }): Promise<void>;
-  /** Runs `follow` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  followMany(items: FollowArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `reading_moved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reading_movedMany(items: ReadingMovedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The read ended: the catalogue it found, or why it found none. */
+  reading_done(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `reading_done` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reading_doneMany(items: ReadingDoneArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The job an app's change is, as far as the engine has got: its row says where it stands, and what it made is read once it ends. */
+  change_done(args: {
+    a: App;
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `change_done` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  change_doneMany(items: ChangeDoneArgs[]): Promise<tilo.ActionAnswer[]>;
   /** A job that changes the catalogue itself rather than one app, followed as the read is: its end reads the sources again, so a new repository or an update of everything lands. */
   begin_reading(args: {
     op: string;
     ask: string;
-  }): Promise<void>;
-  /** Runs `begin_reading` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  begin_readingMany(items: BeginReadingArgs[]): Promise<tilo.ActionAnswer[]>;
+  }): Promise<boolean>;
   /** A job the engine started for `a`, or why it did not start. */
   begin(args: {
     a: App;
@@ -598,7 +609,7 @@ export interface Store extends tilo.Resource {
 
 /** The actions `Store` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const STORE_ACTIONS = ["poll", "pollMany", "follow", "followMany", "begin_reading", "begin_readingMany", "begin", "beginMany", "read_app", "read_appMany", "show_details", "show_detailsMany", "take_catalogue", "take_catalogueMany", "read_flathub", "read_flathubMany", "read_flathub_details", "read_flathub_detailsMany", "absorb_text", "absorb_remote_text", "absorb_remote_textMany", "refresh_remotes", "refresh_remotesMany", "add_remote", "add_remoteMany", "enable_remote", "enable_remoteMany", "disable_remote", "disable_remoteMany", "remote_change", "remote_changeMany", "remove_remote", "remove_remoteMany", "browse", "browseMany", "update_all", "update_allMany", "add_bot", "add_botMany", "block_app", "block_appMany", "unblock_app", "unblock_appMany", "import_package", "install_reviewed", "install_reviewedMany", "open_reference", "open_referenceMany", "open_link", "review_runtime", "draft_report", "record_moderation_case", "record_moderation_caseMany", "prepare_report", "refresh_status", "refresh_statusMany"] as const;
+export const STORE_ACTIONS = ["reading_moved", "reading_movedMany", "reading_done", "reading_doneMany", "change_done", "change_doneMany", "begin_reading", "begin", "beginMany", "read_app", "read_appMany", "show_details", "show_detailsMany", "take_catalogue", "take_catalogueMany", "read_flathub", "read_flathubMany", "read_flathub_details", "read_flathub_detailsMany", "absorb_text", "absorb_remote_text", "absorb_remote_textMany", "refresh_remotes", "refresh_remotesMany", "add_remote", "add_remoteMany", "enable_remote", "enable_remoteMany", "disable_remote", "disable_remoteMany", "remote_change", "remote_changeMany", "remove_remote", "remove_remoteMany", "browse", "browseMany", "update_all", "update_allMany", "add_bot", "add_botMany", "block_app", "block_appMany", "unblock_app", "unblock_appMany", "import_package", "install_reviewed", "install_reviewedMany", "open_reference", "open_referenceMany", "open_link", "review_runtime", "draft_report", "record_moderation_case", "record_moderation_caseMany", "prepare_report", "refresh_status", "refresh_statusMany"] as const;
 
 /** The `tl.so.tilo.store.Store` kind at `path`. */
 export function store(ws: tilo.Workspace, path: string): Store {
@@ -771,22 +782,18 @@ export function prepared(ws: tilo.Workspace, path: string): Prepared {
   return resourceProxy(ws, path, SURFACE, PREPARED_ACTIONS) as unknown as Prepared;
 }
 
-/** Job — `tl.so.tilo.store.Job`. */
-export interface Job extends tilo.Resource {
-  mqizmue3: string;  // state
-  ygdo3z6c: number;  // done
-  msrdztlm: number;  // total
-  fatgfp52: string;  // error
-  "35ydyeno": string;  // status
+/** JobWords — `tl.so.tilo.store.JobWords`. */
+export interface JobWords extends tilo.Resource {
+  pwpo5osg: string;  // status
 }
 
-/** The actions `Job` reaches before it is read: `ws` calls them without a
+/** The actions `JobWords` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const JOB_ACTIONS = [] as const;
+export const JOBWORDS_ACTIONS = [] as const;
 
-/** The `tl.so.tilo.store.Job` kind at `path`. */
-export function job(ws: tilo.Workspace, path: string): Job {
-  return resourceProxy(ws, path, SURFACE, JOB_ACTIONS) as unknown as Job;
+/** The `tl.so.tilo.store.JobWords` kind at `path`. */
+export function jobWords(ws: tilo.Workspace, path: string): JobWords {
+  return resourceProxy(ws, path, SURFACE, JOBWORDS_ACTIONS) as unknown as JobWords;
 }
 
 /** CaseRead — `tl.so.tilo.store.CaseRead`. */
@@ -856,21 +863,6 @@ export const FLATHUBASK_ACTIONS = [] as const;
 /** The `tl.so.tilo.store.FlathubAsk` kind at `path`. */
 export function flathubAsk(ws: tilo.Workspace, path: string): FlathubAsk {
   return resourceProxy(ws, path, SURFACE, FLATHUBASK_ACTIONS) as unknown as FlathubAsk;
-}
-
-/** Started — `tl.so.tilo.store.Started`. */
-export interface Started extends tilo.Resource {
-  omjipbxx: string;  // job
-  haex7z3y: string;  // error
-}
-
-/** The actions `Started` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const STARTED_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.store.Started` kind at `path`. */
-export function started(ws: tilo.Workspace, path: string): Started {
-  return resourceProxy(ws, path, SURFACE, STARTED_ACTIONS) as unknown as Started;
 }
 
 /** OneAsk — `tl.so.tilo.store.OneAsk`. */

@@ -22,13 +22,18 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.camera@0cd26b372352ad7e";
+export const SURFACE = "so.tilo.camera@93d0212f06fd7210";
 
 /** A capture is a still picture or a clip. One of "photo", "video". */
 export type CaptureKind = "photo" | "video";
 
 /** Which lens the viewfinder shows: the rear one, one facing the person, or the wide one. One of "back", "front", "wide". */
 export type Facing = "back" | "front" | "wide";
+
+/** The arguments of `scanned`. */
+export interface ScannedArgs {
+  j: unknown;
+}
 
 /** The arguments of `register_capture`. */
 export interface RegisterCaptureArgs {
@@ -145,12 +150,17 @@ export interface CaptureArgs {
 export interface StartRecordingArgs {
 }
 
+/** The arguments of `recorded`. */
+export interface RecordedArgs {
+  j: unknown;
+}
+
 /** The arguments of `stop_recording`. */
 export interface StopRecordingArgs {
 }
 
-/** The arguments of `poll`. */
-export interface PollArgs {
+/** The arguments of `capture_page`. */
+export interface CapturePageArgs {
 }
 
 /** The arguments of `shutter_due`. */
@@ -189,10 +199,6 @@ export interface SetScanSourceArgs {
 /** The arguments of `set_ocr_language`. */
 export interface SetOcrLanguageArgs {
   language: string;
-}
-
-/** The arguments of `capture_page`. */
-export interface CapturePageArgs {
 }
 
 /** The arguments of `select_page`. */
@@ -380,11 +386,17 @@ export interface ScanSession extends tilo.Resource {
   "2yr4wc6x": string;  // job
   "7mup54lj": string;  // failed
   yn4bzy6x: number;  // selected
+  /** The scan ended: its page added to the document, or why none came. */
+  scanned(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `scanned` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  scannedMany(items: ScannedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `ScanSession` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SCANSESSION_ACTIONS = [] as const;
+export const SCANSESSION_ACTIONS = ["scanned", "scannedMany"] as const;
 
 /** The `tl.so.tilo.camera.ScanSession` kind at `path`. */
 export function scanSession(ws: tilo.Workspace, path: string): ScanSession {
@@ -524,14 +536,20 @@ export interface Camera extends tilo.Resource {
   start_recording(): Promise<void>;
   /** Runs `start_recording` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   start_recordingMany(items: StartRecordingArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The recording ended: the clip it made and handed on, or why it made none. */
+  recorded(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `recorded` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  recordedMany(items: RecordedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Stops the clip recording and hands it on once the engine has muxed it. */
   stop_recording(): Promise<void>;
   /** Runs `stop_recording` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stop_recordingMany(items: StopRecordingArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks how far the recording and the document scan have got, finishing what is done. */
-  poll(): Promise<void>;
-  /** Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  pollMany(items: PollArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Captures one page with the chosen scanner and settings. */
+  capture_page(): Promise<void>;
+  /** Runs `capture_page` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  capture_pageMany(items: CapturePageArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The self-timer's moment came: take the photo it counted down to, unless it was cancelled. */
   shutter_due(): Promise<void>;
   /** Runs `shutter_due` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -576,10 +594,6 @@ export interface Camera extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_ocr_language` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_ocr_languageMany(items: SetOcrLanguageArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Captures one page with the chosen scanner and settings. */
-  capture_page(): Promise<void>;
-  /** Runs `capture_page` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  capture_pageMany(items: CapturePageArgs[]): Promise<tilo.ActionAnswer[]>;
   select_page(args: {
     page: ScannedPage;
   }): Promise<void>;
@@ -624,7 +638,7 @@ export interface Camera extends tilo.Resource {
 
 /** The actions `Camera` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CAMERA_ACTIONS = ["register_capture", "register_captureMany", "record_scan", "record_scanMany", "set_grid", "set_gridMany", "set_level", "set_levelMany", "prefs_of", "session_of", "use_mode", "use_modeMany", "use_lens", "use_lensMany", "cycle_lens", "cycle_lensMany", "use_camera", "use_cameraMany", "retry_camera", "retry_cameraMany", "list_cameras", "list_camerasMany", "set_resolution", "set_resolutionMany", "set_photo_format", "set_photo_formatMany", "set_timer", "set_timerMany", "set_mirror_front", "set_mirror_frontMany", "set_geotag", "set_geotagMany", "set_hdr", "set_hdrMany", "set_default_lens", "set_default_lensMany", "start_look", "start_lookMany", "stop_look", "stop_lookMany", "look", "lookMany", "read_codes", "read_codesMany", "shutter", "shutterMany", "arm_timer", "arm_timerMany", "capture", "captureMany", "start_recording", "start_recordingMany", "stop_recording", "stop_recordingMany", "poll", "pollMany", "shutter_due", "shutter_dueMany", "import_image", "import_imageMany", "copy_code", "keep_scan", "keep_scanMany", "set_scanner", "set_scannerMany", "set_scan_resolution", "set_scan_resolutionMany", "set_scan_colour", "set_scan_colourMany", "set_scan_source", "set_scan_sourceMany", "set_ocr_language", "set_ocr_languageMany", "capture_page", "capture_pageMany", "select_page", "select_pageMany", "rotate_page", "rotate_pageMany", "recognize_text", "recognize_textMany", "copy_text", "move_page", "move_pageMany", "remove_page", "remove_pageMany", "crop_source", "crop_page", "crop_pageMany", "document_pdf", "open_recent"] as const;
+export const CAMERA_ACTIONS = ["register_capture", "register_captureMany", "record_scan", "record_scanMany", "set_grid", "set_gridMany", "set_level", "set_levelMany", "prefs_of", "session_of", "use_mode", "use_modeMany", "use_lens", "use_lensMany", "cycle_lens", "cycle_lensMany", "use_camera", "use_cameraMany", "retry_camera", "retry_cameraMany", "list_cameras", "list_camerasMany", "set_resolution", "set_resolutionMany", "set_photo_format", "set_photo_formatMany", "set_timer", "set_timerMany", "set_mirror_front", "set_mirror_frontMany", "set_geotag", "set_geotagMany", "set_hdr", "set_hdrMany", "set_default_lens", "set_default_lensMany", "start_look", "start_lookMany", "stop_look", "stop_lookMany", "look", "lookMany", "read_codes", "read_codesMany", "shutter", "shutterMany", "arm_timer", "arm_timerMany", "capture", "captureMany", "start_recording", "start_recordingMany", "recorded", "recordedMany", "stop_recording", "stop_recordingMany", "capture_page", "capture_pageMany", "shutter_due", "shutter_dueMany", "import_image", "import_imageMany", "copy_code", "keep_scan", "keep_scanMany", "set_scanner", "set_scannerMany", "set_scan_resolution", "set_scan_resolutionMany", "set_scan_colour", "set_scan_colourMany", "set_scan_source", "set_scan_sourceMany", "set_ocr_language", "set_ocr_languageMany", "select_page", "select_pageMany", "rotate_page", "rotate_pageMany", "recognize_text", "recognize_textMany", "copy_text", "move_page", "move_pageMany", "remove_page", "remove_pageMany", "crop_source", "crop_page", "crop_pageMany", "document_pdf", "open_recent"] as const;
 
 /** The `tl.so.tilo.camera.Camera` kind at `path`. */
 export function camera(ws: tilo.Workspace, path: string): Camera {
@@ -753,22 +767,6 @@ export const JOBANSWER_ACTIONS = [] as const;
 /** The `tl.so.tilo.camera.JobAnswer` kind at `path`. */
 export function jobAnswer(ws: tilo.Workspace, path: string): JobAnswer {
   return resourceProxy(ws, path, SURFACE, JOBANSWER_ACTIONS) as unknown as JobAnswer;
-}
-
-/** JobState — `tl.so.tilo.camera.JobState`. */
-export interface JobState extends tilo.Resource {
-  "5c2s6yqj": string;  // state
-  b4mxjneo: string;  // url
-  i7ypqcia: string;  // error
-}
-
-/** The actions `JobState` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const JOBSTATE_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.camera.JobState` kind at `path`. */
-export function jobState(ws: tilo.Workspace, path: string): JobState {
-  return resourceProxy(ws, path, SURFACE, JOBSTATE_ACTIONS) as unknown as JobState;
 }
 
 /** RecordAsk — `tl.so.tilo.camera.RecordAsk`. */

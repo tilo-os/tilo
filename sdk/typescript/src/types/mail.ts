@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@3882fabea750171d";
+export const SURFACE = "so.tilo.mail@374de8982cd026ad";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -395,7 +395,7 @@ export interface Message extends tilo.Resource {
   copy_link(args: {
     url: string;
   }): Promise<void>;
-  /** The message as a Markdown file: what a person exports to read it, or keep it, elsewhere. */
+  /** The message as a Markdown file: what a person exports to read it, or keep it, elsewhere. The system's one Export… lists it with the message's other formats. */
   export_markdown(): Promise<unknown>;
   /** The message as a JSON file: what a script or an agent reads its record from. */
   export_json(): Promise<unknown>;

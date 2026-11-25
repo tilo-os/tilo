@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.code-editor@5305c907565048a5";
+export const SURFACE = "so.tilo.code-editor@6929cbdec37a6d37";
 
 /** What an entry of the project is: code that is written, or a place that holds entries. One of "file", "folder". */
 export type EntryKind = "file" | "folder";
@@ -224,8 +224,14 @@ export interface ClearCommandsArgs {
 export interface OpenTerminalArgs {
 }
 
-/** The arguments of `poll`. */
-export interface PollArgs {
+/** The arguments of `ran`. */
+export interface RanArgs {
+  j: unknown;
+}
+
+/** The arguments of `searched`. */
+export interface SearchedArgs {
+  j: unknown;
 }
 
 /** The arguments of `reveal_item`. */
@@ -262,13 +268,17 @@ export interface EnsureServerArgs {
   entry: Entry;
 }
 
-/** The arguments of `poll_server`. */
-export interface PollServerArgs {
+/** The arguments of `announce`. */
+export interface AnnounceArgs {
+  entry: Entry;
 }
 
-/** The arguments of `read_answer`. */
-export interface ReadAnswerArgs {
-  answer: string;
+/** The arguments of `ask_server`. */
+export interface AskServerArgs {
+  entry: Entry;
+  what: string;
+  line: number;
+  column: number;
 }
 
 /** The arguments of `complete`. */
@@ -729,20 +739,6 @@ export function runAsk(ws: tilo.Workspace, path: string): RunAsk {
   return resourceProxy(ws, path, SURFACE, RUNASK_ACTIONS) as unknown as RunAsk;
 }
 
-/** JobAnswer — `tl.so.tilo.code-editor.JobAnswer`. */
-export interface JobAnswer extends tilo.Resource {
-  o7kaxwxn: string;  // job
-}
-
-/** The actions `JobAnswer` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const JOBANSWER_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.code-editor.JobAnswer` kind at `path`. */
-export function jobAnswer(ws: tilo.Workspace, path: string): JobAnswer {
-  return resourceProxy(ws, path, SURFACE, JOBANSWER_ACTIONS) as unknown as JobAnswer;
-}
-
 /** SearchState — `tl.so.tilo.code-editor.SearchState`. */
 export interface SearchState extends tilo.Resource {
   zby3g4ps: string;  // state
@@ -795,7 +791,7 @@ export function serverAsk(ws: tilo.Workspace, path: string): ServerAsk {
 
 /** DocumentAsk — `tl.so.tilo.code-editor.DocumentAsk`. */
 export interface DocumentAsk extends tilo.Resource {
-  jmzsddw6: string;  // job
+  h63xj7zy: string;  // op
   cimxyukl: string;  // path
   u2ozcojk: string;  // language
   kxtscxdf: string;  // text
@@ -813,7 +809,7 @@ export function documentAsk(ws: tilo.Workspace, path: string): DocumentAsk {
 
 /** AskAsk — `tl.so.tilo.code-editor.AskAsk`. */
 export interface AskAsk extends tilo.Resource {
-  gxbdmbnd: string;  // job
+  vxmeoszq: string;  // op
   ysxutqlg: string;  // path
   p4m2am32: number;  // line
   q3inki66: number;  // column
@@ -981,20 +977,14 @@ export interface Project extends tilo.Resource {
   evbsknez: Array<tilo.Entry<Entry>>;  // files
   inupl3md: Array<tilo.Entry<Command>>;  // commands
   ubr6i22h: string;  // folder
-  "7sbddtl7": string;  // server_job
+  "7sbddtl7": string;  // server
   w3s6k4wz: string;  // server_language
-  tz2cc24s: string;  // server_name
-  wajnagjm: string;  // server_state
   mkyngogi: string;  // server_trouble
-  jwtdk5zn: string;  // server_progress
   yukh3x5s: boolean;  // language_servers
   "5qk4qm7f": boolean;  // format_on_save
   eolbog7w: string;  // answer_what
-  luh6yto7: string;  // answer_text
   "5vjxpshd": number;  // answer_line
   w3z62her: number;  // answer_column
-  p4n4bpno: Completion[];  // answer_items
-  thlj3m5d: Location[];  // answer_locations
   t4nipezs: string;  // search_job
   nbqioo6i: string;  // search_query
   "5z5b5fqg": string;  // search_text
@@ -1173,10 +1163,18 @@ export interface Project extends tilo.Resource {
   open_terminal(): Promise<void>;
   /** Runs `open_terminal` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   open_terminalMany(items: OpenTerminalArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks how far the running commands and the project search have got, once a second while anything runs: the one place the device's answers are folded into what the window shows. */
-  poll(): Promise<void>;
-  /** Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  pollMany(items: PollArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The command a job runs ended, or moved: its output, exit status and truncated flag are kept with the command, its output's places become items, and a failure is the window's trouble. */
+  ran(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `ran` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  ranMany(items: RanArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The project search ended, or moved: each hit it found is added as it comes, and the files it searched are counted. */
+  searched(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `searched` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  searchedMany(items: SearchedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Brings the caret to the place an item of a command's output names: the file is read if the project does not hold it yet, and the page shows it. */
   reveal_item(args: {
     path: string;
@@ -1210,7 +1208,7 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `open_hit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   open_hitMany(items: OpenHitArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Starts the language server for a file's language, if none runs for it yet, and tells it about the file. */
+  /** Opens the language server for a file's language, the project's held connection for that language and folder, or joins the one this device holds already, and tells it about the file. It runs in the app's own process until the project closes it: closing the window ends nothing. */
   ensure_server(args: {
     entry: Entry;
   }): Promise<void>;
@@ -1220,16 +1218,17 @@ export interface Project extends tilo.Resource {
   announce(args: {
     entry: Entry;
   }): Promise<void>;
-  /** Reads what the server answered: its state and progress, its problems for each file, and any answer to a code-help ask the page made. */
-  poll_server(): Promise<void>;
-  /** Runs `poll_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  poll_serverMany(items: PollServerArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Reads the answer the server gave to the page's last ask: a completion list, the words a hover shows, the places a declaration stands at, or the edits a format makes. */
-  read_answer(args: {
-    answer: string;
+  /** Runs `announce` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  announceMany(items: AnnounceArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Asks the server `what` about a place in a file; its answer arrives as what it says next. */
+  ask_server(args: {
+    entry: Entry;
+    what: string;
+    line: number;
+    column: number;
   }): Promise<void>;
-  /** Runs `read_answer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  read_answerMany(items: ReadAnswerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `ask_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  ask_serverMany(items: AskServerArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Asks the server for completions at a place in a file. */
   complete(args: {
     entry: Entry;
@@ -1280,7 +1279,7 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `toggle_format_on_save` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   toggle_format_on_saveMany(items: ToggleFormatOnSaveArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Stops the language server, as a person pressing 'Try again' after a failure does. */
+  /** Ends the language server, as a person pressing 'Try again' after a failure does: the next file checked starts it again. */
   restart_server(): Promise<void>;
   /** Runs `restart_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   restart_serverMany(items: RestartServerArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -1308,7 +1307,7 @@ export interface Project extends tilo.Resource {
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["new_file", "new_folder", "rename", "renameMany", "move_entry", "move_entryMany", "move_after", "move_afterMany", "delete", "deleteMany", "find_in_window", "find_in_windowMany", "check", "checkMany", "open_folder", "open_folderMany", "read_into", "read_intoMany", "read_folder_into", "read_folder_intoMany", "read_text", "read_textMany", "open_file", "open_fileMany", "save", "saveMany", "write", "overwrite", "overwriteMany", "reload", "reloadMany", "save_all", "save_allMany", "save_into", "save_intoMany", "move_on_disk", "move_on_diskMany", "import_dropped", "import_droppedMany", "run", "runMany", "stop", "stopMany", "rerun", "rerunMany", "rerun_test", "rerun_testMany", "run_", "run_Many", "clear_commands", "clear_commandsMany", "open_terminal", "open_terminalMany", "poll", "pollMany", "reveal_item", "reveal_itemMany", "go_to_line", "go_to_lineMany", "search_project", "search_projectMany", "stop_search", "stop_searchMany", "open_hit", "open_hitMany", "ensure_server", "ensure_serverMany", "announce", "poll_server", "poll_serverMany", "read_answer", "read_answerMany", "complete", "completeMany", "hover", "hoverMany", "definition", "definitionMany", "accept_completion", "accept_completionMany", "format_file", "format_fileMany", "toggle_language_servers", "toggle_language_serversMany", "toggle_format_on_save", "toggle_format_on_saveMany", "restart_server", "restart_serverMany", "show_problems", "show_terminal", "show_search_results", "ensure_settings", "zoom_in", "zoom_inMany", "zoom_out", "zoom_outMany", "zoom_reset", "zoom_resetMany"] as const;
+export const PROJECT_ACTIONS = ["new_file", "new_folder", "rename", "renameMany", "move_entry", "move_entryMany", "move_after", "move_afterMany", "delete", "deleteMany", "find_in_window", "find_in_windowMany", "check", "checkMany", "open_folder", "open_folderMany", "read_into", "read_intoMany", "read_folder_into", "read_folder_intoMany", "read_text", "read_textMany", "open_file", "open_fileMany", "save", "saveMany", "write", "overwrite", "overwriteMany", "reload", "reloadMany", "save_all", "save_allMany", "save_into", "save_intoMany", "move_on_disk", "move_on_diskMany", "import_dropped", "import_droppedMany", "run", "runMany", "stop", "stopMany", "rerun", "rerunMany", "rerun_test", "rerun_testMany", "run_", "run_Many", "clear_commands", "clear_commandsMany", "open_terminal", "open_terminalMany", "ran", "ranMany", "searched", "searchedMany", "reveal_item", "reveal_itemMany", "go_to_line", "go_to_lineMany", "search_project", "search_projectMany", "stop_search", "stop_searchMany", "open_hit", "open_hitMany", "ensure_server", "ensure_serverMany", "announce", "announceMany", "ask_server", "ask_serverMany", "complete", "completeMany", "hover", "hoverMany", "definition", "definitionMany", "accept_completion", "accept_completionMany", "format_file", "format_fileMany", "toggle_language_servers", "toggle_language_serversMany", "toggle_format_on_save", "toggle_format_on_saveMany", "restart_server", "restart_serverMany", "show_problems", "show_terminal", "show_search_results", "ensure_settings", "zoom_in", "zoom_inMany", "zoom_out", "zoom_outMany", "zoom_reset", "zoom_resetMany"] as const;
 
 /** The `tl.so.tilo.code-editor.Project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {

@@ -36,12 +36,11 @@ __all__ = [
     "Review",
     "Case",
     "Prepared",
-    "Job",
+    "JobWords",
     "CaseRead",
     "Change",
     "Ask",
     "FlathubAsk",
-    "Started",
     "OneAsk",
     "One",
     "OneRead",
@@ -65,9 +64,9 @@ __all__ = [
     "CancelChangeArgs",
     "SubmitReportArgs",
     "AppealArgs",
-    "PollArgs",
-    "FollowArgs",
-    "BeginReadingArgs",
+    "ReadingMovedArgs",
+    "ReadingDoneArgs",
+    "ChangeDoneArgs",
     "BeginArgs",
     "ReadAppArgs",
     "ShowDetailsArgs",
@@ -124,20 +123,21 @@ AppealArgs = TypedDict("AppealArgs", {
 })
 """The arguments of `appeal`."""
 
-PollArgs = TypedDict("PollArgs", {
+ReadingMovedArgs = TypedDict("ReadingMovedArgs", {
+    "j": "Any",
 })
-"""The arguments of `poll`."""
+"""The arguments of `reading_moved`."""
 
-FollowArgs = TypedDict("FollowArgs", {
+ReadingDoneArgs = TypedDict("ReadingDoneArgs", {
+    "j": "Any",
+})
+"""The arguments of `reading_done`."""
+
+ChangeDoneArgs = TypedDict("ChangeDoneArgs", {
     "a": "App",
+    "j": "Any",
 })
-"""The arguments of `follow`."""
-
-BeginReadingArgs = TypedDict("BeginReadingArgs", {
-    "op": "str",
-    "ask": "str",
-})
-"""The arguments of `begin_reading`."""
+"""The arguments of `change_done`."""
 
 BeginArgs = TypedDict("BeginArgs", {
     "a": "App",
@@ -253,7 +253,7 @@ RefreshStatusArgs = TypedDict("RefreshStatusArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -314,7 +314,7 @@ class Notice(Resource):
 
 class Version(Resource):
     """Version — `tl.so.tilo.store.Version`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     tv4yjmd7: str  # version
     @property
     def _2jsas2xh(self) -> str:
@@ -333,21 +333,21 @@ class Version(Resource):
 
 class Permission(Resource):
     """Permission — `tl.so.tilo.store.Permission`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     yrcnogu3: str  # what
     znsz4dgp: bool  # broad
 
 
 class Release(Resource):
     """Release — `tl.so.tilo.store.Release`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     dbblppxc: str  # version
     sil2634m: str  # notes
 
 
 class App(Resource):
     """App — `tl.so.tilo.store.App`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     bsz5kepr: str  # identity
     z7s7wy7i: str  # name
     @property
@@ -456,6 +456,7 @@ class App(Resource):
     def _7l5m7ka6(self, value: bool) -> None:
         self.edit("7l5m7ka6", value=value)
     awr7kqfn: str  # trouble
+    qbd5uogv: str  # failed
 
     def get(self) -> None:
         """Gets an app the workspace does not run yet: the newest version its source offers."""
@@ -521,7 +522,7 @@ class App(Resource):
 
 class Remote(Resource):
     """Remote — `tl.so.tilo.store.Remote`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     q6znklmy: str  # name
     e74rqhdi: str  # title
     yimcob4p: str  # url
@@ -541,13 +542,13 @@ class Remote(Resource):
 
 class Block(Resource):
     """Block — `tl.so.tilo.store.Block`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     qexvvrxm: str  # identity
 
 
 class Report(Resource):
     """Report — `tl.so.tilo.store.Report`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     i2w5sqnt: str  # identity
     tmhftkva: str  # note
     riwxceey: str  # status
@@ -582,7 +583,7 @@ class Report(Resource):
 
 class Store(Resource):
     """Store — `tl.so.tilo.store.Store`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     t6lkc6fh: list[Entry[App]]  # apps
     gvveyw3n: list[Entry[Remote]]  # remotes
     @property
@@ -603,6 +604,15 @@ class Store(Resource):
     def _72gq3jue(self, value: str) -> None:
         self.edit("72gq3jue", value=value)
     sotfrvum: str  # trouble
+    y63chpxh: str  # flathub_trouble
+    @property
+    def _6udr6hps(self) -> str:
+        """command_trouble (`6udr6hps` on the wire)."""
+        return self.fields["6udr6hps"]
+
+    @_6udr6hps.setter
+    def _6udr6hps(self, value: str) -> None:
+        self.edit("6udr6hps", value=value)
     eubzl4qx: str  # reading
     e22zgwb6: bool  # flatpak
     uxwwy2fl: str  # flatpak_trouble
@@ -627,33 +637,41 @@ class Store(Resource):
     vihbdrl7: Any | None  # reviewed_file
 
     # the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
-    def poll(self) -> None:
-        """Asks how far the read or the change running has got, and puts what it found into the workspace. Runs while the window is open."""
-        return self.action("poll")
+    def reading_moved(self, *, j: Any) -> None:
+        """The read moved on: the line the window shows while it runs."""
+        return self.action("reading_moved", j=j)
 
-    def poll_many(self, items: list[PollArgs]) -> list[dict[str, Any]]:
-        """Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("poll", items)
+    def reading_moved_many(self, items: list[ReadingMovedArgs]) -> list[dict[str, Any]]:
+        """Runs `reading_moved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("reading_moved", items)
 
-    def follow(self, *, a: App) -> None:
+    def reading_done(self, *, j: Any) -> None:
+        """The read ended: the catalogue it found, or why it found none."""
+        return self.action("reading_done", j=j)
+
+    def reading_done_many(self, items: list[ReadingDoneArgs]) -> list[dict[str, Any]]:
+        """Runs `reading_done` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("reading_done", items)
+
+    def change_done(self,
+        *,
+        a: App,
+        j: Any,
+    ) -> None:
         """The job an app's change is, as far as the engine has got: its row says where it stands, and what it made is read once it ends."""
-        return self.action("follow", a=a)
+        return self.action("change_done", a=a, j=j)
 
-    def follow_many(self, items: list[FollowArgs]) -> list[dict[str, Any]]:
-        """Runs `follow` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("follow", items)
+    def change_done_many(self, items: list[ChangeDoneArgs]) -> list[dict[str, Any]]:
+        """Runs `change_done` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("change_done", items)
 
     def begin_reading(self,
         *,
         op: str,
         ask: str,
-    ) -> None:
+    ) -> bool:
         """A job that changes the catalogue itself rather than one app, followed as the read is: its end reads the sources again, so a new repository or an update of everything lands."""
         return self.action("begin_reading", op=op, ask=ask)
-
-    def begin_reading_many(self, items: list[BeginReadingArgs]) -> list[dict[str, Any]]:
-        """Runs `begin_reading` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("begin_reading", items)
 
     def begin(self,
         *,
@@ -887,12 +905,12 @@ class Store(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"poll", "poll_many", "follow", "follow_many", "begin_reading", "begin_reading_many", "begin", "begin_many", "read_app", "read_app_many", "show_details", "show_details_many", "take_catalogue", "take_catalogue_many", "read_flathub", "read_flathub_many", "read_flathub_details", "read_flathub_details_many", "absorb_text", "absorb_remote_text", "absorb_remote_text_many", "refresh_remotes", "refresh_remotes_many", "add_remote", "add_remote_many", "enable_remote", "enable_remote_many", "disable_remote", "disable_remote_many", "remote_change", "remote_change_many", "remove_remote", "remove_remote_many", "browse", "browse_many", "update_all", "update_all_many", "add_bot", "add_bot_many", "block_app", "block_app_many", "unblock_app", "unblock_app_many", "import_package", "install_reviewed", "install_reviewed_many", "open_reference", "open_reference_many", "open_link", "review_runtime", "draft_report", "record_moderation_case", "record_moderation_case_many", "prepare_report", "refresh_status", "refresh_status_many"})
+    __actions__ = frozenset({"reading_moved", "reading_moved_many", "reading_done", "reading_done_many", "change_done", "change_done_many", "begin_reading", "begin", "begin_many", "read_app", "read_app_many", "show_details", "show_details_many", "take_catalogue", "take_catalogue_many", "read_flathub", "read_flathub_many", "read_flathub_details", "read_flathub_details_many", "absorb_text", "absorb_remote_text", "absorb_remote_text_many", "refresh_remotes", "refresh_remotes_many", "add_remote", "add_remote_many", "enable_remote", "enable_remote_many", "disable_remote", "disable_remote_many", "remote_change", "remote_change_many", "remove_remote", "remove_remote_many", "browse", "browse_many", "update_all", "update_all_many", "add_bot", "add_bot_many", "block_app", "block_app_many", "unblock_app", "unblock_app_many", "import_package", "install_reviewed", "install_reviewed_many", "open_reference", "open_reference_many", "open_link", "review_runtime", "draft_report", "record_moderation_case", "record_moderation_case_many", "prepare_report", "refresh_status", "refresh_status_many"})
 
 
 class Item(Resource):
     """Item — `tl.so.tilo.store.Item`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     epxtvzuf: str  # identity
     @property
     def _6a7tsprp(self) -> str:
@@ -976,7 +994,7 @@ class Item(Resource):
 
 class Catalogue(Resource):
     """Catalogue — `tl.so.tilo.store.Catalogue`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     mr6dwxv6: list[str]  # items
     onje62ck: list[str]  # remotes
     ncdaffvy: str  # status
@@ -989,7 +1007,7 @@ class Catalogue(Resource):
 
 class RemoteRead(Resource):
     """RemoteRead — `tl.so.tilo.store.RemoteRead`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     rz4t6wig: str  # name
     roitw26x: str  # title
     @property
@@ -1007,7 +1025,7 @@ class RemoteRead(Resource):
 
 class Details(Resource):
     """Details — `tl.so.tilo.store.Details`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     @property
     def _6cb7jl47(self) -> str:
         """description (`6cb7jl47` on the wire)."""
@@ -1040,7 +1058,7 @@ class Details(Resource):
 
 class Review(Resource):
     """Review — `tl.so.tilo.store.Review`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     mzd6fvgn: str  # item
     hxcclid7: str  # root
     oiutpkg7: str  # trouble
@@ -1048,7 +1066,7 @@ class Review(Resource):
 
 class Case(Resource):
     """Case — `tl.so.tilo.store.Case`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     zyv4ydev: str  # case
     hf6ogyp3: str  # status
     o4zyd7r3: str  # situation
@@ -1057,32 +1075,21 @@ class Case(Resource):
 
 class Prepared(Resource):
     """Prepared — `tl.so.tilo.store.Prepared`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     wywxs5oj: str  # operation
     zenjiysp: str  # registry
     owkrdhjj: str  # trouble
 
 
-class Job(Resource):
-    """Job — `tl.so.tilo.store.Job`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
-    mqizmue3: str  # state
-    ygdo3z6c: int  # done
-    msrdztlm: int  # total
-    fatgfp52: str  # error
-    @property
-    def _35ydyeno(self) -> str:
-        """status (`35ydyeno` on the wire)."""
-        return self.fields["35ydyeno"]
-
-    @_35ydyeno.setter
-    def _35ydyeno(self, value: str) -> None:
-        self.edit("35ydyeno", value=value)
+class JobWords(Resource):
+    """JobWords — `tl.so.tilo.store.JobWords`."""
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
+    pwpo5osg: str  # status
 
 
 class CaseRead(Resource):
     """CaseRead — `tl.so.tilo.store.CaseRead`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     wi7dxv7v: str  # case
     f67cduxy: str  # status
     @property
@@ -1097,7 +1104,7 @@ class CaseRead(Resource):
 
 class Change(Resource):
     """Change — `tl.so.tilo.store.Change`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     sr6eixi6: str  # identity
     rkd5rikz: str  # kind
     wfeji5lc: str  # version
@@ -1119,47 +1126,40 @@ class Change(Resource):
 
 class Ask(Resource):
     """Ask — `tl.so.tilo.store.Ask`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     k33jf5d6: bool  # force
 
 
 class FlathubAsk(Resource):
     """FlathubAsk — `tl.so.tilo.store.FlathubAsk`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     yk5x3lyl: str  # query
     jyhorffp: int  # hits_per_page
     n6ivjlst: int  # page
 
 
-class Started(Resource):
-    """Started — `tl.so.tilo.store.Started`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
-    omjipbxx: str  # job
-    haex7z3y: str  # error
-
-
 class OneAsk(Resource):
     """OneAsk — `tl.so.tilo.store.OneAsk`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     bzdopfzn: str  # identity
     kz4m2q7x: str  # registry
 
 
 class One(Resource):
     """One — `tl.so.tilo.store.One`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     ibr65ngi: str | None  # item
 
 
 class OneRead(Resource):
     """OneRead — `tl.so.tilo.store.OneRead`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     gwl2nm5a: Item  # item
 
 
 class RemoteReads(Resource):
     """RemoteReads — `tl.so.tilo.store.RemoteReads`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     @property
     def _6476ldq6(self) -> list[str]:
         """remotes (`6476ldq6` on the wire)."""
@@ -1174,7 +1174,7 @@ class RemoteReads(Resource):
 
 class RemoteAsk(Resource):
     """RemoteAsk — `tl.so.tilo.store.RemoteAsk`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     @property
     def _7ltvsddp(self) -> str:
         """name (`7ltvsddp` on the wire)."""
@@ -1189,14 +1189,14 @@ class RemoteAsk(Resource):
 
 class BlockAsk(Resource):
     """BlockAsk — `tl.so.tilo.store.BlockAsk`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     dlrecm5k: str  # identity
     xjtxb4gh: bool  # blocked
 
 
 class PackageAsk(Resource):
     """PackageAsk — `tl.so.tilo.store.PackageAsk`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     fxwybrap: str  # file
     qaju5cxd: str  # name
     bkjyjpcr: int  # size
@@ -1204,14 +1204,14 @@ class PackageAsk(Resource):
 
 class RuntimeAsk(Resource):
     """RuntimeAsk — `tl.so.tilo.store.RuntimeAsk`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     vpcuziom: str  # runtime
     snmv7oek: str  # registry
 
 
 class ReportAsk(Resource):
     """ReportAsk — `tl.so.tilo.store.ReportAsk`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     @property
     def _3x7qwbnh(self) -> str:
         """identity (`3x7qwbnh` on the wire)."""
@@ -1242,7 +1242,7 @@ class ReportAsk(Resource):
 
 class SendAsk(Resource):
     """SendAsk — `tl.so.tilo.store.SendAsk`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     mn7ndrul: str  # identity
     rq53vgig: str  # operation
     f72wtnsy: str  # note
@@ -1250,7 +1250,7 @@ class SendAsk(Resource):
 
 class StatusAsk(Resource):
     """StatusAsk — `tl.so.tilo.store.StatusAsk`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     @property
     def _5xifqzkr(self) -> str:
         """identity (`5xifqzkr` on the wire)."""
@@ -1265,19 +1265,19 @@ class StatusAsk(Resource):
 
 class Changes(Resource):
     """Changes — `tl.so.tilo.store.Changes`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     zxtxkidh: list[Change]  # list
 
 
 class Items(Resource):
     """Items — `tl.so.tilo.store.Items`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     r4t6n2uh: list[str]  # items
 
 
 class Evidence(Resource):
     """Evidence — `tl.so.tilo.store.Evidence`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
     j6n5hmtr: str  # identity
     bnqubb5u: str  # note
     cbhojiz7: str  # status
@@ -1288,5 +1288,5 @@ class Evidence(Resource):
 
 class TiloStore(Resource):
     """App Store — `tl.so.tilo.store`."""
-    __surface__ = "so.tilo.store@b68a7236639baac4"
+    __surface__ = "so.tilo.store@ca0e0433b7b78ffe"
 

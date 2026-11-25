@@ -186,7 +186,7 @@ ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.notes@06bf0e99c12e2856"
+    __surface__ = "so.tilo.notes@5523ae3d199a6faa"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -247,7 +247,7 @@ class Notice(Resource):
 
 class Note(Resource):
     """Note — `tl.so.tilo.notes.Note`."""
-    __surface__ = "so.tilo.notes@06bf0e99c12e2856"
+    __surface__ = "so.tilo.notes@5523ae3d199a6faa"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
@@ -454,7 +454,7 @@ class Note(Resource):
         return self.action("export_markdown")
 
     def export_note(self) -> Any:
-        """A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a picture is one zip — `Q3 plan.md` and `Q3 plan/images/fox.png` — because Markdown reaches a picture by a path and by nothing else; a note of words alone is that Markdown itself."""
+        """A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a picture is one zip — `Q3 plan.md` and `Q3 plan/images/fox.png` — because Markdown reaches a picture by a path and by nothing else; a note of words alone is that Markdown itself. The system's one Export… saves it where the person says."""
         return self.action("export_note")
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
@@ -464,7 +464,7 @@ class Note(Resource):
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.notes.Notebook`."""
-    __surface__ = "so.tilo.notes@06bf0e99c12e2856"
+    __surface__ = "so.tilo.notes@5523ae3d199a6faa"
     tmqqtkeb: list[Entry[Note]]  # notes
     qgq6mcy7: list[Entry[Note]]  # set_aside
     dq2mnb22: list[Entry[Tag]]  # tags
@@ -666,13 +666,13 @@ class Notebook(Resource):
 
 class Tag(Resource):
     """Tag — `tl.so.tilo.notes.Tag`."""
-    __surface__ = "so.tilo.notes@06bf0e99c12e2856"
+    __surface__ = "so.tilo.notes@5523ae3d199a6faa"
     itadoh74: str  # name
 
 
 class Found(Resource):
     """Found — `tl.so.tilo.notes.Found`."""
-    __surface__ = "so.tilo.notes@06bf0e99c12e2856"
+    __surface__ = "so.tilo.notes@5523ae3d199a6faa"
     dxxdlopq: int  # at
     @property
     def _2vlaqp45(self) -> str:
@@ -686,5 +686,5 @@ class Found(Resource):
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.notes`."""
-    __surface__ = "so.tilo.notes@06bf0e99c12e2856"
+    __surface__ = "so.tilo.notes@5523ae3d199a6faa"
 

@@ -29,8 +29,7 @@ __all__ = [
     "PrinterOptions",
     "PrintCentre",
     "OptionsAsk",
-    "JobAnswer",
-    "JobState",
+    "ScanDetail",
     "OcrAsk",
     "OcrAnswer",
     "PdfPage",
@@ -41,14 +40,14 @@ __all__ = [
     "TiloPrintCentre",
     "TurnPageArgs",
     "RecognizeArgs",
+    "ScanEndedArgs",
+    "PrintEndedArgs",
     "AskOptionsArgs",
     "AbsorbDocumentArgs",
     "PrintFileArgs",
     "ClearShowingArgs",
     "SendToPrinterArgs",
-    "PollPrintArgs",
     "ScanPageArgs",
-    "PollScanArgs",
     "CropPageArgs",
     "RemovePageArgs",
     "NewScannedDocumentArgs",
@@ -70,6 +69,16 @@ TurnPageArgs = TypedDict("TurnPageArgs", {
 RecognizeArgs = TypedDict("RecognizeArgs", {
 })
 """The arguments of `recognize`."""
+
+ScanEndedArgs = TypedDict("ScanEndedArgs", {
+    "j": "Any",
+})
+"""The arguments of `scan_ended`."""
+
+PrintEndedArgs = TypedDict("PrintEndedArgs", {
+    "j": "Any",
+})
+"""The arguments of `print_ended`."""
 
 AskOptionsArgs = TypedDict("AskOptionsArgs", {
 })
@@ -93,17 +102,9 @@ SendToPrinterArgs = TypedDict("SendToPrinterArgs", {
 })
 """The arguments of `send_to_printer`."""
 
-PollPrintArgs = TypedDict("PollPrintArgs", {
-})
-"""The arguments of `poll_print`."""
-
 ScanPageArgs = TypedDict("ScanPageArgs", {
 })
 """The arguments of `scan_page`."""
-
-PollScanArgs = TypedDict("PollScanArgs", {
-})
-"""The arguments of `poll_scan`."""
 
 CropPageArgs = TypedDict("CropPageArgs", {
     "page": "ScannedPage",
@@ -173,7 +174,7 @@ SetScannerArgs = TypedDict("SetScannerArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -234,7 +235,7 @@ class Notice(Resource):
 
 class Defaults(Resource):
     """Defaults — `tl.so.tilo.print-centre.Defaults`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     coq3zrug: bool  # two_sided
     @property
     def _26zbe323(self) -> int:
@@ -251,7 +252,7 @@ class Defaults(Resource):
 
 class ScannedPage(Resource):
     """ScannedPage — `tl.so.tilo.print-centre.ScannedPage`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     zphe26i4: Any  # file
     @property
     def _67hjm6gx(self) -> str:
@@ -294,7 +295,7 @@ class ScannedPage(Resource):
 
 class ScanSession(Resource):
     """ScanSession — `tl.so.tilo.print-centre.ScanSession`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     @property
     def _3kybq73d(self) -> str:
         """scanner (`3kybq73d` on the wire)."""
@@ -307,10 +308,22 @@ class ScanSession(Resource):
     wv7xzi7n: str  # job
     t6j77lzd: str  # failed
 
+    def scan_ended(self, *, j: Any) -> None:
+        """The scan ended; a page that arrived is added to the document."""
+        return self.action("scan_ended", j=j)
+
+    def scan_ended_many(self, items: list[ScanEndedArgs]) -> list[dict[str, Any]]:
+        """Runs `scan_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("scan_ended", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"scan_ended", "scan_ended_many"})
+
 
 class PrintDocument(Resource):
     """PrintDocument — `tl.so.tilo.print-centre.PrintDocument`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     lurulxdl: Any | None  # file
     nfdtbdvt: Any | None  # preview
     hkdu56wa: str  # name
@@ -354,10 +367,22 @@ class PrintDocument(Resource):
     def _4ngifmut(self, value: str) -> None:
         self.edit("4ngifmut", value=value)
 
+    def print_ended(self, *, j: Any) -> None:
+        """The print ended, printed or failed; it says which."""
+        return self.action("print_ended", j=j)
+
+    def print_ended_many(self, items: list[PrintEndedArgs]) -> list[dict[str, Any]]:
+        """Runs `print_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("print_ended", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"print_ended", "print_ended_many"})
+
 
 class Choice(Resource):
     """Choice — `tl.so.tilo.print-centre.Choice`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     ybptuzdv: str  # key
     n2rjd6ws: str  # label
     q5qiqhve: bool  # default
@@ -365,7 +390,7 @@ class Choice(Resource):
 
 class PrinterOptions(Resource):
     """PrinterOptions — `tl.so.tilo.print-centre.PrinterOptions`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     nov3upcs: list[Choice]  # page_sizes
     pvufqhii: list[Choice]  # colour_modes
     boxhaco3: list[Choice]  # duplex_modes
@@ -374,7 +399,7 @@ class PrinterOptions(Resource):
 
 class PrintCentre(Resource):
     """PrintCentre — `tl.so.tilo.print-centre.PrintCentre`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     kqm47afv: Defaults  # defaults
     lz7ue3si: list[Entry[PrintDocument]]  # documents
     iysceybl: list[Entry[ScanSession]]  # scans
@@ -429,14 +454,6 @@ class PrintCentre(Resource):
         """Runs `send_to_printer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("send_to_printer", items)
 
-    def poll_print(self) -> None:
-        """Asks how far the print has got; a finished or failed one says so."""
-        return self.action("poll_print")
-
-    def poll_print_many(self, items: list[PollPrintArgs]) -> list[dict[str, Any]]:
-        """Runs `poll_print` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("poll_print", items)
-
     def scan_page(self) -> None:
         """Scans one page with the chosen scanner and the defaults."""
         return self.action("scan_page")
@@ -444,14 +461,6 @@ class PrintCentre(Resource):
     def scan_page_many(self, items: list[ScanPageArgs]) -> list[dict[str, Any]]:
         """Runs `scan_page` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("scan_page", items)
-
-    def poll_scan(self) -> None:
-        """Asks how far the scan has got; a page that arrived is added to the document."""
-        return self.action("poll_scan")
-
-    def poll_scan_many(self, items: list[PollScanArgs]) -> list[dict[str, Any]]:
-        """Runs `poll_scan` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("poll_scan", items)
 
     def crop_page(self,
         *,
@@ -576,39 +585,24 @@ class PrintCentre(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"document_of", "scan_of", "ask_options", "ask_options_many", "absorb_document", "absorb_document_many", "print_file", "print_file_many", "clear_showing", "clear_showing_many", "send_to_printer", "send_to_printer_many", "poll_print", "poll_print_many", "scan_page", "scan_page_many", "poll_scan", "poll_scan_many", "crop_page", "crop_page_many", "remove_page", "remove_page_many", "new_scanned_document", "new_scanned_document_many", "move_page", "move_page_many", "document_to_save", "choose_printer", "choose_printer_many", "set_two_sided", "set_two_sided_many", "set_print_option", "set_print_option_many", "set_resolution", "set_resolution_many", "set_scan_colour", "set_scan_colour_many", "set_scan_source", "set_scan_source_many", "set_ocr_language", "set_ocr_language_many", "set_scanner", "set_scanner_many"})
+    __actions__ = frozenset({"document_of", "scan_of", "ask_options", "ask_options_many", "absorb_document", "absorb_document_many", "print_file", "print_file_many", "clear_showing", "clear_showing_many", "send_to_printer", "send_to_printer_many", "scan_page", "scan_page_many", "crop_page", "crop_page_many", "remove_page", "remove_page_many", "new_scanned_document", "new_scanned_document_many", "move_page", "move_page_many", "document_to_save", "choose_printer", "choose_printer_many", "set_two_sided", "set_two_sided_many", "set_print_option", "set_print_option_many", "set_resolution", "set_resolution_many", "set_scan_colour", "set_scan_colour_many", "set_scan_source", "set_scan_source_many", "set_ocr_language", "set_ocr_language_many", "set_scanner", "set_scanner_many"})
 
 
 class OptionsAsk(Resource):
     """OptionsAsk — `tl.so.tilo.print-centre.OptionsAsk`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     aun3edzr: str  # queue
 
 
-class JobAnswer(Resource):
-    """JobAnswer — `tl.so.tilo.print-centre.JobAnswer`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
-    hovq2inv: str  # job
-
-
-class JobState(Resource):
-    """JobState — `tl.so.tilo.print-centre.JobState`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
-    @property
-    def _3ofqxf34(self) -> str:
-        """state (`3ofqxf34` on the wire)."""
-        return self.fields["3ofqxf34"]
-
-    @_3ofqxf34.setter
-    def _3ofqxf34(self, value: str) -> None:
-        self.edit("3ofqxf34", value=value)
-    cmyjb3zt: str  # url
-    oyaqvmzs: str  # error
+class ScanDetail(Resource):
+    """ScanDetail — `tl.so.tilo.print-centre.ScanDetail`."""
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
+    jlmf7wws: str  # url
 
 
 class OcrAsk(Resource):
     """OcrAsk — `tl.so.tilo.print-centre.OcrAsk`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     vuwh5pv6: str  # url
     @property
     def _56cimtrv(self) -> str:
@@ -622,33 +616,33 @@ class OcrAsk(Resource):
 
 class OcrAnswer(Resource):
     """OcrAnswer — `tl.so.tilo.print-centre.OcrAnswer`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     qegnvsxr: str  # text
 
 
 class PdfPage(Resource):
     """PdfPage — `tl.so.tilo.print-centre.PdfPage`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     qxzi756t: str  # url
     mytppaxs: str  # text
 
 
 class PagesAsk(Resource):
     """PagesAsk — `tl.so.tilo.print-centre.PagesAsk`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     omod5rbh: list[PdfPage]  # pages
     u566k7ni: str  # name
 
 
 class UrlAnswer(Resource):
     """UrlAnswer — `tl.so.tilo.print-centre.UrlAnswer`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     y2ejci4l: str  # url
 
 
 class PrintAsk(Resource):
     """PrintAsk — `tl.so.tilo.print-centre.PrintAsk`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     fk3jkxxv: str  # queue
     tddc4c3j: str  # url
     dkvqbxny: str  # name
@@ -677,7 +671,7 @@ class PrintAsk(Resource):
 
 class ScanAsk(Resource):
     """ScanAsk — `tl.so.tilo.print-centre.ScanAsk`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     vilpbf2g: str  # scanner
     onyv6rml: int  # resolution
     dvoh6l75: str  # colour
@@ -701,7 +695,7 @@ class ScanAsk(Resource):
 
 class TiloPrintCentre(Resource):
     """Print Centre — `tl.so.tilo.print-centre`."""
-    __surface__ = "so.tilo.print-centre@5d24eec2895e5c2b"
+    __surface__ = "so.tilo.print-centre@c0a891ca54f0df90"
     def preview_of_file(self, *, file: Any) -> Any | None:
         """The first page's picture, for the print form: a PDF's first page, or the picture itself."""
         return self.action("preview_of_file", file=file)

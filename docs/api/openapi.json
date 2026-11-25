@@ -6281,7 +6281,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Starts what `send` sends as a job the person at the window can stop, and leaves its answer to\n`trigger watch_send`. A person pressing Send must be able to stop waiting, which an action\nthat waits for the answer cannot do; a caller that needs the answer in the call uses `send`."
+        "description": "Starts what `send` sends as a job the person at the window can stop, and leaves its answer to\n`send_ended`, which the job runs when it ends. A person pressing Send must be able to stop waiting, which an action\nthat waits for the answer cannot do; a caller that needs the answer in the call uses `send`."
       },
       "tl.so.tilo.api-tester.Workspace.send_failed.Arguments": {
         "type": "object",
@@ -6313,11 +6313,46 @@
         "required": [],
         "description": "Stops waiting for the service to answer."
       },
-      "tl.so.tilo.api-tester.Workspace.poll_send.Arguments": {
+      "tl.so.tilo.api-tester.Workspace.send_ended.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks the device how the request on its way is doing, and keeps what it answered."
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The request ended: the window keeps the answer it brought, or says why it did not come."
       },
       "tl.so.tilo.api-tester.Workspace.open_sent.Arguments": {
         "type": "object",
@@ -6936,7 +6971,8 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "name"
+              "name",
+              "path"
             ],
             "type": "string"
           },
@@ -6970,6 +7006,55 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.backups.Entry.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.backups.Folded.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.backups.Folded.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "path"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.backups.Folded.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.backups.Folded.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -7350,11 +7435,91 @@
         "required": [],
         "description": "Stops the work under way; what it was writing goes."
       },
-      "tl.so.tilo.backups.Backups.poll.Arguments": {
+      "tl.so.tilo.backups.Backups.work_moved.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks the device how the work is doing, once a second while it runs."
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The work moved on: how far it has got, in files and bytes."
+      },
+      "tl.so.tilo.backups.Backups.work_ended.Arguments": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "kind",
+          "j"
+        ],
+        "description": "The work ended: the repository as it now stands, what a check found, or why it failed."
       },
       "tl.so.tilo.backups.Backups.open_snapshot.Arguments": {
         "type": "object",
@@ -7526,6 +7691,55 @@
         "properties": {},
         "required": [],
         "description": "Allow overwrite"
+      },
+      "tl.so.tilo.backups.Backups.fold_folder.Arguments": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.backups.Snapshot",
+            "type": "object"
+          },
+          "path": {
+            "type": "string"
+          },
+          "folded": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "s",
+          "path",
+          "folded"
+        ],
+        "description": "Folds a folder of the snapshot's file index away, or opens it again."
       },
       "tl.so.tilo.backups.CatalogAsk.$create.Arguments": {
         "type": "object",
@@ -7730,22 +7944,20 @@
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
-      "tl.so.tilo.backups.WorkState.$create.Arguments": {
+      "tl.so.tilo.backups.WorkDetail.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.backups.WorkState.edit-text.Arguments": {
+      "tl.so.tilo.backups.WorkDetail.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "state",
               "progress",
-              "answer",
-              "error"
+              "answer"
             ],
             "type": "string"
           },
@@ -7758,7 +7970,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.backups.WorkState.edit-flag.Arguments": {
+      "tl.so.tilo.backups.WorkDetail.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -7776,7 +7988,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.backups.WorkState.$scenario.Arguments": {
+      "tl.so.tilo.backups.WorkDetail.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -9004,7 +9216,7 @@
           "url",
           "popup"
         ],
-        "description": "Keeps a page the page opened in a window of its own as a page of this browser, as its window\nhands it over: a popup a site sized, or a plain new tab."
+        "description": "Keeps a page the page opened in a window of its own as a page of this browser, as its window\nhands it over: a plain new tab, or a popup a window could not show beside the page."
       },
       "tl.so.tilo.browser.Page.remember_history.Arguments": {
         "type": "object",
@@ -10183,7 +10395,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Closes the extension's page the page's window showed beside or over this one: its side panel,\nor the page it asked the person to sign in on, which ends as turned down."
+        "description": "Closes the page the page's window showed beside or over this one: an extension's side panel,\nthe page it asked the person to sign in on, or a popup a script opened."
       },
       "tl.so.tilo.browser.Page.remember_panel.Arguments": {
         "type": "object",
@@ -10211,7 +10423,7 @@
           "url",
           "interactive"
         ],
-        "description": "Writes the extension's page the page's window shows beside this one into its record, or takes\nit away. The window raises it; a person, agent or script never does."
+        "description": "Writes the page the page's window shows beside this one into its record, or takes it away.\nThe window raises it; a person, agent or script never does."
       },
       "tl.so.tilo.browser.Page.remember_omnibox.Arguments": {
         "type": "object",
@@ -10831,6 +11043,56 @@
         "properties": {},
         "required": [],
         "description": "Stops a download that is still going: what it saved so far is removed."
+      },
+      "tl.so.tilo.browser.DownloadSaved.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.DownloadSaved.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "path",
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.DownloadSaved.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.DownloadSaved.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
       },
       "tl.so.tilo.browser.DownloadJob.$create.Arguments": {
         "type": "object",
@@ -14143,7 +14405,7 @@
           }
         },
         "required": [],
-        "description": "The calendar — every event and task it holds, or only one event — as an iCalendar file, for\na person to save or an agent to hand on. Nothing is written by this."
+        "description": "The calendar — every event and task it holds, or only one event — as an iCalendar file, for\na person to save or an agent to hand on. Nothing is written by this. The system's one\nExport… lists it, and saves the file where the person says."
       },
       "tl.so.tilo.calendar.Calendars.take_invitation.Arguments": {
         "type": "object",
@@ -14542,6 +14804,47 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.camera.ScanSession.scanned.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The scan ended: its page added to the document, or why none came."
+      },
       "tl.so.tilo.camera.Camera.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -14884,17 +15187,58 @@
         "required": [],
         "description": "Starts recording from the frames the camera's engine thread takes."
       },
+      "tl.so.tilo.camera.Camera.recorded.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The recording ended: the clip it made and handed on, or why it made none."
+      },
       "tl.so.tilo.camera.Camera.stop_recording.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Stops the clip recording and hands it on once the engine has muxed it."
       },
-      "tl.so.tilo.camera.Camera.poll.Arguments": {
+      "tl.so.tilo.camera.Camera.capture_page.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Asks how far the recording and the document scan have got, finishing what is done."
+        "description": "Captures one page with the chosen scanner and settings."
       },
       "tl.so.tilo.camera.Camera.shutter_due.Arguments": {
         "type": "object",
@@ -14989,12 +15333,6 @@
           "language"
         ],
         "description": "Set ocr language"
-      },
-      "tl.so.tilo.camera.Camera.capture_page.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Captures one page with the chosen scanner and settings."
       },
       "tl.so.tilo.camera.Camera.select_page.Arguments": {
         "type": "object",
@@ -15442,51 +15780,6 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.camera.JobAnswer.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.camera.JobState.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.camera.JobState.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "state",
-              "url",
-              "error"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.camera.JobState.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -27661,49 +27954,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.code-editor.JobAnswer.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.code-editor.JobAnswer.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "job"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.code-editor.JobAnswer.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
       "tl.so.tilo.code-editor.SearchState.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -27852,7 +28102,7 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "job",
+              "op",
               "path",
               "language",
               "text"
@@ -27898,7 +28148,7 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "job",
+              "op",
               "path",
               "what"
             ],
@@ -28339,14 +28589,10 @@
             "description": "The name of the field to set.",
             "enum": [
               "folder",
-              "server_job",
+              "server",
               "server_language",
-              "server_name",
-              "server_state",
               "server_trouble",
-              "server_progress",
               "answer_what",
-              "answer_text",
               "search_job",
               "search_query",
               "search_text",
@@ -29390,11 +29636,87 @@
         "required": [],
         "description": "Opens the project's folder in the system's terminal: the shell a person runs by hand."
       },
-      "tl.so.tilo.code-editor.Project.poll.Arguments": {
+      "tl.so.tilo.code-editor.Project.ran.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks how far the running commands and the project search have got, once a second while\nanything runs: the one place the device's answers are folded into what the window shows."
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The command a job runs ended, or moved: its output, exit status and truncated flag are kept\nwith the command, its output's places become items, and a failure is the window's trouble."
+      },
+      "tl.so.tilo.code-editor.Project.searched.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The project search ended, or moved: each hit it found is added as it comes, and the files it\nsearched are counted."
       },
       "tl.so.tilo.code-editor.Project.reveal_item.Arguments": {
         "type": "object",
@@ -29504,7 +29826,7 @@
         "required": [
           "entry"
         ],
-        "description": "Starts the language server for a file's language, if none runs for it yet, and tells it\nabout the file."
+        "description": "Opens the language server for a file's language, the project's held connection for that\nlanguage and folder, or joins the one this device holds already, and tells it about the\nfile. It runs in the app's own process until the project closes it: closing the window\nends nothing."
       },
       "tl.so.tilo.code-editor.Project.announce.Arguments": {
         "type": "object",
@@ -29547,23 +29869,58 @@
         ],
         "description": "Tells the server that `entry` is open, with the text it holds now, so its answers are about\nwhat a person reads."
       },
-      "tl.so.tilo.code-editor.Project.poll_server.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Reads what the server answered: its state and progress, its problems for each file, and any\nanswer to a code-help ask the page made."
-      },
-      "tl.so.tilo.code-editor.Project.read_answer.Arguments": {
+      "tl.so.tilo.code-editor.Project.ask_server.Arguments": {
         "type": "object",
         "properties": {
-          "answer": {
+          "entry": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.code-editor.Entry",
+            "type": "object"
+          },
+          "what": {
             "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "column": {
+            "type": "integer"
           }
         },
         "required": [
-          "answer"
+          "entry",
+          "what",
+          "line",
+          "column"
         ],
-        "description": "Reads the answer the server gave to the page's last ask: a completion list, the words a\nhover shows, the places a declaration stands at, or the edits a format makes."
+        "description": "Asks the server `what` about a place in a file; its answer arrives as what it says next."
       },
       "tl.so.tilo.code-editor.Project.complete.Arguments": {
         "type": "object",
@@ -29820,7 +30177,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Stops the language server, as a person pressing \"Try again\" after a failure does."
+        "description": "Ends the language server, as a person pressing \"Try again\" after a failure does: the next\nfile checked starts it again."
       },
       "tl.so.tilo.code-editor.Project.show_problems.Arguments": {
         "type": "object",
@@ -30590,7 +30947,7 @@
           }
         },
         "required": [],
-        "description": "A contact as a file: their card, named for them."
+        "description": "A contact as a file: their card, named for them. The system's one Export… lists it and saves\nit where the person says."
       },
       "tl.so.tilo.contacts.Group.$create.Arguments": {
         "type": "object",
@@ -31085,6 +31442,12 @@
         },
         "required": [],
         "description": "Every contact as one vCard file, which another address book reads whole."
+      },
+      "tl.so.tilo.contacts.Book.export_book_v3.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Every contact as one vCard 3.0 file, which an address book that reads no 4.0 card opens."
       },
       "tl.so.tilo.contacts.Book.export_vcard_content.Arguments": {
         "type": "object",
@@ -31991,6 +32354,88 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.containers.Pull.pull_moved.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The pull moved on: what the engine wrote so far."
+      },
+      "tl.so.tilo.containers.Pull.pull_ended.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The pull ended, finished or failed; it says how and stays."
+      },
       "tl.so.tilo.containers.Containers.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -32130,12 +32575,6 @@
         ],
         "description": "Starts pulling an image, and keeps its output as it comes."
       },
-      "tl.so.tilo.containers.Containers.poll_pull.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks how far a pull has got; a finished or failed one says so and stays."
-      },
       "tl.so.tilo.containers.Containers.cancel_pull.Arguments": {
         "type": "object",
         "properties": {
@@ -32261,32 +32700,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.containers.JobAnswer.$create.Arguments": {
+      "tl.so.tilo.containers.PullDetail.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.containers.JobAnswer.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "job"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.containers.JobAnswer.edit-flag.Arguments": {
+      "tl.so.tilo.containers.PullDetail.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -32295,33 +32715,6 @@
             "type": "string"
           },
           "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.containers.JobState.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.containers.JobState.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "state",
-              "error"
-            ],
-            "type": "string"
-          },
-          "value": {
             "type": "string"
           }
         },
@@ -32330,7 +32723,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.containers.JobState.edit-flag.Arguments": {
+      "tl.so.tilo.containers.PullDetail.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -33202,11 +33595,46 @@
         "required": [],
         "description": "Clears what the window last said."
       },
-      "tl.so.tilo.db-client.Database.check.Arguments": {
+      "tl.so.tilo.db-client.Database.job_done.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks how far the job in flight has got, and folds its answer in. A job this device does not\nrun says so, and leaves the window as it is."
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The job in flight ended: its answer is read as what it is, or the window says why it failed\nor was stopped. A job this window no longer runs leaves the window as it is."
       },
       "tl.so.tilo.db-client.Database.opened.Arguments": {
         "type": "object",
@@ -33462,49 +33890,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.db-client.Started.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.db-client.Started.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "job"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.db-client.Started.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
       "tl.so.tilo.db-client.Progress.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -33517,9 +33902,7 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "state",
-              "result",
-              "error"
+              "result"
             ],
             "type": "string"
           },
@@ -38968,11 +39351,87 @@
         "required": [],
         "description": "Reads the folders of the one the picker shows."
       },
-      "tl.so.tilo.disk-usage.Analyzer.poll.Arguments": {
+      "tl.so.tilo.disk-usage.Analyzer.scan_moved.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks how far the measuring has got: the window's own clock, once a second while it runs."
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The measuring moved on: how much of the folder it has seen so far."
+      },
+      "tl.so.tilo.disk-usage.Analyzer.scan_ended.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The measuring ended: the folders it found, why it could not read them, or that it was\nstopped."
       },
       "tl.so.tilo.disk-usage.ScanAsk.$create.Arguments": {
         "type": "object",
@@ -39018,105 +39477,6 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.disk-usage.ScanAsk.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
-      "tl.so.tilo.disk-usage.JobAnswer.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.disk-usage.JobAnswer.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "job"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.disk-usage.JobAnswer.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.disk-usage.JobAnswer.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
-      "tl.so.tilo.disk-usage.Scanned.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.disk-usage.Scanned.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "name",
-              "path"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.disk-usage.Scanned.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.disk-usage.Scanned.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -39168,6 +39528,105 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.disk-usage.ScanState.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.disk-usage.EntriesAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.disk-usage.EntriesAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "job"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.disk-usage.EntriesAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.disk-usage.EntriesAsk.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.disk-usage.Scanned.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.disk-usage.Scanned.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "path"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.disk-usage.Scanned.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.disk-usage.Scanned.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -41783,7 +42242,7 @@
           }
         },
         "required": [],
-        "description": "Reads every subscription again. The device fetches them away from the frame and the app takes\neach answer as it lands (`poll_refresh`), so a slow site never holds the window."
+        "description": "Reads every subscription again. The device fetches them away from the frame, and the app takes\neach answer as it lands (`refresh_moved`), so a slow site never holds the window."
       },
       "tl.so.tilo.feeds.Library.stop_refresh.Arguments": {
         "type": "object",
@@ -41791,11 +42250,87 @@
         "required": [],
         "description": "Stops a refresh that is running."
       },
-      "tl.so.tilo.feeds.Library.poll_refresh.Arguments": {
+      "tl.so.tilo.feeds.Library.refresh_moved.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Takes what the device has read so far: each subscription's answer as it lands, and what the\nfeed says of itself with it. What a refresh brought in is nobody's step of their own, so\nlanding it says nothing and offers no undo of its own; an article the library already keeps is\nnot added twice. Landing writes, so it stands here rather than in a call of its own: a run that\ncalls another action is run twice, and the device's answers are not its to answer twice."
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "Takes what the device has read so far as a refresh moves: each subscription's answer as it\nlands, and what the feed says of itself with it. What a refresh brought in is nobody's step of\ntheir own, so landing it says nothing and offers no undo of its own; an article the library\nalready keeps is not added twice."
+      },
+      "tl.so.tilo.feeds.Library.refresh_ended.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The refresh ended: it is done, or a person stopped it, or it failed and the window says why."
       },
       "tl.so.tilo.feeds.Library.import_opml.Arguments": {
         "type": "object",
@@ -41811,7 +42346,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "The library's subscriptions as an OPML 2.0 file."
+        "description": "The library's subscriptions as an OPML 2.0 file. The system's one Export… lists it and saves\nit where the person says."
       },
       "tl.so.tilo.feeds.Ask.$create.Arguments": {
         "type": "object",
@@ -42773,6 +43308,47 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.file-explorer.Transfer.transfer_moved.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "How far the transfer `t` has got, as the device records each move."
+      },
       "tl.so.tilo.file-explorer.FileFacts.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -42862,49 +43438,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.file-explorer.TransferStarted.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.file-explorer.TransferStarted.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "job"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.file-explorer.TransferStarted.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
       "tl.so.tilo.file-explorer.TransferState.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -42917,9 +43450,7 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "state",
-              "current",
-              "error"
+              "current"
             ],
             "type": "string"
           },
@@ -43190,11 +43721,79 @@
         ],
         "description": "Puts the entries at `paths` into `folder`, moving them or copying them, as the device's own work:\nthe window shows how far it has got and can stop it. What arrives under a name the folder\nalready holds lands as “name (2)”, so nothing is replaced."
       },
-      "tl.so.tilo.file-explorer.Files.poll_transfers.Arguments": {
+      "tl.so.tilo.file-explorer.Files.transfer_ended.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks how far each transfer under way has got. One that finished leaves the window and the\nfolder is read again; one that failed stays, saying why, until it is dismissed."
+        "properties": {
+          "t": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.file-explorer.Transfer",
+            "type": "object"
+          },
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "t",
+          "j"
+        ],
+        "description": "The transfer `t` ended: one that finished leaves the window and the folder is read again; one\nthat failed stays, saying why, until it is dismissed."
       },
       "tl.so.tilo.file-explorer.Files.stop_transfer.Arguments": {
         "type": "object",
@@ -51429,7 +52028,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "The message as a Markdown file: what a person exports to read it, or keep it, elsewhere."
+        "description": "The message as a Markdown file: what a person exports to read it, or keep it, elsewhere. The\nsystem's one Export… lists it with the message's other formats."
       },
       "tl.so.tilo.mail.Message.export_json.Arguments": {
         "type": "object",
@@ -52185,7 +52784,9 @@
             "enum": [
               "name",
               "key",
-              "address"
+              "address",
+              "phone",
+              "website"
             ],
             "type": "string"
           },
@@ -52240,6 +52841,18 @@
           "name"
         ],
         "description": "Renames a saved place; the name a search brought is the place's until the person gives it\nanother."
+      },
+      "tl.so.tilo.maps.Place.call_place.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Calls the place's phone number, through the system's own open action."
+      },
+      "tl.so.tilo.maps.Place.open_site.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opens the place's website in the app that opens web addresses."
       },
       "tl.so.tilo.maps.Step.$create.Arguments": {
         "type": "object",
@@ -52736,93 +53349,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.maps.SaveStarted.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.maps.SaveStarted.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "job"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.maps.SaveStarted.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.maps.Saving.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.maps.Saving.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "state",
-              "error"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.maps.Saving.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
       "tl.so.tilo.maps.Atlas.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -52855,7 +53381,6 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "traffic",
               "navigating"
             ],
             "type": "string"
@@ -52999,6 +53524,24 @@
         "properties": {},
         "required": [],
         "description": "Takes the searches the person made away."
+      },
+      "tl.so.tilo.maps.Atlas.show_directions.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opens the directions beside the map."
+      },
+      "tl.so.tilo.maps.Atlas.set_directions.Arguments": {
+        "type": "object",
+        "properties": {
+          "open": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "open"
+        ],
+        "description": "Opens or closes the directions beside the map, as its own row's toggle asks."
       },
       "tl.so.tilo.maps.Atlas.open_place.Arguments": {
         "type": "object",
@@ -53344,16 +53887,6 @@
         ],
         "description": "Shows a point of interest the map found, and opens the map on it."
       },
-      "tl.so.tilo.maps.Atlas.toggle_traffic.Arguments": {
-        "type": "object",
-        "properties": {
-          "traffic": {
-            "type": "boolean"
-          }
-        },
-        "required": [],
-        "description": "Shows the traffic layer on the map, or takes it away."
-      },
       "tl.so.tilo.maps.Atlas.download_view.Arguments": {
         "type": "object",
         "properties": {
@@ -53514,13 +54047,42 @@
             "resource_kind": "tl.so.tilo.maps.KeptArea",
             "type": "object"
           },
-          "outcome": {
-            "type": "string"
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
           }
         },
         "required": [
           "area",
-          "outcome"
+          "j"
         ],
         "description": "What an area's download ended with: what it kept, or that the person stopped it."
       },
@@ -56439,7 +57001,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a\npicture is one zip — `Q3 plan.md` and `Q3 plan/images/fox.png` — because Markdown reaches a\npicture by a path and by nothing else; a note of words alone is that Markdown itself."
+        "description": "A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a\npicture is one zip — `Q3 plan.md` and `Q3 plan/images/fox.png` — because Markdown reaches a\npicture by a path and by nothing else; a note of words alone is that Markdown itself. The\nsystem's one Export… saves it where the person says."
       },
       "tl.so.tilo.notes.Notebook.$create.Arguments": {
         "type": "object",
@@ -62592,12 +63154,41 @@
       "tl.so.tilo.photos.Library.imported.Arguments": {
         "type": "object",
         "properties": {
-          "outcome": {
-            "type": "string"
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
           }
         },
         "required": [
-          "outcome"
+          "j"
         ],
         "description": "An import's end: each picture it read becomes a photo, or brings what it says to the photo the\nsame picture already made, and what it could not read is kept to try again. What the person set\non a photo (its time, its place) is theirs, so reading it again never overwrites it."
       },
@@ -63889,55 +64480,6 @@
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
-      "tl.so.tilo.photos.JobStarted.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.photos.JobStarted.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "job"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.photos.JobStarted.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.photos.JobStarted.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
       "tl.so.tilo.photos.FaceScan.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -64809,6 +65351,47 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.print-centre.ScanSession.scan_ended.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The scan ended; a page that arrived is added to the document."
+      },
       "tl.so.tilo.print-centre.PrintDocument.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -64862,6 +65445,47 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.print-centre.PrintDocument.print_ended.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The print ended, printed or failed; it says which."
       },
       "tl.so.tilo.print-centre.Choice.$create.Arguments": {
         "type": "object",
@@ -65043,23 +65667,11 @@
         "required": [],
         "description": "Prints the chosen document on the chosen printer, with the form's settings."
       },
-      "tl.so.tilo.print-centre.PrintCentre.poll_print.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks how far the print has got; a finished or failed one says so."
-      },
       "tl.so.tilo.print-centre.PrintCentre.scan_page.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Scans one page with the chosen scanner and the defaults."
-      },
-      "tl.so.tilo.print-centre.PrintCentre.poll_scan.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks how far the scan has got; a page that arrived is added to the document."
       },
       "tl.so.tilo.print-centre.PrintCentre.crop_page.Arguments": {
         "type": "object",
@@ -65362,19 +65974,19 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.print-centre.JobAnswer.$create.Arguments": {
+      "tl.so.tilo.print-centre.ScanDetail.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.print-centre.JobAnswer.edit-text.Arguments": {
+      "tl.so.tilo.print-centre.ScanDetail.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "job"
+              "url"
             ],
             "type": "string"
           },
@@ -65387,52 +65999,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.print-centre.JobAnswer.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.print-centre.JobState.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.print-centre.JobState.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "state",
-              "url",
-              "error"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.print-centre.JobState.edit-flag.Arguments": {
+      "tl.so.tilo.print-centre.ScanDetail.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -65924,11 +66491,46 @@
         "required": [],
         "description": "Reads what the registry holds about this computer's key's application."
       },
-      "tl.so.tilo.publisher.Publisher.poll.Arguments": {
+      "tl.so.tilo.publisher.Publisher.answered.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks the registry how the call under way is doing, once a second while one runs."
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The registry answered: what it said about the application, or why it could not."
       },
       "tl.so.tilo.publisher.ForgeParts.$create.Arguments": {
         "type": "object",
@@ -66130,21 +66732,19 @@
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
-      "tl.so.tilo.publisher.JobState.$create.Arguments": {
+      "tl.so.tilo.publisher.RegistryWords.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.publisher.JobState.edit-text.Arguments": {
+      "tl.so.tilo.publisher.RegistryWords.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "state",
-              "summary",
-              "error"
+              "summary"
             ],
             "type": "string"
           },
@@ -66157,7 +66757,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.publisher.JobState.edit-flag.Arguments": {
+      "tl.so.tilo.publisher.RegistryWords.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -66175,56 +66775,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.publisher.JobState.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
-      "tl.so.tilo.publisher.JobAnswer.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.publisher.JobAnswer.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "job"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.publisher.JobAnswer.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.publisher.JobAnswer.$scenario.Arguments": {
+      "tl.so.tilo.publisher.RegistryWords.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -78715,7 +79266,8 @@
               "runtime",
               "runtime_registry",
               "job",
-              "trouble"
+              "trouble",
+              "failed"
             ],
             "type": "string"
           },
@@ -78988,6 +79540,8 @@
             "enum": [
               "status",
               "trouble",
+              "flathub_trouble",
+              "command_trouble",
               "reading",
               "flatpak_trouble",
               "reviewed_root",
@@ -79030,13 +79584,89 @@
         "required": [],
         "description": "Reads the workspace's sources again: the registries, Flathub and this computer's Flatpak\nrepositories, and what the workspace runs."
       },
-      "tl.so.tilo.store.Store.poll.Arguments": {
+      "tl.so.tilo.store.Store.reading_moved.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks how far the read or the change running has got, and puts what it found into the\nworkspace. Runs while the window is open."
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The read moved on: the line the window shows while it runs."
       },
-      "tl.so.tilo.store.Store.follow.Arguments": {
+      "tl.so.tilo.store.Store.reading_done.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The read ended: the catalogue it found, or why it found none."
+      },
+      "tl.so.tilo.store.Store.change_done.Arguments": {
         "type": "object",
         "properties": {
           "a": {
@@ -79070,10 +79700,43 @@
             ],
             "resource_kind": "tl.so.tilo.store.App",
             "type": "object"
+          },
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
           }
         },
         "required": [
-          "a"
+          "a",
+          "j"
         ],
         "description": "The job an app's change is, as far as the engine has got: its row says where it stands, and\nwhat it made is read once it ends."
       },
@@ -80221,20 +80884,18 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.store.Job.$create.Arguments": {
+      "tl.so.tilo.store.JobWords.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.store.Job.edit-text.Arguments": {
+      "tl.so.tilo.store.JobWords.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "state",
-              "error",
               "status"
             ],
             "type": "string"
@@ -80248,7 +80909,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.store.Job.edit-flag.Arguments": {
+      "tl.so.tilo.store.JobWords.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -80431,50 +81092,6 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.store.FlathubAsk.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.store.Started.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.store.Started.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "job",
-              "error"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.store.Started.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -84758,61 +85375,6 @@
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
-      "tl.so.tilo.tube.GrayjayStarted.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.tube.GrayjayStarted.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "job"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.tube.GrayjayStarted.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.tube.GrayjayStarted.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
-      "tl.so.tilo.tube.GrayjayStarted.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
       "tl.so.tilo.tube.GrayjayPairAsk.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -85573,11 +86135,46 @@
         "required": [],
         "description": "The approved devices are exchanged with on the timer, as Grayjay's own app does while it is\nopen, so what either app adds reaches the other without anyone pressing. Nothing runs until\na person has synced once by hand."
       },
-      "tl.so.tilo.tube.YouTube.poll_grayjay.Arguments": {
+      "tl.so.tilo.tube.YouTube.grayjay_ended.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Follows the Grayjay operation under way, once a second, so its end reaches the window\nwithout anyone asking by hand."
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The Grayjay operation ended: a pairing keeps the device it made, an exchange what it\nbrought, and a failure or a stop says so in the window."
       },
       "tl.so.tilo.tube.YouTube.keep_paired.Arguments": {
         "type": "object",
@@ -90470,11 +91067,87 @@
         ],
         "description": "Renders the cut to a file, refusing when a source this device cannot read would leave the\nfilm missing its footage."
       },
-      "tl.so.tilo.video-editor.Project.poll_render.Arguments": {
+      "tl.so.tilo.video-editor.Project.render_moved.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Asks how far the running render has got."
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The render moved on: how far it has got, as the window shows it."
+      },
+      "tl.so.tilo.video-editor.Project.render_done.Arguments": {
+        "type": "object",
+        "properties": {
+          "j": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host.Job",
+            "type": "object"
+          }
+        },
+        "required": [
+          "j"
+        ],
+        "description": "The render ended: the file a person saves, or why it made none."
       },
       "tl.so.tilo.video-editor.Project.cancel_render.Arguments": {
         "type": "object",
@@ -90968,51 +91641,6 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.video-editor.JobAnswer.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.video-editor.JobState.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.video-editor.JobState.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "state",
-              "url",
-              "error"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.video-editor.JobState.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -92889,6 +93517,7 @@
             "enum": [
               "wanted",
               "asked",
+              "pending",
               "note"
             ],
             "type": "string"
@@ -93090,6 +93719,21 @@
         ],
         "description": "Moves a place to the top of the list."
       },
+      "tl.so.tilo.weather.Locations.move_place.Arguments": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "description": "Moves the place a person dragged, before the one it was dropped on: the list's reorder\nreports the two ids in that order."
+      },
       "tl.so.tilo.weather.Locations.rename_place.Arguments": {
         "type": "object",
         "properties": {
@@ -93273,6 +93917,12 @@
         "properties": {},
         "required": [],
         "description": "Takes what the last read found: a place's reading and its hours and days land together, and\nthe search's rows beside the field. What an update reads is nobody's step of their own, so\nlanding it says nothing and offers no undo of its own. A second read of the same place\nreplaces the first."
+      },
+      "tl.so.tilo.weather.Locations.look_for_place.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Looks for what the person typed once it has stopped changing: the query waits one look, and\nthe device is asked for the last query only."
       },
       "tl.so.tilo.weather.Locations.begin_search.Arguments": {
         "type": "object",
@@ -94336,6 +94986,18 @@
         },
         "required": [
           "theme"
+        ],
+        "description": ""
+      },
+      "settings.appearance.apply-theme.Arguments": {
+        "type": "object",
+        "properties": {
+          "package": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "package"
         ],
         "description": ""
       },
@@ -95548,6 +96210,18 @@
         },
         "required": [
           "change"
+        ],
+        "description": ""
+      },
+      "settings.emoji.set-used.Arguments": {
+        "type": "object",
+        "properties": {
+          "used": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "used"
         ],
         "description": ""
       },
@@ -96920,8 +97594,8 @@
     {
       "app": "so.tilo.api-tester",
       "resource": "tl.so.tilo.api-tester.Workspace",
-      "action": "poll_send",
-      "arguments": "#/components/schemas/tl.so.tilo.api-tester.Workspace.poll_send.Arguments"
+      "action": "send_ended",
+      "arguments": "#/components/schemas/tl.so.tilo.api-tester.Workspace.send_ended.Arguments"
     },
     {
       "app": "so.tilo.api-tester",
@@ -97219,6 +97893,30 @@
     },
     {
       "app": "so.tilo.backups",
+      "resource": "tl.so.tilo.backups.Folded",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Folded.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
+      "resource": "tl.so.tilo.backups.Folded",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Folded.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
+      "resource": "tl.so.tilo.backups.Folded",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Folded.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
+      "resource": "tl.so.tilo.backups.Folded",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Folded.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
       "resource": "tl.so.tilo.backups.Snapshot",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.backups.Snapshot.$create.Arguments"
@@ -97364,8 +98062,14 @@
     {
       "app": "so.tilo.backups",
       "resource": "tl.so.tilo.backups.Backups",
-      "action": "poll",
-      "arguments": "#/components/schemas/tl.so.tilo.backups.Backups.poll.Arguments"
+      "action": "work_moved",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Backups.work_moved.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
+      "resource": "tl.so.tilo.backups.Backups",
+      "action": "work_ended",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Backups.work_ended.Arguments"
     },
     {
       "app": "so.tilo.backups",
@@ -97465,6 +98169,12 @@
     },
     {
       "app": "so.tilo.backups",
+      "resource": "tl.so.tilo.backups.Backups",
+      "action": "fold_folder",
+      "arguments": "#/components/schemas/tl.so.tilo.backups.Backups.fold_folder.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
       "resource": "tl.so.tilo.backups.CatalogAsk",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.backups.CatalogAsk.$create.Arguments"
@@ -97561,27 +98271,27 @@
     },
     {
       "app": "so.tilo.backups",
-      "resource": "tl.so.tilo.backups.WorkState",
+      "resource": "tl.so.tilo.backups.WorkDetail",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.backups.WorkState.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.backups.WorkDetail.$create.Arguments"
     },
     {
       "app": "so.tilo.backups",
-      "resource": "tl.so.tilo.backups.WorkState",
+      "resource": "tl.so.tilo.backups.WorkDetail",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.backups.WorkState.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.backups.WorkDetail.edit-text.Arguments"
     },
     {
       "app": "so.tilo.backups",
-      "resource": "tl.so.tilo.backups.WorkState",
+      "resource": "tl.so.tilo.backups.WorkDetail",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.backups.WorkState.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.backups.WorkDetail.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.backups",
-      "resource": "tl.so.tilo.backups.WorkState",
+      "resource": "tl.so.tilo.backups.WorkDetail",
       "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.backups.WorkState.$scenario.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.backups.WorkDetail.$scenario.Arguments"
     },
     {
       "app": "so.tilo.backups",
@@ -98770,6 +99480,30 @@
       "resource": "tl.so.tilo.browser.Download",
       "action": "cancel_download",
       "arguments": "#/components/schemas/tl.so.tilo.browser.Download.cancel_download.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadSaved",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadSaved.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadSaved",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadSaved.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadSaved",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadSaved.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadSaved",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadSaved.$scenario.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -100381,6 +101115,12 @@
     },
     {
       "app": "so.tilo.camera",
+      "resource": "tl.so.tilo.camera.ScanSession",
+      "action": "scanned",
+      "arguments": "#/components/schemas/tl.so.tilo.camera.ScanSession.scanned.Arguments"
+    },
+    {
+      "app": "so.tilo.camera",
       "resource": "tl.so.tilo.camera.Camera",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.camera.Camera.$create.Arguments"
@@ -100562,14 +101302,20 @@
     {
       "app": "so.tilo.camera",
       "resource": "tl.so.tilo.camera.Camera",
+      "action": "recorded",
+      "arguments": "#/components/schemas/tl.so.tilo.camera.Camera.recorded.Arguments"
+    },
+    {
+      "app": "so.tilo.camera",
+      "resource": "tl.so.tilo.camera.Camera",
       "action": "stop_recording",
       "arguments": "#/components/schemas/tl.so.tilo.camera.Camera.stop_recording.Arguments"
     },
     {
       "app": "so.tilo.camera",
       "resource": "tl.so.tilo.camera.Camera",
-      "action": "poll",
-      "arguments": "#/components/schemas/tl.so.tilo.camera.Camera.poll.Arguments"
+      "action": "capture_page",
+      "arguments": "#/components/schemas/tl.so.tilo.camera.Camera.capture_page.Arguments"
     },
     {
       "app": "so.tilo.camera",
@@ -100624,12 +101370,6 @@
       "resource": "tl.so.tilo.camera.Camera",
       "action": "set_ocr_language",
       "arguments": "#/components/schemas/tl.so.tilo.camera.Camera.set_ocr_language.Arguments"
-    },
-    {
-      "app": "so.tilo.camera",
-      "resource": "tl.so.tilo.camera.Camera",
-      "action": "capture_page",
-      "arguments": "#/components/schemas/tl.so.tilo.camera.Camera.capture_page.Arguments"
     },
     {
       "app": "so.tilo.camera",
@@ -100834,24 +101574,6 @@
       "resource": "tl.so.tilo.camera.JobAnswer",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.camera.JobAnswer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.camera",
-      "resource": "tl.so.tilo.camera.JobState",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.camera.JobState.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.camera",
-      "resource": "tl.so.tilo.camera.JobState",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.camera.JobState.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.camera",
-      "resource": "tl.so.tilo.camera.JobState",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.camera.JobState.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.camera",
@@ -104773,24 +105495,6 @@
     },
     {
       "app": "so.tilo.code-editor",
-      "resource": "tl.so.tilo.code-editor.JobAnswer",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.code-editor.JobAnswer.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.code-editor",
-      "resource": "tl.so.tilo.code-editor.JobAnswer",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.code-editor.JobAnswer.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.code-editor",
-      "resource": "tl.so.tilo.code-editor.JobAnswer",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.code-editor.JobAnswer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.code-editor",
       "resource": "tl.so.tilo.code-editor.SearchState",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.code-editor.SearchState.$create.Arguments"
@@ -105230,8 +105934,14 @@
     {
       "app": "so.tilo.code-editor",
       "resource": "tl.so.tilo.code-editor.Project",
-      "action": "poll",
-      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.poll.Arguments"
+      "action": "ran",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.ran.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "tl.so.tilo.code-editor.Project",
+      "action": "searched",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.searched.Arguments"
     },
     {
       "app": "so.tilo.code-editor",
@@ -105278,14 +105988,8 @@
     {
       "app": "so.tilo.code-editor",
       "resource": "tl.so.tilo.code-editor.Project",
-      "action": "poll_server",
-      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.poll_server.Arguments"
-    },
-    {
-      "app": "so.tilo.code-editor",
-      "resource": "tl.so.tilo.code-editor.Project",
-      "action": "read_answer",
-      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.read_answer.Arguments"
+      "action": "ask_server",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.ask_server.Arguments"
     },
     {
       "app": "so.tilo.code-editor",
@@ -105902,6 +106606,12 @@
     {
       "app": "so.tilo.contacts",
       "resource": "tl.so.tilo.contacts.Book",
+      "action": "export_book_v3",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.export_book_v3.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
       "action": "export_vcard_content",
       "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.export_vcard_content.Arguments"
     },
@@ -106081,6 +106791,18 @@
     },
     {
       "app": "so.tilo.containers",
+      "resource": "tl.so.tilo.containers.Pull",
+      "action": "pull_moved",
+      "arguments": "#/components/schemas/tl.so.tilo.containers.Pull.pull_moved.Arguments"
+    },
+    {
+      "app": "so.tilo.containers",
+      "resource": "tl.so.tilo.containers.Pull",
+      "action": "pull_ended",
+      "arguments": "#/components/schemas/tl.so.tilo.containers.Pull.pull_ended.Arguments"
+    },
+    {
+      "app": "so.tilo.containers",
       "resource": "tl.so.tilo.containers.Containers",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.containers.Containers.$create.Arguments"
@@ -106166,12 +106888,6 @@
     {
       "app": "so.tilo.containers",
       "resource": "tl.so.tilo.containers.Containers",
-      "action": "poll_pull",
-      "arguments": "#/components/schemas/tl.so.tilo.containers.Containers.poll_pull.Arguments"
-    },
-    {
-      "app": "so.tilo.containers",
-      "resource": "tl.so.tilo.containers.Containers",
       "action": "cancel_pull",
       "arguments": "#/components/schemas/tl.so.tilo.containers.Containers.cancel_pull.Arguments"
     },
@@ -106201,39 +106917,21 @@
     },
     {
       "app": "so.tilo.containers",
-      "resource": "tl.so.tilo.containers.JobAnswer",
+      "resource": "tl.so.tilo.containers.PullDetail",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.containers.JobAnswer.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.containers.PullDetail.$create.Arguments"
     },
     {
       "app": "so.tilo.containers",
-      "resource": "tl.so.tilo.containers.JobAnswer",
+      "resource": "tl.so.tilo.containers.PullDetail",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.containers.JobAnswer.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.containers.PullDetail.edit-text.Arguments"
     },
     {
       "app": "so.tilo.containers",
-      "resource": "tl.so.tilo.containers.JobAnswer",
+      "resource": "tl.so.tilo.containers.PullDetail",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.containers.JobAnswer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.containers",
-      "resource": "tl.so.tilo.containers.JobState",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.containers.JobState.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.containers",
-      "resource": "tl.so.tilo.containers.JobState",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.containers.JobState.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.containers",
-      "resource": "tl.so.tilo.containers.JobState",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.containers.JobState.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.containers.PullDetail.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.containers",
@@ -106622,8 +107320,8 @@
     {
       "app": "so.tilo.db-client",
       "resource": "tl.so.tilo.db-client.Database",
-      "action": "check",
-      "arguments": "#/components/schemas/tl.so.tilo.db-client.Database.check.Arguments"
+      "action": "job_done",
+      "arguments": "#/components/schemas/tl.so.tilo.db-client.Database.job_done.Arguments"
     },
     {
       "app": "so.tilo.db-client",
@@ -106726,24 +107424,6 @@
       "resource": "tl.so.tilo.db-client.Answer",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.db-client.Answer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.db-client",
-      "resource": "tl.so.tilo.db-client.Started",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.db-client.Started.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.db-client",
-      "resource": "tl.so.tilo.db-client.Started",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.db-client.Started.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.db-client",
-      "resource": "tl.so.tilo.db-client.Started",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.db-client.Started.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.db-client",
@@ -109082,8 +109762,14 @@
     {
       "app": "so.tilo.disk-usage",
       "resource": "tl.so.tilo.disk-usage.Analyzer",
-      "action": "poll",
-      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.Analyzer.poll.Arguments"
+      "action": "scan_moved",
+      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.Analyzer.scan_moved.Arguments"
+    },
+    {
+      "app": "so.tilo.disk-usage",
+      "resource": "tl.so.tilo.disk-usage.Analyzer",
+      "action": "scan_ended",
+      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.Analyzer.scan_ended.Arguments"
     },
     {
       "app": "so.tilo.disk-usage",
@@ -109111,27 +109797,51 @@
     },
     {
       "app": "so.tilo.disk-usage",
-      "resource": "tl.so.tilo.disk-usage.JobAnswer",
+      "resource": "tl.so.tilo.disk-usage.ScanState",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.JobAnswer.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.ScanState.$create.Arguments"
     },
     {
       "app": "so.tilo.disk-usage",
-      "resource": "tl.so.tilo.disk-usage.JobAnswer",
+      "resource": "tl.so.tilo.disk-usage.ScanState",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.JobAnswer.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.ScanState.edit-text.Arguments"
     },
     {
       "app": "so.tilo.disk-usage",
-      "resource": "tl.so.tilo.disk-usage.JobAnswer",
+      "resource": "tl.so.tilo.disk-usage.ScanState",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.JobAnswer.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.ScanState.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.disk-usage",
-      "resource": "tl.so.tilo.disk-usage.JobAnswer",
+      "resource": "tl.so.tilo.disk-usage.ScanState",
       "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.JobAnswer.$scenario.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.ScanState.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.disk-usage",
+      "resource": "tl.so.tilo.disk-usage.EntriesAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.EntriesAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.disk-usage",
+      "resource": "tl.so.tilo.disk-usage.EntriesAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.EntriesAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.disk-usage",
+      "resource": "tl.so.tilo.disk-usage.EntriesAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.EntriesAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.disk-usage",
+      "resource": "tl.so.tilo.disk-usage.EntriesAsk",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.EntriesAsk.$scenario.Arguments"
     },
     {
       "app": "so.tilo.disk-usage",
@@ -109156,30 +109866,6 @@
       "resource": "tl.so.tilo.disk-usage.Scanned",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.disk-usage.Scanned.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.disk-usage",
-      "resource": "tl.so.tilo.disk-usage.ScanState",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.ScanState.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.disk-usage",
-      "resource": "tl.so.tilo.disk-usage.ScanState",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.ScanState.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.disk-usage",
-      "resource": "tl.so.tilo.disk-usage.ScanState",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.ScanState.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.disk-usage",
-      "resource": "tl.so.tilo.disk-usage.ScanState",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.disk-usage.ScanState.$scenario.Arguments"
     },
     {
       "app": "so.tilo.disk-usage",
@@ -110126,8 +110812,14 @@
     {
       "app": "so.tilo.feeds",
       "resource": "tl.so.tilo.feeds.Library",
-      "action": "poll_refresh",
-      "arguments": "#/components/schemas/tl.so.tilo.feeds.Library.poll_refresh.Arguments"
+      "action": "refresh_moved",
+      "arguments": "#/components/schemas/tl.so.tilo.feeds.Library.refresh_moved.Arguments"
+    },
+    {
+      "app": "so.tilo.feeds",
+      "resource": "tl.so.tilo.feeds.Library",
+      "action": "refresh_ended",
+      "arguments": "#/components/schemas/tl.so.tilo.feeds.Library.refresh_ended.Arguments"
     },
     {
       "app": "so.tilo.feeds",
@@ -110611,6 +111303,12 @@
     },
     {
       "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Transfer",
+      "action": "transfer_moved",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Transfer.transfer_moved.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
       "resource": "tl.so.tilo.file-explorer.FileFacts",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.file-explorer.FileFacts.$create.Arguments"
@@ -110644,24 +111342,6 @@
       "resource": "tl.so.tilo.file-explorer.TransferAsk",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferAsk.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "tl.so.tilo.file-explorer.TransferStarted",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferStarted.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "tl.so.tilo.file-explorer.TransferStarted",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferStarted.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "tl.so.tilo.file-explorer.TransferStarted",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.TransferStarted.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",
@@ -110798,8 +111478,8 @@
     {
       "app": "so.tilo.file-explorer",
       "resource": "tl.so.tilo.file-explorer.Files",
-      "action": "poll_transfers",
-      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.poll_transfers.Arguments"
+      "action": "transfer_ended",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.transfer_ended.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",
@@ -114649,6 +115329,18 @@
     },
     {
       "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Place",
+      "action": "call_place",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Place.call_place.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Place",
+      "action": "open_site",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Place.open_site.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
       "resource": "tl.so.tilo.maps.Step",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.maps.Step.$create.Arguments"
@@ -114847,42 +115539,6 @@
     },
     {
       "app": "so.tilo.maps",
-      "resource": "tl.so.tilo.maps.SaveStarted",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.SaveStarted.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "tl.so.tilo.maps.SaveStarted",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.SaveStarted.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "tl.so.tilo.maps.SaveStarted",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.SaveStarted.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "tl.so.tilo.maps.Saving",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.Saving.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "tl.so.tilo.maps.Saving",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.Saving.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "tl.so.tilo.maps.Saving",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.Saving.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
       "resource": "tl.so.tilo.maps.Atlas",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.$create.Arguments"
@@ -114940,6 +115596,18 @@
       "resource": "tl.so.tilo.maps.Atlas",
       "action": "clear_recents",
       "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.clear_recents.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Atlas",
+      "action": "show_directions",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.show_directions.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Atlas",
+      "action": "set_directions",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.set_directions.Arguments"
     },
     {
       "app": "so.tilo.maps",
@@ -115054,12 +115722,6 @@
       "resource": "tl.so.tilo.maps.Atlas",
       "action": "open_poi",
       "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.open_poi.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "tl.so.tilo.maps.Atlas",
-      "action": "toggle_traffic",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.toggle_traffic.Arguments"
     },
     {
       "app": "so.tilo.maps",
@@ -118831,30 +119493,6 @@
     },
     {
       "app": "so.tilo.photos",
-      "resource": "tl.so.tilo.photos.JobStarted",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.photos.JobStarted.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "tl.so.tilo.photos.JobStarted",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.photos.JobStarted.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "tl.so.tilo.photos.JobStarted",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.photos.JobStarted.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
-      "resource": "tl.so.tilo.photos.JobStarted",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.photos.JobStarted.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.photos",
       "resource": "tl.so.tilo.photos.FaceScan",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.photos.FaceScan.$create.Arguments"
@@ -119281,6 +119919,12 @@
     },
     {
       "app": "so.tilo.print-centre",
+      "resource": "tl.so.tilo.print-centre.ScanSession",
+      "action": "scan_ended",
+      "arguments": "#/components/schemas/tl.so.tilo.print-centre.ScanSession.scan_ended.Arguments"
+    },
+    {
+      "app": "so.tilo.print-centre",
       "resource": "tl.so.tilo.print-centre.PrintDocument",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintDocument.$create.Arguments"
@@ -119296,6 +119940,12 @@
       "resource": "tl.so.tilo.print-centre.PrintDocument",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintDocument.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.print-centre",
+      "resource": "tl.so.tilo.print-centre.PrintDocument",
+      "action": "print_ended",
+      "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintDocument.print_ended.Arguments"
     },
     {
       "app": "so.tilo.print-centre",
@@ -119396,20 +120046,8 @@
     {
       "app": "so.tilo.print-centre",
       "resource": "tl.so.tilo.print-centre.PrintCentre",
-      "action": "poll_print",
-      "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintCentre.poll_print.Arguments"
-    },
-    {
-      "app": "so.tilo.print-centre",
-      "resource": "tl.so.tilo.print-centre.PrintCentre",
       "action": "scan_page",
       "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintCentre.scan_page.Arguments"
-    },
-    {
-      "app": "so.tilo.print-centre",
-      "resource": "tl.so.tilo.print-centre.PrintCentre",
-      "action": "poll_scan",
-      "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintCentre.poll_scan.Arguments"
     },
     {
       "app": "so.tilo.print-centre",
@@ -119509,39 +120147,21 @@
     },
     {
       "app": "so.tilo.print-centre",
-      "resource": "tl.so.tilo.print-centre.JobAnswer",
+      "resource": "tl.so.tilo.print-centre.ScanDetail",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.print-centre.JobAnswer.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.print-centre.ScanDetail.$create.Arguments"
     },
     {
       "app": "so.tilo.print-centre",
-      "resource": "tl.so.tilo.print-centre.JobAnswer",
+      "resource": "tl.so.tilo.print-centre.ScanDetail",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.print-centre.JobAnswer.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.print-centre.ScanDetail.edit-text.Arguments"
     },
     {
       "app": "so.tilo.print-centre",
-      "resource": "tl.so.tilo.print-centre.JobAnswer",
+      "resource": "tl.so.tilo.print-centre.ScanDetail",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.print-centre.JobAnswer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.print-centre",
-      "resource": "tl.so.tilo.print-centre.JobState",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.print-centre.JobState.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.print-centre",
-      "resource": "tl.so.tilo.print-centre.JobState",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.print-centre.JobState.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.print-centre",
-      "resource": "tl.so.tilo.print-centre.JobState",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.print-centre.JobState.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.print-centre.ScanDetail.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.print-centre",
@@ -119804,8 +120424,8 @@
     {
       "app": "so.tilo.publisher",
       "resource": "tl.so.tilo.publisher.Publisher",
-      "action": "poll",
-      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.poll.Arguments"
+      "action": "answered",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.answered.Arguments"
     },
     {
       "app": "so.tilo.publisher",
@@ -119905,51 +120525,27 @@
     },
     {
       "app": "so.tilo.publisher",
-      "resource": "tl.so.tilo.publisher.JobState",
+      "resource": "tl.so.tilo.publisher.RegistryWords",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobState.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.RegistryWords.$create.Arguments"
     },
     {
       "app": "so.tilo.publisher",
-      "resource": "tl.so.tilo.publisher.JobState",
+      "resource": "tl.so.tilo.publisher.RegistryWords",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobState.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.RegistryWords.edit-text.Arguments"
     },
     {
       "app": "so.tilo.publisher",
-      "resource": "tl.so.tilo.publisher.JobState",
+      "resource": "tl.so.tilo.publisher.RegistryWords",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobState.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.RegistryWords.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.publisher",
-      "resource": "tl.so.tilo.publisher.JobState",
+      "resource": "tl.so.tilo.publisher.RegistryWords",
       "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobState.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.publisher",
-      "resource": "tl.so.tilo.publisher.JobAnswer",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobAnswer.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.publisher",
-      "resource": "tl.so.tilo.publisher.JobAnswer",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobAnswer.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.publisher",
-      "resource": "tl.so.tilo.publisher.JobAnswer",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobAnswer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.publisher",
-      "resource": "tl.so.tilo.publisher.JobAnswer",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobAnswer.$scenario.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.RegistryWords.$scenario.Arguments"
     },
     {
       "app": "so.tilo.publisher",
@@ -123908,14 +124504,20 @@
     {
       "app": "so.tilo.store",
       "resource": "tl.so.tilo.store.Store",
-      "action": "poll",
-      "arguments": "#/components/schemas/tl.so.tilo.store.Store.poll.Arguments"
+      "action": "reading_moved",
+      "arguments": "#/components/schemas/tl.so.tilo.store.Store.reading_moved.Arguments"
     },
     {
       "app": "so.tilo.store",
       "resource": "tl.so.tilo.store.Store",
-      "action": "follow",
-      "arguments": "#/components/schemas/tl.so.tilo.store.Store.follow.Arguments"
+      "action": "reading_done",
+      "arguments": "#/components/schemas/tl.so.tilo.store.Store.reading_done.Arguments"
+    },
+    {
+      "app": "so.tilo.store",
+      "resource": "tl.so.tilo.store.Store",
+      "action": "change_done",
+      "arguments": "#/components/schemas/tl.so.tilo.store.Store.change_done.Arguments"
     },
     {
       "app": "so.tilo.store",
@@ -124219,21 +124821,21 @@
     },
     {
       "app": "so.tilo.store",
-      "resource": "tl.so.tilo.store.Job",
+      "resource": "tl.so.tilo.store.JobWords",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.store.Job.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.store.JobWords.$create.Arguments"
     },
     {
       "app": "so.tilo.store",
-      "resource": "tl.so.tilo.store.Job",
+      "resource": "tl.so.tilo.store.JobWords",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.store.Job.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.store.JobWords.edit-text.Arguments"
     },
     {
       "app": "so.tilo.store",
-      "resource": "tl.so.tilo.store.Job",
+      "resource": "tl.so.tilo.store.JobWords",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.store.Job.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.store.JobWords.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.store",
@@ -124306,24 +124908,6 @@
       "resource": "tl.so.tilo.store.FlathubAsk",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.store.FlathubAsk.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.store",
-      "resource": "tl.so.tilo.store.Started",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.store.Started.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.store",
-      "resource": "tl.so.tilo.store.Started",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.store.Started.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.store",
-      "resource": "tl.so.tilo.store.Started",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.store.Started.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.store",
@@ -126073,36 +126657,6 @@
     },
     {
       "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjayStarted",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayStarted.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjayStarted",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayStarted.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjayStarted",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayStarted.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjayStarted",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayStarted.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.GrayjayStarted",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayStarted.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.GrayjayPairAsk",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPairAsk.$create.Arguments"
@@ -126446,8 +127000,8 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.YouTube",
-      "action": "poll_grayjay",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.poll_grayjay.Arguments"
+      "action": "grayjay_ended",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.grayjay_ended.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -128006,8 +128560,14 @@
     {
       "app": "so.tilo.video-editor",
       "resource": "tl.so.tilo.video-editor.Project",
-      "action": "poll_render",
-      "arguments": "#/components/schemas/tl.so.tilo.video-editor.Project.poll_render.Arguments"
+      "action": "render_moved",
+      "arguments": "#/components/schemas/tl.so.tilo.video-editor.Project.render_moved.Arguments"
+    },
+    {
+      "app": "so.tilo.video-editor",
+      "resource": "tl.so.tilo.video-editor.Project",
+      "action": "render_done",
+      "arguments": "#/components/schemas/tl.so.tilo.video-editor.Project.render_done.Arguments"
     },
     {
       "app": "so.tilo.video-editor",
@@ -128212,24 +128772,6 @@
       "resource": "tl.so.tilo.video-editor.JobAnswer",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.video-editor.JobAnswer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.video-editor",
-      "resource": "tl.so.tilo.video-editor.JobState",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.video-editor.JobState.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.video-editor",
-      "resource": "tl.so.tilo.video-editor.JobState",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.video-editor.JobState.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.video-editor",
-      "resource": "tl.so.tilo.video-editor.JobState",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.video-editor.JobState.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.video-editor",
@@ -129098,6 +129640,12 @@
     {
       "app": "so.tilo.weather",
       "resource": "tl.so.tilo.weather.Locations",
+      "action": "move_place",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.Locations.move_place.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.Locations",
       "action": "rename_place",
       "arguments": "#/components/schemas/tl.so.tilo.weather.Locations.rename_place.Arguments"
     },
@@ -129136,6 +129684,12 @@
       "resource": "tl.so.tilo.weather.Locations",
       "action": "poll_weather",
       "arguments": "#/components/schemas/tl.so.tilo.weather.Locations.poll_weather.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.Locations",
+      "action": "look_for_place",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.Locations.look_for_place.Arguments"
     },
     {
       "app": "so.tilo.weather",
@@ -129644,6 +130198,12 @@
     {
       "app": "so.tilo.settings.sections",
       "resource": "settings.appearance",
+      "action": "apply-theme",
+      "arguments": "#/components/schemas/settings.appearance.apply-theme.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.appearance",
       "action": "set-dark-mode",
       "arguments": "#/components/schemas/settings.appearance.set-dark-mode.Arguments"
     },
@@ -130090,6 +130650,12 @@
       "resource": "settings.display-change",
       "action": "request",
       "arguments": "#/components/schemas/settings.display-change.request.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.emoji",
+      "action": "set-used",
+      "arguments": "#/components/schemas/settings.emoji.set-used.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",

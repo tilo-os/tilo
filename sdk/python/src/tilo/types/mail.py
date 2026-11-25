@@ -189,7 +189,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.mail@3882fabea750171d"
+    __surface__ = "so.tilo.mail@374de8982cd026ad"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -250,7 +250,7 @@ class Notice(Resource):
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@3882fabea750171d"
+    __surface__ = "so.tilo.mail@374de8982cd026ad"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -316,7 +316,7 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@3882fabea750171d"
+    __surface__ = "so.tilo.mail@374de8982cd026ad"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -335,7 +335,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@3882fabea750171d"
+    __surface__ = "so.tilo.mail@374de8982cd026ad"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -531,13 +531,13 @@ class Thread(Resource):
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@3882fabea750171d"
+    __surface__ = "so.tilo.mail@374de8982cd026ad"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@3882fabea750171d"
+    __surface__ = "so.tilo.mail@374de8982cd026ad"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -594,7 +594,7 @@ class Message(Resource):
         return self.action("copy_link", url=url)
 
     def export_markdown(self) -> Any:
-        """The message as a Markdown file: what a person exports to read it, or keep it, elsewhere."""
+        """The message as a Markdown file: what a person exports to read it, or keep it, elsewhere. The system's one Export… lists it with the message's other formats."""
         return self.action("export_markdown")
 
     def export_json(self) -> Any:
@@ -632,7 +632,7 @@ class Message(Resource):
 
 class Picture(Resource):
     """Picture — `tl.so.tilo.mail.Picture`."""
-    __surface__ = "so.tilo.mail@3882fabea750171d"
+    __surface__ = "so.tilo.mail@374de8982cd026ad"
     gb5hqtag: str  # source
     @property
     def _7hhcy4ay(self) -> Any:
@@ -646,7 +646,7 @@ class Picture(Resource):
 
 class TrustedSender(Resource):
     """TrustedSender — `tl.so.tilo.mail.TrustedSender`."""
-    __surface__ = "so.tilo.mail@3882fabea750171d"
+    __surface__ = "so.tilo.mail@374de8982cd026ad"
     @property
     def _5eoon66w(self) -> str:
         """address (`5eoon66w` on the wire)."""
@@ -659,7 +659,7 @@ class TrustedSender(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@3882fabea750171d"
+    __surface__ = "so.tilo.mail@374de8982cd026ad"
     m2g6zrle: str  # from
     zx2b4ax2: str  # from_address
     hd3o4gkq: str  # to
@@ -747,7 +747,7 @@ class Draft(Resource):
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@3882fabea750171d"
+    __surface__ = "so.tilo.mail@374de8982cd026ad"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -916,5 +916,5 @@ class Mail(Resource):
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@3882fabea750171d"
+    __surface__ = "so.tilo.mail@374de8982cd026ad"
 

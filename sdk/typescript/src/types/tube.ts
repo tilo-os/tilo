@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@c3855a677fd393b4";
+export const SURFACE = "so.tilo.tube@b8c7db3ed6fb9b51";
 
 /** The arguments of `subscribe`. */
 export interface SubscribeArgs {
@@ -119,8 +119,9 @@ export interface SyncDevicesArgs {
 export interface AutoSyncArgs {
 }
 
-/** The arguments of `poll_grayjay`. */
-export interface PollGrayjayArgs {
+/** The arguments of `grayjay_ended`. */
+export interface GrayjayEndedArgs {
+  j: unknown;
 }
 
 /** The arguments of `keep_paired`. */
@@ -457,20 +458,6 @@ export function pairedDevice(ws: tilo.Workspace, path: string): PairedDevice {
   return resourceProxy(ws, path, SURFACE, PAIREDDEVICE_ACTIONS) as unknown as PairedDevice;
 }
 
-/** GrayjayStarted — `tl.so.tilo.tube.GrayjayStarted`. */
-export interface GrayjayStarted extends tilo.Resource {
-  xtg3ig6h: string;  // job
-}
-
-/** The actions `GrayjayStarted` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const GRAYJAYSTARTED_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.tube.GrayjayStarted` kind at `path`. */
-export function grayjayStarted(ws: tilo.Workspace, path: string): GrayjayStarted {
-  return resourceProxy(ws, path, SURFACE, GRAYJAYSTARTED_ACTIONS) as unknown as GrayjayStarted;
-}
-
 /** GrayjayPairAsk — `tl.so.tilo.tube.GrayjayPairAsk`. */
 export interface GrayjayPairAsk extends tilo.Resource {
   vjm7bxs2: string;  // invite
@@ -700,10 +687,12 @@ export interface YouTube extends tilo.Resource {
   auto_sync(): Promise<void>;
   /** Runs `auto_sync` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   auto_syncMany(items: AutoSyncArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Follows the Grayjay operation under way, once a second, so its end reaches the window without anyone asking by hand. */
-  poll_grayjay(): Promise<void>;
-  /** Runs `poll_grayjay` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  poll_grayjayMany(items: PollGrayjayArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The Grayjay operation ended: a pairing keeps the device it made, an exchange what it brought, and a failure or a stop says so in the window. */
+  grayjay_ended(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `grayjay_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  grayjay_endedMany(items: GrayjayEndedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Keeps the device a pairing made, waiting for the person's approval: the fingerprint beside it is what Grayjay shows on the other end. */
   keep_paired(args: {
     answer: string;
@@ -761,7 +750,7 @@ export interface YouTube extends tilo.Resource {
 
 /** The actions `YouTube` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const YOUTUBE_ACTIONS = ["play_queue", "session", "play_items", "play_itemsMany", "autoplay_next", "delete_history", "delete_historyMany", "set_autoplay", "set_autoplayMany", "set_quality", "set_qualityMany", "set_sponsorblock", "set_sponsorblockMany", "set_dearrow", "set_dearrowMany", "set_dislikes", "set_dislikesMany", "set_comments", "set_commentsMany", "set_speed", "set_speedMany", "pair_device", "pair_deviceMany", "approve_device", "approve_deviceMany", "revoke_device", "revoke_deviceMany", "sync_devices", "sync_devicesMany", "auto_sync", "auto_syncMany", "poll_grayjay", "poll_grayjayMany", "keep_paired", "keep_pairedMany", "keep_exchange", "keep_exchangeMany", "search", "filter_search", "filter_searchMany", "filter_length", "filter_published", "end_search", "end_searchMany", "refresh_feed", "load_trending", "open_link", "like_comment", "like_commentMany", "play_again"] as const;
+export const YOUTUBE_ACTIONS = ["play_queue", "session", "play_items", "play_itemsMany", "autoplay_next", "delete_history", "delete_historyMany", "set_autoplay", "set_autoplayMany", "set_quality", "set_qualityMany", "set_sponsorblock", "set_sponsorblockMany", "set_dearrow", "set_dearrowMany", "set_dislikes", "set_dislikesMany", "set_comments", "set_commentsMany", "set_speed", "set_speedMany", "pair_device", "pair_deviceMany", "approve_device", "approve_deviceMany", "revoke_device", "revoke_deviceMany", "sync_devices", "sync_devicesMany", "auto_sync", "auto_syncMany", "grayjay_ended", "grayjay_endedMany", "keep_paired", "keep_pairedMany", "keep_exchange", "keep_exchangeMany", "search", "filter_search", "filter_searchMany", "filter_length", "filter_published", "end_search", "end_searchMany", "refresh_feed", "load_trending", "open_link", "like_comment", "like_commentMany", "play_again"] as const;
 
 /** The `tl.so.tilo.tube.YouTube` kind at `path`. */
 export function youTube(ws: tilo.Workspace, path: string): YouTube {

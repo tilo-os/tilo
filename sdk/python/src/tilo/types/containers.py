@@ -25,16 +25,26 @@ __all__ = [
     "Pull",
     "Containers",
     "PullAsk",
-    "JobAnswer",
-    "JobState",
+    "PullDetail",
     "TiloContainers",
+    "PullMovedArgs",
+    "PullEndedArgs",
     "ClearCreateArgs",
     "FillArgs",
     "BeginPullArgs",
-    "PollPullArgs",
     "CancelPullArgs",
     "DismissPullArgs",
 ]
+
+PullMovedArgs = TypedDict("PullMovedArgs", {
+    "j": "Any",
+})
+"""The arguments of `pull_moved`."""
+
+PullEndedArgs = TypedDict("PullEndedArgs", {
+    "j": "Any",
+})
+"""The arguments of `pull_ended`."""
 
 ClearCreateArgs = TypedDict("ClearCreateArgs", {
 })
@@ -51,10 +61,6 @@ BeginPullArgs = TypedDict("BeginPullArgs", {
 })
 """The arguments of `begin_pull`."""
 
-PollPullArgs = TypedDict("PollPullArgs", {
-})
-"""The arguments of `poll_pull`."""
-
 CancelPullArgs = TypedDict("CancelPullArgs", {
     "p": "Pull",
 })
@@ -67,7 +73,7 @@ DismissPullArgs = TypedDict("DismissPullArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.containers@37b082af246c2971"
+    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -128,7 +134,7 @@ class Notice(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.containers.Draft`."""
-    __surface__ = "so.tilo.containers@37b082af246c2971"
+    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
     mnoqvwjm: str  # name
     kc5y7sq2: str  # image
     gkz666im: str  # ports
@@ -153,17 +159,37 @@ class Draft(Resource):
 
 class Pull(Resource):
     """Pull — `tl.so.tilo.containers.Pull`."""
-    __surface__ = "so.tilo.containers@37b082af246c2971"
+    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
     shb65p47: str  # image
     gubc3b62: str  # job
     hhqtcu4c: list[str]  # lines
     jgmjny63: bool  # done
     wektgccg: str  # failed
 
+    def pull_moved(self, *, j: Any) -> None:
+        """The pull moved on: what the engine wrote so far."""
+        return self.action("pull_moved", j=j)
+
+    def pull_moved_many(self, items: list[PullMovedArgs]) -> list[dict[str, Any]]:
+        """Runs `pull_moved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("pull_moved", items)
+
+    def pull_ended(self, *, j: Any) -> None:
+        """The pull ended, finished or failed; it says how and stays."""
+        return self.action("pull_ended", j=j)
+
+    def pull_ended_many(self, items: list[PullEndedArgs]) -> list[dict[str, Any]]:
+        """Runs `pull_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("pull_ended", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"pull_moved", "pull_moved_many", "pull_ended", "pull_ended_many"})
+
 
 class Containers(Resource):
     """Containers — `tl.so.tilo.containers.Containers`."""
-    __surface__ = "so.tilo.containers@37b082af246c2971"
+    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
     svwiioos: Draft  # draft
     ilelnqwj: list[Entry[Pull]]  # pulls
 
@@ -231,14 +257,6 @@ class Containers(Resource):
         """Runs `begin_pull` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("begin_pull", items)
 
-    def poll_pull(self) -> None:
-        """Asks how far a pull has got; a finished or failed one says so and stays."""
-        return self.action("poll_pull")
-
-    def poll_pull_many(self, items: list[PollPullArgs]) -> list[dict[str, Any]]:
-        """Runs `poll_pull` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("poll_pull", items)
-
     def cancel_pull(self, *, p: Pull) -> None:
         """Ends a pull and the engine's process with it."""
         return self.action("cancel_pull", p=p)
@@ -257,32 +275,24 @@ class Containers(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"clear_create", "clear_create_many", "fill", "fill_many", "create_container", "show_containers", "show_images", "show_volumes", "show_distrobox", "new_container_form", "make_volume", "tag_image", "begin_pull", "begin_pull_many", "poll_pull", "poll_pull_many", "cancel_pull", "cancel_pull_many", "dismiss_pull", "dismiss_pull_many"})
+    __actions__ = frozenset({"clear_create", "clear_create_many", "fill", "fill_many", "create_container", "show_containers", "show_images", "show_volumes", "show_distrobox", "new_container_form", "make_volume", "tag_image", "begin_pull", "begin_pull_many", "cancel_pull", "cancel_pull_many", "dismiss_pull", "dismiss_pull_many"})
 
 
 class PullAsk(Resource):
     """PullAsk — `tl.so.tilo.containers.PullAsk`."""
-    __surface__ = "so.tilo.containers@37b082af246c2971"
+    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
     tukmkidh: str  # image
 
 
-class JobAnswer(Resource):
-    """JobAnswer — `tl.so.tilo.containers.JobAnswer`."""
-    __surface__ = "so.tilo.containers@37b082af246c2971"
-    znalhivd: str  # job
-
-
-class JobState(Resource):
-    """JobState — `tl.so.tilo.containers.JobState`."""
-    __surface__ = "so.tilo.containers@37b082af246c2971"
-    h3ie7k7k: str  # state
-    bzkmqs4p: list[str]  # lines
-    a6sjrj6l: str  # error
+class PullDetail(Resource):
+    """PullDetail — `tl.so.tilo.containers.PullDetail`."""
+    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
+    bldlgtsf: list[str]  # lines
 
 
 class TiloContainers(Resource):
     """Containers — `tl.so.tilo.containers`."""
-    __surface__ = "so.tilo.containers@37b082af246c2971"
+    __surface__ = "so.tilo.containers@3a5429fb94e2020d"
     def open_shell(self, *, container: str) -> None:
         """Opens a shell in a running container: podman's, in the Tilo terminal."""
         return self.action("open_shell", container=container)

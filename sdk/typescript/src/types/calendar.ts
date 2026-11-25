@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.calendar@0b8f9a748b18680e";
+export const SURFACE = "so.tilo.calendar@8278162ef0695da9";
 
 /** The colours a calendar, an event or a project can take, each a place in the theme. One of "indigo", "emerald", "amber", "red", "blue", "violet", "slate". */
 export type Color = "indigo" | "emerald" | "amber" | "red" | "blue" | "violet" | "slate";
@@ -1029,7 +1029,7 @@ export interface Calendars extends tilo.Resource {
   this_week(): Promise<void>;
   /** Runs `this_week` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   this_weekMany(items: ThisWeekArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** The calendar — every event and task it holds, or only one event — as an iCalendar file, for a person to save or an agent to hand on. Nothing is written by this. */
+  /** The calendar — every event and task it holds, or only one event — as an iCalendar file, for a person to save or an agent to hand on. Nothing is written by this. The system's one Export… lists it, and saves the file where the person says. */
   export_calendar(args?: {
     e?: Event;
   }): Promise<unknown>;

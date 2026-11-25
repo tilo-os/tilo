@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.disk-usage@8d7a57b84ae32aae";
+export const SURFACE = "so.tilo.disk-usage@b1e8bfb751fc3d15";
 
 /** The arguments of `analyze`. */
 export interface AnalyzeArgs {
@@ -69,8 +69,14 @@ export interface CancelChooseArgs {
 export interface ReadPickerArgs {
 }
 
-/** The arguments of `poll`. */
-export interface PollArgs {
+/** The arguments of `scan_moved`. */
+export interface ScanMovedArgs {
+  j: unknown;
+}
+
+/** The arguments of `scan_ended`. */
+export interface ScanEndedArgs {
+  j: unknown;
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -195,15 +201,23 @@ export interface Analyzer extends tilo.Resource {
   read_picker(): Promise<void>;
   /** Runs `read_picker` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   read_pickerMany(items: ReadPickerArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks how far the measuring has got: the window's own clock, once a second while it runs. */
-  poll(): Promise<void>;
-  /** Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  pollMany(items: PollArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The measuring moved on: how much of the folder it has seen so far. */
+  scan_moved(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `scan_moved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  scan_movedMany(items: ScanMovedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The measuring ended: the folders it found, why it could not read them, or that it was stopped. */
+  scan_ended(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `scan_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  scan_endedMany(items: ScanEndedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Analyzer` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ANALYZER_ACTIONS = ["analyze", "analyzeMany", "drill", "drillMany", "open_place", "open_placeMany", "stop", "back", "backMany", "home", "homeMany", "choose", "chooseMany", "go", "goMany", "pick", "pickMany", "cancel_choose", "cancel_chooseMany", "read_picker", "read_pickerMany", "poll", "pollMany"] as const;
+export const ANALYZER_ACTIONS = ["analyze", "analyzeMany", "drill", "drillMany", "open_place", "open_placeMany", "stop", "back", "backMany", "home", "homeMany", "choose", "chooseMany", "go", "goMany", "pick", "pickMany", "cancel_choose", "cancel_chooseMany", "read_picker", "read_pickerMany", "scan_moved", "scan_movedMany", "scan_ended", "scan_endedMany"] as const;
 
 /** The `tl.so.tilo.disk-usage.Analyzer` kind at `path`. */
 export function analyzer(ws: tilo.Workspace, path: string): Analyzer {
@@ -224,37 +238,6 @@ export function scanAsk(ws: tilo.Workspace, path: string): ScanAsk {
   return resourceProxy(ws, path, SURFACE, SCANASK_ACTIONS) as unknown as ScanAsk;
 }
 
-/** JobAnswer — `tl.so.tilo.disk-usage.JobAnswer`. */
-export interface JobAnswer extends tilo.Resource {
-  "42vybryr": string;  // job
-}
-
-/** The actions `JobAnswer` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const JOBANSWER_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.disk-usage.JobAnswer` kind at `path`. */
-export function jobAnswer(ws: tilo.Workspace, path: string): JobAnswer {
-  return resourceProxy(ws, path, SURFACE, JOBANSWER_ACTIONS) as unknown as JobAnswer;
-}
-
-/** Scanned — `tl.so.tilo.disk-usage.Scanned`. */
-export interface Scanned extends tilo.Resource {
-  "5asfkn6k": string;  // name
-  "7xc3ifdt": string;  // path
-  elhtrr33: number;  // bytes
-  ktl6erww: number;  // files
-}
-
-/** The actions `Scanned` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const SCANNED_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.disk-usage.Scanned` kind at `path`. */
-export function scanned(ws: tilo.Workspace, path: string): Scanned {
-  return resourceProxy(ws, path, SURFACE, SCANNED_ACTIONS) as unknown as Scanned;
-}
-
 /** ScanState — `tl.so.tilo.disk-usage.ScanState`. */
 export interface ScanState extends tilo.Resource {
   qaev2xl3: string;  // state
@@ -273,6 +256,37 @@ export const SCANSTATE_ACTIONS = [] as const;
 /** The `tl.so.tilo.disk-usage.ScanState` kind at `path`. */
 export function scanState(ws: tilo.Workspace, path: string): ScanState {
   return resourceProxy(ws, path, SURFACE, SCANSTATE_ACTIONS) as unknown as ScanState;
+}
+
+/** EntriesAsk — `tl.so.tilo.disk-usage.EntriesAsk`. */
+export interface EntriesAsk extends tilo.Resource {
+  hxfyfs5q: string;  // job
+}
+
+/** The actions `EntriesAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ENTRIESASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.disk-usage.EntriesAsk` kind at `path`. */
+export function entriesAsk(ws: tilo.Workspace, path: string): EntriesAsk {
+  return resourceProxy(ws, path, SURFACE, ENTRIESASK_ACTIONS) as unknown as EntriesAsk;
+}
+
+/** Scanned — `tl.so.tilo.disk-usage.Scanned`. */
+export interface Scanned extends tilo.Resource {
+  "5asfkn6k": string;  // name
+  "7xc3ifdt": string;  // path
+  elhtrr33: number;  // bytes
+  ktl6erww: number;  // files
+}
+
+/** The actions `Scanned` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SCANNED_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.disk-usage.Scanned` kind at `path`. */
+export function scanned(ws: tilo.Workspace, path: string): Scanned {
+  return resourceProxy(ws, path, SURFACE, SCANNED_ACTIONS) as unknown as Scanned;
 }
 
 /** Disk Usage Analyzer — `tl.so.tilo.disk-usage`. */

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-editor@45a11a013891294f";
+export const SURFACE = "so.tilo.video-editor@017be4f90908e872";
 
 /** How a title's lines sit in its box. One of "left", "centre", "right". */
 export type Align = "left" | "centre" | "right";
@@ -519,8 +519,14 @@ export interface ExportCutArgs {
   fps: number;
 }
 
-/** The arguments of `poll_render`. */
-export interface PollRenderArgs {
+/** The arguments of `render_moved`. */
+export interface RenderMovedArgs {
+  j: unknown;
+}
+
+/** The arguments of `render_done`. */
+export interface RenderDoneArgs {
+  j: unknown;
 }
 
 /** The arguments of `cancel_render`. */
@@ -1371,10 +1377,18 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `export_cut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   export_cutMany(items: ExportCutArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks how far the running render has got. */
-  poll_render(): Promise<void>;
-  /** Runs `poll_render` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  poll_renderMany(items: PollRenderArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The render moved on: how far it has got, as the window shows it. */
+  render_moved(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `render_moved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  render_movedMany(items: RenderMovedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The render ended: the file a person saves, or why it made none. */
+  render_done(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `render_done` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  render_doneMany(items: RenderDoneArgs[]): Promise<tilo.ActionAnswer[]>;
   cancel_render(): Promise<void>;
   /** Runs `cancel_render` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   cancel_renderMany(items: CancelRenderArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -1382,7 +1396,7 @@ export interface Project extends tilo.Resource {
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["restore_clip", "split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "adopt_probe", "adopt_probeMany", "refresh_source", "refresh_sourceMany", "relink", "relinkMany", "mark_missing", "mark_missingMany", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "move_to", "move_toMany", "trim_to", "trim_toMany", "move_marker", "move_markerMany", "moved", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clips", "remove_clipsMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "trim_start", "trim_startMany", "trim_end", "trim_endMany", "copy_clips", "cut_clips", "paste_track", "paste_clips", "paste_clipsMany", "duplicate_clips", "duplicate_clipsMany", "trim_tracks", "trim_tracksMany", "check_mix", "check_mixMany", "hear_mix", "hear_mixMany", "forgot_mix", "forgot_mixMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "play_cut", "play_cutMany", "stop_cut", "stop_cutMany", "pause_cut", "pause_cutMany", "shuttle", "shuttleMany", "jump_to", "jump_toMany", "live_at", "scrub_to", "scrub_toMany", "play_moving", "refresh_live", "refresh_liveMany", "hear_scrub", "export_cut", "export_cutMany", "poll_render", "poll_renderMany", "cancel_render", "cancel_renderMany"] as const;
+export const PROJECT_ACTIONS = ["restore_clip", "split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "adopt_probe", "adopt_probeMany", "refresh_source", "refresh_sourceMany", "relink", "relinkMany", "mark_missing", "mark_missingMany", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "move_to", "move_toMany", "trim_to", "trim_toMany", "move_marker", "move_markerMany", "moved", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clips", "remove_clipsMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "trim_start", "trim_startMany", "trim_end", "trim_endMany", "copy_clips", "cut_clips", "paste_track", "paste_clips", "paste_clipsMany", "duplicate_clips", "duplicate_clipsMany", "trim_tracks", "trim_tracksMany", "check_mix", "check_mixMany", "hear_mix", "hear_mixMany", "forgot_mix", "forgot_mixMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "play_cut", "play_cutMany", "stop_cut", "stop_cutMany", "pause_cut", "pause_cutMany", "shuttle", "shuttleMany", "jump_to", "jump_toMany", "live_at", "scrub_to", "scrub_toMany", "play_moving", "refresh_live", "refresh_liveMany", "hear_scrub", "export_cut", "export_cutMany", "render_moved", "render_movedMany", "render_done", "render_doneMany", "cancel_render", "cancel_renderMany"] as const;
 
 /** The `tl.so.tilo.video-editor.Project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {
@@ -1553,24 +1567,6 @@ export const JOBANSWER_ACTIONS = [] as const;
 /** The `tl.so.tilo.video-editor.JobAnswer` kind at `path`. */
 export function jobAnswer(ws: tilo.Workspace, path: string): JobAnswer {
   return resourceProxy(ws, path, SURFACE, JOBANSWER_ACTIONS) as unknown as JobAnswer;
-}
-
-/** JobState — `tl.so.tilo.video-editor.JobState`. */
-export interface JobState extends tilo.Resource {
-  "2lqqe2u4": string;  // state
-  wddixskv: number;  // done
-  yfo7z67v: number;  // total
-  ivfsfn6q: string;  // url
-  tlb73mjx: string;  // error
-}
-
-/** The actions `JobState` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const JOBSTATE_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.video-editor.JobState` kind at `path`. */
-export function jobState(ws: tilo.Workspace, path: string): JobState {
-  return resourceProxy(ws, path, SURFACE, JOBSTATE_ACTIONS) as unknown as JobState;
 }
 
 /** LiveAsk — `tl.so.tilo.video-editor.LiveAsk`. */

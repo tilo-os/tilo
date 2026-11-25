@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.db-client@fcebe3a45dc48e1c";
+export const SURFACE = "so.tilo.db-client@bd20e39fa4ba3423";
 
 /** The engine a connection targets. One of "sqlite", "postgres", "mysql". */
 export type Engine = "sqlite" | "postgres" | "mysql";
@@ -172,8 +172,9 @@ export interface OrderByArgs {
 export interface DismissArgs {
 }
 
-/** The arguments of `check`. */
-export interface CheckArgs {
+/** The arguments of `job_done`. */
+export interface JobDoneArgs {
+  j: unknown;
 }
 
 /** The arguments of `opened`. */
@@ -444,10 +445,12 @@ export interface Database extends tilo.Resource {
   dismiss(): Promise<void>;
   /** Runs `dismiss` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   dismissMany(items: DismissArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks how far the job in flight has got, and folds its answer in. A job this device does not run says so, and leaves the window as it is. */
-  check(): Promise<void>;
-  /** Runs `check` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  checkMany(items: CheckArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The job in flight ended: its answer is read as what it is, or the window says why it failed or was stopped. A job this window no longer runs leaves the window as it is. */
+  job_done(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `job_done` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  job_doneMany(items: JobDoneArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Takes a connection's handle in, once the engine opened it, and reads its catalog. */
   opened(args: {
     answer: string;
@@ -464,7 +467,7 @@ export interface Database extends tilo.Resource {
 
 /** The actions `Database` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DATABASE_ACTIONS = ["ensure_session", "connect", "connectMany", "disconnect", "disconnectMany", "add_connection", "add_connectionMany", "remove_connection", "remove_connectionMany", "remember_password", "remember_passwordMany", "save_query", "save_queryMany", "remove_query", "remove_queryMany", "load_query", "load_queryMany", "load_starter", "load_starterMany", "choose_tab", "choose_tabMany", "show_tab", "show_tabMany", "begin_transaction", "begin_transactionMany", "commit_transaction", "commit_transactionMany", "rollback_transaction", "rollback_transactionMany", "run", "runMany", "confirm_run", "confirm_runMany", "dismiss_run", "dismiss_runMany", "run_query", "run_queryMany", "rerun", "rerunMany", "start_statement", "start_statementMany", "cancel", "cancelMany", "browse", "browseMany", "load_structure", "load_structureMany", "load_page", "load_pageMany", "next_page", "next_pageMany", "previous_page", "previous_pageMany", "refresh_catalog", "refresh_catalogMany", "order_by", "order_byMany", "copy_row", "copy_result", "export_csv", "dismiss", "dismissMany", "check", "checkMany", "opened", "openedMany", "queried", "queriedMany"] as const;
+export const DATABASE_ACTIONS = ["ensure_session", "connect", "connectMany", "disconnect", "disconnectMany", "add_connection", "add_connectionMany", "remove_connection", "remove_connectionMany", "remember_password", "remember_passwordMany", "save_query", "save_queryMany", "remove_query", "remove_queryMany", "load_query", "load_queryMany", "load_starter", "load_starterMany", "choose_tab", "choose_tabMany", "show_tab", "show_tabMany", "begin_transaction", "begin_transactionMany", "commit_transaction", "commit_transactionMany", "rollback_transaction", "rollback_transactionMany", "run", "runMany", "confirm_run", "confirm_runMany", "dismiss_run", "dismiss_runMany", "run_query", "run_queryMany", "rerun", "rerunMany", "start_statement", "start_statementMany", "cancel", "cancelMany", "browse", "browseMany", "load_structure", "load_structureMany", "load_page", "load_pageMany", "next_page", "next_pageMany", "previous_page", "previous_pageMany", "refresh_catalog", "refresh_catalogMany", "order_by", "order_byMany", "copy_row", "copy_result", "export_csv", "dismiss", "dismissMany", "job_done", "job_doneMany", "opened", "openedMany", "queried", "queriedMany"] as const;
 
 /** The `tl.so.tilo.db-client.Database` kind at `path`. */
 export function database(ws: tilo.Workspace, path: string): Database {
@@ -490,8 +493,8 @@ export function tableInfo(ws: tilo.Workspace, path: string): TableInfo {
 
 /** ColumnInfo — `tl.so.tilo.db-client.ColumnInfo`. */
 export interface ColumnInfo extends tilo.Resource {
-  kdq23jfd: string;  // schema
-  wklm2rxq: string;  // table
+  ybqhn5bv: string;  // schema
+  mti4en3a: string;  // table
   qmrcvjjn: string;  // name
   ffkug4qg: string;  // decl_type
   ifa6r5by: boolean;  // nullable
@@ -561,25 +564,9 @@ export function answer(ws: tilo.Workspace, path: string): Answer {
   return resourceProxy(ws, path, SURFACE, ANSWER_ACTIONS) as unknown as Answer;
 }
 
-/** Started — `tl.so.tilo.db-client.Started`. */
-export interface Started extends tilo.Resource {
-  ms2izpdh: string;  // job
-}
-
-/** The actions `Started` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const STARTED_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.db-client.Started` kind at `path`. */
-export function started(ws: tilo.Workspace, path: string): Started {
-  return resourceProxy(ws, path, SURFACE, STARTED_ACTIONS) as unknown as Started;
-}
-
 /** Progress — `tl.so.tilo.db-client.Progress`. */
 export interface Progress extends tilo.Resource {
-  dday2ali: string;  // state
   bpgwkoxz: string;  // result
-  gacluwxm: string;  // error
 }
 
 /** The actions `Progress` reaches before it is read: `ws` calls them without a
@@ -683,7 +670,7 @@ export interface Session extends tilo.Resource {
   utbjkevx: Tab;  // tab
   "62jlzlao": string[];  // schemas
   c5axoen6: Array<tilo.Entry<TableInfo>>;  // tables
-  solxuk72: Array<tilo.Entry<ColumnInfo>>;  // catalog_columns
+  tzehhxal: Array<tilo.Entry<ColumnInfo>>;  // catalog_columns
   p5c7ywkh: Array<tilo.Entry<KeyInfo>>;  // keys
   zb4ttvcb: Array<tilo.Entry<IndexInfo>>;  // indexes
   y5w3id3d: string;  // selected_schema

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.contacts@0f642981a0fd2bb7";
+export const SURFACE = "so.tilo.contacts@c32a407883c8217b";
 
 /** The versions of the card format another address book reads. One of "v4", "v3". */
 export type VCardVersion = "v4" | "v3";
@@ -305,7 +305,7 @@ export interface Contact extends tilo.Resource {
   }): Promise<void>;
   /** Runs `ungroup` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   ungroupMany(items: UngroupArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** A contact as a file: their card, named for them. */
+  /** A contact as a file: their card, named for them. The system's one Export… lists it and saves it where the person says. */
   export_contact(args?: {
     version?: VCardVersion;
   }): Promise<unknown>;
@@ -414,6 +414,8 @@ export interface Book extends tilo.Resource {
   export_book(args?: {
     version?: VCardVersion;
   }): Promise<unknown>;
+  /** Every contact as one vCard 3.0 file, which an address book that reads no 4.0 card opens. */
+  export_book_v3(): Promise<unknown>;
   /** Every contact as the text of one card file, or the one `name` calls: for an agent or a script that hands the cards on where a person's file chooser cannot, as the address its bytes are kept at. A name the book holds twice is refused rather than guessed. */
   export_vcard_content(args?: {
     name?: string;
@@ -473,7 +475,7 @@ export interface Book extends tilo.Resource {
 
 /** The actions `Book` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const BOOK_ACTIONS = ["new_contact", "named_or_new", "group", "groupMany", "new_group", "delete", "deleteMany", "merge_into", "merge_intoMany", "export_book", "export_vcard_content", "import_vcard", "add_contacts", "refuse_import", "report_import", "dismiss_import", "dismiss_importMany", "file_card", "take_card", "add_card", "import_as_new", "keep_existing", "keep_existingMany", "find_for_address"] as const;
+export const BOOK_ACTIONS = ["new_contact", "named_or_new", "group", "groupMany", "new_group", "delete", "deleteMany", "merge_into", "merge_intoMany", "export_book", "export_book_v3", "export_vcard_content", "import_vcard", "add_contacts", "refuse_import", "report_import", "dismiss_import", "dismiss_importMany", "file_card", "take_card", "add_card", "import_as_new", "keep_existing", "keep_existingMany", "find_for_address"] as const;
 
 /** The `tl.so.tilo.contacts.Book` kind at `path`. */
 export function book(ws: tilo.Workspace, path: string): Book {

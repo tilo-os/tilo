@@ -25,9 +25,9 @@ __all__ = [
     "Recent",
     "Analyzer",
     "ScanAsk",
-    "JobAnswer",
-    "Scanned",
     "ScanState",
+    "EntriesAsk",
+    "Scanned",
     "DiskUsage",
     "AnalyzeArgs",
     "DrillArgs",
@@ -39,7 +39,8 @@ __all__ = [
     "PickArgs",
     "CancelChooseArgs",
     "ReadPickerArgs",
-    "PollArgs",
+    "ScanMovedArgs",
+    "ScanEndedArgs",
 ]
 
 AnalyzeArgs = TypedDict("AnalyzeArgs", {
@@ -87,13 +88,19 @@ ReadPickerArgs = TypedDict("ReadPickerArgs", {
 })
 """The arguments of `read_picker`."""
 
-PollArgs = TypedDict("PollArgs", {
+ScanMovedArgs = TypedDict("ScanMovedArgs", {
+    "j": "Any",
 })
-"""The arguments of `poll`."""
+"""The arguments of `scan_moved`."""
+
+ScanEndedArgs = TypedDict("ScanEndedArgs", {
+    "j": "Any",
+})
+"""The arguments of `scan_ended`."""
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
+    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -154,7 +161,7 @@ class Notice(Resource):
 
 class Measure(Resource):
     """Measure — `tl.so.tilo.disk-usage.Measure`."""
-    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
+    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
     dgpcdvfo: str  # name
     hr7pdtyh: str  # path
     @property
@@ -170,7 +177,7 @@ class Measure(Resource):
 
 class Recent(Resource):
     """Recent — `tl.so.tilo.disk-usage.Recent`."""
-    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
+    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
     mks7bf3q: str  # path
     w6urofdz: str  # label
     rrwtdebb: str  # seen
@@ -178,7 +185,7 @@ class Recent(Resource):
 
 class Analyzer(Resource):
     """Analyzer — `tl.so.tilo.disk-usage.Analyzer`."""
-    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
+    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
     myw6qh3s: str  # folder
     thlese6a: str  # label
     w37l5txv: list[Entry[Measure]]  # entries
@@ -284,41 +291,61 @@ class Analyzer(Resource):
         """Runs `read_picker` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("read_picker", items)
 
-    def poll(self) -> None:
-        """Asks how far the measuring has got: the window's own clock, once a second while it runs."""
-        return self.action("poll")
+    def scan_moved(self, *, j: Any) -> None:
+        """The measuring moved on: how much of the folder it has seen so far."""
+        return self.action("scan_moved", j=j)
 
-    def poll_many(self, items: list[PollArgs]) -> list[dict[str, Any]]:
-        """Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("poll", items)
+    def scan_moved_many(self, items: list[ScanMovedArgs]) -> list[dict[str, Any]]:
+        """Runs `scan_moved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("scan_moved", items)
+
+    def scan_ended(self, *, j: Any) -> None:
+        """The measuring ended: the folders it found, why it could not read them, or that it was stopped."""
+        return self.action("scan_ended", j=j)
+
+    def scan_ended_many(self, items: list[ScanEndedArgs]) -> list[dict[str, Any]]:
+        """Runs `scan_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("scan_ended", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"analyze", "analyze_many", "drill", "drill_many", "open_place", "open_place_many", "stop", "back", "back_many", "home", "home_many", "choose", "choose_many", "go", "go_many", "pick", "pick_many", "cancel_choose", "cancel_choose_many", "read_picker", "read_picker_many", "poll", "poll_many"})
+    __actions__ = frozenset({"analyze", "analyze_many", "drill", "drill_many", "open_place", "open_place_many", "stop", "back", "back_many", "home", "home_many", "choose", "choose_many", "go", "go_many", "pick", "pick_many", "cancel_choose", "cancel_choose_many", "read_picker", "read_picker_many", "scan_moved", "scan_moved_many", "scan_ended", "scan_ended_many"})
 
 
 class ScanAsk(Resource):
     """ScanAsk — `tl.so.tilo.disk-usage.ScanAsk`."""
-    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
+    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
     fzzlfxy7: str  # path
 
 
-class JobAnswer(Resource):
-    """JobAnswer — `tl.so.tilo.disk-usage.JobAnswer`."""
-    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
+class ScanState(Resource):
+    """ScanState — `tl.so.tilo.disk-usage.ScanState`."""
+    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
+    qaev2xl3: str  # state
+    dmlnkvla: str  # path
+    k2iebb3k: int  # bytes
+    zzb64yrs: int  # files
     @property
-    def _42vybryr(self) -> str:
-        """job (`42vybryr` on the wire)."""
-        return self.fields["42vybryr"]
+    def _7gwl2int(self) -> int:
+        """total (`7gwl2int` on the wire)."""
+        return self.fields["7gwl2int"]
 
-    @_42vybryr.setter
-    def _42vybryr(self, value: str) -> None:
-        self.edit("42vybryr", value=value)
+    @_7gwl2int.setter
+    def _7gwl2int(self, value: int) -> None:
+        self.edit("7gwl2int", value=value)
+    uvlehuak: int  # unreadable
+    f7hqirco: str  # error
+
+
+class EntriesAsk(Resource):
+    """EntriesAsk — `tl.so.tilo.disk-usage.EntriesAsk`."""
+    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
+    hxfyfs5q: str  # job
 
 
 class Scanned(Resource):
     """Scanned — `tl.so.tilo.disk-usage.Scanned`."""
-    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
+    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
     @property
     def _5asfkn6k(self) -> str:
         """name (`5asfkn6k` on the wire)."""
@@ -339,28 +366,9 @@ class Scanned(Resource):
     ktl6erww: int  # files
 
 
-class ScanState(Resource):
-    """ScanState — `tl.so.tilo.disk-usage.ScanState`."""
-    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
-    qaev2xl3: str  # state
-    dmlnkvla: str  # path
-    k2iebb3k: int  # bytes
-    zzb64yrs: int  # files
-    @property
-    def _7gwl2int(self) -> int:
-        """total (`7gwl2int` on the wire)."""
-        return self.fields["7gwl2int"]
-
-    @_7gwl2int.setter
-    def _7gwl2int(self, value: int) -> None:
-        self.edit("7gwl2int", value=value)
-    uvlehuak: int  # unreadable
-    f7hqirco: str  # error
-
-
 class DiskUsage(Resource):
     """Disk Usage Analyzer — `tl.so.tilo.disk-usage`."""
-    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
+    __surface__ = "so.tilo.disk-usage@b1e8bfb751fc3d15"
     def open_disks(self) -> None:
         """Opens the Disks app, where the device's drives and their use are."""
         return self.action("open_disks")

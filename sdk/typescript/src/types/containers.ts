@@ -22,7 +22,17 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.containers@37b082af246c2971";
+export const SURFACE = "so.tilo.containers@3a5429fb94e2020d";
+
+/** The arguments of `pull_moved`. */
+export interface PullMovedArgs {
+  j: unknown;
+}
+
+/** The arguments of `pull_ended`. */
+export interface PullEndedArgs {
+  j: unknown;
+}
 
 /** The arguments of `clear_create`. */
 export interface ClearCreateArgs {
@@ -37,10 +47,6 @@ export interface FillArgs {
 /** The arguments of `begin_pull`. */
 export interface BeginPullArgs {
   image: string;
-}
-
-/** The arguments of `poll_pull`. */
-export interface PollPullArgs {
 }
 
 /** The arguments of `cancel_pull`. */
@@ -99,11 +105,23 @@ export interface Pull extends tilo.Resource {
   hhqtcu4c: string[];  // lines
   jgmjny63: boolean;  // done
   wektgccg: string;  // failed
+  /** The pull moved on: what the engine wrote so far. */
+  pull_moved(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `pull_moved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  pull_movedMany(items: PullMovedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The pull ended, finished or failed; it says how and stays. */
+  pull_ended(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `pull_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  pull_endedMany(items: PullEndedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Pull` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PULL_ACTIONS = [] as const;
+export const PULL_ACTIONS = ["pull_moved", "pull_movedMany", "pull_ended", "pull_endedMany"] as const;
 
 /** The `tl.so.tilo.containers.Pull` kind at `path`. */
 export function pull(ws: tilo.Workspace, path: string): Pull {
@@ -149,10 +167,6 @@ export interface Containers extends tilo.Resource {
   }): Promise<void>;
   /** Runs `begin_pull` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   begin_pullMany(items: BeginPullArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks how far a pull has got; a finished or failed one says so and stays. */
-  poll_pull(): Promise<void>;
-  /** Runs `poll_pull` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  poll_pullMany(items: PollPullArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Ends a pull and the engine's process with it. */
   cancel_pull(args: {
     p: Pull;
@@ -169,7 +183,7 @@ export interface Containers extends tilo.Resource {
 
 /** The actions `Containers` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CONTAINERS_ACTIONS = ["clear_create", "clear_createMany", "fill", "fillMany", "create_container", "show_containers", "show_images", "show_volumes", "show_distrobox", "new_container_form", "make_volume", "tag_image", "begin_pull", "begin_pullMany", "poll_pull", "poll_pullMany", "cancel_pull", "cancel_pullMany", "dismiss_pull", "dismiss_pullMany"] as const;
+export const CONTAINERS_ACTIONS = ["clear_create", "clear_createMany", "fill", "fillMany", "create_container", "show_containers", "show_images", "show_volumes", "show_distrobox", "new_container_form", "make_volume", "tag_image", "begin_pull", "begin_pullMany", "cancel_pull", "cancel_pullMany", "dismiss_pull", "dismiss_pullMany"] as const;
 
 /** The `tl.so.tilo.containers.Containers` kind at `path`. */
 export function containers(ws: tilo.Workspace, path: string): Containers {
@@ -190,34 +204,18 @@ export function pullAsk(ws: tilo.Workspace, path: string): PullAsk {
   return resourceProxy(ws, path, SURFACE, PULLASK_ACTIONS) as unknown as PullAsk;
 }
 
-/** JobAnswer — `tl.so.tilo.containers.JobAnswer`. */
-export interface JobAnswer extends tilo.Resource {
-  znalhivd: string;  // job
+/** PullDetail — `tl.so.tilo.containers.PullDetail`. */
+export interface PullDetail extends tilo.Resource {
+  bldlgtsf: string[];  // lines
 }
 
-/** The actions `JobAnswer` reaches before it is read: `ws` calls them without a
+/** The actions `PullDetail` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const JOBANSWER_ACTIONS = [] as const;
+export const PULLDETAIL_ACTIONS = [] as const;
 
-/** The `tl.so.tilo.containers.JobAnswer` kind at `path`. */
-export function jobAnswer(ws: tilo.Workspace, path: string): JobAnswer {
-  return resourceProxy(ws, path, SURFACE, JOBANSWER_ACTIONS) as unknown as JobAnswer;
-}
-
-/** JobState — `tl.so.tilo.containers.JobState`. */
-export interface JobState extends tilo.Resource {
-  h3ie7k7k: string;  // state
-  bzkmqs4p: string[];  // lines
-  a6sjrj6l: string;  // error
-}
-
-/** The actions `JobState` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const JOBSTATE_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.containers.JobState` kind at `path`. */
-export function jobState(ws: tilo.Workspace, path: string): JobState {
-  return resourceProxy(ws, path, SURFACE, JOBSTATE_ACTIONS) as unknown as JobState;
+/** The `tl.so.tilo.containers.PullDetail` kind at `path`. */
+export function pullDetail(ws: tilo.Workspace, path: string): PullDetail {
+  return resourceProxy(ws, path, SURFACE, PULLDETAIL_ACTIONS) as unknown as PullDetail;
 }
 
 /** Containers — `tl.so.tilo.containers`. */

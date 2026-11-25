@@ -41,7 +41,6 @@ __all__ = [
     "Listing",
     "SearchAsk",
     "RunAsk",
-    "JobAnswer",
     "SearchState",
     "RunState",
     "ServerAsk",
@@ -95,15 +94,16 @@ __all__ = [
     "ProjectRunArgs",
     "ClearCommandsArgs",
     "OpenTerminalArgs",
-    "PollArgs",
+    "RanArgs",
+    "SearchedArgs",
     "RevealItemArgs",
     "GoToLineArgs",
     "SearchProjectArgs",
     "StopSearchArgs",
     "OpenHitArgs",
     "EnsureServerArgs",
-    "PollServerArgs",
-    "ReadAnswerArgs",
+    "AnnounceArgs",
+    "AskServerArgs",
     "CompleteArgs",
     "HoverArgs",
     "DefinitionArgs",
@@ -317,9 +317,15 @@ OpenTerminalArgs = TypedDict("OpenTerminalArgs", {
 })
 """The arguments of `open_terminal`."""
 
-PollArgs = TypedDict("PollArgs", {
+RanArgs = TypedDict("RanArgs", {
+    "j": "Any",
 })
-"""The arguments of `poll`."""
+"""The arguments of `ran`."""
+
+SearchedArgs = TypedDict("SearchedArgs", {
+    "j": "Any",
+})
+"""The arguments of `searched`."""
 
 RevealItemArgs = TypedDict("RevealItemArgs", {
     "path": "str",
@@ -355,14 +361,18 @@ EnsureServerArgs = TypedDict("EnsureServerArgs", {
 })
 """The arguments of `ensure_server`."""
 
-PollServerArgs = TypedDict("PollServerArgs", {
+AnnounceArgs = TypedDict("AnnounceArgs", {
+    "entry": "Entry",
 })
-"""The arguments of `poll_server`."""
+"""The arguments of `announce`."""
 
-ReadAnswerArgs = TypedDict("ReadAnswerArgs", {
-    "answer": "str",
+AskServerArgs = TypedDict("AskServerArgs", {
+    "entry": "Entry",
+    "what": "str",
+    "line": "int",
+    "column": "int",
 })
-"""The arguments of `read_answer`."""
+"""The arguments of `ask_server`."""
 
 CompleteArgs = TypedDict("CompleteArgs", {
     "entry": "Entry",
@@ -425,7 +435,7 @@ ZoomResetArgs = TypedDict("ZoomResetArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -486,7 +496,7 @@ class Notice(Resource):
 
 class Entry(Resource):
     """Entry — `tl.so.tilo.code-editor.Entry`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     jr3jrrmx: EntryKind  # kind
     wlnikenq: str  # name
     otwgp44c: Entry | None  # parent
@@ -693,7 +703,7 @@ class Entry(Resource):
 
 class Problem(Resource):
     """Problem — `tl.so.tilo.code-editor.Problem`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     nbyucnyk: Severity  # severity
     cg3ctzdq: int  # line
     f5kva2nw: int  # column
@@ -702,7 +712,7 @@ class Problem(Resource):
 
 class Found(Resource):
     """Found — `tl.so.tilo.code-editor.Found`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     hzzanee7: int  # line
     qt6b4p4a: int  # column
     @property
@@ -717,7 +727,7 @@ class Found(Resource):
 
 class Item(Resource):
     """Item — `tl.so.tilo.code-editor.Item`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     gvqsbkfl: ItemKind  # kind
     @property
     def _6zcxi5vb(self) -> str:
@@ -748,7 +758,7 @@ class Item(Resource):
 
 class Command(Resource):
     """Command — `tl.so.tilo.code-editor.Command`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     c4ytwucq: str  # command
     i3avwdem: str  # cwd
     @property
@@ -770,7 +780,7 @@ class Command(Resource):
 
 class Hit(Resource):
     """Hit — `tl.so.tilo.code-editor.Hit`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     bcptqatu: str  # path
     zwn4bgwt: str  # rel
     bgpnyksl: int  # line
@@ -781,7 +791,7 @@ class Hit(Resource):
 
 class Completion(Resource):
     """Completion — `tl.so.tilo.code-editor.Completion`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     qg4m5uwr: str  # label
     xm4myjqj: str  # detail
     kwj5llbq: str  # insert
@@ -789,7 +799,7 @@ class Completion(Resource):
 
 class Location(Resource):
     """Location — `tl.so.tilo.code-editor.Location`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     trhzxars: str  # path
     pu4qmppj: int  # line
     e2bphgrg: int  # column
@@ -797,7 +807,7 @@ class Location(Resource):
 
 class Loaded(Resource):
     """Loaded — `tl.so.tilo.code-editor.Loaded`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     pisboohb: str  # text
     wcz4xfj7: int  # mtime
     jqqoxnpy: int  # len
@@ -805,14 +815,14 @@ class Loaded(Resource):
 
 class Stamped(Resource):
     """Stamped — `tl.so.tilo.code-editor.Stamped`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     fj7hqru4: int  # mtime
     qw5jig3a: int  # len
 
 
 class Exists(Resource):
     """Exists — `tl.so.tilo.code-editor.Exists`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     uvwwyzvs: bool  # exists
     @property
     def _7n6rmzco(self) -> int:
@@ -827,13 +837,13 @@ class Exists(Resource):
 
 class DiskAsk(Resource):
     """DiskAsk — `tl.so.tilo.code-editor.DiskAsk`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     kn6q47ka: str  # path
 
 
 class DiskSave(Resource):
     """DiskSave — `tl.so.tilo.code-editor.DiskSave`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     haepmky3: str  # path
     pwykv2y3: str  # text
     zetzlvco: int  # mtime
@@ -843,7 +853,7 @@ class DiskSave(Resource):
 
 class DiskEntry(Resource):
     """DiskEntry — `tl.so.tilo.code-editor.DiskEntry`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     bfnbknrx: str  # name
     wv4a7ixx: str  # path
     @property
@@ -859,13 +869,13 @@ class DiskEntry(Resource):
 
 class Listing(Resource):
     """Listing — `tl.so.tilo.code-editor.Listing`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     pd7egi2y: list[DiskEntry]  # entries
 
 
 class SearchAsk(Resource):
     """SearchAsk — `tl.so.tilo.code-editor.SearchAsk`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     xkrqnga5: str  # root
     @property
     def _5dkbrhtv(self) -> str:
@@ -881,20 +891,14 @@ class SearchAsk(Resource):
 
 class RunAsk(Resource):
     """RunAsk — `tl.so.tilo.code-editor.RunAsk`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     qhqdbt2f: str  # command
     vqlkdbpf: str  # cwd
 
 
-class JobAnswer(Resource):
-    """JobAnswer — `tl.so.tilo.code-editor.JobAnswer`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
-    o7kaxwxn: str  # job
-
-
 class SearchState(Resource):
     """SearchState — `tl.so.tilo.code-editor.SearchState`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     zby3g4ps: str  # state
     aqlgsja7: list[Hit]  # hits
     vp2ht5bq: int  # files
@@ -903,7 +907,7 @@ class SearchState(Resource):
 
 class RunState(Resource):
     """RunState — `tl.so.tilo.code-editor.RunState`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     coxzozlk: str  # state
     swqx5bgj: int  # exit
     wsbgo4u6: str  # output
@@ -913,15 +917,15 @@ class RunState(Resource):
 
 class ServerAsk(Resource):
     """ServerAsk — `tl.so.tilo.code-editor.ServerAsk`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     dwxem6ty: str  # language
     fegqdch5: str  # root
 
 
 class DocumentAsk(Resource):
     """DocumentAsk — `tl.so.tilo.code-editor.DocumentAsk`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
-    jmzsddw6: str  # job
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
+    h63xj7zy: str  # op
     cimxyukl: str  # path
     u2ozcojk: str  # language
     kxtscxdf: str  # text
@@ -930,8 +934,8 @@ class DocumentAsk(Resource):
 
 class AskAsk(Resource):
     """AskAsk — `tl.so.tilo.code-editor.AskAsk`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
-    gxbdmbnd: str  # job
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
+    vxmeoszq: str  # op
     ysxutqlg: str  # path
     p4m2am32: int  # line
     q3inki66: int  # column
@@ -940,7 +944,7 @@ class AskAsk(Resource):
 
 class Progress(Resource):
     """Progress — `tl.so.tilo.code-editor.Progress`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     agn2f2db: str  # title
     g7hzlu2h: str  # detail
     whcglspc: int  # percent
@@ -948,7 +952,7 @@ class Progress(Resource):
 
 class Diag(Resource):
     """Diag — `tl.so.tilo.code-editor.Diag`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     ioyqdqpm: str  # severity
     beb3ijea: int  # line
     mev4fmk5: int  # column
@@ -957,28 +961,28 @@ class Diag(Resource):
 
 class CompletionAnswer(Resource):
     """CompletionAnswer — `tl.so.tilo.code-editor.CompletionAnswer`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     z5gkzdtb: str  # what
     xm2tpahh: list[Completion]  # items
 
 
 class HoverAnswer(Resource):
     """HoverAnswer — `tl.so.tilo.code-editor.HoverAnswer`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     jchhxxfm: str  # what
     m4blp7e7: str  # text
 
 
 class DefinitionAnswer(Resource):
     """DefinitionAnswer — `tl.so.tilo.code-editor.DefinitionAnswer`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     qb2osbdn: str  # what
     u57x3dub: list[Location]  # locations
 
 
 class FormatEdit(Resource):
     """FormatEdit — `tl.so.tilo.code-editor.FormatEdit`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     @property
     def _7flc4fke(self) -> int:
         """start (`7flc4fke` on the wire)."""
@@ -995,7 +999,7 @@ class FormatEdit(Resource):
 
 class FormatAnswer(Resource):
     """FormatAnswer — `tl.so.tilo.code-editor.FormatAnswer`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     um2x3bkg: str  # what
     wikls7kq: list[FormatEdit]  # edits
     zke66gso: str  # error
@@ -1003,7 +1007,7 @@ class FormatAnswer(Resource):
 
 class ServerProgress(Resource):
     """ServerProgress — `tl.so.tilo.code-editor.ServerProgress`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     b22hm43k: str  # title
     @property
     def _33vetzuz(self) -> str:
@@ -1018,7 +1022,7 @@ class ServerProgress(Resource):
 
 class ServerState(Resource):
     """ServerState — `tl.so.tilo.code-editor.ServerState`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     mxvtycpj: str  # state
     kqcbbx2v: str  # server
     @property
@@ -1036,23 +1040,20 @@ class ServerState(Resource):
 
 class Project(Resource):
     """Project — `tl.so.tilo.code-editor.Project`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     evbsknez: list[Entry[Entry]]  # files
     inupl3md: list[Entry[Command]]  # commands
     ubr6i22h: str  # folder
     @property
     def _7sbddtl7(self) -> str:
-        """server_job (`7sbddtl7` on the wire)."""
+        """server (`7sbddtl7` on the wire)."""
         return self.fields["7sbddtl7"]
 
     @_7sbddtl7.setter
     def _7sbddtl7(self, value: str) -> None:
         self.edit("7sbddtl7", value=value)
     w3s6k4wz: str  # server_language
-    tz2cc24s: str  # server_name
-    wajnagjm: str  # server_state
     mkyngogi: str  # server_trouble
-    jwtdk5zn: str  # server_progress
     yukh3x5s: bool  # language_servers
     @property
     def _5qk4qm7f(self) -> bool:
@@ -1063,7 +1064,6 @@ class Project(Resource):
     def _5qk4qm7f(self, value: bool) -> None:
         self.edit("5qk4qm7f", value=value)
     eolbog7w: str  # answer_what
-    luh6yto7: str  # answer_text
     @property
     def _5vjxpshd(self) -> int:
         """answer_line (`5vjxpshd` on the wire)."""
@@ -1073,8 +1073,6 @@ class Project(Resource):
     def _5vjxpshd(self, value: int) -> None:
         self.edit("5vjxpshd", value=value)
     w3z62her: int  # answer_column
-    p4n4bpno: list[Completion]  # answer_items
-    thlj3m5d: list[Location]  # answer_locations
     t4nipezs: str  # search_job
     nbqioo6i: str  # search_query
     @property
@@ -1409,13 +1407,21 @@ class Project(Resource):
         """Runs `open_terminal` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("open_terminal", items)
 
-    def poll(self) -> None:
-        """Asks how far the running commands and the project search have got, once a second while anything runs: the one place the device's answers are folded into what the window shows."""
-        return self.action("poll")
+    def ran(self, *, j: Any) -> None:
+        """The command a job runs ended, or moved: its output, exit status and truncated flag are kept with the command, its output's places become items, and a failure is the window's trouble."""
+        return self.action("ran", j=j)
 
-    def poll_many(self, items: list[PollArgs]) -> list[dict[str, Any]]:
-        """Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("poll", items)
+    def ran_many(self, items: list[RanArgs]) -> list[dict[str, Any]]:
+        """Runs `ran` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("ran", items)
+
+    def searched(self, *, j: Any) -> None:
+        """The project search ended, or moved: each hit it found is added as it comes, and the files it searched are counted."""
+        return self.action("searched", j=j)
+
+    def searched_many(self, items: list[SearchedArgs]) -> list[dict[str, Any]]:
+        """Runs `searched` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("searched", items)
 
     def reveal_item(self,
         *,
@@ -1493,7 +1499,7 @@ class Project(Resource):
         return self.many("open_hit", items)
 
     def ensure_server(self, *, entry: Entry) -> None:
-        """Starts the language server for a file's language, if none runs for it yet, and tells it about the file."""
+        """Opens the language server for a file's language, the project's held connection for that language and folder, or joins the one this device holds already, and tells it about the file. It runs in the app's own process until the project closes it: closing the window ends nothing."""
         return self.action("ensure_server", entry=entry)
 
     def ensure_server_many(self, items: list[EnsureServerArgs]) -> list[dict[str, Any]]:
@@ -1504,21 +1510,23 @@ class Project(Resource):
         """Tells the server that `entry` is open, with the text it holds now, so its answers are about what a person reads."""
         return self.action("announce", entry=entry)
 
-    def poll_server(self) -> None:
-        """Reads what the server answered: its state and progress, its problems for each file, and any answer to a code-help ask the page made."""
-        return self.action("poll_server")
+    def announce_many(self, items: list[AnnounceArgs]) -> list[dict[str, Any]]:
+        """Runs `announce` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("announce", items)
 
-    def poll_server_many(self, items: list[PollServerArgs]) -> list[dict[str, Any]]:
-        """Runs `poll_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("poll_server", items)
+    def ask_server(self,
+        *,
+        entry: Entry,
+        what: str,
+        line: int,
+        column: int,
+    ) -> None:
+        """Asks the server `what` about a place in a file; its answer arrives as what it says next."""
+        return self.action("ask_server", entry=entry, what=what, line=line, column=column)
 
-    def read_answer(self, *, answer: str) -> None:
-        """Reads the answer the server gave to the page's last ask: a completion list, the words a hover shows, the places a declaration stands at, or the edits a format makes."""
-        return self.action("read_answer", answer=answer)
-
-    def read_answer_many(self, items: list[ReadAnswerArgs]) -> list[dict[str, Any]]:
-        """Runs `read_answer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("read_answer", items)
+    def ask_server_many(self, items: list[AskServerArgs]) -> list[dict[str, Any]]:
+        """Runs `ask_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("ask_server", items)
 
     def complete(self,
         *,
@@ -1627,7 +1635,7 @@ class Project(Resource):
         return self.many("toggle_format_on_save", items)
 
     def restart_server(self) -> None:
-        """Stops the language server, as a person pressing 'Try again' after a failure does."""
+        """Ends the language server, as a person pressing 'Try again' after a failure does: the next file checked starts it again."""
         return self.action("restart_server")
 
     def restart_server_many(self, items: list[RestartServerArgs]) -> list[dict[str, Any]]:
@@ -1676,16 +1684,16 @@ class Project(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_file", "new_folder", "rename", "rename_many", "move_entry", "move_entry_many", "move_after", "move_after_many", "delete", "delete_many", "find_in_window", "find_in_window_many", "check", "check_many", "open_folder", "open_folder_many", "read_into", "read_into_many", "read_folder_into", "read_folder_into_many", "read_text", "read_text_many", "open_file", "open_file_many", "save", "save_many", "write", "overwrite", "overwrite_many", "reload", "reload_many", "save_all", "save_all_many", "save_into", "save_into_many", "move_on_disk", "move_on_disk_many", "import_dropped", "import_dropped_many", "run", "run_many", "stop", "stop_many", "rerun", "rerun_many", "rerun_test", "rerun_test_many", "run_", "run__many", "clear_commands", "clear_commands_many", "open_terminal", "open_terminal_many", "poll", "poll_many", "reveal_item", "reveal_item_many", "go_to_line", "go_to_line_many", "search_project", "search_project_many", "stop_search", "stop_search_many", "open_hit", "open_hit_many", "ensure_server", "ensure_server_many", "announce", "poll_server", "poll_server_many", "read_answer", "read_answer_many", "complete", "complete_many", "hover", "hover_many", "definition", "definition_many", "accept_completion", "accept_completion_many", "format_file", "format_file_many", "toggle_language_servers", "toggle_language_servers_many", "toggle_format_on_save", "toggle_format_on_save_many", "restart_server", "restart_server_many", "show_problems", "show_terminal", "show_search_results", "ensure_settings", "zoom_in", "zoom_in_many", "zoom_out", "zoom_out_many", "zoom_reset", "zoom_reset_many"})
+    __actions__ = frozenset({"new_file", "new_folder", "rename", "rename_many", "move_entry", "move_entry_many", "move_after", "move_after_many", "delete", "delete_many", "find_in_window", "find_in_window_many", "check", "check_many", "open_folder", "open_folder_many", "read_into", "read_into_many", "read_folder_into", "read_folder_into_many", "read_text", "read_text_many", "open_file", "open_file_many", "save", "save_many", "write", "overwrite", "overwrite_many", "reload", "reload_many", "save_all", "save_all_many", "save_into", "save_into_many", "move_on_disk", "move_on_disk_many", "import_dropped", "import_dropped_many", "run", "run_many", "stop", "stop_many", "rerun", "rerun_many", "rerun_test", "rerun_test_many", "run_", "run__many", "clear_commands", "clear_commands_many", "open_terminal", "open_terminal_many", "ran", "ran_many", "searched", "searched_many", "reveal_item", "reveal_item_many", "go_to_line", "go_to_line_many", "search_project", "search_project_many", "stop_search", "stop_search_many", "open_hit", "open_hit_many", "ensure_server", "ensure_server_many", "announce", "announce_many", "ask_server", "ask_server_many", "complete", "complete_many", "hover", "hover_many", "definition", "definition_many", "accept_completion", "accept_completion_many", "format_file", "format_file_many", "toggle_language_servers", "toggle_language_servers_many", "toggle_format_on_save", "toggle_format_on_save_many", "restart_server", "restart_server_many", "show_problems", "show_terminal", "show_search_results", "ensure_settings", "zoom_in", "zoom_in_many", "zoom_out", "zoom_out_many", "zoom_reset", "zoom_reset_many"})
 
 
 class Settings(Resource):
     """Settings — `tl.so.tilo.code-editor.Settings`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
     douj4xux: float  # editor_zoom
 
 
 class CodeEditor(Resource):
     """Code Editor — `tl.so.tilo.code-editor`."""
-    __surface__ = "so.tilo.code-editor@5305c907565048a5"
+    __surface__ = "so.tilo.code-editor@6929cbdec37a6d37"
 

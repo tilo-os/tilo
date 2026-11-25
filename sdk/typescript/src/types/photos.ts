@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.photos@6619e9e267c54f4a";
+export const SURFACE = "so.tilo.photos@11d418bee67c429f";
 
 /** What an edit does to one field of every selected photo: keeps what each photo has, takes it off all of them, gives them all one value, or adds or takes off names (tags, people). One of "keep", "clear", "set", "add", "remove". */
 export type Change = "keep" | "clear" | "set" | "add" | "remove";
@@ -113,7 +113,7 @@ export interface StartImportArgs {
 
 /** The arguments of `imported`. */
 export interface ImportedArgs {
-  outcome: string;
+  j: unknown;
 }
 
 /** The arguments of `retry_import`. */
@@ -492,7 +492,7 @@ export interface Library extends tilo.Resource {
   start_importMany(items: StartImportArgs[]): Promise<tilo.ActionAnswer[]>;
   /** An import's end: each picture it read becomes a photo, or brings what it says to the photo the same picture already made, and what it could not read is kept to try again. What the person set on a photo (its time, its place) is theirs, so reading it again never overwrites it. */
   imported(args: {
-    outcome: string;
+    j: unknown;
   }): Promise<void>;
   /** Runs `imported` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   importedMany(items: ImportedArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -791,20 +791,6 @@ export const IMPORTRECORD_ACTIONS = [] as const;
 /** The `tl.so.tilo.photos.ImportRecord` kind at `path`. */
 export function importRecord(ws: tilo.Workspace, path: string): ImportRecord {
   return resourceProxy(ws, path, SURFACE, IMPORTRECORD_ACTIONS) as unknown as ImportRecord;
-}
-
-/** JobStarted — `tl.so.tilo.photos.JobStarted`. */
-export interface JobStarted extends tilo.Resource {
-  cgbfeocd: string;  // job
-}
-
-/** The actions `JobStarted` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const JOBSTARTED_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.photos.JobStarted` kind at `path`. */
-export function jobStarted(ws: tilo.Workspace, path: string): JobStarted {
-  return resourceProxy(ws, path, SURFACE, JOBSTARTED_ACTIONS) as unknown as JobStarted;
 }
 
 /** FaceScan — `tl.so.tilo.photos.FaceScan`. */

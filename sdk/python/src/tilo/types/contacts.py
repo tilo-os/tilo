@@ -193,7 +193,7 @@ UnshareArgs = TypedDict("UnshareArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
+    __surface__ = "so.tilo.contacts@c32a407883c8217b"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -254,14 +254,14 @@ class Notice(Resource):
 
 class Labeled(Resource):
     """Labeled — `tl.so.tilo.contacts.Labeled`."""
-    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
+    __surface__ = "so.tilo.contacts@c32a407883c8217b"
     fzyd2a52: str  # label
     b4cilqkx: str  # value
 
 
 class Address(Resource):
     """Address — `tl.so.tilo.contacts.Address`."""
-    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
+    __surface__ = "so.tilo.contacts@c32a407883c8217b"
     @property
     def _5iipld72(self) -> str:
         """label (`5iipld72` on the wire)."""
@@ -279,7 +279,7 @@ class Address(Resource):
 
 class Contact(Resource):
     """Contact — `tl.so.tilo.contacts.Contact`."""
-    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
+    __surface__ = "so.tilo.contacts@c32a407883c8217b"
     zut4kvim: str  # name
     rfhxkccf: str  # org
     @property
@@ -445,7 +445,7 @@ class Contact(Resource):
         *,
         version: VCardVersion | None = None,
     ) -> Any:
-        """A contact as a file: their card, named for them."""
+        """A contact as a file: their card, named for them. The system's one Export… lists it and saves it where the person says."""
         args: dict[str, Any] = {}
         if version is not None:
             args["version"] = version
@@ -458,13 +458,13 @@ class Contact(Resource):
 
 class Group(Resource):
     """Group — `tl.so.tilo.contacts.Group`."""
-    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
+    __surface__ = "so.tilo.contacts@c32a407883c8217b"
     jn6l7z6v: str  # name
 
 
 class ImportCard(Resource):
     """ImportCard — `tl.so.tilo.contacts.ImportCard`."""
-    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
+    __surface__ = "so.tilo.contacts@c32a407883c8217b"
     op5ercnd: str  # card
     a4s7qvbf: str  # name
     kcnlll33: str  # uid
@@ -473,7 +473,7 @@ class ImportCard(Resource):
 
 class ImportReport(Resource):
     """ImportReport — `tl.so.tilo.contacts.ImportReport`."""
-    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
+    __surface__ = "so.tilo.contacts@c32a407883c8217b"
     ydus2juj: int  # imported
     bqy264j6: int  # unchanged
     jm2un2fr: int  # awaiting
@@ -483,7 +483,7 @@ class ImportReport(Resource):
 
 class Book(Resource):
     """Book — `tl.so.tilo.contacts.Book`."""
-    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
+    __surface__ = "so.tilo.contacts@c32a407883c8217b"
     qfj7l6eu: list[Entry[Contact]]  # contacts
     uyyz5pg2: list[Entry[Group]]  # groups
     zc4aqhgg: list[Entry[ImportCard]]  # review
@@ -565,6 +565,10 @@ class Book(Resource):
         if version is not None:
             args["version"] = version
         return self.action("export_book", **args)
+
+    def export_book_v3(self) -> Any:
+        """Every contact as one vCard 3.0 file, which an address book that reads no 4.0 card opens."""
+        return self.action("export_book_v3")
 
     def export_vcard_content(self,
         *,
@@ -652,12 +656,12 @@ class Book(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_contact", "named_or_new", "group", "group_many", "new_group", "delete", "delete_many", "merge_into", "merge_into_many", "export_book", "export_vcard_content", "import_vcard", "add_contacts", "refuse_import", "report_import", "dismiss_import", "dismiss_import_many", "file_card", "take_card", "add_card", "import_as_new", "keep_existing", "keep_existing_many", "find_for_address"})
+    __actions__ = frozenset({"new_contact", "named_or_new", "group", "group_many", "new_group", "delete", "delete_many", "merge_into", "merge_into_many", "export_book", "export_book_v3", "export_vcard_content", "import_vcard", "add_contacts", "refuse_import", "report_import", "dismiss_import", "dismiss_import_many", "file_card", "take_card", "add_card", "import_as_new", "keep_existing", "keep_existing_many", "find_for_address"})
 
 
 class Contacts(Resource):
     """Contacts — `tl.so.tilo.contacts`."""
-    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
+    __surface__ = "so.tilo.contacts@c32a407883c8217b"
     def confirm(self,
         *,
         d: Any,

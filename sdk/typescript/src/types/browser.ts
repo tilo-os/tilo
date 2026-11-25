@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@ba063b9fd2897dd9";
+export const SURFACE = "so.tilo.browser@b138a3bc0cbeae2b";
 
 /** Where a row the address bar offers comes from. One of "bookmark", "visited", "imported", "search". */
 export type SuggestionKind = "bookmark" | "visited" | "imported" | "search";
@@ -569,7 +569,7 @@ export interface Page extends tilo.Resource {
     cross_origin?: boolean;
     frame?: string;
   }): Promise<Answer>;
-  /** Keeps a page the page opened in a window of its own as a page of this browser, as its window hands it over: a popup a site sized, or a plain new tab. */
+  /** Keeps a page the page opened in a window of its own as a page of this browser, as its window hands it over: a plain new tab, or a popup a window could not show beside the page. */
   open_from_page(args: {
     url: string;
     popup: boolean;
@@ -829,9 +829,9 @@ export interface Page extends tilo.Resource {
   open_side_panel(args: {
     e: Extension;
   }): Promise<Answer>;
-  /** Closes the extension's page the page's window showed beside or over this one: its side panel, or the page it asked the person to sign in on, which ends as turned down. */
+  /** Closes the page the page's window showed beside or over this one: an extension's side panel, the page it asked the person to sign in on, or a popup a script opened. */
   close_panel(): Promise<Answer>;
-  /** Writes the extension's page the page's window shows beside this one into its record, or takes it away. The window raises it; a person, agent or script never does. */
+  /** Writes the page the page's window shows beside this one into its record, or takes it away. The window raises it; a person, agent or script never does. */
   remember_panel(args: {
     open: boolean;
     kind: string;
@@ -1057,6 +1057,21 @@ export const DOWNLOAD_ACTIONS = ["cancel_download"] as const;
 /** The `tl.so.tilo.browser.Download` kind at `path`. */
 export function download(ws: tilo.Workspace, path: string): Download {
   return resourceProxy(ws, path, SURFACE, DOWNLOAD_ACTIONS) as unknown as Download;
+}
+
+/** DownloadSaved — `tl.so.tilo.browser.DownloadSaved`. */
+export interface DownloadSaved extends tilo.Resource {
+  xig3oj7a: string;  // path
+  as5zgbcl: string;  // name
+}
+
+/** The actions `DownloadSaved` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DOWNLOADSAVED_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.DownloadSaved` kind at `path`. */
+export function downloadSaved(ws: tilo.Workspace, path: string): DownloadSaved {
+  return resourceProxy(ws, path, SURFACE, DOWNLOADSAVED_ACTIONS) as unknown as DownloadSaved;
 }
 
 /** DownloadJob — `tl.so.tilo.browser.DownloadJob`. */

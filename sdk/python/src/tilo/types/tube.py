@@ -32,7 +32,6 @@ __all__ = [
     "PlaybackPrefs",
     "WatchEntry",
     "PairedDevice",
-    "GrayjayStarted",
     "GrayjayPairAsk",
     "GrayjaySyncAsk",
     "GrayjayPeer",
@@ -62,7 +61,7 @@ __all__ = [
     "RevokeDeviceArgs",
     "SyncDevicesArgs",
     "AutoSyncArgs",
-    "PollGrayjayArgs",
+    "GrayjayEndedArgs",
     "KeepPairedArgs",
     "KeepExchangeArgs",
     "FilterSearchArgs",
@@ -165,9 +164,10 @@ AutoSyncArgs = TypedDict("AutoSyncArgs", {
 })
 """The arguments of `auto_sync`."""
 
-PollGrayjayArgs = TypedDict("PollGrayjayArgs", {
+GrayjayEndedArgs = TypedDict("GrayjayEndedArgs", {
+    "j": "Any",
 })
-"""The arguments of `poll_grayjay`."""
+"""The arguments of `grayjay_ended`."""
 
 KeepPairedArgs = TypedDict("KeepPairedArgs", {
     "answer": "str",
@@ -196,7 +196,7 @@ LikeCommentArgs = TypedDict("LikeCommentArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -257,7 +257,7 @@ class Notice(Resource):
 
 class Channel(Resource):
     """Channel — `tl.so.tilo.tube.Channel`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     @property
     def _26ctwf34(self) -> str:
         """key (`26ctwf34` on the wire)."""
@@ -322,7 +322,7 @@ class Channel(Resource):
 
 class Video(Resource):
     """Video — `tl.so.tilo.tube.Video`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     irzy3c7m: str  # key
     fpxk5w7b: str  # title
     mhkply6c: str  # channel_key
@@ -442,7 +442,7 @@ class Video(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.tube.Playlist`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     ow7glfos: str  # key
     ljyc7mx2: str  # title
     bzfmd6pg: str  # channel_key
@@ -481,7 +481,7 @@ class Playlist(Resource):
 
 class Comment(Resource):
     """Comment — `tl.so.tilo.tube.Comment`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     pv4laajx: str  # key
     li4xiefh: str  # video_key
     @property
@@ -511,7 +511,7 @@ class Comment(Resource):
 
 class Segment(Resource):
     """Segment — `tl.so.tilo.tube.Segment`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     uakovynu: str  # key
     pvlf5o2c: str  # video_key
     qlgpeq35: str  # category
@@ -522,7 +522,7 @@ class Segment(Resource):
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.tube.Reply`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     y4coaxks: str  # comment
     kwxg57v6: str  # video
     @property
@@ -551,20 +551,20 @@ class Reply(Resource):
 
 class Subscription(Resource):
     """Subscription — `tl.so.tilo.tube.Subscription`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     slhmwv67: str  # key
     ynf67l6e: str  # name
 
 
 class QueuedVideo(Resource):
     """QueuedVideo — `tl.so.tilo.tube.QueuedVideo`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     o3xolmld: str  # key
 
 
 class PlaybackPrefs(Resource):
     """PlaybackPrefs — `tl.so.tilo.tube.PlaybackPrefs`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     @property
     def _5twttwwn(self) -> str:
         """member (`5twttwwn` on the wire)."""
@@ -591,7 +591,7 @@ class PlaybackPrefs(Resource):
 
 class WatchEntry(Resource):
     """WatchEntry — `tl.so.tilo.tube.WatchEntry`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     noppuxpb: str  # key
     stuii7l7: str  # title
     j37y2bbw: str  # channel_name
@@ -610,7 +610,7 @@ class WatchEntry(Resource):
 
 class PairedDevice(Resource):
     """PairedDevice — `tl.so.tilo.tube.PairedDevice`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     eqjnywdb: str  # key
     xzt7hvjd: str  # name
     r6hetdhx: list[str]  # addresses
@@ -629,21 +629,15 @@ class PairedDevice(Resource):
     ovgswiz5: str  # last_error
 
 
-class GrayjayStarted(Resource):
-    """GrayjayStarted — `tl.so.tilo.tube.GrayjayStarted`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
-    xtg3ig6h: str  # job
-
-
 class GrayjayPairAsk(Resource):
     """GrayjayPairAsk — `tl.so.tilo.tube.GrayjayPairAsk`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     vjm7bxs2: str  # invite
 
 
 class GrayjaySyncAsk(Resource):
     """GrayjaySyncAsk — `tl.so.tilo.tube.GrayjaySyncAsk`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     ldigr4fm: list[GrayjayPeer]  # peers
     @property
     def _2ubtnp7s(self) -> list[GrayjaySubscription]:
@@ -657,7 +651,7 @@ class GrayjaySyncAsk(Resource):
 
 class GrayjayPeer(Resource):
     """GrayjayPeer — `tl.so.tilo.tube.GrayjayPeer`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     @property
     def _73ossitw(self) -> str:
         """key (`73ossitw` on the wire)."""
@@ -673,7 +667,7 @@ class GrayjayPeer(Resource):
 
 class GrayjaySubscription(Resource):
     """GrayjaySubscription — `tl.so.tilo.tube.GrayjaySubscription`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     @property
     def _5k7gvetf(self) -> str:
         """url (`5k7gvetf` on the wire)."""
@@ -687,7 +681,7 @@ class GrayjaySubscription(Resource):
 
 class GrayjayJob(Resource):
     """GrayjayJob — `tl.so.tilo.tube.GrayjayJob`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     @property
     def _4nyda52b(self) -> str:
         """state (`4nyda52b` on the wire)."""
@@ -702,7 +696,7 @@ class GrayjayJob(Resource):
 
 class GrayjayOutcome(Resource):
     """GrayjayOutcome — `tl.so.tilo.tube.GrayjayOutcome`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     xil726fb: str  # key
     zkmfyff4: bool  # ok
     mp7b4zg2: str  # error
@@ -710,7 +704,7 @@ class GrayjayOutcome(Resource):
 
 class GrayjayRead(Resource):
     """GrayjayRead — `tl.so.tilo.tube.GrayjayRead`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     oow4nbb2: list[GrayjayOutcome]  # peers
     @property
     def _2vaamao3(self) -> list[GrayjaySubscription]:
@@ -725,7 +719,7 @@ class GrayjayRead(Resource):
 
 class YouTube(Resource):
     """YouTube — `tl.so.tilo.tube.YouTube`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
     olrung72: str  # title
     ihhzrm3f: list[Entry[Channel]]  # channels
     qnfjkti5: list[Entry[Video]]  # videos
@@ -917,13 +911,13 @@ class YouTube(Resource):
         """Runs `auto_sync` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("auto_sync", items)
 
-    def poll_grayjay(self) -> None:
-        """Follows the Grayjay operation under way, once a second, so its end reaches the window without anyone asking by hand."""
-        return self.action("poll_grayjay")
+    def grayjay_ended(self, *, j: Any) -> None:
+        """The Grayjay operation ended: a pairing keeps the device it made, an exchange what it brought, and a failure or a stop says so in the window."""
+        return self.action("grayjay_ended", j=j)
 
-    def poll_grayjay_many(self, items: list[PollGrayjayArgs]) -> list[dict[str, Any]]:
-        """Runs `poll_grayjay` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("poll_grayjay", items)
+    def grayjay_ended_many(self, items: list[GrayjayEndedArgs]) -> list[dict[str, Any]]:
+        """Runs `grayjay_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("grayjay_ended", items)
 
     def keep_paired(self, *, answer: str) -> None:
         """Keeps the device a pairing made, waiting for the person's approval: the fingerprint beside it is what Grayjay shows on the other end."""
@@ -1009,10 +1003,10 @@ class YouTube(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"play_queue", "session", "play_items", "play_items_many", "autoplay_next", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_quality", "set_quality_many", "set_sponsorblock", "set_sponsorblock_many", "set_dearrow", "set_dearrow_many", "set_dislikes", "set_dislikes_many", "set_comments", "set_comments_many", "set_speed", "set_speed_many", "pair_device", "pair_device_many", "approve_device", "approve_device_many", "revoke_device", "revoke_device_many", "sync_devices", "sync_devices_many", "auto_sync", "auto_sync_many", "poll_grayjay", "poll_grayjay_many", "keep_paired", "keep_paired_many", "keep_exchange", "keep_exchange_many", "search", "filter_search", "filter_search_many", "filter_length", "filter_published", "end_search", "end_search_many", "refresh_feed", "load_trending", "open_link", "like_comment", "like_comment_many", "play_again"})
+    __actions__ = frozenset({"play_queue", "session", "play_items", "play_items_many", "autoplay_next", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_quality", "set_quality_many", "set_sponsorblock", "set_sponsorblock_many", "set_dearrow", "set_dearrow_many", "set_dislikes", "set_dislikes_many", "set_comments", "set_comments_many", "set_speed", "set_speed_many", "pair_device", "pair_device_many", "approve_device", "approve_device_many", "revoke_device", "revoke_device_many", "sync_devices", "sync_devices_many", "auto_sync", "auto_sync_many", "grayjay_ended", "grayjay_ended_many", "keep_paired", "keep_paired_many", "keep_exchange", "keep_exchange_many", "search", "filter_search", "filter_search_many", "filter_length", "filter_published", "end_search", "end_search_many", "refresh_feed", "load_trending", "open_link", "like_comment", "like_comment_many", "play_again"})
 
 
 class Tube(Resource):
     """YouTube — `tl.so.tilo.tube`."""
-    __surface__ = "so.tilo.tube@c3855a677fd393b4"
+    __surface__ = "so.tilo.tube@b8c7db3ed6fb9b51"
 

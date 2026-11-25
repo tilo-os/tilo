@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.feeds@b30dab91ee6a0489";
+export const SURFACE = "so.tilo.feeds@bc16a7f096d9e213";
 
 /** The format a subscription is read in. One of "rss", "atom", "json", "gemini". */
 export type FeedFormat = "rss" | "atom" | "json" | "gemini";
@@ -135,8 +135,14 @@ export interface MarkReadArgs {
 export interface StopRefreshArgs {
 }
 
-/** The arguments of `poll_refresh`. */
-export interface PollRefreshArgs {
+/** The arguments of `refresh_moved`. */
+export interface RefreshMovedArgs {
+  j: unknown;
+}
+
+/** The arguments of `refresh_ended`. */
+export interface RefreshEndedArgs {
+  j: unknown;
 }
 
 /** The arguments of `import_opml`. */
@@ -399,23 +405,31 @@ export interface Library extends tilo.Resource {
   stop_refresh(): Promise<void>;
   /** Runs `stop_refresh` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stop_refreshMany(items: StopRefreshArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Takes what the device has read so far: each subscription's answer as it lands, and what the feed says of itself with it. What a refresh brought in is nobody's step of their own, so landing it says nothing and offers no undo of its own; an article the library already keeps is not added twice. Landing writes, so it stands here rather than in a call of its own: a run that calls another action is run twice, and the device's answers are not its to answer twice. */
-  poll_refresh(): Promise<void>;
-  /** Runs `poll_refresh` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  poll_refreshMany(items: PollRefreshArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes what the device has read so far as a refresh moves: each subscription's answer as it lands, and what the feed says of itself with it. What a refresh brought in is nobody's step of their own, so landing it says nothing and offers no undo of its own; an article the library already keeps is not added twice. */
+  refresh_moved(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `refresh_moved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  refresh_movedMany(items: RefreshMovedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The refresh ended: it is done, or a person stopped it, or it failed and the window says why. */
+  refresh_ended(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `refresh_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  refresh_endedMany(items: RefreshEndedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Subscribes to what an OPML file lists: every address the library does not have yet, in the folders the file names, made where missing. */
   import_opml(args: {
     file: unknown;
   }): Promise<void>;
   /** Runs `import_opml` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   import_opmlMany(items: ImportOpmlArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** The library's subscriptions as an OPML 2.0 file. */
+  /** The library's subscriptions as an OPML 2.0 file. The system's one Export… lists it and saves it where the person says. */
   export_opml(): Promise<unknown>;
 }
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["begin_reading", "add_subscription", "unsubscribe", "unsubscribeMany", "new_folder", "new_folderMany", "delete_folder", "delete_folderMany", "mark_read", "mark_readMany", "stop_refresh", "stop_refreshMany", "poll_refresh", "poll_refreshMany", "import_opml", "import_opmlMany", "export_opml"] as const;
+export const LIBRARY_ACTIONS = ["begin_reading", "add_subscription", "unsubscribe", "unsubscribeMany", "new_folder", "new_folderMany", "delete_folder", "delete_folderMany", "mark_read", "mark_readMany", "stop_refresh", "stop_refreshMany", "refresh_moved", "refresh_movedMany", "refresh_ended", "refresh_endedMany", "import_opml", "import_opmlMany", "export_opml"] as const;
 
 /** The `tl.so.tilo.feeds.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {

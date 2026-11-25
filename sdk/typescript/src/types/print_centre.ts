@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.print-centre@5d24eec2895e5c2b";
+export const SURFACE = "so.tilo.print-centre@c0a891ca54f0df90";
 
 /** The arguments of `turn_page`. */
 export interface TurnPageArgs {
@@ -30,6 +30,16 @@ export interface TurnPageArgs {
 
 /** The arguments of `recognize`. */
 export interface RecognizeArgs {
+}
+
+/** The arguments of `scan_ended`. */
+export interface ScanEndedArgs {
+  j: unknown;
+}
+
+/** The arguments of `print_ended`. */
+export interface PrintEndedArgs {
+  j: unknown;
 }
 
 /** The arguments of `ask_options`. */
@@ -54,16 +64,8 @@ export interface ClearShowingArgs {
 export interface SendToPrinterArgs {
 }
 
-/** The arguments of `poll_print`. */
-export interface PollPrintArgs {
-}
-
 /** The arguments of `scan_page`. */
 export interface ScanPageArgs {
-}
-
-/** The arguments of `poll_scan`. */
-export interface PollScanArgs {
 }
 
 /** The arguments of `crop_page`. */
@@ -204,11 +206,17 @@ export interface ScanSession extends tilo.Resource {
   pva6zctd: Array<tilo.Entry<ScannedPage>>;  // pages
   wv7xzi7n: string;  // job
   t6j77lzd: string;  // failed
+  /** The scan ended; a page that arrived is added to the document. */
+  scan_ended(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `scan_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  scan_endedMany(items: ScanEndedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `ScanSession` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SCANSESSION_ACTIONS = [] as const;
+export const SCANSESSION_ACTIONS = ["scan_ended", "scan_endedMany"] as const;
 
 /** The `tl.so.tilo.print-centre.ScanSession` kind at `path`. */
 export function scanSession(ws: tilo.Workspace, path: string): ScanSession {
@@ -231,11 +239,17 @@ export interface PrintDocument extends tilo.Resource {
   dzhipxmg: string;  // job
   so7pxc5y: string;  // failed
   "4ngifmut": string;  // trouble
+  /** The print ended, printed or failed; it says which. */
+  print_ended(args: {
+    j: unknown;
+  }): Promise<void>;
+  /** Runs `print_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  print_endedMany(items: PrintEndedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `PrintDocument` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PRINTDOCUMENT_ACTIONS = [] as const;
+export const PRINTDOCUMENT_ACTIONS = ["print_ended", "print_endedMany"] as const;
 
 /** The `tl.so.tilo.print-centre.PrintDocument` kind at `path`. */
 export function printDocument(ws: tilo.Workspace, path: string): PrintDocument {
@@ -310,18 +324,10 @@ export interface PrintCentre extends tilo.Resource {
   send_to_printer(): Promise<void>;
   /** Runs `send_to_printer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   send_to_printerMany(items: SendToPrinterArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks how far the print has got; a finished or failed one says so. */
-  poll_print(): Promise<void>;
-  /** Runs `poll_print` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  poll_printMany(items: PollPrintArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Scans one page with the chosen scanner and the defaults. */
   scan_page(): Promise<void>;
   /** Runs `scan_page` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   scan_pageMany(items: ScanPageArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks how far the scan has got; a page that arrived is added to the document. */
-  poll_scan(): Promise<void>;
-  /** Runs `poll_scan` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  poll_scanMany(items: PollScanArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Crops a scanned page to the part the person kept, in fractions of the picture a viewer shows. The text read off the whole page no longer describes it, so it is cleared. */
   crop_page(args: {
     page: ScannedPage;
@@ -404,7 +410,7 @@ export interface PrintCentre extends tilo.Resource {
 
 /** The actions `PrintCentre` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PRINTCENTRE_ACTIONS = ["document_of", "scan_of", "ask_options", "ask_optionsMany", "absorb_document", "absorb_documentMany", "print_file", "print_fileMany", "clear_showing", "clear_showingMany", "send_to_printer", "send_to_printerMany", "poll_print", "poll_printMany", "scan_page", "scan_pageMany", "poll_scan", "poll_scanMany", "crop_page", "crop_pageMany", "remove_page", "remove_pageMany", "new_scanned_document", "new_scanned_documentMany", "move_page", "move_pageMany", "document_to_save", "choose_printer", "choose_printerMany", "set_two_sided", "set_two_sidedMany", "set_print_option", "set_print_optionMany", "set_resolution", "set_resolutionMany", "set_scan_colour", "set_scan_colourMany", "set_scan_source", "set_scan_sourceMany", "set_ocr_language", "set_ocr_languageMany", "set_scanner", "set_scannerMany"] as const;
+export const PRINTCENTRE_ACTIONS = ["document_of", "scan_of", "ask_options", "ask_optionsMany", "absorb_document", "absorb_documentMany", "print_file", "print_fileMany", "clear_showing", "clear_showingMany", "send_to_printer", "send_to_printerMany", "scan_page", "scan_pageMany", "crop_page", "crop_pageMany", "remove_page", "remove_pageMany", "new_scanned_document", "new_scanned_documentMany", "move_page", "move_pageMany", "document_to_save", "choose_printer", "choose_printerMany", "set_two_sided", "set_two_sidedMany", "set_print_option", "set_print_optionMany", "set_resolution", "set_resolutionMany", "set_scan_colour", "set_scan_colourMany", "set_scan_source", "set_scan_sourceMany", "set_ocr_language", "set_ocr_languageMany", "set_scanner", "set_scannerMany"] as const;
 
 /** The `tl.so.tilo.print-centre.PrintCentre` kind at `path`. */
 export function printCentre(ws: tilo.Workspace, path: string): PrintCentre {
@@ -425,34 +431,18 @@ export function optionsAsk(ws: tilo.Workspace, path: string): OptionsAsk {
   return resourceProxy(ws, path, SURFACE, OPTIONSASK_ACTIONS) as unknown as OptionsAsk;
 }
 
-/** JobAnswer — `tl.so.tilo.print-centre.JobAnswer`. */
-export interface JobAnswer extends tilo.Resource {
-  hovq2inv: string;  // job
+/** ScanDetail — `tl.so.tilo.print-centre.ScanDetail`. */
+export interface ScanDetail extends tilo.Resource {
+  jlmf7wws: string;  // url
 }
 
-/** The actions `JobAnswer` reaches before it is read: `ws` calls them without a
+/** The actions `ScanDetail` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const JOBANSWER_ACTIONS = [] as const;
+export const SCANDETAIL_ACTIONS = [] as const;
 
-/** The `tl.so.tilo.print-centre.JobAnswer` kind at `path`. */
-export function jobAnswer(ws: tilo.Workspace, path: string): JobAnswer {
-  return resourceProxy(ws, path, SURFACE, JOBANSWER_ACTIONS) as unknown as JobAnswer;
-}
-
-/** JobState — `tl.so.tilo.print-centre.JobState`. */
-export interface JobState extends tilo.Resource {
-  "3ofqxf34": string;  // state
-  cmyjb3zt: string;  // url
-  oyaqvmzs: string;  // error
-}
-
-/** The actions `JobState` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const JOBSTATE_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.print-centre.JobState` kind at `path`. */
-export function jobState(ws: tilo.Workspace, path: string): JobState {
-  return resourceProxy(ws, path, SURFACE, JOBSTATE_ACTIONS) as unknown as JobState;
+/** The `tl.so.tilo.print-centre.ScanDetail` kind at `path`. */
+export function scanDetail(ws: tilo.Workspace, path: string): ScanDetail {
+  return resourceProxy(ws, path, SURFACE, SCANDETAIL_ACTIONS) as unknown as ScanDetail;
 }
 
 /** OcrAsk — `tl.so.tilo.print-centre.OcrAsk`. */

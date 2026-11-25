@@ -27,6 +27,7 @@ __all__ = [
     "Origin",
     "Notice",
     "Entry",
+    "Folded",
     "Snapshot",
     "Policy",
     "Place",
@@ -35,7 +36,7 @@ __all__ = [
     "BackupAsk",
     "SnapshotAsk",
     "RestoreAsk",
-    "WorkState",
+    "WorkDetail",
     "Checked",
     "TiloBackups",
     "KeepCatalogArgs",
@@ -45,7 +46,8 @@ __all__ = [
     "BeginRestoreArgs",
     "RestoreNowArgs",
     "StopWorkArgs",
-    "PollArgs",
+    "WorkMovedArgs",
+    "WorkEndedArgs",
     "OpenSnapshotArgs",
     "SetOrderArgs",
     "ShowPlaceArgs",
@@ -62,6 +64,7 @@ __all__ = [
     "StartWorkArgs",
     "CloseSnapshotArgs",
     "AllowOverwriteArgs",
+    "FoldFolderArgs",
 ]
 
 Health = Literal["complete", "verifying", "failed"]
@@ -111,9 +114,16 @@ StopWorkArgs = TypedDict("StopWorkArgs", {
 })
 """The arguments of `stop_work`."""
 
-PollArgs = TypedDict("PollArgs", {
+WorkMovedArgs = TypedDict("WorkMovedArgs", {
+    "j": "Any",
 })
-"""The arguments of `poll`."""
+"""The arguments of `work_moved`."""
+
+WorkEndedArgs = TypedDict("WorkEndedArgs", {
+    "kind": "str",
+    "j": "Any",
+})
+"""The arguments of `work_ended`."""
 
 OpenSnapshotArgs = TypedDict("OpenSnapshotArgs", {
     "s": "Snapshot",
@@ -187,9 +197,16 @@ AllowOverwriteArgs = TypedDict("AllowOverwriteArgs", {
 })
 """The arguments of `allow_overwrite`."""
 
+FoldFolderArgs = TypedDict("FoldFolderArgs", {
+    "s": "Snapshot",
+    "path": "str",
+    "folded": "bool",
+})
+"""The arguments of `fold_folder`."""
+
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -250,16 +267,23 @@ class Notice(Resource):
 
 class Entry(Resource):
     """Entry — `tl.so.tilo.backups.Entry`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
     cvlieest: str  # name
+    dssaufce: str  # path
     c2m5wzf4: int  # depth
     pfl5jyx2: int  # size
     tzyurmps: bool  # folder
 
 
+class Folded(Resource):
+    """Folded — `tl.so.tilo.backups.Folded`."""
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    yp5mxjwc: str  # path
+
+
 class Snapshot(Resource):
     """Snapshot — `tl.so.tilo.backups.Snapshot`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
     dallfwqf: str  # label
     ngqbekfc: int  # at
     hydekdnu: Taken  # taken
@@ -284,11 +308,12 @@ class Snapshot(Resource):
     @_5nvgiivd.setter
     def _5nvgiivd(self, value: list[Entry[Entry]]) -> None:
         self.edit("5nvgiivd", value=value)
+    sikyuvd6: list[Entry[Folded]]  # folded
 
 
 class Policy(Resource):
     """Policy — `tl.so.tilo.backups.Policy`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
     cyugw7lh: int  # hourly
     avot6p6r: int  # daily
     ywba2jzd: int  # weekly
@@ -304,14 +329,14 @@ class Policy(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.backups.Place`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
     dho3qqg3: str  # name
     f3pl3mol: str  # path
 
 
 class Backups(Resource):
     """Backups — `tl.so.tilo.backups.Backups`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
     p2imk5l5: Policy  # policy
     srrmxp5i: str  # source
     @property
@@ -340,6 +365,7 @@ class Backups(Resource):
     @_3wbouwis.setter
     def _3wbouwis(self, value: bool) -> None:
         self.edit("3wbouwis", value=value)
+    ymfvuwvo: int  # next_run
     v3i3cihq: str  # destination_name
     kqbve5pf: int  # used_bytes
     mdbssite: int  # total_bytes
@@ -447,13 +473,25 @@ class Backups(Resource):
         """Runs `stop_work` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stop_work", items)
 
-    def poll(self) -> None:
-        """Asks the device how the work is doing, once a second while it runs."""
-        return self.action("poll")
+    def work_moved(self, *, j: Any) -> None:
+        """The work moved on: how far it has got, in files and bytes."""
+        return self.action("work_moved", j=j)
 
-    def poll_many(self, items: list[PollArgs]) -> list[dict[str, Any]]:
-        """Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("poll", items)
+    def work_moved_many(self, items: list[WorkMovedArgs]) -> list[dict[str, Any]]:
+        """Runs `work_moved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("work_moved", items)
+
+    def work_ended(self,
+        *,
+        kind: str,
+        j: Any,
+    ) -> None:
+        """The work ended: the repository as it now stands, what a check found, or why it failed."""
+        return self.action("work_ended", kind=kind, j=j)
+
+    def work_ended_many(self, items: list[WorkEndedArgs]) -> list[dict[str, Any]]:
+        """Runs `work_ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("work_ended", items)
 
     def open_snapshot(self, *, s: Snapshot) -> None:
         """Shows one snapshot's sheet: what it holds and what can be done with it."""
@@ -587,21 +625,34 @@ class Backups(Resource):
         """Runs `allow_overwrite` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("allow_overwrite", items)
 
+    def fold_folder(self,
+        *,
+        s: Snapshot,
+        path: str,
+        folded: bool,
+    ) -> None:
+        """Folds a folder of the snapshot's file index away, or opens it again."""
+        return self.action("fold_folder", s=s, path=path, folded=folded)
+
+    def fold_folder_many(self, items: list[FoldFolderArgs]) -> list[dict[str, Any]]:
+        """Runs `fold_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("fold_folder", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"keep_catalog", "keep_catalog_many", "back_up_now", "back_up_now_many", "verify", "verify_many", "ask_restore", "ask_restore_many", "begin_restore", "begin_restore_many", "restore_now", "restore_now_many", "stop_work", "stop_work_many", "poll", "poll_many", "open_snapshot", "open_snapshot_many", "set_order", "set_order_many", "show_place", "show_place_many", "keep_more", "keep_more_many", "keep_fewer", "keep_fewer_many", "dismiss", "dismiss_many", "choose_source", "choose_source_many", "choose_destination", "choose_destination_many", "go", "go_many", "go_up", "go_up_many", "pick", "pick_many", "cancel_pick", "cancel_pick_many", "read_picker", "read_picker_many", "start_work", "start_work_many", "close_snapshot", "close_snapshot_many", "allow_overwrite", "allow_overwrite_many"})
+    __actions__ = frozenset({"keep_catalog", "keep_catalog_many", "back_up_now", "back_up_now_many", "verify", "verify_many", "ask_restore", "ask_restore_many", "begin_restore", "begin_restore_many", "restore_now", "restore_now_many", "stop_work", "stop_work_many", "work_moved", "work_moved_many", "work_ended", "work_ended_many", "open_snapshot", "open_snapshot_many", "set_order", "set_order_many", "show_place", "show_place_many", "keep_more", "keep_more_many", "keep_fewer", "keep_fewer_many", "dismiss", "dismiss_many", "choose_source", "choose_source_many", "choose_destination", "choose_destination_many", "go", "go_many", "go_up", "go_up_many", "pick", "pick_many", "cancel_pick", "cancel_pick_many", "read_picker", "read_picker_many", "start_work", "start_work_many", "close_snapshot", "close_snapshot_many", "allow_overwrite", "allow_overwrite_many", "fold_folder", "fold_folder_many"})
 
 
 class CatalogAsk(Resource):
     """CatalogAsk — `tl.so.tilo.backups.CatalogAsk`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
     gbluxeo3: str  # source
     ixnr6cnx: str  # destination
 
 
 class BackupAsk(Resource):
     """BackupAsk — `tl.so.tilo.backups.BackupAsk`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
     w7elqfbk: str  # source
     ebybhxkw: str  # destination
     qqrrtmrs: int  # policy_hourly
@@ -619,7 +670,7 @@ class BackupAsk(Resource):
 
 class SnapshotAsk(Resource):
     """SnapshotAsk — `tl.so.tilo.backups.SnapshotAsk`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
     @property
     def _2stygd3d(self) -> str:
         """destination (`2stygd3d` on the wire)."""
@@ -633,7 +684,7 @@ class SnapshotAsk(Resource):
 
 class RestoreAsk(Resource):
     """RestoreAsk — `tl.so.tilo.backups.RestoreAsk`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
     z2pcuhft: str  # destination
     qz4acm4a: str  # snapshot
     @property
@@ -647,23 +698,21 @@ class RestoreAsk(Resource):
     lbwhdcbx: bool  # overwrite
 
 
-class WorkState(Resource):
-    """WorkState — `tl.so.tilo.backups.WorkState`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
-    ptww3noe: str  # state
-    pnevrulc: str  # progress
-    lrfiygoo: str  # answer
-    apwu74vg: str  # error
+class WorkDetail(Resource):
+    """WorkDetail — `tl.so.tilo.backups.WorkDetail`."""
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
+    m7xwwoxh: str  # progress
+    lwahnmcm: str  # answer
 
 
 class Checked(Resource):
     """Checked — `tl.so.tilo.backups.Checked`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
     lg6ud7lc: int  # files
     deudvrko: int  # bytes
 
 
 class TiloBackups(Resource):
     """Backups — `tl.so.tilo.backups`."""
-    __surface__ = "so.tilo.backups@c80c34fc77c08786"
+    __surface__ = "so.tilo.backups@cf21eed351c07025"
 
