@@ -147,11 +147,17 @@ mod unix {
         io::{self, BufRead as _, Write as _},
         os::{
             fd::FromRawFd as _,
-            unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt},
+            unix::{fs::PermissionsExt, net::UnixStream},
         },
         path::{Path, PathBuf},
-        process::Command,
         time::Duration,
+    };
+    // Android has no runtime host to re-exec under: its apps run as they are, so nothing
+    // attaches and the code that would is not built there.
+    #[cfg(not(target_os = "android"))]
+    use std::{
+        os::unix::process::CommandExt as _,
+        process::Command,
     };
 
     use super::LaunchRequest;
@@ -160,6 +166,7 @@ mod unix {
         io::Error::new(io::ErrorKind::InvalidInput, message)
     }
 
+    #[cfg(not(target_os = "android"))]
     fn inherited() -> io::Result<bool> {
         let owner = super::connection_owner()?;
         if owner.is_some_and(|pid| pid != std::process::id()) {
