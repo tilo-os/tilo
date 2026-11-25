@@ -1100,8 +1100,9 @@ impl CredentialStore {
     /// keeps for it, and the secret to keep in its place where it was renewed: an `OAuth`
     /// account's current access token, renewed when it is due (or when `force`, after the drive
     /// refused it), or an iCloud account's session headers. No vault is opened here: whoever
-    /// keeps the account keeps the renewed secret too. A grant the provider no longer takes is
-    /// [`CredentialError::NeedsAuthentication`]: its person signs in again.
+    /// keeps the account keeps the renewed secret too. A grant the provider no longer takes
+    /// signs no drive in ([`DriveCredential::credential`] is `None`, and the sign-in it was is
+    /// kept where it is): its person signs in again.
     ///
     /// # Errors
     /// The account is disabled, signs in with no grant, or its grant was not renewed.
@@ -1148,15 +1149,24 @@ impl CredentialStore {
             else {
                 return Err(CredentialError::NeedsAuthentication);
             };
-            let (renewed, headers) = self
+            let (renewed, headers) = match self
                 .icloud
                 .resume(&ICloudSessionState(Zeroizing::new(session)))
-                .map_err(|error| match error {
-                    ICloudAuthError::NeedsReauthentication
-                    | ICloudAuthError::InvalidCredentials => CredentialError::NeedsAuthentication,
-                    ICloudAuthError::Offline => CredentialError::Offline,
-                    other => CredentialError::SignIn(other.to_string()),
-                })?;
+            {
+                Ok(resumed) => resumed,
+                Err(
+                    ICloudAuthError::NeedsReauthentication | ICloudAuthError::InvalidCredentials,
+                ) => {
+                    // The session is no longer taken: it is left where it is, so its person is
+                    // asked to sign in again, as a grant the provider will not renew.
+                    return Ok(DriveCredential {
+                        credential: None,
+                        renewed: None,
+                    });
+                }
+                Err(ICloudAuthError::Offline) => return Err(CredentialError::Offline),
+                Err(other) => return Err(CredentialError::SignIn(other.to_string())),
+            };
             (
                 Some(cloud_source::Credential::Session {
                     headers: headers.headers,
