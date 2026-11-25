@@ -240,6 +240,10 @@ view question(key: Text, here: Bool, a: invocations.Asked) {
 /// What the question says: who asks, what it would do and to what, what the asker shows, what
 /// the person types, picks or chooses, and the answers it offers. `headline` is its own line at
 /// the top, empty where the surface drawing it names the action itself.
+///
+/// Where an answer follows the person's own press, the keyboard starts on that answer, so Enter
+/// finishes what they started. Where an agent, a program or a device asked, it starts on the way
+/// out instead: Enter never approves a call nobody here began, and "always let" never takes it.
 view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) {
     let lines = a.facts.filter(f -> f.label == "")
     let labelled = a.facts.filter(f -> f.label != "")
@@ -359,7 +363,12 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                         }
                     }
                     spacer
-                    ui.Button("Don't answer", size: .small, role: .plain) {
+                    ui.Button(
+                        "Don't answer",
+                        size: .small,
+                        role: .plain,
+                        default_focus: a.pressed == .none,
+                    ) {
                         on press: decline(key)
                     }
                 } else {
@@ -381,7 +390,14 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                             on press: set(changing, true)
                         }
                     }
-                    ui.Button("Don't allow", size: .small, role: .secondary) {
+                    // Where the answer itself is given on the device that asked, the way out is
+                    // the only answer this surface offers.
+                    ui.Button(
+                        "Don't allow",
+                        size: .small,
+                        role: .secondary,
+                        default_focus: a.pressed == .none or not here,
+                    ) {
                         on press: decline(key)
                     }
                     if here {
@@ -391,6 +407,7 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                             enabled: not unfilled,
                             description: "Fill in what it asks for first",
                             role: if a.destructive { .destructive } else { .primary },
+                            default_focus: a.pressed != .none,
                         ) {
                             on press: host.resolve(
                                 resource(key, of: host.Invocation),

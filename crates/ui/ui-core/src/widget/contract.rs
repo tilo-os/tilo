@@ -434,6 +434,12 @@ pub trait Widget {
         false
     }
 
+    /// The main answer of the panel this control stands in, as that panel marks it: an opening
+    /// panel's keyboard starts here, after a control marked [`Self::is_default_keyboard_focus`].
+    fn is_main_answer(&self) -> bool {
+        false
+    }
+
     fn set_focus(&mut self, _focused: bool) {}
 
     /// The window holding this content fills its display (a maximized window): it has nothing beside it

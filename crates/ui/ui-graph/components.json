@@ -671,6 +671,11 @@
           "type": "bool"
         },
         {
+          "name": "default_focus",
+          "doc": "Whether it is the answer the surface it stands in starts on: an ask that opens puts the keyboard here, so Enter gives this answer. A view marks the answer its surface opens on, and leaves it off for every other control beside it.",
+          "type": "bool"
+        },
+        {
           "name": "description",
           "doc": "Why it cannot be pressed now, where the label does not say: the requirement an action does not meet.",
           "type": {

@@ -184,11 +184,15 @@ pub(crate) fn widget_path(
 }
 
 /// How readily `widget` takes the keyboard when its app does without a control of its own choosing:
-/// its default keyboard control first (`Some(0)`), else one that takes typing — a field, an editor,
-/// a terminal (`Some(1)`) — never a button merely for being first (`None`): Enter would press it.
+/// its default keyboard control first (`Some(0)`), else the main answer of the panel it stands in
+/// beside one that takes typing — a field, an editor, a terminal (`Some(1)`) — never a button merely
+/// for being first (`None`): Enter would press it.
 pub(crate) fn keyboard_entry_rank(widget: &dyn Widget) -> Option<u8> {
     if widget.is_default_keyboard_focus() {
         return Some(0);
+    }
+    if widget.is_main_answer() {
+        return Some(1);
     }
     // The widget's own node is enough to read its role: the whole subtree of a
     // document (every block of a long note) would be built on every relayout.
@@ -204,6 +208,29 @@ pub(crate) fn keyboard_entry_rank(widget: &dyn Widget) -> Option<u8> {
             )
         })
         .then_some(1)
+}
+
+/// Offer the focused control under `widget` the activation the window gives on Space, or on Enter
+/// (`buttons_only`) only when it is a button; whether it took it. A surface that holds the
+/// keyboard itself — a dialog, a panel — presses the answer the keyboard is on with this, as the
+/// window would otherwise do behind it.
+pub(crate) fn activate_focused(
+    widget: &mut dyn Widget,
+    state: &mut crate::widget::Edits<'_>,
+    path: &ModelPath,
+    buttons_only: bool,
+) -> bool {
+    if widget.is_focused() && widget.is_focusable() {
+        let button = widget
+            .accessibility()
+            .is_some_and(|node| node.role == crate::a11y::Role::Button);
+        return (button || !buttons_only)
+            && widget.perform_action(&crate::a11y::Action::Activate, &[], state, path);
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| activate_focused(child, state, path, buttons_only))
 }
 
 /// A laid-out box placed at `origin`, in absolute coordinates.

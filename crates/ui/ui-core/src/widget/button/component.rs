@@ -41,6 +41,10 @@ pub struct ButtonProps {
     pub size: ControlSize,
     /// Whether it can be pressed now.
     pub enabled: bool,
+    /// Whether it is the answer the surface it stands in starts on: an ask that opens puts the
+    /// keyboard here, so Enter gives this answer. A view marks the answer its surface opens on,
+    /// and leaves it off for every other control beside it.
+    pub default_focus: bool,
     /// Why it cannot be pressed now, where the label does not say: the requirement an action does not meet.
     pub description: Option<String>,
     /// What it says is news: a screen reader announces it when it appears or changes, without the
@@ -86,6 +90,7 @@ impl Default for ButtonProps {
             toggled: None,
             size: ControlSize::default(),
             enabled: true,
+            default_focus: false,
             description: None,
             live: None,
             key: None,
@@ -114,6 +119,7 @@ impl Described for Button {
             toggled,
             size,
             enabled,
+            default_focus,
             description,
             live,
             key: shortcut_key,
@@ -167,6 +173,11 @@ impl Described for Button {
             button = button.with_count(content, style);
         }
         let button = if in_menu { button.in_menu() } else { button };
+        let button = if default_focus {
+            button.with_default_focus()
+        } else {
+            button
+        };
         let mut button = button.with_enabled(enabled);
         if let Some(why) = description.filter(|why| !why.trim().is_empty()) {
             button = button.with_description(&why).tooltip(why);
@@ -240,6 +251,7 @@ impl Described for Button {
         if let Some(on) = props.toggled {
             self.set_toggled(on);
         }
+        self.default_focus = props.default_focus;
         self.set_enabled(props.enabled && !props.press.is_none());
         self.live = props.live;
         true

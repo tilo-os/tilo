@@ -2137,7 +2137,12 @@ impl Widget for ModalDialog<dyn Widget> {
                     let enter = *key == NamedKey::Enter;
                     let content_handled = self.forward_to_header(event, ctx)
                         || self.forward_to_content(event, ctx)
-                        || activate_focused(&mut self.content, &mut ctx.state, ctx.path, enter);
+                        || crate::widget::activate_focused(
+                            &mut self.content,
+                            &mut ctx.state,
+                            ctx.path,
+                            enter,
+                        );
                     if !content_handled
                         && enter
                         && let Some(slot) = self.default_slot()
@@ -2677,27 +2682,6 @@ fn tree_window(taffy: &TaffyTree<()>, node: NodeId) -> Option<Rect> {
         (f64::from(l.size.width), f64::from(l.size.height)),
     );
     (window.width() > 0.0 && window.height() > 0.0).then_some(window)
-}
-
-/// Offer the focused control under `widget` the activation the window gives on Space, or on Enter
-/// (`buttons_only`) only when it is a button; whether it took it.
-fn activate_focused(
-    widget: &mut dyn Widget,
-    state: &mut crate::widget::Edits<'_>,
-    path: &ModelPath,
-    buttons_only: bool,
-) -> bool {
-    if widget.is_focused() && widget.is_focusable() {
-        let button = widget
-            .accessibility()
-            .is_some_and(|node| node.role == crate::a11y::Role::Button);
-        return (button || !buttons_only)
-            && widget.perform_action(&crate::a11y::Action::Activate, &[], state, path);
-    }
-    widget
-        .children_mut()
-        .into_iter()
-        .any(|child| activate_focused(child, state, path, buttons_only))
 }
 
 fn theme_line(theme: &Theme) -> f32 {

@@ -157,6 +157,62 @@ fn confirm_button(desktop: &tilolang_runtime::ViewInstance, label: &str) -> Stri
         .clone()
 }
 
+/// Where the keyboard starts when a question stands in the shell's window: on the answer the
+/// person's own press started, never on "always let", and on the way out where nobody here
+/// started it.
+#[cfg(target_os = "linux")]
+mod focus {
+    use super::texts;
+    use crate::shell_staged::StagedWindow;
+
+    /// The shell staged as its scenario `scenario`, its desktop in a window that takes the
+    /// keyboard as it opens.
+    fn staged(scenario: &str, asked: &[&str]) -> StagedWindow {
+        let mut theme = ui::Theme::dark();
+        theme.reduce_motion = true;
+        StagedWindow::staged(scenario, asked, (1280, 800), theme)
+    }
+
+    #[test]
+    fn a_press_that_needs_a_yes_opens_on_the_answer_that_was_pressed() {
+        let shell = staged("a press that needs a yes", &["studio/invocations/share-1"]);
+        let tree = shell.instance.root_tree().expect("the window's tree");
+        let [confirm] = tree.of_kind("ui.Popover")[..] else {
+            panic!("one confirm stands at the press: {tree:#?}");
+        };
+        assert!(
+            texts(confirm)
+                .iter()
+                .any(|shown| shown == "Always let Notes share notes"),
+            "the confirm offers a permanent permission beside its answer"
+        );
+        let holds = shell.holds_keyboard();
+        assert_eq!(
+            holds.as_deref(),
+            Some("Share"),
+            "the keyboard starts on the answer the press under the confirm gives"
+        );
+        assert_ne!(
+            holds.as_deref(),
+            Some("Always let Notes share notes"),
+            "a permanent permission never takes the keyboard as the confirm opens"
+        );
+    }
+
+    #[test]
+    fn an_agents_question_opens_on_the_way_out() {
+        let shell = staged(
+            "a call that writes another record",
+            &["studio/invocations/mail-1", "studio/invocations/alarm-3"],
+        );
+        assert_eq!(
+            shell.holds_keyboard().as_deref(),
+            Some("Don't allow"),
+            "nothing here started the call, so the keyboard starts on declining it"
+        );
+    }
+}
+
 /// Every call the shell made, each the record's `resolve` with the resolution it gave: all that
 /// reached the workspace, which runs the asked call only on an approve.
 fn answers(called: &Called) -> Vec<String> {

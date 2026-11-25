@@ -102,6 +102,10 @@ pub struct Button {
     /// The page's encouraged action: a focus reset lands here, so Enter
     /// activates it.
     default_focus: bool,
+    /// The main answer of the panel it stands in, marked by that panel as it
+    /// lays it out ([`crate::widget::Popover`]): an opening panel's keyboard
+    /// starts here unless a control is marked [`Self::with_default_focus`].
+    main_answer: bool,
     /// The last painted body, border and label; a move only translates it.
     face: crate::widget::CachedPaint,
     dirty: bool,
@@ -199,6 +203,7 @@ impl Button {
             control_size: ControlSize::Regular,
             metrics: FaceMetrics::stock(ControlSize::Regular),
             default_focus: false,
+            main_answer: false,
             on_click: None,
             action: None,
             presence_path: Vec::new(),
@@ -751,6 +756,13 @@ impl Button {
     pub fn with_default_focus(mut self) -> Self {
         self.default_focus = true;
         self
+    }
+
+    /// Mark this button as the main answer of the panel it stands in: when that panel opens,
+    /// the keyboard starts here unless the view marked a control default focus. The panel marks
+    /// it as it lays it out ([`crate::widget::Popover`]); a view does not call this.
+    pub(crate) fn set_main_answer(&mut self, main: bool) {
+        self.main_answer = main;
     }
 
     pub fn set_compact_toolbar_presentation(&mut self, compact: bool) {
@@ -2615,6 +2627,9 @@ impl Widget for Button {
     }
     fn is_default_keyboard_focus(&self) -> bool {
         self.default_focus
+    }
+    fn is_main_answer(&self) -> bool {
+        self.main_answer
     }
     fn set_focus(&mut self, focused: bool) {
         self.pressed_into_focus &= focused;

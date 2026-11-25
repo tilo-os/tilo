@@ -582,6 +582,7 @@ decorator_trait! {
         #[doc(hidden)]
         fn relaid_layout_node() -> Option<NodeId>;
         fn is_default_keyboard_focus() -> bool;
+        fn is_main_answer() -> bool;
         fn primary_vertical_scroll() -> Option<PrimaryScrollRegion>;
     }
 

@@ -535,4 +535,81 @@ tilo_test_env::scenario! {
             "the keyboard goes to the entry the modal now shows"
         );
     }
+
+    phase an_opening_popover_starts_on_its_main_answer;
+    {
+        use crate::widget::Column;
+        let pressed = Rc::new(Cell::new(0));
+        let share = Rc::clone(&pressed);
+        let panel = crate::widget::Popover::with_content(
+            Column::new()
+                .push(Box::new(Button::new(
+                    "always",
+                    "Always let Notes share notes",
+                )))
+                .push(Box::new(
+                    Button::new("share", "Share")
+                        .role(crate::widget::ButtonRole::Primary)
+                        .on_click(move || share.set(share.get() + 1)),
+                )),
+        )
+        .open(true)
+        .with_viewport(KurboRect::new(0.0, 0.0, 800.0, 600.0));
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(panel));
+        app.init_layout();
+        assert!(
+            app.accessibility.focus_trap_active,
+            "an open panel traps the keyboard"
+        );
+        let focused = app.focused_node.expect("the panel starts on an answer");
+        assert_eq!(
+            app.inspect_node(focused, |widget| widget.test_id().map(str::to_owned))
+                .unwrap()
+                .as_deref(),
+            Some("share"),
+            "the panel's main answer, not the first control in it"
+        );
+        press_enter(&mut app);
+        assert_eq!(
+            pressed.get(),
+            1,
+            "Enter gives the answer the panel's main button gives"
+        );
+    }
+
+    phase an_option_menu_takes_no_control_focus_of_its_own;
+    {
+        let mut menu = crate::widget::Popover::new().with_items(["One", "Two"]);
+        menu.open_at(KurboRect::new(100.0, 40.0, 180.0, 68.0), Some(1));
+        assert_eq!(menu.highlighted(), 1, "it opens on the row it was given");
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(menu));
+        app.init_layout();
+        assert!(app.accessibility.focus_trap_active);
+        assert!(
+            app.focusable_order.is_empty(),
+            "a menu's rows are its highlighted row, not keyboard stops"
+        );
+        assert_eq!(
+            app.focused_node, None,
+            "opening a menu takes no control's keyboard"
+        );
+    }
+}
+
+/// Enter on what holds the keyboard, through the widget tree and the host's own fallback: the
+/// same two steps a window runs.
+fn press_enter(app: &mut App) {
+    let event = crate::synthetic_input::key_input(
+        &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+        ElementState::Pressed,
+    );
+    let sent = crate::testing::Dispatch::new()
+        .modifiers(app.input.modifiers)
+        .doc(&mut app.state.doc)
+        .path(&app.state.root)
+        .layout(&app.layout.taffy, app.layout.root_node.unwrap())
+        .send(app.root_widget.as_mut(), &event);
+    let mut handled = sent.handled;
+    app.handle_unconsumed_activation_key(&event, &mut handled);
+    app.dispatch_control_invocations();
 }

@@ -78,6 +78,33 @@ fn primary_button(content: &dyn Widget) -> Option<Rect> {
     None
 }
 
+/// Mark the main answer of `content` ([`primary_button`]) as the control an opening panel's
+/// keyboard starts on, and clear the mark from every other button: what a press at the answer
+/// under the panel does is what Enter does. The control a view marked
+/// ([`crate::widget::Button::with_default_focus`]) still wins over it.
+fn mark_main_answer(content: &mut dyn Widget) {
+    use crate::widget::ButtonRole;
+    fn walk(widget: &mut dyn Widget, marked: &mut bool) {
+        if let Some(button) = widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<crate::widget::Button>())
+        {
+            let main = !*marked
+                && matches!(
+                    button.role_of(),
+                    ButtonRole::Primary | ButtonRole::Destructive
+                );
+            button.set_main_answer(main);
+            *marked |= main;
+        }
+        for child in widget.children_mut() {
+            walk(child, marked);
+        }
+    }
+    let mut marked = false;
+    walk(content, &mut marked);
+}
+
 /// An anchored floating Panel holding an option menu or any content widget.
 /// See the module docs for the contract.
 #[crate::component::not_a_component(
@@ -896,8 +923,17 @@ impl PopoverPanel {
                         self.options_mut().highlighted = next;
                         self.menu.set_highlight(Some(next));
                     }
-                } else {
-                    self.forward_to_content(content, event, ctx);
+                } else if !self.forward_to_content(content, event, ctx)
+                    && matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space))
+                {
+                    // The panel takes these before the window does, as a dialog does: the answer
+                    // the keyboard is on is pressed here, and Enter gives it.
+                    crate::widget::activate_focused(
+                        content,
+                        &mut ctx.state,
+                        ctx.path,
+                        matches!(key, Key::Named(NamedKey::Enter)),
+                    );
                 }
                 // An open popover owns the keyboard: nothing leaks behind it.
                 *ctx.handled = true;
@@ -1488,12 +1524,20 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
         self.panel.detached = None;
         let content = self.content.build_layout(taffy, theme, node_map);
+        // The answers exist now, whether or not the host applies the layout before it reads the
+        // focus order: the panel's main answer takes an opening panel's keyboard.
+        if self.panel.open {
+            mark_main_answer(&mut self.content);
+        }
         self.panel.host_content = Some(content);
         let style = self.panel.body_style(theme);
         taffy.widget_node(style, &[content], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, _origin: Point) {
+        if self.panel.open {
+            mark_main_answer(&mut self.content);
+        }
         self.panel.apply_layout(&mut self.content, taffy, node);
     }
 
