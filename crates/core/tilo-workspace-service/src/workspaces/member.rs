@@ -98,6 +98,10 @@ pub(super) struct Members {
     /// Held while a copy is taken in: a workspace joined while the session holds what it took
     /// part in before is kept once.
     pub(super) holding: tokio::sync::Mutex<()>,
+    /// Held while this device signs its own way into a workspace, by an invitation or as a
+    /// further device of its person: a join and an entry never both sign for one device at once,
+    /// so it writes its way in once and the second finds it in.
+    entering: tokio::sync::Mutex<()>,
     /// The device the copies act as, once the embedder hands it to the
     /// service ([`Workspaces::set_member_device`]).
     device: std::sync::OnceLock<Arc<MemberDevice>>,
@@ -133,6 +137,7 @@ impl Default for Members {
             links: std::sync::Mutex::default(),
             syncing: std::sync::Mutex::default(),
             holding: tokio::sync::Mutex::default(),
+            entering: tokio::sync::Mutex::default(),
             device: std::sync::OnceLock::default(),
             up: std::sync::Mutex::default(),
             away: std::sync::Mutex::default(),
@@ -667,6 +672,7 @@ impl Workspaces {
         invitation: &str,
         name: Option<&str>,
     ) -> Result<WorkspaceId, String> {
+        let _entering = self.inner.member.entering.lock().await;
         let device = self.member_identity()?;
         holds_copies(&device.cert)?;
         let now_ns = tilo_clock::try_unix_now_ns().ok_or("the clock is before the Unix epoch")?;
@@ -846,6 +852,37 @@ impl Workspaces {
         workspace: WorkspaceId,
         hint: &TransportHint,
     ) -> Result<WorkspaceId, String> {
+        let _entering = self.inner.member.entering.lock().await;
+        self.prove_and_hold(workspace, hint).await
+    }
+
+    /// [`Self::hold_as_member`], unless the workspace is held and synced here as this device
+    /// already: what the person's list or a copied machine asks of this device. A
+    /// join on its way is waited for, and what it admitted is not entered again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::hold_as_member`].
+    async fn enter_as_member(
+        &self,
+        workspace: WorkspaceId,
+        hint: &TransportHint,
+    ) -> Result<WorkspaceId, String> {
+        let _entering = self.inner.member.entering.lock().await;
+        if self.member_link_up(workspace) && self.holds_as_this_device(&workspace.to_string()).await
+        {
+            return Ok(workspace);
+        }
+        self.prove_and_hold(workspace, hint).await
+    }
+
+    /// Prove this device's membership of `workspace` at the device `hint` names and hold what it
+    /// answers.
+    async fn prove_and_hold(
+        &self,
+        workspace: WorkspaceId,
+        hint: &TransportHint,
+    ) -> Result<WorkspaceId, String> {
         let device = self.member_identity()?;
         holds_copies(&device.cert)?;
         let (address, _) =
@@ -870,14 +907,7 @@ impl Workspaces {
         held: impl IntoIterator<Item = (WorkspaceId, TransportHint)>,
     ) {
         for (workspace, hint) in held {
-            if self
-                .is_member(&workspace.to_string())
-                .await
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            match tokio::time::timeout(HOLD_WITHIN, self.hold_as_member(workspace, &hint)).await {
+            match tokio::time::timeout(HOLD_WITHIN, self.enter_as_member(workspace, &hint)).await {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => {
                     tracing::warn!(%error, %workspace, "a workspace this device takes part in is not held on its service");
@@ -1246,6 +1276,68 @@ impl Workspaces {
             .permissions(device.cert.device_public_key, tilo_clock::wall())
             .ok()?;
         member.person_id().map(str::to_owned)
+    }
+
+    /// Whether `workspace` is held here and its governance names this device's certificate: a
+    /// copy a machine kept as the device it was copied from names that device, not this one.
+    pub(crate) async fn holds_as_this_device(&self, workspace: &str) -> bool {
+        let own = self.device_cert().device_public_key;
+        let state = self.inner.workspaces.lock().await.get(workspace).cloned();
+        let Some(state) = state else {
+            return false;
+        };
+        let governed = state.lock().await;
+        governed
+            .peer()
+            .certificates()
+            .iter()
+            .any(|cert| cert.device_public_key == own)
+    }
+
+    /// The workspaces held here whose governance names no certificate of this device, each with
+    /// where the device serving it is reached: a machine copied from another holds them as the
+    /// device it was copied from, and enters each again as itself
+    /// ([`Self::hold_as_members`]).
+    pub(crate) async fn held_as_another_device(&self) -> Vec<(WorkspaceId, TransportHint)> {
+        let own = self.device_cert().device_public_key;
+        let held: Vec<_> = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .iter()
+            .map(|(name, state)| (name.clone(), Arc::clone(state)))
+            .collect();
+        let mut entering = Vec::new();
+        for (name, state) in held {
+            let Some(workspace) = WorkspaceId::parse(&name) else {
+                continue;
+            };
+            let governed = state.lock().await;
+            let peer = governed.peer();
+            if peer
+                .certificates()
+                .iter()
+                .any(|cert| cert.device_public_key == own)
+            {
+                continue;
+            }
+            // A member copy syncs with the device serving it; a disk copied from that device
+            // holds the workspace as its holder, and enters at the holder its governance names.
+            let hint = governed.member.as_ref().map_or_else(
+                || {
+                    peer.governance()
+                        .keeping_devices()
+                        .into_iter()
+                        .find(|hint| hint.host.device_public_key != own)
+                },
+                |member| Some(member.hint.clone()),
+            );
+            if let Some(hint) = hint {
+                entering.push((workspace, hint));
+            }
+        }
+        entering
     }
 
     /// Whether `workspace` is held here as a member copy of another device.

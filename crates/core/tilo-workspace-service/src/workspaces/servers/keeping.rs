@@ -1,14 +1,20 @@
-//! What an always-on server of the person keeps: every workspace in their list.
+//! What each device of the person holds of their list of workspaces.
 //!
 //! The person's list of workspaces is a resource of their own workspace
-//! (`identity.workspaces`, a [`WorkspaceList`]). A server with an entry among their servers
-//! ([`super::SERVERS`]) keeps each workspace the list names, unless its entry
-//! turned keeping off for it ([`Server::keeps_not`]). It enters one it does
-//! not keep yet the way every device of the person enters a workspace of
-//! theirs: as a member copy, at the address the list keeps for it
-//! ([`crate::workspaces::Workspaces::hold_as_members`]). One its entry no longer keeps it
-//! lets go of ([`Workspaces::release`]); its files stay, and keeping it again
-//! takes it up from them.
+//! (`identity.workspaces`, a [`WorkspaceList`]). Every device of theirs enters
+//! each workspace the list shows on it, as a member copy at the address the
+//! list keeps for it ([`crate::workspaces::Workspaces::hold_as_members`]): the
+//! device's daemon does, and the desktop session shows what it holds. A server
+//! with an entry among their servers ([`super::SERVERS`]) keeps each workspace
+//! the list names instead, unless its entry turned keeping off for it
+//! ([`Server::keeps_not`]). One its entry no longer keeps it lets go of
+//! ([`Workspaces::release`]); its files stay, and keeping it again takes it up
+//! from them.
+//!
+//! On every device of the person, a workspace held as the device the machine
+//! was copied from is entered again as this device at the device serving it
+//! ([`Workspaces::held_as_another_device`]): the daemon does that, never the
+//! desktop session.
 //!
 //! It learns of a change from the change itself: a write to the list or to
 //! the servers' document, or the person's workspace reaching this device
@@ -46,9 +52,10 @@ impl Kept {
     }
 }
 
-/// Keep every workspace of this device's person's list its entry among their
-/// servers keeps, and let go of each it keeps no longer: one pass. A device
-/// with no entry there, or a retired one, keeps what it keeps.
+/// Enter every workspace of this device's person's list that shows on this
+/// device, or, on a server of theirs, that its entry among their servers keeps,
+/// letting go of each that entry keeps no longer: one pass. Every device first
+/// enters as itself what it holds as the device it was copied from.
 ///
 /// # Errors
 /// The servers' document or the list could not be read, or a workspace could
@@ -56,27 +63,30 @@ impl Kept {
 pub async fn keep_listed(workspaces: &Workspaces) -> Result<Kept, String> {
     let own = workspaces.device_cert().clone();
     let person = person_workspace_id(&own.user_public_key);
+    // What this device holds as the device it was copied from it enters as itself, at the device
+    // serving it: every device of the person's, listed or not, and never its desktop session.
+    let mut kept = enter_as_this_device(workspaces).await;
     if !holds_person_workspace(workspaces).await {
-        return Ok(Kept::default());
+        return Ok(kept);
     }
-    let Some(entry) = read(workspaces)
+    // A server keeps what its entry keeps; every other device what the list shows on it.
+    let entry = read(workspaces)
         .await?
         .active(&own.device_public_key)
-        .cloned()
-    else {
-        return Ok(Kept::default());
-    };
-    let mut kept = Kept::default();
-    for workspace in &entry.keeps_not {
+        .cloned();
+    for workspace in entry.iter().flat_map(|entry| &entry.keeps_not) {
         if *workspace != person && workspaces.state(workspace).await.is_some() {
             workspaces.release(workspace).await?;
             kept.released.push(workspace.clone());
         }
     }
     let mut entering = Vec::new();
-    for (workspace, hint) in listed(workspaces, &own.user_public_key).await? {
+    for (workspace, hint, shown) in
+        listed(workspaces, &own.user_public_key, &own.device_public_key).await?
+    {
         let id = workspace.to_string();
-        if id == person || !entry.keeps(&id) || workspaces.state(&id).await.is_some() {
+        let keeps = entry.as_ref().map_or(shown, |entry| entry.keeps(&id));
+        if id == person || !keeps || workspaces.state(&id).await.is_some() {
             continue;
         }
         if keep_again(workspaces, &id).await? {
@@ -85,8 +95,10 @@ pub async fn keep_listed(workspaces: &Workspaces) -> Result<Kept, String> {
         }
         match hint {
             Some(hint) => entering.push((workspace, hint)),
+            // The device that made it says where it is reached once it holds it: that write
+            // to the list brings another pass.
             None => {
-                tracing::warn!(workspace = %id, "the person's list says nowhere this server reaches a workspace it keeps");
+                tracing::debug!(workspace = %id, "the person's list says nowhere yet this device reaches a workspace of theirs");
             }
         }
     }
@@ -100,12 +112,29 @@ pub async fn keep_listed(workspaces: &Workspaces) -> Result<Kept, String> {
     Ok(kept)
 }
 
-/// Each workspace of `person`'s list, with the address the list keeps for it:
-/// `None` for one no device of theirs said where it is kept.
+/// Enter as this device each workspace held here as the device this machine was copied from
+/// ([`Workspaces::held_as_another_device`]), and say which it holds as itself now.
+async fn enter_as_this_device(workspaces: &Workspaces) -> Kept {
+    let entering = workspaces.held_as_another_device().await;
+    let ids: Vec<String> = entering.iter().map(|(id, _)| id.to_string()).collect();
+    workspaces.hold_as_members(entering).await;
+    let mut kept = Kept::default();
+    for id in ids {
+        if workspaces.holds_as_this_device(&id).await {
+            kept.entered.push(id);
+        }
+    }
+    kept
+}
+
+/// Each workspace of `person`'s list, with the address the list keeps for it
+/// (`None` for one no device of theirs said where it is kept) and whether it
+/// shows on `device`.
 async fn listed(
     workspaces: &Workspaces,
     person: &[u8; 32],
-) -> Result<Vec<(WorkspaceId, Option<TransportHint>)>, String> {
+    device: &[u8; 32],
+) -> Result<Vec<(WorkspaceId, Option<TransportHint>, bool)>, String> {
     let list = person_workspace::read_on::<WorkspaceList>(
         workspaces,
         &person_workspace_id(person),
@@ -122,7 +151,7 @@ async fn listed(
                     postcard::from_bytes::<TransportHint>(&bytes).ok()
                 )
             });
-            Some((workspace, hint))
+            Some((workspace, hint, listed.shows_on(device)))
         })
         .collect())
 }
@@ -189,7 +218,7 @@ impl Workspaces {
                     };
                     match Box::pin(keep_listed(&Self { inner })).await {
                         Ok(kept) if !kept.none() => {
-                            tracing::info!(?kept, "this server keeps the person's list");
+                            tracing::info!(?kept, "this device keeps the person's list");
                         }
                         Ok(_) => {}
                         Err(error) => {

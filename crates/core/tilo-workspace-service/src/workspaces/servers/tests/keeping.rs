@@ -1,7 +1,6 @@
-//! An always-on server keeps every workspace of its person's list: one the
-//! list gains it enters as a device of theirs, told by the list's change, and
-//! one its entry turns keeping off for it lets go of, then enters again when
-//! keeping is turned back on.
+//! Every device of the person enters each workspace their list shows on it, told by the list's
+//! change. An always-on server keeps every workspace of the list instead: one its entry turns
+//! keeping off for it lets go of, then enters again when keeping is turned back on.
 #![allow(
     clippy::significant_drop_tightening,
     reason = "each test keeps the device serving the workspace to its end"
@@ -147,20 +146,65 @@ async fn a_server_keeps_each_listed_workspace_until_its_entry_says_not() {
     drop(desk);
 }
 
-/// A device with no entry among the person's servers keeps what it keeps: their list says
-/// nothing of what it takes.
+/// A device of the person's that is no server of theirs enters each workspace their list shows on
+/// it, told by the list's change: the daemon takes in what the person made on another device,
+/// and the desktop shows what it holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_that_is_no_server_of_the_person_keeps_nothing_by_the_list() {
-    let state = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let host = test_host(state.path(), &key, &cert).await;
+async fn a_device_that_is_no_server_enters_what_the_list_shows_on_it() {
+    let desk_state = tempfile::tempdir().unwrap();
+    let laptop_state = tempfile::tempdir().unwrap();
+    let (desk_key, desk_cert) = governor();
+    let desk = test_host(desk_state.path(), &desk_key, &desk_cert).await;
+    let made = desk
+        .workspaces()
+        .create("Desk")
+        .await
+        .expect("the desk founds a workspace");
+    let hint = desk
+        .workspaces()
+        .hosts(&made.workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|hint| hint.host.device_public_key == desk_cert.device_public_key)
+        .expect("the desk signs where it is reached");
+    // The desk's person's other device: the same root, a key of its own.
+    let (key, cert) = device_cert(
+        &SigningKey::from_bytes(&[1; 32]),
+        "laptop",
+        DeviceCapabilities::member(),
+    );
+    let laptop = test_host(laptop_state.path(), &key, &cert).await;
+    let workspaces = laptop.workspaces();
+    workspaces.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key),
+    }));
     let person = person_workspace_id(&cert.user_public_key);
-    host.workspaces()
+    workspaces
         .create_workspace(person_workspace::NAME, Some(&person))
         .await
-        .unwrap();
-    assert_eq!(
-        Box::pin(keep_listed(host.workspaces())).await.unwrap(),
-        super::super::keeping::Kept::default()
+        .expect("the person's own workspace is founded");
+    assert!(
+        read(workspaces)
+            .await
+            .unwrap()
+            .active(&cert.device_public_key)
+            .is_none(),
+        "the laptop is no server of the person's"
     );
+
+    list_workspace(workspaces, &made.workspace, "Desk", &hint).await;
+    keeps(
+        workspaces,
+        &made.workspace,
+        true,
+        "the laptop enters the workspace its person's list gained",
+    )
+    .await;
+    assert!(
+        workspaces.is_member(&made.workspace).await.unwrap(),
+        "it entered as a device of the person, as a member copy of the desk's"
+    );
+    drop(desk);
 }

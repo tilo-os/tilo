@@ -432,8 +432,13 @@ fn a_workspace_the_daemon_holds_elsewhere_is_listed_and_let_go_once_this_device_
         !personal.made_here(Some(&list), notes),
         "a workspace taken from the daemon's list is not one this device founds, nor claims"
     );
-    let hint = Personal::host_hint(&list, notes)
+    // Where the device's daemon enters it, as it reads the list.
+    let address = list
+        .get(notes)
+        .and_then(|listed| listed.address())
         .expect("the list says where the workspace's host is reached");
+    let hint: tilo_peer_state::join::TransportHint =
+        postcard::from_bytes(&address).expect("the host's address reads");
     assert!(
         hint.host.is_of_device(&server_cert.device_public_key),
         "it is entered at the host the daemon named"

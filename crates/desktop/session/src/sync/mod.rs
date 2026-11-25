@@ -36,24 +36,6 @@ pub const JOIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
         .saturating_add(SETTLE_WITHIN.as_secs()),
 );
 
-/// One of the person's workspaces this device holds nothing of yet: it takes the workspace in as a
-/// further device of their person, at the device hosting it. A device certified by a member's root
-/// is that member's device, so nothing has to be invited here
-/// ([`tilo_peer_state::owner::enroll::admit_as_member`]).
-#[cfg(target_os = "linux")]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Entering {
-    /// The workspace the person's list names.
-    pub workspace_id: tilo_desktop_model::WorkspaceId,
-    /// What the person's list calls it.
-    pub name: String,
-    /// Where the device hosting it is reached, as its host signed it.
-    pub host: tilo_peer_state::join::TransportHint,
-    /// Already on this session, held as the device this machine was copied
-    /// from: an entry that does not land leaves it where it is.
-    pub held: bool,
-}
-
 mod client;
 pub use client::Client;
 #[cfg(all(test, target_os = "linux"))]

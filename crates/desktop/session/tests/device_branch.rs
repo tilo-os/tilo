@@ -169,20 +169,12 @@ fn a_machine_copied_from_a_device_rejoins_as_a_device_of_its_own() {
     // The group state on the copied disk names the device it was made for: once the workspace
     // admits the copy, the copy drops it and joins the workspace's key group as itself.
     let dropped = "group state named the device this machine was copied from";
-    let admitted = format!(
-        "the host admitted this device and the workspace is held here workspace={}",
-        site.workspace
-    );
     // The copy joins as it starts, and the product gives that join its own patience before it says
     // the join did not happen: the wait spans that and the suite's hang bound after it, and a wait
     // that runs out reports what the copy's session said instead of only that it did not.
     let rejoined = || {
-        let log = copy.log();
-        (log.contains(dropped)
-            && log
-                .lines()
-                .any(|line| line.contains(&admitted) && line.contains("member=true")))
-        .then_some(())
+        (copy.log().contains(dropped) && names_device(&site, &copy.cert.device_public_key))
+            .then_some(())
     };
     let deadline = Instant::now()
         .checked_add(joined_within())
@@ -427,6 +419,17 @@ fn a_copy_lists_the_logins_its_source_saved() {
     );
 }
 
+/// Whether the workspace `site` serves names `device` among its people's devices: its governance
+/// took the device in as its own.
+fn names_device(site: &Site, device: &[u8; 32]) -> bool {
+    site.runtime_summary().is_ok_and(|summary| {
+        summary
+            .devices
+            .values()
+            .any(|devices| devices.contains(device))
+    })
+}
+
 /// What `device` says of the workspace `site` serves (`keeping_devices`): who hosts it, and
 /// whether its host took `device` in yet. `Null` while `device` does not hold it.
 fn held_row(device: &Device, site: &Site) -> serde_json::Value {
@@ -443,16 +446,10 @@ fn held_row(device: &Device, site: &Site) -> serde_json::Value {
 /// Wait until `site` took `device` in as a device of its person's own: the workspace's record names
 /// this device, and its apps join there as it.
 fn wait_admitted(device: &Device, site: &Site) {
-    let admitted = format!(
-        "the host admitted this device and the workspace is held here workspace={}",
-        site.workspace
-    );
     let until = tilo_test_env::hang_deadline();
     loop {
         let log = device.log();
-        if log
-            .lines()
-            .any(|line| line.contains(&admitted) && line.contains("member=true"))
+        if names_device(site, &device.cert.device_public_key)
             && held_row(device, site)["awaiting_host"] == false
         {
             return;
