@@ -82,7 +82,7 @@ rustPlatform.buildRustPackage rec {
     "-p" "tilo-session"
     "-p" "tilo-cli"
     "-p" "tilolang-process"
-    "-p" "tilo-runtime"
+    "-p" "tilo-daemon"
     "--bin" "tilo"
     "--bin" "tilo-runtime"
     "--bin" "tilolang-process"
