@@ -218,7 +218,7 @@ impl ContentSlot {
         self.sources.read_recover().clone()
     }
 
-    fn keepers(&self) -> Vec<Arc<dyn ContentKeeper>> {
+    pub(super) fn keepers(&self) -> Vec<Arc<dyn ContentKeeper>> {
         self.keepers
             .read_recover()
             .iter()
