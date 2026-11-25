@@ -131,7 +131,6 @@ fn ground_stops(theme: &Theme) -> (Color, Color) {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
     reason = "a colour channel, 0 to 255, rounded and clamped before it is a byte again"
 )]
 fn settle_toward_neutral(color: Color, amount: f32) -> Color {
@@ -147,7 +146,6 @@ fn settle_toward_neutral(color: Color, amount: f32) -> Color {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
     reason = "a colour channel, 0 to 255, rounded and clamped before it is a byte again"
 )]
 fn shade(color: Color, factor: f32) -> Color {
