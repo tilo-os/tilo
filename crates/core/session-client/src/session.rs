@@ -1122,7 +1122,62 @@ impl Task {
     ///
     /// The host refused the device or answered nothing, its answer does not read, or the
     /// membership it answered does not hold here.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn take_in(&mut self, workspace_id: WorkspaceId) -> Result<(), LinkError> {
+        let (served, hint) = self.entry_hint(workspace_id).await?;
+        let dialer = self.dial.dialer(&self.config, self.signer.as_ref()).await?;
+        let endpoint = dialer.endpoint().await?;
+        let bootstrap = tilo_peer_state::owner::enroll::prove_membership(
+            &tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint),
+            &served.endpoint_addr,
+            workspace_id,
+            &self.config.cert,
+            self.signer.as_ref(),
+        )
+        .await
+        .map_err(LinkError::Unavailable)?;
+        self.owner
+            .install_member(
+                workspace_id,
+                &bootstrap,
+                hint,
+                &self.config.cert,
+                tilo_clock::wall(),
+            )
+            .map_err(LinkError::Unavailable)?;
+        Ok(())
+    }
+
+    /// Hold `workspace_id` here: a page holds no workspace but the ones it is lent, so it asks
+    /// its host's entry and says it cannot.
+    ///
+    /// # Errors
+    ///
+    /// [`LinkError::Unavailable`], whatever the entry answered.
+    #[cfg(target_arch = "wasm32")]
     async fn take_in(&self, workspace_id: WorkspaceId) -> Result<(), LinkError> {
+        let _ = self.entry_hint(workspace_id).await?;
+        Err(LinkError::Unavailable(
+            "a page holds no workspace but the ones it is lent".into(),
+        ))
+    }
+
+    /// What the entry answers for `workspace_id`: the workspace's host address, and the hint the
+    /// entry admits this device with.
+    ///
+    /// # Errors
+    ///
+    /// The host refused the device or answered nothing, or its answer does not read.
+    async fn entry_hint(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<
+        (
+            tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1,
+            tilo_peer_state::join::TransportHint,
+        ),
+        LinkError,
+    > {
         let entering = tilo_server_protocol::entering::Entering {
             workspace: workspace_id.to_string(),
             name: self.config.cert.device_label.clone(),
@@ -1177,37 +1232,7 @@ impl Task {
                 &hint,
             )
             .map_err(|error| LinkError::Malformed(error.to_string()))?;
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (served, hint);
-            Err(LinkError::Unavailable(
-                "a page holds no workspace but the ones it is lent".into(),
-            ))
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let dialer = self.dial.dialer(&self.config, self.signer.as_ref()).await?;
-            let endpoint = dialer.endpoint().await?;
-            let bootstrap = tilo_peer_state::owner::enroll::prove_membership(
-                &tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint),
-                &served.endpoint_addr,
-                workspace_id,
-                &self.config.cert,
-                self.signer.as_ref(),
-            )
-            .await
-            .map_err(LinkError::Unavailable)?;
-            self.owner
-                .install_member(
-                    workspace_id,
-                    &bootstrap,
-                    hint,
-                    &self.config.cert,
-                    tilo_clock::wall(),
-                )
-                .map_err(LinkError::Unavailable)?;
-            Ok(())
-        }
+        Ok((served, hint))
     }
 
     /// The device's replica of `workspace_id`, as the link that owns it syncs it, taking its
