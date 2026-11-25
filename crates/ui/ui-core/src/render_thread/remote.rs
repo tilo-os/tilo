@@ -54,33 +54,10 @@ pub fn requested() -> bool {
             && (std::env::var_os(tilo_render_protocol::broker::FD_ENV).is_some()
                 || std::env::var_os(tilo_render_protocol::broker::SOCKET_ENV).is_some());
         if wanted {
-            ACTIVE.store(true, Ordering::Release);
+            crate::text_render::font_origins::mark_active();
         }
         wanted
     })
-}
-
-static ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// Whether frames go to a render service, cheaply, for code that records what the service will need
-/// (font origins).
-pub fn active() -> bool {
-    ACTIVE.load(Ordering::Acquire)
-}
-
-/// Fonts the text renderer loaded from a file, by blob: the service maps the same file from the shared
-/// read-only view rather than receiving its bytes.
-fn font_files() -> &'static Mutex<HashMap<u64, PathBuf>> {
-    static FILES: OnceLock<Mutex<HashMap<u64, PathBuf>>> = OnceLock::new();
-    FILES.get_or_init(Mutex::default)
-}
-
-/// `font` was loaded from `path`.
-pub fn note_font_file(font: &FontData, path: &Path) {
-    font_files()
-        .lock_recover()
-        .entry(font.data.id())
-        .or_insert_with(|| path.to_path_buf());
 }
 
 /// Uploads shared by every window's connection: one sealed memfd per image or font, sent to each
@@ -252,7 +229,7 @@ impl ResourceIds for Session {
         }
         let id = FontId(self.next_font);
         self.next_font = self.next_font.wrapping_add(1);
-        let file = font_files().lock_recover().get(&font.data.id()).cloned();
+        let file = crate::text_render::font_origins::font_file(font);
         let catalog = file
             .as_deref()
             .and_then(crate::font_catalog::catalog_digest)

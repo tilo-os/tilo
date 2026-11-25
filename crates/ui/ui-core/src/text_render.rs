@@ -15,6 +15,8 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 
 mod cache;
 pub use cache::PreparedText;
+#[cfg(feature = "native")]
+pub(crate) mod font_origins;
 mod presentation;
 pub use presentation::present_text;
 use presentation::{epoch as presentation_epoch, presents_text};
@@ -3232,12 +3234,12 @@ impl TextRenderer {
             .map(|font| font.as_peniko())?;
         // A render service maps the same file instead of receiving the bytes.
         #[cfg(feature = "native")]
-        if crate::render_thread::remote::active()
+        if font_origins::active()
             && let Some(face) = self.font_system.db().face(face_id)
             && let cosmic_text::fontdb::Source::File(path)
             | cosmic_text::fontdb::Source::SharedFile(path, _) = &face.source
         {
-            crate::render_thread::remote::note_font_file(&font, path);
+            font_origins::note_font_file(&font, path);
         }
         Some(font)
     }
@@ -5220,7 +5222,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod renderer_regressions;
+mod renderer_regressions_tests;
 
 #[cfg(test)]
 mod reading_faces;
