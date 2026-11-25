@@ -217,12 +217,13 @@ pub(crate) fn within_verb(
         };
         // One verb of the name that admits the resource's write is enough: a family declared
         // by prefix writes its own kinds beside a verb of the same name another app declares.
-        if !verbs.iter().any(|verb| {
-            verb_admits(schema, verb, stamp, id, kind, touch, writes).is_ok()
-        }) {
-            return verbs.iter().try_for_each(|verb| {
-                verb_admits(schema, verb, stamp, id, kind, touch, writes)
-            });
+        if !verbs
+            .iter()
+            .any(|verb| verb_admits(schema, verb, stamp, id, kind, touch, writes).is_ok())
+        {
+            return verbs
+                .iter()
+                .try_for_each(|verb| verb_admits(schema, verb, stamp, id, kind, touch, writes));
         }
     }
     Ok(())
@@ -249,17 +250,24 @@ fn marks(stamp: &Stamp, operations: usize) -> Result<(), String> {
 }
 
 /// Whether the origin's write, `verb`, admits a write of a resource of `kind`: any field or
-/// content of a declared kind, as the move places one of any kind. The platform's own write
-/// alone makes it: a change whose entry names what it did is an action's, never the origin's.
+/// content of a kind an origin declares, as the move places one of any kind. The platform's own
+/// write alone makes it: a change whose entry names what it did is an action's, never the
+/// origin's, and a kind no outside service keeps in step is no origin's to write.
 fn origin_admits(
     schema: &Schema,
     verb: &crate::schema::Verb,
     stamp: &Stamp,
     kind: &str,
 ) -> Result<(), String> {
-    schema
+    let ty = schema
         .get(kind)
         .ok_or_else(|| format!("no type `{kind}` is declared"))?;
+    if ty.origin.is_none() {
+        return Err(format!(
+            "`{kind}` is no origin's kind, so `{}` does not write it",
+            verb.name
+        ));
+    }
     if stamp
         .context
         .as_deref()
@@ -347,9 +355,9 @@ fn verb_admits(
             Err(format!("`{}` only carries `{id}` across", verb.name))
         };
     }
-    // The origin's write takes what an outside service said into a declared kind: any field or
-    // content the kind declares, as the move places one of any kind. It is the platform's own
-    // write, and no app action makes it.
+    // The origin's write takes what an outside service said into a kind that service keeps: any
+    // field or content the kind declares, as the move places one of any kind. It is the
+    // platform's own write, and no app action makes it.
     if verb.origins {
         return origin_admits(schema, verb, stamp, kind);
     }

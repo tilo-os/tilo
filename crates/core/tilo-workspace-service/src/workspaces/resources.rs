@@ -964,10 +964,24 @@ impl HostedWorkspace {
                 None
             }
         };
-        // A platform verb's wider write is the platform's alone: the invocation it belongs to
-        // must be the author's, or carried by their signed call.
+        // The origin's write is the platform's own, and no app action makes it: it is admitted
+        // only for the account whose sign-in its writer holds, in that account's place, read by
+        // the person who wrote it. What it needs is read once for the whole write. Every other
+        // change is its author's to make, and a platform verb's wider write the platform's.
+        let stamps: Vec<collab_types::Stamp> = origin_stamps(&changes)
+            .into_iter()
+            .map(|(_, stamp)| stamp)
+            .collect();
+        let origin = self.origin_leave(doc, author, &stamps, false);
         let admit = move |proposal: &tilo_resource_store::Proposal<'_>| {
-            permitted && platform_write_belongs(proposal.stamp, author_person)
+            if proposal
+                .stamp
+                .is_some_and(|stamp| stamp.verb == collab_types::Stamp::ORIGIN_VERB)
+            {
+                origin.as_ref().is_some_and(|leave| leave.admits(proposal))
+            } else {
+                permitted && platform_write_belongs(proposal.stamp, author_person)
+            }
         };
         // A sealed write was decided, by members without its key, by the kinds its claims name;
         // the store refuses each change unless they are the kinds it reads. A claim that names no
@@ -996,6 +1010,82 @@ impl HostedWorkspace {
             tracing::info!(workspace = %self.workspace(), %doc, %change, ?refusal, "a member's change to a resource was refused");
         }
         Ok(applied)
+    }
+
+    /// What an origin's write in `doc` is judged by, read once for `changes`: the devices that
+    /// may author it, each with the access it wrote under, and where every record of the document
+    /// stands. `None` when the write carries no change of the origin's.
+    fn origin_leave(
+        &self,
+        doc: &str,
+        author: [u8; 32],
+        stamps: &[collab_types::Stamp],
+        carried: bool,
+    ) -> Option<OriginLeave> {
+        use tilo_lock::MutexRecover as _;
+        if stamps.is_empty() {
+            return None;
+        }
+        let now = tilo_clock::wall();
+        // The device a change names is the one the workspace service wrote it for, and the
+        // device that signed it is the one it came from: either may be the one that holds the
+        // account's sign-in, and both are read against the membership now.
+        let mut devices = BTreeSet::from([author]);
+        devices.extend(stamps.iter().filter_map(device_of));
+        let mut writers = std::collections::HashMap::new();
+        for device in devices {
+            if let Ok(access) = self.peer().permissions(device, now) {
+                writers.insert(device, access);
+            }
+        }
+        let mut leave = OriginLeave {
+            writers,
+            records: std::collections::HashMap::new(),
+            origins: std::collections::HashMap::new(),
+            carried,
+        };
+        let store = self.resources.store.lock_recover();
+        for ty in &store.schema().types {
+            leave.origins.insert(ty.name.clone(), ty.origin.clone());
+        }
+        for (kind, id) in store.index().held(doc) {
+            leave.records.insert(
+                id.to_owned(),
+                RecordPlace {
+                    kind: kind.to_owned(),
+                    parent: store
+                        .index()
+                        .get(kind, id)
+                        .and_then(|row| row.parent.clone()),
+                },
+            );
+        }
+        Some(leave)
+    }
+
+    /// The origin's leave for each document the `writes` touch by the origin's write, read once
+    /// for the batch these writes are checked in.
+    fn origin_leaves(
+        &self,
+        author: [u8; 32],
+        writes: &[tilo_resource_store::Written],
+        carried: bool,
+    ) -> std::collections::HashMap<String, OriginLeave> {
+        let mut stamps: BTreeMap<String, Vec<collab_types::Stamp>> = BTreeMap::new();
+        for write in writes {
+            if let Some(stamp) = collab_types::Stamp::of(&write.change)
+                && stamp.verb == collab_types::Stamp::ORIGIN_VERB
+            {
+                stamps.entry(write.doc.clone()).or_default().push(stamp);
+            }
+        }
+        stamps
+            .into_iter()
+            .filter_map(|(doc, stamps)| {
+                self.origin_leave(&doc, author, &stamps, carried)
+                    .map(|leave| (doc, leave))
+            })
+            .collect()
     }
 
     async fn draft_resource_document(
@@ -1853,7 +1943,22 @@ impl Workspaces {
         if !in_place {
             return Ok(false);
         }
-        let admit = |_: &tilo_resource_store::Proposal<'_>| true;
+        let doc = hosted
+            .resources
+            .store_mut()
+            .index()
+            .get(kind, id)
+            .map(|held| held.doc.clone())
+            .unwrap_or_default();
+        let leave = (stamp.verb == collab_types::Stamp::ORIGIN_VERB)
+            .then(|| hosted.origin_leave(&doc, device.device(), std::slice::from_ref(stamp), true))
+            .flatten();
+        let admit = |proposal: &tilo_resource_store::Proposal<'_>| {
+            !proposal
+                .stamp
+                .is_some_and(|stamp| stamp.verb == collab_types::Stamp::ORIGIN_VERB)
+                || leave.as_ref().is_some_and(|leave| leave.admits(proposal))
+        };
         let write = self.store_of(&mut *hosted).draft_field_update(
             (kind, id),
             resource,
@@ -2195,10 +2300,19 @@ impl Workspaces {
     ) -> Result<collab_types::store::wire::Reply, String> {
         use collab_types::store::wire::Reply;
         let app = app.to_owned();
+        // The store's types and verbs are declared before the origin's leave reads them.
+        drop(self.store_of(&mut hosted));
         // A batch the store refuses a step of keeps none of its steps: check every write against
         // the store as the writes before it leave it, before a frame of the batch is retained.
+        // The origin's write is judged by the same leave a holder judges it by, so a write this
+        // device carries for a member is no more than one it would take from them.
+        let origin = hosted.origin_leaves(device.device(), &writes, true);
         self.store_of(&mut hosted)
-            .check_batch(&writes, device.device())
+            .check_batch_with(
+                &writes,
+                device.device(),
+                &OriginAdmission { origin: &origin },
+            )
             .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
         // The store takes these writes as they are kept, unless the action has others to come.
         let whole = action.is_none();
@@ -2798,6 +2912,172 @@ fn platform_write_belongs(
     }
 }
 
+/// Whether `proposal`, judged in the batch whose origin's leave is `origin`, may be made: an
+/// origin's write is the leave's to admit, and every other write is the caller's own to judge.
+fn admits_origin(
+    origin: &std::collections::HashMap<String, OriginLeave>,
+    proposal: &tilo_resource_store::Proposal<'_>,
+) -> bool {
+    if proposal
+        .stamp
+        .is_some_and(|stamp| stamp.verb == collab_types::Stamp::ORIGIN_VERB)
+    {
+        origin
+            .get(proposal.doc)
+            .is_some_and(|leave| leave.admits(proposal))
+    } else {
+        true
+    }
+}
+
+/// [`admits_origin`] as the store asks it: one batch's origin's leaves.
+struct OriginAdmission<'a> {
+    origin: &'a std::collections::HashMap<String, OriginLeave>,
+}
+
+impl tilo_resource_store::Admit for OriginAdmission<'_> {
+    fn admit(&self, proposal: &tilo_resource_store::Proposal<'_>) -> bool {
+        admits_origin(self.origin, proposal)
+    }
+}
+
+/// The changes of `changes` that name the origin's write, each with its stamp.
+fn origin_stamps(changes: &[AmChange]) -> Vec<(&AmChange, collab_types::Stamp)> {
+    changes
+        .iter()
+        .filter_map(|change| {
+            collab_types::Stamp::of(change)
+                .filter(|stamp| stamp.verb == collab_types::Stamp::ORIGIN_VERB)
+                .map(|stamp| (change, stamp))
+        })
+        .collect()
+}
+
+/// The device a stamp names as the one its change was written on, by its key in hex.
+fn device_of(stamp: &collab_types::Stamp) -> Option<[u8; 32]> {
+    if stamp.device.len() != 64 {
+        return None;
+    }
+    let mut key = [0_u8; 32];
+    hex::decode_to_slice(stamp.device.as_bytes(), &mut key).ok()?;
+    Some(key)
+}
+
+/// A record as the document holds it: its kind, and the record it is nested in.
+struct RecordPlace {
+    kind: String,
+    parent: Option<String>,
+}
+
+/// What an origin's write in one document is judged by, read once for the write: the access of
+/// every device it may be authored by, where each record of the document stands, and the outside
+/// kind each kind declares.
+struct OriginLeave {
+    writers: std::collections::HashMap<[u8; 32], tilo_action_policy::MemberAccess>,
+    records: std::collections::HashMap<String, RecordPlace>,
+    origins: std::collections::HashMap<String, Option<String>>,
+    /// This device carried the write for the caller it certified, as a command over its own
+    /// route: its stamp names the caller, and the device signed nothing of their own.
+    carried: bool,
+}
+
+impl OriginLeave {
+    /// Whether the origin's write `proposal` is one its writer may make: it names the person it
+    /// wrote for, the device it names is one of that person's (or an agent they run), the reader
+    /// set includes that person, and every record it touches stands in an origin account's place.
+    fn admits(&self, proposal: &tilo_resource_store::Proposal<'_>) -> bool {
+        let Some(stamp) = proposal.stamp else {
+            return false;
+        };
+        let device = device_of(stamp).unwrap_or(*proposal.author);
+        let Some(access) = self.writers.get(&device) else {
+            return false;
+        };
+        // The change names the person it wrote for, or, for an app's own process taking in what
+        // its service said, the person whose device holds the sign-in it used.
+        let named = stamp
+            .invoked_by()
+            .and_then(|invoker| invoker.person_id().map(str::to_owned))
+            .or_else(|| access.person_id().map(str::to_owned));
+        let Some(person) = named else {
+            return false;
+        };
+        // The device named wrote for the person, or, on the device that carried a command for
+        // the caller it certified, it is that device's own write of what they asked for.
+        let named_person = tilo_action_policy::Acting::person(person.as_str());
+        if access.invoked_by(&named_person).is_none()
+            && !(self.carried && device == *proposal.author)
+        {
+            return false;
+        }
+        let Some(key) = person_bytes(&person) else {
+            return false;
+        };
+        let Some(readers) = collab_types::Readers::parse(proposal.readers) else {
+            return false;
+        };
+        // Every member reads a document written for the workspace; a named set reads it where
+        // it names the person, by their key or by a role theirs includes.
+        if let Some(named) = readers.named()
+            && !named.includes(&key, access.policy.role_of(&person))
+        {
+            return false;
+        }
+        proposal
+            .touched
+            .resources
+            .iter()
+            .all(|(id, touch)| self.in_place(id, touch, &proposal.touched))
+    }
+
+    /// Whether the record `id` the change `touch` makes stands in an origin account's place: it
+    /// is nested, through the records the document holds and the records the change makes, in a
+    /// record of a kind an origin keeps (`imap.account`, `caldav.account`).
+    fn in_place(
+        &self,
+        id: &str,
+        touch: &collab_types::touch::Touch,
+        touched: &collab_types::touch::Touched,
+    ) -> bool {
+        let mut kind = self
+            .records
+            .get(id)
+            .map(|place| place.kind.clone())
+            .or_else(|| touch.kind.clone());
+        let mut parent = self
+            .records
+            .get(id)
+            .map(|place| place.parent.clone())
+            .unwrap_or_else(|| touch.parent.clone());
+        for _ in 0..64 {
+            if let Some(kind) = &kind
+                && self
+                    .origins
+                    .get(kind)
+                    .and_then(Option::as_deref)
+                    .is_some_and(|origin| origin.ends_with(".account"))
+            {
+                return true;
+            }
+            let Some(next) = parent else {
+                return false;
+            };
+            let made = touched.resources.get(&next);
+            kind = self
+                .records
+                .get(&next)
+                .map(|place| place.kind.clone())
+                .or_else(|| made.and_then(|touch| touch.kind.clone()));
+            parent = self
+                .records
+                .get(&next)
+                .map(|place| place.parent.clone())
+                .unwrap_or_else(|| made.and_then(|touch| touch.parent.clone()));
+        }
+        false
+    }
+}
+
 /// Whether the reader set `readers` names `reader` ([`tilo_resource_store::wire::reads_as`]).
 fn may_read(reader: String) -> impl Fn(&str) -> bool {
     move |readers| tilo_resource_store::wire::reads_as(&reader)(readers)
@@ -2811,3 +3091,193 @@ mod record_changes;
 // the members around it (`agents`, for the device the sealed fixtures make).
 #[cfg(all(test, feature = "apps", feature = "agents"))]
 mod tests;
+
+// The origin's write is the platform's own, and no app action makes it: a test of who may
+// author one, and where, without a workspace's whole governance around it.
+#[cfg(test)]
+mod origin_tests {
+    use std::collections::BTreeMap;
+
+    use collab_types::touch::{Touch, Touched};
+    use tilo_action_policy::{MemberAccess, WorkspacePolicy};
+    use tilo_resource_store::{Proposal, Stamp};
+
+    use super::{OriginLeave, RecordPlace};
+
+    const PERSON: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const OTHER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const DEVICE: [u8; 32] = [1; 32];
+    const OTHER_DEVICE: [u8; 32] = [2; 32];
+    const ACCOUNT: &str = "imap.account";
+    const MESSAGE: &str = "imap.message";
+
+    fn leave(writer: &str) -> OriginLeave {
+        let policy = WorkspacePolicy::new("workspace", PERSON);
+        let access = MemberAccess::person(policy, writer);
+        let mut records = std::collections::HashMap::new();
+        records.insert(
+            "account".to_owned(),
+            RecordPlace {
+                kind: "tl.mail.Account".to_owned(),
+                parent: Some("mail".to_owned()),
+            },
+        );
+        records.insert(
+            "message".to_owned(),
+            RecordPlace {
+                kind: "tl.mail.Message".to_owned(),
+                parent: Some("account".to_owned()),
+            },
+        );
+        records.insert(
+            "top".to_owned(),
+            RecordPlace {
+                kind: "tl.mail.Message".to_owned(),
+                parent: None,
+            },
+        );
+        OriginLeave {
+            writers: std::collections::HashMap::from([(DEVICE, access)]),
+            records,
+            origins: std::collections::HashMap::from([
+                ("tl.mail.Account".to_owned(), Some(ACCOUNT.to_owned())),
+                ("tl.mail.Message".to_owned(), Some(MESSAGE.to_owned())),
+                ("tl.mail.Mail".to_owned(), None),
+            ]),
+            carried: false,
+        }
+    }
+
+    fn touched(id: &str, parent: Option<&str>) -> Touched {
+        Touched {
+            resources: BTreeMap::from([(
+                id.to_owned(),
+                Touch {
+                    kind: Some("tl.mail.Message".to_owned()),
+                    parent: parent.map(str::to_owned),
+                    ..Touch::default()
+                },
+            )]),
+            readers: Some(collab_types::EVERY_MEMBER.to_owned()),
+        }
+    }
+
+    fn stamp(invoker: &str, device: [u8; 32]) -> Stamp {
+        Stamp {
+            verb: collab_types::Stamp::ORIGIN_VERB.to_owned(),
+            invoker: invoker.to_owned(),
+            device: hex::encode(device),
+            ..Stamp::default()
+        }
+    }
+
+    fn admits(leave: &OriginLeave, stamp: &Stamp, touched: &Touched, readers: &str) -> bool {
+        leave.admits(&Proposal {
+            doc: "*/tl.mail#0",
+            readers,
+            author: &DEVICE,
+            stamp: Some(stamp),
+            touched,
+        })
+    }
+
+    #[test]
+    fn a_device_writes_the_origin_only_for_its_own_person() {
+        let here = leave(PERSON);
+        // The person's own device, writing in an account's place, is admitted.
+        let own = stamp(PERSON, DEVICE);
+        assert!(admits(
+            &here,
+            &own,
+            &touched("message", Some("account")),
+            "*"
+        ));
+        // A change naming another person than the device's is refused, though the document is
+        // the same: a member's device writes for nobody else.
+        let other = stamp(OTHER, DEVICE);
+        assert!(!admits(
+            &here,
+            &other,
+            &touched("message", Some("account")),
+            "*"
+        ));
+        // Nor does another device stand in for this one.
+        let elsewhere = stamp(PERSON, OTHER_DEVICE);
+        assert!(!admits(
+            &here,
+            &elsewhere,
+            &touched("message", Some("account")),
+            "*"
+        ));
+    }
+
+    #[test]
+    fn the_device_that_carried_a_call_admits_it_for_the_caller_it_certified() {
+        // A member's command on the workspace's host: the stamp names the person who asked, and
+        // the host's own device wrote it. Another holder receiving the same write as that
+        // member's own requires their device to stand for them.
+        let mut host = leave(PERSON);
+        host.carried = true;
+        let carried = stamp(OTHER, DEVICE);
+        assert!(admits(
+            &host,
+            &carried,
+            &touched("message", Some("account")),
+            "*"
+        ));
+        let remote = leave(PERSON);
+        assert!(!admits(
+            &remote,
+            &carried,
+            &touched("message", Some("account")),
+            "*"
+        ));
+    }
+
+    #[test]
+    fn the_origin_writes_only_inside_an_accounts_place_and_to_its_readers() {
+        let here = leave(PERSON);
+        let own = stamp(PERSON, DEVICE);
+        // A record at the top of the workspace stands in no account's place.
+        assert!(!admits(&here, &own, &touched("top", None), "*"));
+        // Neither does one whose parent the document does not hold.
+        assert!(!admits(&here, &own, &touched("fresh", Some("gone")), "*"));
+        // A reader set that leaves the person out is no reader set of theirs.
+        let only_other = hex::encode([9_u8; 32]);
+        assert!(!admits(
+            &here,
+            &own,
+            &touched("message", Some("account")),
+            &only_other
+        ));
+        // The account's own record is in its place.
+        let mut account = touched("account", Some("mail"));
+        account.resources.get_mut("account").unwrap().kind = Some("tl.mail.Account".to_owned());
+        assert!(admits(&here, &own, &account, "*"));
+    }
+
+    #[test]
+    fn a_change_naming_no_person_is_its_devices_and_an_unknown_device_is_refused() {
+        let here = leave(PERSON);
+        // A change naming no person is the person of the device it names.
+        let no_person = Stamp {
+            verb: collab_types::Stamp::ORIGIN_VERB.to_owned(),
+            device: hex::encode(DEVICE),
+            ..Stamp::default()
+        };
+        assert!(admits(
+            &here,
+            &no_person,
+            &touched("message", Some("account")),
+            "*"
+        ));
+        // A device the workspace does not know writes nothing.
+        let no_device = stamp(PERSON, [3; 32]);
+        assert!(!admits(
+            &here,
+            &no_device,
+            &touched("message", Some("account")),
+            "*"
+        ));
+    }
+}

@@ -389,6 +389,7 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet, targeted: bool) -
         // declares): what a change writing either is admitted by.
         outside: action.outside.clone(),
         notice: action.notice || action.uses.iter().any(|effect| effect == "notify"),
+        origin: None,
     }
 }
 
@@ -470,6 +471,7 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
         tags: Vec::new(),
         outside: Vec::new(),
         notice: false,
+        origin: None,
     };
     let mut verbs = vec![create];
     verbs.extend(DIRECT_EDITS.iter().map(|direct| {
@@ -513,6 +515,7 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
             tags: Vec::new(),
             outside: Vec::new(),
             notice: false,
+            origin: None,
         }
     }));
     // A type with rich text offers an agent the edits of one paragraph of it, by the address
@@ -573,6 +576,7 @@ fn block_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
                 tags: Vec::new(),
                 outside: Vec::new(),
                 notice: false,
+                origin: None,
             }
         })
         .collect()
@@ -581,7 +585,7 @@ fn block_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
 /// The verb of what an outside origin writes: its service's answer, taken into the resources the
 /// package keeps in step with it, as one change of the host's own. Receivers decide that change
 /// against this verb.
-fn origin_verb() -> VerbSurface {
+fn origin_verb(origin: &str) -> VerbSurface {
     VerbSurface {
         id: ORIGIN_ACTION.to_owned(),
         name: String::new(),
@@ -597,6 +601,7 @@ fn origin_verb() -> VerbSurface {
         tags: Vec::new(),
         outside: Vec::new(),
         notice: false,
+        origin: Some(origin.to_owned()),
     }
 }
 
@@ -616,6 +621,7 @@ fn scenario_verb() -> VerbSurface {
         tags: Vec::new(),
         outside: Vec::new(),
         notice: false,
+        origin: None,
     }
 }
 
@@ -717,15 +723,15 @@ fn live_surface(meta: &Meta, ty: &TypeMeta) -> Option<tilo_actions::surface::Liv
 #[must_use]
 pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     let mut surfaces = Vec::new();
-    // A package with an outside origin writes what its service says into the resources holding
-    // those of the origin's types, the package's root among them: each resource takes that change.
-    let kept_in_step = meta.types.iter().any(|ty| ty.origin.is_some());
     let seeded = !meta.scenarios.is_empty();
     for ty in &meta.types {
         let mut types = TypeSet::new();
         let mut verbs = edit_verbs(ty);
-        if kept_in_step {
-            verbs.push(origin_verb());
+        // A type an outside service keeps in step declares its origin (`imap.message`): the
+        // surface's origin verb carries that kind, which every receiver judges an origin write
+        // against.
+        if let Some(origin) = &ty.origin {
+            verbs.push(origin_verb(origin));
         }
         // A package's scenario fills its resources with the data its shots and demos start
         // from, writing any of its types.
@@ -827,6 +833,7 @@ pub fn personal_surface() -> Surface {
         tags: Vec::new(),
         outside: Vec::new(),
         notice: false,
+        origin: None,
     })
     .collect();
     Surface {
@@ -906,6 +913,7 @@ pub fn queued_effect_surface() -> Surface {
         tags: Vec::new(),
         outside: Vec::new(),
         notice: false,
+        origin: None,
     };
     Surface {
         kind: OUTBOX.to_owned(),

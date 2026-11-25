@@ -1,7 +1,7 @@
 //! A workspace of `n` items, for measuring a window as a person with that many sees it: the items
-//! of the package's root collection, written to the store as a service's origin writes what it
-//! brings in, a thousand items a change. They are the person's own, as the items of a workspace
-//! they moved in are: nothing of them waits to be caught up on.
+//! of the package's root collection, written to the store as the person's own edit, a thousand
+//! items a change. They are a fixture: what a shot, a benchmark or a test starts from, never what
+//! an outside service said, so no store admits them as an origin's write.
 
 use tilolang_runtime::ResourceRef;
 use tilolang_runtime::origin::OriginWrite;
@@ -117,12 +117,9 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
             })
             .collect();
         host.runtime()
-            .write_origin_for(
-                "seed",
-                Some(host.viewer().clone()),
-                Some(at.to_owned()),
-                |change| change.write(writes),
-            )
+            .write_edit_for(Some(host.viewer().clone()), Some(at.to_owned()), |change| {
+                change.write(writes)
+            })
             .map_err(|error| error.to_string())?;
         written = end;
     }

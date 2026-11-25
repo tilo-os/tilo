@@ -35,11 +35,11 @@ pub const CREATE_VERB: &str = "create";
 pub const BRANCH_VERB: &str = tilo_actions::stamp::Stamp::BRANCH_VERB;
 
 /// The verb of the store's origin write ([`collab_types::Stamp::ORIGIN_VERB`]): data brought in
-/// from outside — a service's messages, a device's records — taken into the resources of the
-/// kinds an app declares. It writes what any field or content of a declared kind holds, as the
-/// move places one of any kind. The platform's own write alone makes it, and no app action names
-/// it: its change names no action, where an app's change names the action that made it. Every
-/// schema has it, as it has the move.
+/// from outside — a service's messages, a device's records — taken into the records of the types
+/// that service keeps. It writes what any field or content of an origin kind holds, as the move
+/// places one of any kind, and no other kind. The platform's own write alone makes it, and no app
+/// action names it: its change names no action, where an app's change names the action that made
+/// it. Every schema has it, as it has the move.
 pub const ORIGIN_VERB: &str = collab_types::Stamp::ORIGIN_VERB;
 
 /// The verbs the platform writes under, which no app declares
@@ -138,7 +138,7 @@ pub struct Verb {
     /// It tells a person something (`notify(...)`): a change writing a notice of the host's
     /// `Notice` kind is admitted only from such a verb.
     pub notice: bool,
-    /// The origin's write ([`ORIGIN_VERB`]): it writes any field and content of a declared kind,
+    /// The origin's write ([`ORIGIN_VERB`]): it writes any field and content of an origin kind,
     /// as the move places one of any kind.
     pub origins: bool,
     /// A verb the platform writes under ([`PLATFORM_VERBS`]): it writes any field and content of
@@ -171,6 +171,9 @@ pub struct Type {
     /// The containers at the root of a resource's content that its fields keep their items in,
     /// by field: what its derived founding makes ([`collab_types::document::founding`]).
     pub founding: Vec<(String, automerge::ObjType)>,
+    /// The outside service kind the type declares (`imap.message`), for a type whose records
+    /// an origin keeps in step with a service. `None` for a type no origin writes.
+    pub origin: Option<String>,
 }
 
 /// One indexed field of a resource type.
@@ -296,6 +299,13 @@ impl Schema {
             .iter()
             .find(|ty| ty.name == own_name)
             .or_else(|| declared.first());
+        // The outside service kind the surface's origin verb declares, for a record an origin
+        // keeps in step with a service.
+        let origin = surface
+            .verbs
+            .iter()
+            .find(|verb| verb.id == ORIGIN_VERB)
+            .and_then(|verb| verb.origin.clone());
         // What the surface says of when its own record is live. A condition this store cannot
         // read (one a later version wrote) leaves the type never live here rather than wrong.
         let live: Option<Vec<collab_types::store::Filter>> = surface
@@ -313,6 +323,7 @@ impl Schema {
                     ty_of.nested.extend(held_records(surface));
                     ty_of.live.clone_from(&live);
                     ty_of.founding = collab_types::document::founding::containers(surface);
+                    ty_of.origin.clone_from(&origin);
                 }
                 ty_of
             })
@@ -397,9 +408,10 @@ impl Schema {
             .chain(HISTORY.iter())
             .filter(move |verb| {
                 verb.name == name
-                    || verb.name.strip_suffix('*').is_some_and(|prefix| {
-                        name.len() > prefix.len() && name.starts_with(prefix)
-                    })
+                    || verb
+                        .name
+                        .strip_suffix('*')
+                        .is_some_and(|prefix| name.len() > prefix.len() && name.starts_with(prefix))
             })
     }
 
@@ -624,6 +636,7 @@ impl Type {
             nested,
             live: None,
             founding: Vec::new(),
+            origin: None,
         }
     }
 

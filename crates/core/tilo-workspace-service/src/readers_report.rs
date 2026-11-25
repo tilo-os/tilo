@@ -109,8 +109,7 @@ fn surface_files(
     depth: usize,
     out: &mut Vec<std::path::PathBuf>,
 ) -> Result<(), String> {
-    let entries =
-        std::fs::read_dir(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    let entries = std::fs::read_dir(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -126,10 +125,7 @@ fn surface_files(
 
 /// The types and rules the surfaces in `surfaces` declare, as a store declares them before it
 /// places a write: each given to `declare`.
-pub(crate) fn declare_surfaces(
-    store: &mut Store,
-    surfaces: &[tilo_actions::surface::Surface],
-) {
+pub(crate) fn declare_surfaces(store: &mut Store, surfaces: &[tilo_actions::surface::Surface]) {
     for surface in surfaces {
         store.declare(tilo_resource_store::Schema::from_surface(surface));
     }
@@ -170,6 +166,7 @@ mod tests {
                 nested: Vec::new(),
                 live: None,
                 founding: Vec::new(),
+                origin: None,
             }],
             ..Schema::default()
         });
@@ -190,7 +187,10 @@ mod tests {
                         parent: None,
                         order: None,
                         fields: BTreeMap::from([
-                            ("subject".to_owned(), Cell::One(Value::from("Quarterly plan"))),
+                            (
+                                "subject".to_owned(),
+                                Cell::One(Value::from("Quarterly plan")),
+                            ),
                             ("sent".to_owned(), Cell::One(Value::Bool(sent))),
                         ]),
                     },

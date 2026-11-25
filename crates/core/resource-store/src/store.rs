@@ -336,6 +336,20 @@ impl Store {
     /// # Errors
     /// The first write it refuses.
     pub fn check_batch(&mut self, writes: &[Written], author: [u8; 32]) -> Result<(), Refusal> {
+        self.check_batch_with(writes, author, &|_: &Proposal<'_>| true)
+    }
+
+    /// [`Self::check_batch`], admitting each write's author by `admit`: what the workspace judges
+    /// a write of this device's own by, as it judges a received one.
+    ///
+    /// # Errors
+    /// The first write it refuses.
+    pub fn check_batch_with(
+        &mut self,
+        writes: &[Written],
+        author: [u8; 32],
+        admit: &dyn Admit,
+    ) -> Result<(), Refusal> {
         if writes.is_empty() {
             return Ok(());
         }
@@ -347,7 +361,7 @@ impl Store {
         };
         self.stage(&scope, |staged| {
             for write in writes {
-                staged.check_write(write, author)?;
+                staged.check_write_with(write, author, admit)?;
                 staged
                     .apply(&write.doc, &write.readers, write.change.clone())
                     .map_err(|_| Refusal::Unplaced)?;
@@ -361,6 +375,19 @@ impl Store {
     /// # Errors
     /// The change has no local base or the resource schema refuses it.
     pub fn check_write(&mut self, write: &Written, author: [u8; 32]) -> Result<(), Refusal> {
+        self.check_write_with(write, author, &|_: &Proposal<'_>| true)
+    }
+
+    /// [`Self::check_write`], admitting its author by `admit`.
+    ///
+    /// # Errors
+    /// The change has no local base or the resource schema refuses it.
+    pub fn check_write_with(
+        &mut self,
+        write: &Written,
+        author: [u8; 32],
+        admit: &dyn Admit,
+    ) -> Result<(), Refusal> {
         let doc = self.doc(&write.doc).map_err(|_| Refusal::Unplaced)?;
         if write.change.deps().iter().any(|dep| !doc.has_change(dep)) {
             return Err(Refusal::Unplaced);
@@ -370,13 +397,7 @@ impl Store {
             author,
             claimed: None,
         };
-        self.judge(
-            &write.doc,
-            &write.readers,
-            &received,
-            None,
-            &|_: &Proposal<'_>| true,
-        )
+        self.judge(&write.doc, &write.readers, &received, None, admit)
     }
 
     /// The kinds of the records `write`, staged against this store, writes, as each holder that
@@ -2346,6 +2367,13 @@ impl Store {
     #[must_use]
     pub const fn schema(&self) -> &Schema {
         &self.schema
+    }
+
+    /// The outside service kind the type `kind` declares (`imap.message`), for a kind an origin
+    /// keeps in step with a service; `None` for any other kind.
+    #[must_use]
+    pub fn origin_of(&self, kind: &str) -> Option<&str> {
+        self.schema.get(kind).and_then(|ty| ty.origin.as_deref())
     }
 
     /// Takes the types `schema` declares into those a peer's change is checked against.

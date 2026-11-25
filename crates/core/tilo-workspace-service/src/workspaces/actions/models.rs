@@ -683,6 +683,7 @@ mod surface_tests {
             tags: crate::workspaces::actions::tags_of(verb.id),
             outside: Vec::new(),
             notice: false,
+            origin: None,
         }
     }
 

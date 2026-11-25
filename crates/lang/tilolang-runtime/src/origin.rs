@@ -197,9 +197,43 @@ impl Runtime {
         at: Option<String>,
         step: impl FnOnce(&mut OriginChange<'_>) -> Result<T, RuntimeError>,
     ) -> Result<T, RuntimeError> {
+        self.write_as_for(
+            crate::store::ORIGIN_ACTION,
+            serde_json::Value::String(origin.to_owned()),
+            invoker,
+            at,
+            step,
+        )
+    }
+
+    /// Write what the person `invoker` brings into the workspace as one change of the fields
+    /// `step` writes, stamped as their own edit: the data a fixture starts from, which no
+    /// service said and no origin keeps in step. Nothing about it is the platform's write.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::write_origin`].
+    pub fn write_edit_for<T>(
+        &self,
+        invoker: Option<crate::ids::Actor>,
+        at: Option<String>,
+        step: impl FnOnce(&mut OriginChange<'_>) -> Result<T, RuntimeError>,
+    ) -> Result<T, RuntimeError> {
+        self.write_as_for("edit", serde_json::Value::Null, invoker, at, step)
+    }
+
+    /// Write what `step` makes as one change of the action `action`, carrying `args`.
+    fn write_as_for<T>(
+        &self,
+        action: &str,
+        args: serde_json::Value,
+        invoker: Option<crate::ids::Actor>,
+        at: Option<String>,
+        step: impl FnOnce(&mut OriginChange<'_>) -> Result<T, RuntimeError>,
+    ) -> Result<T, RuntimeError> {
         let note = ChangeNote {
-            action: crate::store::ORIGIN_ACTION.into(),
-            args: serde_json::Value::String(origin.to_owned()),
+            action: action.into(),
+            args,
             invoker,
             chain: Vec::new(),
             module: "origin".into(),

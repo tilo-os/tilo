@@ -101,6 +101,7 @@ fn verb_of(decl: &Declaration, types: &mut TypeSet) -> VerbSurface {
         tags: Vec::new(),
         outside: Vec::new(),
         notice: false,
+        origin: None,
     }
 }
 
@@ -122,6 +123,7 @@ fn framework_verb(id: &str, writes: Vec<String>) -> VerbSurface {
         tags: Vec::new(),
         outside: Vec::new(),
         notice: false,
+        origin: None,
     }
 }
 
@@ -354,6 +356,7 @@ pub fn effect_verb(decl: &crate::EffectDecl, types: &mut TypeSet) -> VerbSurface
         tags: Vec::new(),
         outside: Vec::new(),
         notice: false,
+        origin: None,
     }
 }
 

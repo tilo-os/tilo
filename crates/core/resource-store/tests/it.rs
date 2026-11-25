@@ -1061,6 +1061,7 @@ mod store {
                 nested: Vec::new(),
                 live: None,
                 founding: Vec::new(),
+                origin: None,
             }],
             ..Schema::default()
         });
@@ -1138,6 +1139,7 @@ mod store {
             nested: Vec::new(),
             live: None,
             founding: Vec::new(),
+            origin: None,
         }
     }
 
@@ -1231,6 +1233,7 @@ mod store {
                 nested: Vec::new(),
                 live: Some(vec![Filter::Is("state".to_owned(), "playing".into())]),
                 founding: Vec::new(),
+                origin: None,
             }],
             ..Schema::default()
         });
@@ -2922,21 +2925,27 @@ mod store {
     }
 
     /// The store's origin write names no app: what an outside service said lands as a change of
-    /// the platform's, writing any field or content of a declared kind, as the move places one
-    /// of any kind. It is declared once, in every schema, and a surface that names it adds
-    /// nothing to it: a change whose entry names an action is an app action's, and is refused,
-    /// so no app gets the platform's write by declaring the verb its own.
+    /// the platform's, writing any field or content of a kind an origin declares, as the move
+    /// places one of any kind. It is declared once, in every schema, and a surface that names it
+    /// adds nothing to it: a change whose entry names an action is an app action's, and is
+    /// refused, so no app gets the platform's write by declaring the verb its own.
     #[test]
-    fn the_origins_write_lands_in_a_declared_kind_and_no_app_action_makes_it() {
+    fn the_origins_write_lands_in_an_origin_kind_and_no_app_action_makes_it() {
         use tilo_resource_store::{ORIGIN_VERB, Refusal};
         let anyone = |_: &Proposal<'_>| true;
         // A store judging verbs, whose surface names the origin's verb its own: what an app
-        // declaring it would publish.
-        let mut there = issues();
+        // declaring it would publish. The kind an origin keeps is declared as its own.
+        let mut origin_kind = record_type(ISSUE);
+        origin_kind.origin = Some("imap.issue".to_owned());
+        let mut there = Store::new();
         there.declare(Schema {
+            types: vec![origin_kind, record_type("gallery.Item")],
             verbs: vec![tilo_resource_store::Verb {
                 name: ORIGIN_VERB.to_owned(),
-                writes: BTreeMap::from([(ISSUE.to_owned(), tilo_resource_store::Writes::default())]),
+                writes: BTreeMap::from([(
+                    ISSUE.to_owned(),
+                    tilo_resource_store::Writes::default(),
+                )]),
                 ..tilo_resource_store::Verb::default()
             }],
             ..Schema::default()
@@ -2960,11 +2969,7 @@ mod store {
         let mut app_action = stamp(ORIGIN_VERB, "i2");
         app_action.context = Some(Box::new(tilo_actions::ActionContext {
             what: Some(tilo_actions::Did::verb(
-                tilo_actions::ActionKey::new(
-                    "so.tilo.tasks",
-                    "tl.so.tilo.tasks.Task",
-                    ORIGIN_VERB,
-                ),
+                tilo_actions::ActionKey::new("so.tilo.tasks", "tl.so.tilo.tasks.Task", ORIGIN_VERB),
                 [],
             )),
             ..tilo_actions::ActionContext::default()
@@ -2981,18 +2986,31 @@ mod store {
             deliver(&smuggled, &mut there, &anyone).as_slice(),
             [Refusal::Undeclared(why)] if why.contains("no action makes it")
         ));
-        // A kind the store does not declare is no origin's to write.
-        let unknown = issues()
+        // A kind the store declares, that no origin keeps, is no origin's to write either.
+        let not_origin = issues()
             .put(
                 "gallery.Item",
                 "o3",
-                resource("board", "o2", "Elsewhere", "open"),
+                resource("board", "o2", "Typed", "open"),
                 &stamp(ORIGIN_VERB, "i3"),
             )
             .unwrap();
         assert!(matches!(
+            deliver(&not_origin, &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("no origin's kind")
+        ));
+        // A kind the store does not declare is no origin's to write.
+        let unknown = issues()
+            .put(
+                "gallery.Unknown",
+                "o4",
+                resource("board", "o3", "Elsewhere", "open"),
+                &stamp(ORIGIN_VERB, "i4"),
+            )
+            .unwrap();
+        assert!(matches!(
             deliver(&unknown, &mut there, &anyone).as_slice(),
-            [Refusal::Undeclared(why)] if why.contains("gallery.Item")
+            [Refusal::Undeclared(why)] if why.contains("gallery.Unknown")
         ));
     }
 
@@ -3126,6 +3144,7 @@ mod store {
                 nested: Vec::new(),
                 live: None,
                 founding: Vec::new(),
+                origin: None,
             }],
             ..Schema::default()
         };
@@ -3667,6 +3686,7 @@ mod store {
             nested: Vec::new(),
             live: None,
             founding: Vec::new(),
+            origin: None,
         };
         let mut store = Store::new();
         store.declare(Schema {
@@ -4150,6 +4170,7 @@ mod outside_effects {
                     nested: Vec::new(),
                     live: None,
                     founding: Vec::new(),
+                    origin: None,
                 },
                 Type {
                     name: OUTBOX.to_owned(),
@@ -4170,6 +4191,7 @@ mod outside_effects {
                     nested: Vec::new(),
                     live: None,
                     founding: Vec::new(),
+                    origin: None,
                 },
             ],
             verbs: vec![Verb {
@@ -4332,6 +4354,7 @@ mod outside_effects {
                     nested: Vec::new(),
                     live: None,
                     founding: Vec::new(),
+                    origin: None,
                 },
                 Type {
                     name: "Ruled".to_owned(),
@@ -4339,6 +4362,7 @@ mod outside_effects {
                     nested: Vec::new(),
                     live: None,
                     founding: Vec::new(),
+                    origin: None,
                 },
             ],
             verbs: Vec::new(),

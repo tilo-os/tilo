@@ -590,17 +590,18 @@ pub(super) fn seed_into(bus: &Rc<tilolang_process::testing::Bus>, n: usize) {
     drop(seeder);
 }
 
-/// An import lands as the store's origin write: the tasks a person brings in are records of the
-/// workspace's store, stamped `$origin`, of the kind their package declares.
+/// A fixture lands as the person's own edit: the tasks a test starts from are records of the
+/// workspace's store, stamped `edit` with the person's name, of the kind their package declares.
+/// Tasks has no origin kind, so nothing of this is an outside service's write.
 #[test]
-fn a_tasks_import_lands_in_the_workspace_store() {
+fn a_tasks_seed_lands_in_the_workspace_store() {
     let bus = seeded_tasks(3);
     assert!(
         bus.workspace()
             .written()
             .iter()
-            .any(|stamp| stamp.verb == collab_types::Stamp::ORIGIN_VERB),
-        "the import is the store's origin write"
+            .any(|stamp| stamp.verb == "edit" && stamp.invoked_by().is_some()),
+        "the seed is the person's edit"
     );
     let listed = bus
         .workspace()

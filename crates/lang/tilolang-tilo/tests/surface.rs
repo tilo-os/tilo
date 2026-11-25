@@ -803,9 +803,9 @@ action attach(b: Board, list: todo.TodoList) {
     }
 
     phase the_workspace_admits_what_an_outside_origin_writes;
-    // What a service said is written by its origin as one change of its own, into the resources
-    // that hold the origin's types: the workspace's store judges every write by the verb it names,
-    // so the surface declares the origin's, or a mailbox keeps none of its mail.
+    // What a service said is written by its origin as one change of its own, into the records of
+    // the types the service keeps: the workspace's store judges every write by the verb it names,
+    // so a type an origin keeps declares the verb, and its package's own records declare none.
     {
         const INBOX: &str = r#"app so.tilo.lang.inbox "Inbox"
 
@@ -842,8 +842,8 @@ view inbox(i: Inbox) {
             .collect();
         assert_eq!(
             declared,
-            [meta.kind_of("Mailbox"), meta.kind_of("Inbox")],
-            "every resource the origin writes into names its verb"
+            [meta.kind_of("Mailbox")],
+            "the kind an origin keeps names its verb, and the package's own records do not"
         );
         let (_, plain) = Replica::new("ada", Workspace::new(), &[(TODO, "")]);
         assert!(

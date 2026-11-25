@@ -165,6 +165,11 @@ pub struct VerbSurface {
     /// notice is admitted only from a verb that says so.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub notice: bool,
+    /// On the surface's origin verb ([`crate::stamp::Stamp::ORIGIN_VERB`]): the outside
+    /// service kind the surface's records are of, as its type declares it (`imap.message`).
+    /// `None` for every other verb, and for a surface whose records no service keeps in step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 fn stored_value() -> String {
@@ -285,6 +290,7 @@ pub fn verb_of(action: &crate::ActionSpec, params: Vec<ParamSurface>) -> VerbSur
         tags: Vec::new(),
         outside: Vec::new(),
         notice: false,
+        origin: None,
     }
 }
 
@@ -468,6 +474,7 @@ impl Surface {
                     tags: Vec::new(),
                     outside: Vec::new(),
                     notice: false,
+                    origin: None,
                 }
             })
             .collect();
