@@ -264,7 +264,7 @@ view accounts_pane() {
         for connected in a.connected {
             ui.ListRow(
                 connected.name,
-                secondary: "{connected.label} · for {app_name(device.apps.installed, connected.app)}",
+                secondary: "{connected.label} account, connected in {app_name(device.apps.installed, connected.app)}",
                 icon: .user,
             ) {
                 trailing: {
