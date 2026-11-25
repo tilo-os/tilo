@@ -1139,6 +1139,37 @@ impl Shell {
                 }
             });
         }
+        // The person's answers to their asked records go to the invocations of the workspace
+        // each record is in, whichever workspace is in front.
+        for (workspace, address, arguments) in self.link.take_answers() {
+            let request = tilo_actions::remote::InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+                    address: address.clone(),
+                },
+                argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            };
+            let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+            let daemon_at = daemon.clone();
+            let refusals = std::sync::Arc::clone(&self.dispatch_refusals);
+            daemon.runtime().spawn(async move {
+                if let Err(why) = daemon_at.dispatch(Some(&workspace), &message).await {
+                    tracing::warn!(action = %address.action, %why, "the person's answer was refused");
+                    refusals
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(format!("{} on {}: {why}", address.action, address.resource));
+                }
+            });
+        }
     }
 
     /// Where the shell's control named `name` stands, logical `(x, y, w, h)` : the first part that

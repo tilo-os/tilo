@@ -544,6 +544,26 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
         invocation: &tilolang_tilo::runtime::delegate::Invocation,
     ) -> tilolang_tilo::runtime::delegate::Invoked {
         use tilolang_tilo::runtime::delegate::{Invocation, Invoked};
+        // An answer to an asked record is the record's own action, kept by the workspace's
+        // invocations where the record is: it never reaches the session's API, which publishes
+        // no such record.
+        if let Invocation::Action {
+            app,
+            name,
+            target: Some(target),
+            ..
+        } = invocation
+            && tilolang_tilo::tilolang::is_invocation_type(&target.ty)
+        {
+            let record = target.item.clone().unwrap_or_else(|| target.doc.clone());
+            self.link.answer(
+                target.doc.clone(),
+                record,
+                tilolang_tilo::catalogue::published_verb(app.as_str(), name).to_owned(),
+                invocation.api_arguments(),
+            );
+            return Invoked::Done(Value::Unit);
+        }
         let ask = match invocation {
             Invocation::Action {
                 app,

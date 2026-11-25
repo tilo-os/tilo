@@ -205,6 +205,10 @@ pub struct SessionLink {
     /// name, which the session runs on the device's dispatch as the person
     /// ([`SessionLink::take_own_calls`]).
     own_calls: RefCell<Vec<(ActionAddress, serde_json::Map<String, serde_json::Value>)>>,
+    /// The person's answers to their asked records, in order: each the workspace the record is
+    /// in, the record's own action and its arguments by name, which the session runs on the
+    /// device's dispatch at that workspace's invocations ([`SessionLink::take_answers`]).
+    answers: RefCell<Vec<(String, ActionAddress, serde_json::Map<String, serde_json::Value>)>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
     served: Cell<u64>,
@@ -285,7 +289,9 @@ impl SessionLink {
     /// Whether the shell asked something the session has not run yet.
     #[must_use]
     pub fn has_asks(&self) -> bool {
-        !self.asked.borrow().is_empty() || !self.own_calls.borrow().is_empty()
+        !self.asked.borrow().is_empty()
+            || !self.own_calls.borrow().is_empty()
+            || !self.answers.borrow().is_empty()
     }
 
     /// The person changed the shell's own records through `call`: the session runs it on the
@@ -303,6 +309,33 @@ impl SessionLink {
         self.served
             .set(self.served.get().wrapping_add(calls.len() as u64));
         calls
+    }
+
+    /// The person answered their asked record `record` in `workspace` with its own `action`:
+    /// the session runs it on the device's dispatch at the workspace's invocations, where the
+    /// record is kept, on its next pass. The dispatch admits a yes only from the person's own
+    /// connection, which the session's is.
+    pub fn answer(
+        &self,
+        workspace: String,
+        record: String,
+        action: String,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) {
+        self.answers
+            .borrow_mut()
+            .push((workspace, ActionAddress::new(record, action), arguments));
+        self.handed.set(self.handed.get().wrapping_add(1));
+    }
+
+    /// The person's answers to their asked records since the session last took them.
+    pub fn take_answers(
+        &self,
+    ) -> Vec<(String, ActionAddress, serde_json::Map<String, serde_json::Value>)> {
+        let answers = std::mem::take(&mut *self.answers.borrow_mut());
+        self.served
+            .set(self.served.get().wrapping_add(answers.len() as u64));
+        answers
     }
 
     /// What the device's dispatch refused of a change the person made of the shell's records, in
