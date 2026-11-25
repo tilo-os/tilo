@@ -180,11 +180,16 @@ pub fn file_from_json(json: &serde_json::Value) -> Result<FileValue, String> {
         .ok_or_else(|| "a file names what it is called (`name`)".to_owned())?;
     let media = text("media").map_or_else(|| media_of(name), str::to_owned);
     let path = text("path").unwrap_or_default();
+    // A size named as [`UNSTATED_SIZE`] states none, as one left out does: that is how a file
+    // stating no size is written, so what a record keeps of one reads back as the file it was.
     let size = match fields.get("size") {
         None => UNSTATED_SIZE,
-        Some(size) => size.as_i64().filter(|size| *size >= 0).ok_or_else(|| {
-            format!("a file's `size` is how many bytes it is, and {size} is none")
-        })?,
+        Some(size) => size
+            .as_i64()
+            .filter(|size| *size >= 0 || *size == UNSTATED_SIZE)
+            .ok_or_else(|| {
+                format!("a file's `size` is how many bytes it is, and {size} is none")
+            })?,
     };
     Ok(FileValue::new(name, media, size, hash).with_path(path))
 }
@@ -779,6 +784,21 @@ mod tests {
                 UNSTATED_SIZE,
                 "a caller that states no size leaves it unstated"
             );
+        }
+
+        phase a_file_that_states_no_size_reads_back_as_it_was_made;
+        {
+            // A file `File.at` makes states no size: a record keeps the encoding the runtime
+            // writes, which says `UNSTATED_SIZE`, and reads it back as the file it was.
+            let made = Value::File(Rc::new(FileValue::new(
+                "page.png",
+                "image/png",
+                UNSTATED_SIZE,
+                "c".repeat(64),
+            )));
+            let kept = crate::value::to_json(&made).expect("a file is kept");
+            let read = crate::value::from_json(&kept).expect("a file stating no size reads back");
+            assert_eq!(read, made, "the file a record kept is the one it was given");
         }
 
         phase what_a_read_answers_is_what_a_caller_can_name;
