@@ -577,9 +577,9 @@ impl Workspaces {
     /// governance named this device and names it no more.
     ///
     /// Every holder links to the others over the device link, exactly once
-    /// per pair: the holder with the greatest device key among them is
-    /// dialled by the others and dials none, so each keeps one link into the
-    /// workspace's history beside the ones it answers.
+    /// per pair: each dials the holders whose device keys are greater than
+    /// its own and answers the rest, so whichever holder goes away, the
+    /// others stay linked.
     pub(super) fn dial_holders(&self, governed: &mut GovernedWorkspace) {
         let host = &self.inner.host;
         let own = host.cert.device_public_key;
@@ -644,16 +644,16 @@ impl Workspaces {
                 links.clone(),
             ))));
         }
-        // The one holder this device dials: the greatest device key among the
-        // others, or none when it is its own; and the device that handed it
-        // over, when that keeps none.
-        let greatest = keeping
+        // The holders this device dials: every other keeper whose device key is
+        // greater than its own, so each two holders are linked once and any one
+        // can go away without leaving the rest apart; and the device that handed
+        // it over, when that keeps none.
+        let greater: Vec<[u8; 32]> = keeping
             .iter()
             .copied()
-            .filter(|device| *device != own)
-            .max()
-            .filter(|greatest| *greatest > own);
-        for dialled in greatest
+            .filter(|device| *device > own)
+            .collect();
+        for dialled in greater
             .into_iter()
             .chain(handed.map(|handed| handed.device_certificate.device_public_key))
         {
