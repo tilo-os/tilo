@@ -100,6 +100,18 @@ impl App {
             &self.bindings.semantic_node_names(&self.layout.node_map),
             self.focused_node,
         );
+        #[cfg(feature = "model")]
+        let controls = {
+            let mut controls = std::collections::HashMap::new();
+            for (node, resource) in semantics.action_resource_nodes() {
+                if let Some(node) = node {
+                    controls.insert(resource.id.as_str().to_owned(), node);
+                }
+                complete.push(resource);
+            }
+            controls
+        };
+        #[cfg(not(feature = "model"))]
         complete.extend(semantics.action_resources());
         trace.finish(CacheResult::NotApplicable);
         let trace = self.trace_resource_stage(Stage::SurfaceValidation);
@@ -129,9 +141,38 @@ impl App {
             .filter(|cache| cache.key == key)
         {
             cache.complete = Some(complete);
+            #[cfg(feature = "model")]
+            {
+                cache.controls = controls;
+            }
         }
         // Completing this generation must retain its already-filtered allowed set.
         key
+    }
+
+    #[cfg(feature = "model")]
+    /// `resource` as the surface publishes it: a control a component shows (`controls`, by the
+    /// layout node it stands in) keeps the verbs that component's person may run there now, so a
+    /// grant revoked takes the component's controls off the surface with its resources. `None`
+    /// when it keeps none.
+    fn permitted_control(
+        &self,
+        controls: &std::collections::HashMap<String, u64>,
+        mut resource: tilo_actions::ResourceSpec,
+    ) -> Option<tilo_actions::ResourceSpec> {
+        let Some(binding) = controls
+            .get(resource.id.as_str())
+            .and_then(|node| self.bindings.binding_ref(taffy::NodeId::from(*node)))
+        else {
+            return Some(resource);
+        };
+        let permissions = binding.permissions.borrow();
+        let decider = permissions.action_decider(&binding.app_id);
+        let (kind, id) = (resource.kind.clone(), resource.id.clone());
+        resource
+            .actions
+            .retain(|action| decider.permits(&kind, id.as_str(), action));
+        (!resource.actions.is_empty()).then_some(resource)
     }
 
     fn collect_declared_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
@@ -491,16 +532,19 @@ impl App {
         }
         self.refresh_local_undo_discovery();
         let key = self.ensure_resource_cache();
-        let mut resources = self
+        let (complete, controls) = self
             .actions
             .resource_cache
             .borrow()
             .as_ref()
             .filter(|cache| cache.key == key)
-            .and_then(|cache| cache.complete.clone())
+            .map(|cache| (cache.complete.clone(), cache.controls.clone()))
+            .unwrap_or_default();
+        let mut resources = complete
             .unwrap_or_default()
             .into_iter()
             .filter_map(remove_reserved)
+            .filter_map(|resource| self.permitted_control(&controls, resource))
             .collect::<Vec<_>>();
         let components = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),

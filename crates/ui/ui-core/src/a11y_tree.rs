@@ -961,6 +961,15 @@ impl SemanticTree {
     /// Project every currently operable accessibility node into the canonical Tilo resource/action
     /// surface.
     pub(crate) fn action_resources(&self) -> Vec<ResourceSpec> {
+        self.action_resource_nodes()
+            .into_iter()
+            .map(|(_, resource)| resource)
+            .collect()
+    }
+
+    /// [`Self::action_resources`], each with the layout node of the widget its control stands
+    /// in: what tells a host whose control it is.
+    pub(crate) fn action_resource_nodes(&self) -> Vec<(Option<u64>, ResourceSpec)> {
         self.iter()
             .filter(|node| node.id != self.root && !node.id.0.starts_with("r:"))
             .filter(|node| node.durable_identity)
@@ -1062,7 +1071,7 @@ impl SemanticTree {
                         .actions
                         .push(spec.for_audience(tilo_actions::Audience::Agents));
                 }
-                Some(resource)
+                Some((node.widget_taffy_id, resource))
             })
             .collect()
     }

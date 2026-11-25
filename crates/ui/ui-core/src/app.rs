@@ -458,6 +458,10 @@ struct ResourceCache {
     key: ResourceCacheKey,
     declared: Vec<tilo_actions::ResourceSpec>,
     complete: Option<Vec<tilo_actions::ResourceSpec>>,
+    /// The layout node each control of `complete` stands in, by its resource id: whose control
+    /// it is.
+    #[cfg(feature = "model")]
+    controls: std::collections::HashMap<String, u64>,
 }
 
 struct LocalResourceCache {
@@ -1716,6 +1720,8 @@ impl App {
             key: key.clone(),
             declared,
             complete: None,
+            #[cfg(feature = "model")]
+            controls: std::collections::HashMap::new(),
         });
         self.actions.local_resource_cache.borrow_mut().take();
         key
