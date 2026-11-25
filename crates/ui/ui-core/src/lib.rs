@@ -116,6 +116,7 @@ pub mod local_dispatch;
 #[cfg(feature = "model")]
 pub mod local_document_action;
 pub use action_locus::{ActionUiRoute, PaintedActionMarker};
+#[cfg(feature = "model")]
 pub mod action_palette;
 pub mod agent_identity;
 pub mod animation;
@@ -526,6 +527,7 @@ pub use a11y_tree::{
 
 pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
+#[cfg(feature = "model")]
 pub use action_palette::ActionPalette;
 pub use tilo_actions;
 
@@ -534,6 +536,7 @@ pub use tilo_actions;
 pub mod autocorrect {
     pub use spellcheck::contraction;
 }
+#[cfg(feature = "model")]
 pub use action_palette::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
 pub use draw::{DrawCtx, DrawEnv, WidgetOverlay};
 pub use widget::ModelView;

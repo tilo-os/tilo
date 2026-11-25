@@ -412,7 +412,9 @@ impl InputRuntime {
 /// centralizes their lifecycle rather than separating them from UI
 /// capabilities.
 pub(super) struct ActionRuntime {
+    #[cfg(feature = "model")]
     pub(super) action_palette: Option<Box<crate::action_palette::ActionPalette>>,
+    #[cfg(feature = "model")]
     /// The window the palette was opened from, when the app hosts several
     /// (the shell's tiles): the palette centres on it, not on the screen.
     pub(super) palette_window: Option<vello::kurbo::Rect>,
@@ -439,9 +441,11 @@ pub(super) struct ActionRuntime {
     pub(super) action_registry_generation: u64,
     pub(super) action_transport: Box<dyn tilo_actions::ActionTransport>,
     pub(super) resource_cache: RefCell<Option<ResourceCache>>,
+    #[cfg(feature = "model")]
     pub(super) bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
     #[cfg(feature = "model")]
     pub(super) bound_document_sync: Option<super::bound_document_sync::BoundDocumentSync>,
+    #[cfg(feature = "model")]
     pub(super) bound_publication: crate::bound_dispatch::BoundPublication,
     #[cfg(feature = "model")]
     pub(super) last_published_bound_route: Option<crate::collaboration::AcceptedRoute>,
@@ -578,7 +582,9 @@ pub(super) struct HeldOwnInvocation {
 impl ActionRuntime {
     pub(super) fn new() -> Self {
         Self {
+            #[cfg(feature = "model")]
             action_palette: None,
+            #[cfg(feature = "model")]
             palette_window: None,
             refusals: Vec::new(),
             refused: RefusedLog::default(),
@@ -589,9 +595,11 @@ impl ActionRuntime {
             action_registry_generation: 0,
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
             resource_cache: RefCell::new(None),
+            #[cfg(feature = "model")]
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
             #[cfg(feature = "model")]
             bound_document_sync: None,
+            #[cfg(feature = "model")]
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
             #[cfg(feature = "model")]
             last_published_bound_route: None,

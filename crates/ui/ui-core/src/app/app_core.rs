@@ -34,6 +34,70 @@ impl App {
         self.layout.layout_dirty = true;
     }
 
+    /// The action palette, open or arriving. Tilo's model is the action layer it searches and
+    /// runs: without it a window has none.
+    pub(crate) fn palette_widget(&self) -> Option<&dyn Widget> {
+        #[cfg(feature = "model")]
+        let palette = self
+            .actions
+            .action_palette
+            .as_deref()
+            .map(|palette| palette as &dyn Widget);
+        #[cfg(not(feature = "model"))]
+        let palette = None;
+        palette
+    }
+
+    /// [`Self::palette_widget`], to change.
+    pub(crate) fn palette_widget_mut(&mut self) -> Option<&mut dyn Widget> {
+        #[cfg(feature = "model")]
+        let palette = self
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .map(|palette| palette as &mut dyn Widget);
+        #[cfg(not(feature = "model"))]
+        let palette = None;
+        palette
+    }
+
+    /// The action palette while it takes the window.
+    pub(crate) fn presented_palette(&self) -> Option<&dyn Widget> {
+        #[cfg(feature = "model")]
+        let palette = self
+            .actions
+            .action_palette
+            .as_deref()
+            .filter(|palette| palette.is_presented())
+            .map(|palette| palette as &dyn Widget);
+        #[cfg(not(feature = "model"))]
+        let palette = None;
+        palette
+    }
+
+    /// Whether the action palette is open.
+    pub(crate) fn palette_open(&self) -> bool {
+        self.palette_widget().is_some()
+    }
+
+    /// Whether the action palette takes the window.
+    pub(crate) fn palette_presented(&self) -> bool {
+        self.presented_palette().is_some()
+    }
+
+    /// Whether the action palette is still arriving or leaving.
+    pub(crate) fn palette_moving(&self) -> bool {
+        #[cfg(feature = "model")]
+        let moving = self
+            .actions
+            .action_palette
+            .as_deref()
+            .is_some_and(crate::action_palette::ActionPalette::is_moving);
+        #[cfg(not(feature = "model"))]
+        let moving = false;
+        moving
+    }
+
     pub(crate) fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget)) {
         visit(self.root_widget.as_ref());
         if let Some(history) = self.history.as_deref() {
@@ -42,7 +106,7 @@ impl App {
         if let Some(dialog) = self.close_admission.dialog.as_deref() {
             visit(dialog);
         }
-        if let Some(palette) = self.actions.action_palette.as_deref() {
+        if let Some(palette) = self.palette_widget() {
             visit(palette);
         }
     }
@@ -57,12 +121,7 @@ impl App {
         if let Some(history) = self.history.as_deref() {
             roots.push(history);
         }
-        if let Some(palette) = self
-            .actions
-            .action_palette
-            .as_deref()
-            .filter(|palette| palette.is_presented())
-        {
+        if let Some(palette) = self.presented_palette() {
             roots.push(palette);
             return roots;
         }

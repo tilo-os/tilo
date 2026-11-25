@@ -286,12 +286,4 @@ impl App {
             .map(|history| history.current_entries(&self.state.doc))
             .unwrap_or_default()
     }
-
-    /// Whether the action palette covers the window.
-    pub(super) fn palette_presented(&self) -> bool {
-        self.actions
-            .action_palette
-            .as_deref()
-            .is_some_and(|palette| palette.is_presented())
-    }
 }

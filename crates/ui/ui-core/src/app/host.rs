@@ -292,9 +292,11 @@ fn draw_frame_content_owning(
         painted(scene, "pointing at what a report is about", &mut drawn);
     }
     app.presence_ctx.pop_viewport(prev_vp);
+    #[cfg(feature = "model")]
     if let Some(ap) = app.actions.action_palette.as_deref_mut() {
         ap.follow_presence(app.theme.motion());
     }
+    #[cfg(feature = "model")]
     if let Some(ap) = app
         .actions
         .action_palette

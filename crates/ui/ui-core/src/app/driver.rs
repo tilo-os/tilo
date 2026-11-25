@@ -1818,13 +1818,7 @@ impl Driver {
         // the window while it is up.
         let mut root = if let Some(presentation) = self.history_inspection(&mut sibling_counts) {
             presentation
-        } else if let Some(palette) = self
-            .app
-            .actions
-            .action_palette
-            .as_deref()
-            .filter(|palette| palette.is_presented())
-        {
+        } else if let Some(palette) = self.app.presented_palette() {
             crate::headless::collect_inspection(palette, "", &mut sibling_counts, None)
         } else {
             crate::headless::collect_inspection(
@@ -2223,11 +2217,7 @@ impl Driver {
     pub fn a11y_tree_update_at(&self, scale: f64) -> accesskit::TreeUpdate {
         let app = &*self.app;
         let exported = app.bindings.exported_nodes(&app.layout.node_map);
-        let palette = app
-            .actions
-            .action_palette
-            .as_deref()
-            .is_some_and(crate::action_palette::ActionPalette::is_presented);
+        let palette = app.palette_presented();
         let mut update = if !app.presents_history() && !palette && app.window_box.is_drawn() {
             // The box with no window around it is read over the app, as it is drawn.
             let roots: [&dyn Widget; 2] = [app.root_widget.as_ref(), &app.window_box];

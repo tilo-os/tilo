@@ -108,13 +108,8 @@ impl App {
         if let Some(history) = &self.history {
             roots.push(history.as_ref() as &dyn Widget);
         }
-        if let Some(palette) = self
-            .actions
-            .action_palette
-            .as_deref()
-            .filter(|p| p.is_presented())
-        {
-            roots.push(palette as &dyn Widget);
+        if let Some(palette) = self.presented_palette() {
+            roots.push(palette);
             return roots;
         }
         if self.app_live() {
@@ -688,13 +683,7 @@ impl App {
             ));
         }
         let exported = self.bindings.exported_nodes(&self.layout.node_map);
-        if self.presents_history()
-            || self
-                .actions
-                .action_palette
-                .as_deref()
-                .is_some_and(|palette| palette.is_presented())
-        {
+        if self.presents_history() || self.palette_presented() {
             let root = FrameworkPresentation {
                 roots: self.history_presentation_roots(),
                 layout_root: self
@@ -929,6 +918,7 @@ impl App {
         // The palette owns its measured overlay geometry. Admit its absolute
         // leaf as a separate presentation root so app/legacy authority and
         // inactive boundaries cannot leak into the host confirmation surface.
+        #[cfg(feature = "model")]
         let palette_node = self
             .actions
             .action_palette
@@ -974,6 +964,7 @@ impl App {
         );
         self.layout.root_node = Some(app);
         let mut roots: Vec<(&dyn Widget, taffy::NodeId)> = vec![(self.root_widget.as_ref(), app)];
+        #[cfg(feature = "model")]
         if let (Some(node), Some(palette)) = (palette_node, self.actions.action_palette.as_deref())
         {
             roots.push((palette, node));

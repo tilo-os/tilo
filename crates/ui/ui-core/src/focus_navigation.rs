@@ -461,10 +461,13 @@ mod hidden_tests {
         dialog.set_open(true);
         assert!(!agreed(&dialog), "an open dialog");
 
-        let mut palette = crate::ActionPalette::rows(Vec::new());
-        assert!(agreed(&palette), "a closed palette");
-        palette.open();
-        assert!(!agreed(&palette), "an open palette");
+        #[cfg(feature = "model")]
+        {
+            let mut palette = crate::ActionPalette::rows(Vec::new());
+            assert!(agreed(&palette), "a closed palette");
+            palette.open();
+            assert!(!agreed(&palette), "an open palette");
+        }
 
         let mut options = Popover::new()
             .with_label("Interval")

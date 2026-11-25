@@ -1,6 +1,7 @@
 //! Assertions an application's tests share, available to downstream crates
 //! through the `test-support` feature.
 
+#[cfg(feature = "model")]
 pub mod action_contract;
 #[cfg(test)]
 mod clicks;

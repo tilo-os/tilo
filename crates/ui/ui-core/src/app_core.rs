@@ -44,6 +44,7 @@ impl AppTree<'_> {
     ) -> Option<crate::bound_dispatch::CallbackBinding> {
         self.bindings.binding_for(node)
     }
+    #[cfg(feature = "model")]
     /// The window a palette is asked for from, when the root lays several out (the shell's strip of
     /// app tiles): the tile under the pointer that pressed, else the one holding keyboard focus.
     pub(crate) fn invoking_window_rect(&self) -> Option<vello::kurbo::Rect> {

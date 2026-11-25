@@ -19,7 +19,8 @@ pub struct FollowedView {
     pub(crate) opened: bool,
 }
 
-// The window's search.
+// The window's search: the action palette, which only Tilo's model has.
+#[cfg(feature = "model")]
 impl Driver {
     /// Whether the window's search shows, as the person sees it.
     #[must_use]

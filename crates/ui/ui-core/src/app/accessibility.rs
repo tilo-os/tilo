@@ -433,12 +433,7 @@ impl App {
     }
     fn update_focusable_order(&mut self) {
         let _profile = tilo_resource::profiling::Phase::start("ui.focus_order");
-        if self
-            .actions
-            .action_palette
-            .as_deref()
-            .is_some_and(|palette| palette.is_presented())
-        {
+        if self.palette_presented() {
             let node = self.tree().action_palette_node();
             self.focusable_order = node.into_iter().collect();
             self.accessibility.focus_trap_active = true;
@@ -1174,12 +1169,7 @@ impl App {
         // Bounds of every widget, also those far from any view.
         self.place_all();
         let exported = self.bindings.exported_nodes(&self.layout.node_map);
-        if self
-            .actions
-            .action_palette
-            .as_deref()
-            .is_some_and(|p| p.is_presented())
-        {
+        if self.palette_presented() {
             return crate::accesskit_bridge::build_presentation_with_resources_bound(
                 &self.history_presentation_roots(),
                 &exported.nodes,
@@ -1708,11 +1698,7 @@ impl App {
         self.window_box.is_drawn()
             || self.close_admission.dialog.is_some()
             || self.history_review_open()
-            || self
-                .actions
-                .action_palette
-                .as_deref()
-                .is_some_and(|palette| palette.is_presented())
+            || self.palette_presented()
     }
 
     /// The refresh of a tree nothing changed under: an empty diff.
@@ -1750,6 +1736,7 @@ impl App {
             self.semantic_tree_untracked() || self.root_widget.needs_animation_frame();
         self.accessibility.semantic_tree_presentation =
             crate::widget::resource_presentation_epoch();
+        #[cfg(feature = "model")]
         if let Some(palette) = self
             .actions
             .action_palette

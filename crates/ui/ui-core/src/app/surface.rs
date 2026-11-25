@@ -463,7 +463,8 @@ impl App {
 
         // The palette owns the keyboard while open; Ctrl+K itself is
         // handled below, so let it through.
-        if app.actions.action_palette.is_some() {
+        #[cfg(feature = "model")]
+        if app.palette_open() {
             let is_ctrl_k = matches!(
                 &event,
                 WindowEvent::KeyboardInput {
@@ -633,8 +634,9 @@ impl App {
                 // Search of this app: the session's one search inside a
                 // session, the window's own outside one, where a second
                 // press closes it.
+                #[cfg(feature = "model")]
                 Some(crate::platform::HostShortcut::Search) => {
-                    if app.actions.action_palette.is_some() {
+                    if app.palette_open() {
                         app.close_action_palette();
                     } else {
                         app.open_search(crate::widget::search_request::SearchRequest::this_app());
@@ -848,17 +850,20 @@ impl App {
             app.drain_local_input_capture();
         }
 
-        if let Some(address) = app.root_widget.take_action_palette_request()
-            && app.open_search_at_action(&address)
+        #[cfg(feature = "model")]
         {
-            app.layout.layout_dirty = true;
-            window.request_redraw();
-        }
+            if let Some(address) = app.root_widget.take_action_palette_request()
+                && app.open_search_at_action(&address)
+            {
+                app.layout.layout_dirty = true;
+                window.request_redraw();
+            }
 
-        if app.root_widget.take_search_request() && app.actions.action_palette.is_none() {
-            app.open_search(crate::widget::search_request::SearchRequest::this_app());
-            app.layout.layout_dirty = true;
-            window.request_redraw();
+            if app.root_widget.take_search_request() && !app.palette_open() {
+                app.open_search(crate::widget::search_request::SearchRequest::this_app());
+                app.layout.layout_dirty = true;
+                window.request_redraw();
+            }
         }
 
         // A handled event (or one that moves focus) asks below for a sync and
@@ -1343,11 +1348,14 @@ impl App {
         if geometry_changed {
             self.input.pointer_replay.mark_unsettled();
         }
+        #[cfg(feature = "model")]
         let search_pending = self
             .actions
             .action_palette
             .as_deref_mut()
             .is_some_and(|palette| palette.advance_search_page().pending);
+        #[cfg(not(feature = "model"))]
+        let search_pending = false;
         // What a window of its own repaints whole: a rebuilt tree, moved
         // geometry, another record, and what paints over the widgets.
         // Carets, selections and marks widgets paint from presence carry no
@@ -1385,7 +1393,7 @@ impl App {
             (themed, "a new theme"),
             (moved.is_none(), "moved geometry"),
             (self.debug_mode, "debug outlines"),
-            (self.actions.action_palette.is_some(), "the action palette"),
+            (self.palette_open(), "the action palette"),
             (hud, "the profiler HUD"),
             (presence_changed, "presence marks"),
         ]
@@ -1605,11 +1613,7 @@ impl App {
             // The palette arrives outside the app's root too: a host that
             // repaints the app only when it asks (an embedded app) would
             // otherwise keep its first, nearly transparent pose on screen.
-            || self
-                .actions
-                .action_palette
-                .as_deref()
-                .is_some_and(crate::action_palette::ActionPalette::is_moving)
+            || self.palette_moving()
             // History's panel moves outside the app's root (it slides in).
             || self
                 .history_widget()
@@ -1905,6 +1909,7 @@ impl SurfaceDamage {
 }
 
 #[cfg(test)]
+#[cfg(feature = "model")]
 mod tests {
     use super::*;
     use crate::testing::Dispatch;
@@ -2552,13 +2557,7 @@ mod tests {
             crate::motion::note_source(crate::tokens::MotionSource::Pointer);
             app.open_action_palette();
             let _ = app.surface_frame(&region, &mut Scene::new());
-            assert!(
-                app.actions
-                    .action_palette
-                    .as_deref()
-                    .is_some_and(crate::action_palette::ActionPalette::is_moving),
-                "a palette a click opened arrives"
-            );
+            assert!(app.palette_moving(), "a palette a click opened arrives");
         });
         crate::time::testing::with_monotonic_time(next, || {
             assert!(

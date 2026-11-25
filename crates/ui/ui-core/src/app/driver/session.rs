@@ -141,7 +141,7 @@ impl Driver {
         }
         self.app.input.keyboard_held = held;
         self.app.root_widget.release_scene_cache();
-        if let Some(palette) = self.app.actions.action_palette.as_deref_mut() {
+        if let Some(palette) = self.app.palette_widget_mut() {
             palette.release_scene_cache();
         }
         if let Some(history) = self.app.history.as_mut() {

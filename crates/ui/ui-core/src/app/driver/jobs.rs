@@ -198,11 +198,7 @@ impl Driver {
     pub(super) fn row_titles(&self) -> std::collections::HashMap<accesskit::NodeId, String> {
         let app = &*self.app;
         let exported = app.bindings.exported_nodes(&app.layout.node_map);
-        let palette = app
-            .actions
-            .action_palette
-            .as_deref()
-            .is_some_and(crate::action_palette::ActionPalette::is_presented);
+        let palette = app.palette_presented();
         let (_, titles) = if app.history.is_none() && !palette && app.window_box.is_drawn() {
             let roots: [&dyn Widget; 2] = [app.root_widget.as_ref(), &app.window_box];
             crate::accesskit_bridge::build_presentation_tree_with_titles_bound(

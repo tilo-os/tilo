@@ -43,7 +43,10 @@ impl App {
     }
 
     fn invalidate_close_presentation(&mut self) {
-        self.actions.action_palette = None;
+        #[cfg(feature = "model")]
+        {
+            self.actions.action_palette = None;
+        }
         self.bindings.clear();
         self.layout.node_map.clear();
         self.layout.request_rebuild();

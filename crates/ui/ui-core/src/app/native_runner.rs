@@ -2405,6 +2405,7 @@ impl AppHandler {
         // Continue one bounded provider page per frame. Re-querying resets the
         // palette generation/cursors, so stale work cannot leak into a newer
         // query. A follow-up redraw is requested only while more pages exist.
+        #[cfg(feature = "model")]
         let (search_pending, search_announcement) = app
             .actions
             .action_palette
@@ -2413,6 +2414,8 @@ impl AppHandler {
                 let progress = palette.advance_search_page();
                 (progress.pending, palette.take_search_announcement())
             });
+        #[cfg(not(feature = "model"))]
+        let (search_pending, search_announcement): (bool, Option<String>) = (false, None);
         needs_followup_redraw |= search_pending;
         if let (Some(reader), Some(announcement)) = (
             app.accessibility.screen_reader.as_mut(),
@@ -2634,7 +2637,7 @@ impl AppHandler {
         full_redraw_required |= repaint_why.note(
             "overlay",
             app.debug_mode
-                || app.actions.action_palette.is_some()
+                || app.palette_open()
                 || app.input.tooltips.needs_frame()
                 || app.input.tooltips.visible().is_some()
                 || app
@@ -3588,13 +3591,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 window.request_redraw();
             }
             UserEvent::HostSearch(query) => {
-                if self
+                let opened = self
                     .app
-                    .invoke_host_shortcut(crate::platform::HostShortcut::Search)
-                    && let Some(palette) = self.app.actions.action_palette.as_deref_mut()
-                {
+                    .invoke_host_shortcut(crate::platform::HostShortcut::Search);
+                // The query carries on in the palette, the model's search.
+                #[cfg(feature = "model")]
+                if opened && let Some(palette) = self.app.actions.action_palette.as_deref_mut() {
                     palette.set_query(&query);
                 }
+                #[cfg(not(feature = "model"))]
+                let _ = (opened, query);
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
             }

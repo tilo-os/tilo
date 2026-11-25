@@ -2554,7 +2554,7 @@ impl App {
             || modifiers.alt_key()
             || modifiers.super_key()
             || !self.presents_search()
-            || self.actions.action_palette.is_some()
+            || self.palette_open()
             || self.ime_window_state().is_some()
         {
             return false;
@@ -2595,7 +2595,7 @@ impl App {
             || modifiers.alt_key()
             || modifiers.super_key()
             || !crate::shared_selection::send_host_available()
-            || self.actions.action_palette.is_some()
+            || self.palette_open()
             || self.ime_window_state().is_some()
         {
             return false;
@@ -2848,12 +2848,7 @@ impl App {
         if matches!(event, WindowEvent::KeyboardInput { .. }) {
             return self.action_palette_handle_key(event);
         }
-        if !self
-            .actions
-            .action_palette
-            .as_deref()
-            .is_some_and(|palette| palette.is_presented())
-        {
+        if !self.palette_presented() {
             return false;
         }
         self.refresh_action_palette_resources();
@@ -2878,7 +2873,7 @@ impl App {
 
     #[cfg(feature = "model")]
     fn action_palette_handle_key(&mut self, event: &WindowEvent) -> bool {
-        if self.actions.action_palette.is_none() {
+        if !self.palette_open() {
             return false;
         }
         self.refresh_action_palette_resources();
