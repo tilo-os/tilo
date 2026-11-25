@@ -4374,7 +4374,7 @@ pub struct RuntimeActionProvider {
 
 impl RuntimeActionProvider {
     /// Resolves on the next write landing in a document this device's service holds, from
-    /// whichever device or app it came.
+    /// whichever device or app it came, or once a provider has waited as long as any may.
     fn next_write(
         &self,
     ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
@@ -4384,6 +4384,11 @@ impl RuntimeActionProvider {
             tokio::select! {
                 // A write, writes missed or the service closing: each is something to read again.
                 _ = writes.recv() => landed.complete(Ok(())),
+                // As long as any provider holds a waiting answer: the watch reads again, and
+                // asks again, rather than being told its wait was never answered.
+                () = tokio::time::sleep(tilo_actions::remote::MAX_REMOTE_WAIT) => {
+                    landed.complete(Ok(()));
+                }
                 // Nobody waits for it any more.
                 () = landed.abandoned() => {}
             }
