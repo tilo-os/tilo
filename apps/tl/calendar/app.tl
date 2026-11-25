@@ -1233,13 +1233,27 @@ fn next_quarter(at: Time) -> Time {
 /// The rule an event's repeat is, in iCalendar's words: what the shared expander reads.
 /// The frequency an event repeats at, as a calendar writes it; empty for one that does not.
 fn frequency_of(e: Event) -> Text {
-    if e.repeat == .daily {
+    let base = if e.repeat == .daily {
         "FREQ=DAILY"
     } else if e.repeat == .weekly or e.repeat == .weekdays {
         "FREQ=WEEKLY"
     } else if e.repeat == .monthly {
         "FREQ=MONTHLY"
     } else if e.repeat == .yearly { "FREQ=YEARLY" } else { "" }
+    // The days a weekly repeat comes on are its rule's `BYDAY`, so the server keeps them.
+    let days = weekday_rule(e)
+    if base == "FREQ=WEEKLY" and days != "" { "{base};BYDAY={days}" } else { base }
+}
+
+/// The days a weekly repeat comes on, as its rule writes them (`MO,WE`): empty when it keeps
+/// the day it stands on.
+fn weekday_rule(e: Event) -> Text {
+    if e.repeat != .weekly and e.repeat != .weekdays {
+        return ""
+    }
+    ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+        .filter(day -> e.recurrence_weekdays.contains(day))
+        .join(",")
 }
 
 /// One part of an iCalendar rule, by its name (`INTERVAL`), or empty where it names none.

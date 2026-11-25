@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use jiff::civil::{Date, DateTime, Time};
+use jiff::civil::{Date, DateTime, Time, Weekday};
 use tilo_document::RichText;
 use tilo_recurrence::Rule;
 use tilo_resource::{self, Identified, Keyed, Model, Outbox, Refusal, Set};
@@ -391,6 +391,9 @@ pub struct Event {
     pub recurrence_count: Option<u32>,
     /// Absolute original occurrence dates omitted from the series.
     pub recurrence_exdates: Set<Date>,
+    /// The days of the week it repeats on, as RFC 5545 writes them (`MO`..`SU`), when its rule
+    /// names them: empty leaves the preset's days.
+    pub recurrence_weekdays: Set<String>,
     /// Per-occurrence absolute cancellation/reschedule/content edits.
     pub occurrence_overrides: Keyed<OccurrenceOverride>,
     /// IANA time-zone identifier, or `floating` for legacy/local wall time.
@@ -431,6 +434,7 @@ impl Default for Event {
             recurrence_until: None,
             recurrence_count: None,
             recurrence_exdates: Set::default(),
+            recurrence_weekdays: Set::default(),
             occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
@@ -441,6 +445,44 @@ impl Default for Event {
             categories: Set::default(),
         }
     }
+}
+
+/// The weekday an RFC 5545 code names (`MO`..`SU`), in any case.
+pub fn weekday_of(code: &str) -> Option<Weekday> {
+    Some(match code.trim().to_ascii_uppercase().as_str() {
+        "MO" => Weekday::Monday,
+        "TU" => Weekday::Tuesday,
+        "WE" => Weekday::Wednesday,
+        "TH" => Weekday::Thursday,
+        "FR" => Weekday::Friday,
+        "SA" => Weekday::Saturday,
+        "SU" => Weekday::Sunday,
+        _ => return None,
+    })
+}
+
+/// An RFC 5545 code for `day`, as its rule writes it.
+#[must_use]
+pub fn weekday_code(day: Weekday) -> &'static str {
+    match day {
+        Weekday::Monday => "MO",
+        Weekday::Tuesday => "TU",
+        Weekday::Wednesday => "WE",
+        Weekday::Thursday => "TH",
+        Weekday::Friday => "FR",
+        Weekday::Saturday => "SA",
+        Weekday::Sunday => "SU",
+    }
+}
+
+/// The days a rule comes on, as it writes them (`MO,TU`): its own, in the week's order and each
+/// once; none when it names none.
+#[must_use]
+pub fn rule_weekdays(days: &Set<String>) -> Vec<&'static str> {
+    ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+        .into_iter()
+        .filter(|code| days.iter().any(|day| day.trim().eq_ignore_ascii_case(code)))
+        .collect()
 }
 
 impl Identified for Event {
@@ -561,12 +603,23 @@ impl Event {
 
     pub(crate) fn rule(&self) -> Option<Rule> {
         let exdates: Vec<Date> = self.recurrence_exdates.iter().copied().collect();
-        self.recurrence.rule(
+        let rule = self.recurrence.rule(
             self.recurrence_interval,
             self.recurrence_until,
             self.recurrence_count,
             &exdates,
-        )
+        )?;
+        // The days the rule names are the rule's own, whatever preset picked them.
+        let days: Vec<Weekday> = self
+            .recurrence_weekdays
+            .iter()
+            .filter_map(|code| weekday_of(code))
+            .collect();
+        Some(match (days.is_empty(), self.recurrence) {
+            (true, _) => rule,
+            (false, Recurrence::Weekly | Recurrence::Weekdays) => rule.with_by_day(days),
+            (false, _) => rule,
+        })
     }
 
     pub fn occurrences_in(&self, from: Date, to: Date) -> Vec<Date> {

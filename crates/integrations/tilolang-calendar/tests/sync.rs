@@ -576,3 +576,40 @@ fn a_calendars_name_is_shown_on_one_line_and_cut_where_it_is_long() {
     names.sort();
     assert_eq!(names, ["Work calendar".to_owned(), "x".repeat(80)]);
 }
+
+/// The days a person chose for a weekly repeat reach the server: what it writes names them,
+/// not only the frequency.
+#[test]
+fn chosen_weekdays_reach_the_server() {
+    let server = Server::start(ADA, PASSWORD);
+    server.add_calendar("work", "Work");
+    server.put(
+        "work",
+        "a.ics",
+        &entry(
+            "a@example.test",
+            "Standup",
+            "20261117T090000Z",
+            "20261117T091500Z",
+        ),
+    );
+    let mut rig = rig(&server);
+    let event = rig.events().remove(0);
+    rig.run(
+        "Event",
+        "repeat_weekdays",
+        Some(&event),
+        &[("days", serde_json::json!(["TU", "TH"]))],
+    );
+    rig.settle();
+    let text = held(&server, "work");
+    assert!(
+        text.contains("RRULE:FREQ=WEEKLY;BYDAY=TU,TH"),
+        "the server keeps the chosen days: {text}"
+    );
+    assert_eq!(
+        rig.text("Event", &event, "recurrence"),
+        "FREQ=WEEKLY;BYDAY=TU,TH",
+        "the record says the rule it wrote"
+    );
+}

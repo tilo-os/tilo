@@ -934,9 +934,21 @@ pub fn with_categories(text: &str, categories: &[String]) -> Option<String> {
 }
 
 fn recurrence_rule(event: &Event) -> String {
-    let mut rule = event.recurrence.to_rrule();
+    // The days the rule names replace the preset's own: a weekly repeat on chosen days says
+    // them, and a preset that already says every weekday keeps them when no day is chosen.
+    let days = crate::model::rule_weekdays(&event.recurrence_weekdays);
+    let mut rule = if days.is_empty() {
+        event.recurrence.to_rrule()
+    } else if matches!(event.recurrence, Recurrence::Weekly | Recurrence::Weekdays) {
+        "FREQ=WEEKLY".to_owned()
+    } else {
+        event.recurrence.to_rrule()
+    };
     if rule.is_empty() {
         return rule;
+    }
+    if !days.is_empty() {
+        let _ = write!(rule, ";BYDAY={}", days.join(","));
     }
     if event.recurrence_interval > 1 {
         let _ = write!(rule, ";INTERVAL={}", event.recurrence_interval);
@@ -1443,6 +1455,14 @@ fn parse_vevent(
                 location,
                 color,
                 recurrence: Recurrence::from_rrule(&rrule),
+                recurrence_weekdays: rrule_value(&rrule, "BYDAY")
+                    .map(|days| {
+                        days.split(',')
+                            .filter_map(super::model::weekday_of)
+                            .map(|day| super::model::weekday_code(day).to_owned())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 recurrence_interval,
                 recurrence_until,
                 recurrence_count,

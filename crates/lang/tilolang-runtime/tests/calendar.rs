@@ -400,7 +400,11 @@ mod cases {
                     ("until", Value::some(Value::text("2026-12-31"))),
                 ],
             );
-            assert_eq!(s.text(&e, "recurrence"), "FREQ=WEEKLY");
+            assert_eq!(
+                s.text(&e, "recurrence"),
+                "FREQ=WEEKLY;BYDAY=MO,WE",
+                "the days chosen are the rule's own"
+            );
             assert!(matches!(s.read(&e, "recurrence_every"), Value::Int(2)));
             s.call("repeat_off", &[("e", Value::resource(&e))]);
             assert_eq!(s.text(&e, "recurrence"), "");
@@ -1663,7 +1667,11 @@ mod cases {
                 ),
             ],
         );
-        assert_eq!(s.text(&e, "recurrence"), "FREQ=WEEKLY");
+        assert_eq!(
+            s.text(&e, "recurrence"),
+            "FREQ=WEEKLY;BYDAY=MO,WE",
+            "the rule names the days it comes on"
+        );
         assert_eq!(s.texts_of_set(&e, "recurrence_weekdays"), ["MO", "WE"]);
         s.call(
             "toggle_weekday",

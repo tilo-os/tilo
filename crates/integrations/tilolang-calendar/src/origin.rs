@@ -48,6 +48,7 @@ const PEOPLE: &[&str] = &[
     "recurrence_every",
     "recurrence_until",
     "recurrence_count",
+    "recurrence_weekdays",
     "exdates",
     "calendar",
     "color",
@@ -2058,6 +2059,7 @@ fn read_entry(
         recurrence_until: try_read_text(host, at, ty, "recurrence_until")?,
         recurrence_count: u32::try_from(try_read_int(host, at, ty, "recurrence_count")?)
             .unwrap_or(0),
+        recurrence_weekdays: try_texts(host, at, ty, "recurrence_weekdays")?,
         exdates: try_texts(host, at, ty, "exdates")?,
         overrides: Vec::new(),
         organizer,
@@ -2110,6 +2112,18 @@ fn entry_fields(ty: &OriginType, entry: &Entry, calendar: Option<&str>) -> Vec<(
                 entry.recurrence_count,
             )))))
         },
+    );
+    put(
+        ty,
+        &mut fields,
+        "recurrence_weekdays",
+        Value::List(
+            entry
+                .recurrence_weekdays
+                .iter()
+                .map(|day| text(day))
+                .collect(),
+        ),
     );
     put(
         ty,

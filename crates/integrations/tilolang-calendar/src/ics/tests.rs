@@ -1226,3 +1226,27 @@ fn imported_at(payload: &str) -> (String, String) {
         .unwrap_or_default();
     (event.timezone.clone(), instant)
 }
+
+/// The days a weekly rule names are the event's own: a server's `BYDAY` is kept, written back
+/// as it came, and read again from what the event writes.
+#[test]
+fn a_weekly_rule_keeps_the_days_it_names() {
+    let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:chosen@example.com\r\n\
+         SUMMARY:Chosen days\r\nDTSTART:20260615T090000\r\nDTEND:20260615T100000\r\n\
+         RRULE:FREQ=WEEKLY;BYDAY=TU,TH\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let (events, _) = parse(payload);
+    let event = &events[0];
+    let mut days: Vec<String> = event.recurrence_weekdays.iter().cloned().collect();
+    days.sort();
+    assert_eq!(days, ["TH", "TU"], "the rule's days are the event's");
+    let model = Calendar {
+        events: events.into(),
+        ..Calendar::default()
+    };
+    let ics = export(&model);
+    assert!(ics.contains("RRULE:FREQ=WEEKLY;BYDAY=TU,TH"), "{ics}");
+    let (again, _) = parse(&ics);
+    let mut kept: Vec<String> = again[0].recurrence_weekdays.iter().cloned().collect();
+    kept.sort();
+    assert_eq!(kept, ["TH", "TU"], "the days survive the round trip");
+}

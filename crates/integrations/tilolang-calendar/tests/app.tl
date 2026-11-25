@@ -48,6 +48,7 @@ type Event (origin: caldav.event, title: title) {
     attendees: Collection<Attendee>
     categories: Set<Text>
     recurrence: Text
+    recurrence_weekdays: Set<Text>
     recurrence_every: Int merge register
     recurrence_until: Option<Date> = .none
     recurrence_count: Option<Int> = .none
@@ -90,6 +91,14 @@ action add_calendar(c: Calendars, name: Text) -> Calendar {
 
 action add_event(c: Calendars, calendar: Calendar, title: Text, start: Text, end: Text) -> Event {
     c.events.insert(Event(calendar: calendar, title: title, start: start, end: end))
+}
+
+action repeat_weekdays(e: Event, days: List<Text>) {
+    let codes = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"].filter(day -> days.contains(day))
+    for day in days {
+        e.recurrence_weekdays.add(day)
+    }
+    e.recurrence = if codes.is_empty() { "FREQ=WEEKLY" } else { "FREQ=WEEKLY;BYDAY={codes.join(",")}" }
 }
 
 action rename_event(e: Event, title: Text) {

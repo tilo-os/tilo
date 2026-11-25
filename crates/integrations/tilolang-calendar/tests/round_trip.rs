@@ -109,3 +109,21 @@ fn a_cancelled_instance_goes_back_as_a_day_left_out() {
     );
     assert!(written.contains("STATUS:CANCELLED"), "{written}");
 }
+
+/// A weekly repeat on chosen days goes back to the server on those days, whichever day the
+/// series stands on.
+#[test]
+fn a_weekly_rule_keeps_the_days_it_names() {
+    let text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:a@example.test\r\n\
+         SUMMARY:Standup\r\nDTSTART:20260616T090000\r\nDTEND:20260616T093000\r\n\
+         RRULE:FREQ=WEEKLY;BYDAY=TU,TH\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let entry = Engine::entry_of(text, CALENDAR, HREF).expect("the entry reads");
+    let mut days = entry.recurrence_weekdays.clone();
+    days.sort();
+    assert_eq!(days, ["TH", "TU"], "the days the rule names are kept");
+    let written = text_of(&entry);
+    assert!(
+        written.contains("RRULE:FREQ=WEEKLY;BYDAY=TU,TH\r\n"),
+        "{written}"
+    );
+}

@@ -94,6 +94,9 @@ pub struct Entry {
     pub recurrence_until: String,
     /// How many times it repeats, 0 for no count.
     pub recurrence_count: u32,
+    /// The days of the week it repeats on, `MO`..`SU` as its rule writes them: empty leaves the
+    /// preset's days.
+    pub recurrence_weekdays: Vec<String>,
     /// Dates it is left out on, `YYYY-MM-DD` each.
     pub exdates: Vec<String>,
     /// The occurrences that stand apart: moved, renamed or cancelled.

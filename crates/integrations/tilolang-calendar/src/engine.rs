@@ -1614,6 +1614,11 @@ fn entry_of(
         },
         location: event.location.clone(),
         recurrence: recurrence_text(event),
+        recurrence_weekdays: event
+            .recurrence_weekdays
+            .iter()
+            .map(|day| day.trim().to_ascii_uppercase())
+            .collect(),
         recurrence_every: event.recurrence_interval.max(1),
         recurrence_until: event
             .recurrence_until
@@ -1709,15 +1714,25 @@ fn wall_of_text(text: &str) -> Option<DateTime> {
 /// The entry's repeat as its rule's frequency and days (`FREQ=WEEKLY;BYDAY=MO`), empty for one
 /// occurrence. Its interval, last day and count are fields of their own.
 fn recurrence_text(event: &Event) -> String {
-    event.recurrence.to_rrule()
+    let days = crate::model::rule_weekdays(&event.recurrence_weekdays);
+    if days.is_empty() {
+        return event.recurrence.to_rrule();
+    }
+    if matches!(event.recurrence, Recurrence::Weekly | Recurrence::Weekdays) {
+        format!("FREQ=WEEKLY;BYDAY={}", days.join(","))
+    } else {
+        event.recurrence.to_rrule()
+    }
 }
 
-/// The repeat an `RRULE` names: its frequency, interval, last day and count.
-fn recurrence_parts(rule: &str) -> (Recurrence, u32, Option<Date>, Option<u32>) {
+/// The repeat an `RRULE` names: its frequency, interval, last day, count and the days it comes
+/// on.
+fn recurrence_parts(rule: &str) -> (Recurrence, u32, Option<Date>, Option<u32>, Vec<String>) {
     let mut recurrence = Recurrence::None;
     let mut interval = 1;
     let mut until = None;
     let mut count = None;
+    let mut days: Vec<String> = Vec::new();
     for part in rule.split(';') {
         let Some((name, value)) = part.split_once('=') else {
             continue;
@@ -1732,9 +1747,14 @@ fn recurrence_parts(rule: &str) -> (Recurrence, u32, Option<Date>, Option<u32>) 
                     _ => Recurrence::None,
                 };
             }
-            "BYDAY" if value.to_ascii_uppercase().contains("MO") => {
+            "BYDAY" => {
+                days = value
+                    .split(',')
+                    .filter_map(crate::model::weekday_of)
+                    .map(|day| crate::model::weekday_code(day).to_owned())
+                    .collect();
                 // Every weekday, as the app's own preset names it.
-                if recurrence == Recurrence::Weekly {
+                if recurrence == Recurrence::Weekly && days == ["MO", "TU", "WE", "TH", "FR"] {
                     recurrence = Recurrence::Weekdays;
                 }
             }
@@ -1744,7 +1764,7 @@ fn recurrence_parts(rule: &str) -> (Recurrence, u32, Option<Date>, Option<u32>) 
             _ => {}
         }
     }
-    (recurrence, interval.max(1), until, count)
+    (recurrence, interval.max(1), until, count, days)
 }
 
 /// The day a written `UNTIL` names, `YYYYMMDD` or `YYYYMMDDTHHMMSSZ`.
@@ -1820,7 +1840,7 @@ pub fn text_of(entry: &Entry) -> String {
     let zone = entry.timezone.as_str();
     let start = wall_of_text(&entry.start).unwrap_or_default();
     let end = wall_of_text(&entry.end).unwrap_or_default();
-    let (recurrence, _, _, _) = recurrence_parts(&entry.recurrence);
+    let (recurrence, _, _, _, weekdays) = recurrence_parts(&entry.recurrence);
     let mut event = Event {
         id: Id::new_v4(),
         title: entry.title.clone(),
@@ -1829,6 +1849,13 @@ pub fn text_of(entry: &Entry) -> String {
         all_day: entry.all_day,
         location: entry.location.clone(),
         recurrence,
+        // The days stand in their own field, so a rule kept as its frequency alone still shows
+        // them; one written whole says its own.
+        recurrence_weekdays: if entry.recurrence_weekdays.is_empty() {
+            weekdays.into_iter().collect()
+        } else {
+            entry.recurrence_weekdays.iter().cloned().collect()
+        },
         recurrence_interval: entry.recurrence_every.max(1),
         recurrence_until: entry.recurrence_until.parse::<Date>().ok(),
         recurrence_count: (entry.recurrence_count > 0).then_some(entry.recurrence_count),
