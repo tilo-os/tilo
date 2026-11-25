@@ -97,3 +97,36 @@ fn a_held_frame_takes_the_turns_of_a_gesture() {
         session.handle().revision()
     );
 }
+
+/// A turn the loop hands a settled shell (a timer, a client's message, a display's blank) paints
+/// nothing: what it shows has not changed, so the display keeps the frame it has and the machine
+/// sleeps.
+#[test]
+fn a_turn_handed_to_a_settled_shell_paints_nothing() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let mut quiet = 0_u32;
+    let mut drawn = session.compositor().frames_presented();
+    let _ = crate::common::wait_maybe(&mut session, |session| {
+        let now = session.compositor().frames_presented();
+        quiet = if now == drawn { quiet + 1 } else { 0 };
+        drawn = now;
+        (quiet >= 6).then_some(())
+    });
+    session.compositor().record_frames();
+    for _ in 0..120 {
+        session.step(Duration::ZERO).expect("an offered turn");
+    }
+    let painted: Vec<String> = (session.compositor().recorded_frames().iter())
+        .filter(|sample| sample.painted)
+        .map(|sample| {
+            let why = tilo_frame_metrics::paint_reason::names(sample.paint_reasons);
+            format!("{why} {} {}", sample.paint_clients, sample.paint_animations)
+        })
+        .collect();
+    assert!(
+        painted.is_empty(),
+        "an idle shell painted {} of 120 turns it was handed, for: {painted:?}",
+        painted.len()
+    );
+}

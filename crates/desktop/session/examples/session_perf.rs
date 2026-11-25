@@ -758,13 +758,23 @@ fn idle(session: &mut Session) -> (usize, usize, f64) {
         session.step(Duration::ZERO).expect("an offered turn");
     }
     let wall_us = start.elapsed().as_micros() as f64;
-    let working = session
-        .compositor()
-        .recorded_frames()
-        .iter()
+    let painted: Vec<_> = (session.compositor().recorded_frames().iter())
         .filter(|sample| sample.painted)
-        .count();
-    (offered, working, wall_us / offered as f64)
+        .collect();
+    // An idle frame that painted says why, so a shell that never rests names what woke it.
+    let mut why = std::collections::BTreeMap::<String, usize>::new();
+    for sample in &painted {
+        let reasons = tilo_frame_metrics::paint_reason::names(sample.paint_reasons);
+        let reason = format!(
+            "{reasons} {} {}",
+            sample.paint_clients, sample.paint_animations
+        );
+        *why.entry(reason).or_default() += 1;
+    }
+    for (reason, frames) in why {
+        println!("  idle painted {frames} frames for: {reason}");
+    }
+    (offered, painted.len(), wall_us / offered as f64)
 }
 
 /// Peak resident set in MiB, from `/proc/self/status`.
