@@ -489,6 +489,58 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
     assert!(device.runs.opened.lock().unwrap().is_empty());
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn a_grant_for_one_workspace_is_invited_into_that_one_alone() {
+    let root = SigningKey::from_bytes(&[0x13; 32]);
+    let device = device_host(&root).await;
+    let second = device.host.workspaces().create("Other").await.unwrap();
+    let grant = certified(
+        &root,
+        11,
+        "one workspace",
+        DeviceCapabilities::agent_grant(AgentScope::parse(&device.workspace).unwrap()),
+    );
+    let key = session(&device, &grant).await;
+
+    // The invitation into the workspace its grant reaches is signed for that workspace, and the
+    // host admits it by the scope the person's root signed.
+    let entered = key
+        .enter_workspace(&device.workspace, "one workspace")
+        .await
+        .unwrap();
+    assert!(
+        device
+            .host
+            .is_subscribed(entered, &grant.1.device_public_key)
+            .await
+    );
+
+    // The same grant asking for another workspace's invitation is refused: its scope reaches
+    // the one workspace, and the invitation it asks for is signed for the other.
+    let refused = key
+        .enter_workspace(&second.workspace, "one workspace")
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "refused", "{refused:?}");
+    assert!(
+        refused
+            .message
+            .contains("grant does not reach this workspace"),
+        "{refused:?}"
+    );
+    assert!(
+        !device
+            .host
+            .is_subscribed(
+                second.workspace.parse().unwrap(),
+                &grant.1.device_public_key
+            )
+            .await,
+        "the key entered nothing else"
+    );
+    key.close();
+}
+
 /// A window a device shows on a page, as its window process answers: the page whole, and what
 /// each act did, said back in the markup of the element it changed.
 struct ShownWindow {
@@ -1085,6 +1137,10 @@ tilo_test_env::scenario! {
             let listed = forwarded.client.call("tilo_ls", &json!({}));
             assert_eq!(listed["result"]["isError"], false, "{listed}");
             assert!(text(&listed).contains("notes"), "{listed}");
+            // The rows the host's broker answers, by their names: Notes' notebook.
+            let notes = forwarded.client.call("tilo_ls", &json!({"path": "notes"}));
+            assert_eq!(notes["result"]["isError"], false, "{notes}");
+            assert!(text(&notes).contains("Notebook"), "{notes}");
             // Its agent acts here under the workspace's grants naming it: no device setting
             // lets it in, and no switch is turned on for it.
             let done = forwarded

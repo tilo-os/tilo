@@ -4110,7 +4110,9 @@ impl Task {
 
 /// `message`'s invocation signed by this device for the host scope, when it carries none: a
 /// request that names no workspace proves its device by the invocation, where no workspace's
-/// roster names it. Anything else, and one that cannot be signed, goes as it is.
+/// roster names it. The invitation into a workspace is signed for that workspace
+/// ([`tilo_server_protocol::workspaces::invitation_scope`]), so a grant reaching it alone proves
+/// its key there. Anything else, and one that cannot be signed, goes as it is.
 async fn signed_host_message(
     message: tilo_actions::remote::RemoteActionMessage,
     cert: &DeviceCert,
@@ -4122,7 +4124,7 @@ async fn signed_host_message(
     };
     if request.signed.is_none()
         && let Ok(signed) = tilo_server_protocol::invocation::sign_invocation(
-            "",
+            tilo_server_protocol::workspaces::invitation_scope(&request).unwrap_or_default(),
             &request,
             cert,
             signer,

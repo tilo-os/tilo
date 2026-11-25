@@ -736,6 +736,33 @@ pub const CREATE_WORKSPACE: &str = "workspace.create";
 /// [`CreatedWorkspace`] with the invitation the person's devices redeem to
 /// hold it, as its administrator.
 pub const CREATE_OWN_WORKSPACE: &str = "workspace.create-own";
+
+/// The workspace a request to the host itself is signed for, where it names one: the invitation
+/// into a workspace that is there already ([`CREATE_OWN_WORKSPACE`] with its `workspace` and
+/// nothing that makes or labels another). A device entering that workspace signs for it, so an
+/// agent's grant whose scope reaches that one workspace alone proves its key for the invitation,
+/// and for nothing else of the host's. `None` for every other request, which is signed for no
+/// workspace.
+#[must_use]
+pub fn invitation_scope(request: &InvokeRequest) -> Option<&str> {
+    let target = &request.target;
+    if target.provider != HOST_ACTIONS_PROVIDER
+        || target.address.resource != HOST_WORKSPACES_RESOURCE
+        || target.address.action != CREATE_OWN_WORKSPACE
+    {
+        return None;
+    }
+    let InvokeArgument::Json(arguments) = &request.argument else {
+        return None;
+    };
+    if arguments.contains_key("name") || arguments.contains_key("labels") {
+        return None;
+    }
+    arguments
+        .get("workspace")
+        .and_then(serde_json::Value::as_str)
+        .filter(|workspace| WorkspaceId::parse(workspace).is_some())
+}
 /// Branch `workspace`, one of the caller's person's own on a host that keeps
 /// workspaces of people's own: a new workspace of theirs, named `name` and
 /// labelled `labels` when given, that starts with every record of `workspace`

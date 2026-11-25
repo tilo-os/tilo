@@ -905,7 +905,10 @@ impl HostOperations {
     }
 
     /// The certificate the signed invocation `request` carries, checked as a host checks one:
-    /// signed by its device, fresh, and not revoked.
+    /// signed by its device, fresh, and not revoked. It is signed for no workspace, but for the
+    /// invitation into a workspace, which is signed for that one
+    /// ([`tilo_server_protocol::workspaces::invitation_scope`]): an agent's grant proves its key
+    /// for that invitation only where its root-signed scope reaches that workspace.
     fn certificate(
         &self,
         request: &tilo_actions::remote::InvokeRequest,
@@ -916,7 +919,7 @@ impl HostOperations {
             }
         })?;
         tilo_server_protocol::invocation::verify_invocation(
-            "",
+            tilo_server_protocol::workspaces::invitation_scope(request).unwrap_or_default(),
             request,
             &revocations,
             tilo_clock::unix_now_ns(),
