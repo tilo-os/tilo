@@ -140,6 +140,8 @@ fn run_held(kind: &str, code: std::sync::Arc<dyn tilolang_tilo::held::Kind>) -> 
             release = Arc::new(SignInRelease(std::sync::Mutex::new(sign_ins)));
         }
         Ok(Some(Handed::Reader(reader))) => first = Some(reader),
+        // The held connections call no actions of their own: such a connection is no reader's.
+        Ok(Some(Handed::Actions(_))) => {}
         Ok(None) => return Ok(()),
         Err(error) => return Err(format!("the {kind} connections' socket: {error}")),
     }
