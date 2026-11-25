@@ -83,7 +83,7 @@ fn bottom(node: &ui::headless::InspectionNode) -> f64 {
 
 /// Everything a pane draws past its window's right edge: a leaf whose visible part stands beyond
 /// it, named for the person reading the failure.
-fn past_the_edge(window: &mut Window, (width, height): (u32, u32)) -> Vec<String> {
+fn past_the_edge(window: &Window, (width, height): (u32, u32)) -> Vec<String> {
     let snapshot = window.harness.inspection();
     let mut problems = Vec::new();
     let mut pending: Vec<&ui::headless::InspectionNode> = vec![&snapshot.root];
@@ -125,10 +125,10 @@ fn every_pane_fits_the_window_it_is_shown_in() {
         for pane in PANES {
             open_pane(&mut window, pane);
             assert!(
-                !said(&mut window).is_empty(),
+                !said(&window).is_empty(),
                 "{pane} at {size:?} text {text_scale}: the window shows nothing"
             );
-            let problems = past_the_edge(&mut window, size);
+            let problems = past_the_edge(&window, size);
             assert!(
                 problems.is_empty(),
                 "{pane} at {size:?} text {text_scale} draws past its window: {problems:#?}"
@@ -145,41 +145,41 @@ fn a_phone_folds_the_sidebar_into_a_drawer() {
     let mut window = open(PHONE, ui::Theme::light());
 
     assert!(
-        !places_in_front(&mut window, PHONE).is_empty(),
+        !places_in_front(&window, PHONE).is_empty(),
         "a phone's window opens on the list of places: {:?}",
-        said(&mut window)
+        said(&window)
     );
     assert!(
-        !shows(&mut window, "Mode"),
+        !shows(&window, "Mode"),
         "and not on a pane: {:?}",
-        said(&mut window)
+        said(&window)
     );
 
     press_place(&mut window, "Sound");
     settle_motion(&mut window, ui::time::Duration::from_secs(1));
     assert!(
-        shows(&mut window, "Output"),
+        shows(&window, "Output"),
         "choosing Sound shows the Sound pane: {:?}",
-        said(&mut window)
+        said(&window)
     );
     assert!(
-        places_in_front(&mut window, PHONE).is_empty(),
+        places_in_front(&window, PHONE).is_empty(),
         "the list goes behind what it opened: {:?}",
-        said(&mut window)
+        said(&window)
     );
 
     press_window_control(&mut window, ui::widget::WINDOW_BACK);
     settle_motion(&mut window, ui::time::Duration::from_secs(1));
     assert!(
-        !places_in_front(&mut window, PHONE).is_empty(),
+        !places_in_front(&window, PHONE).is_empty(),
         "the window's way back brings the list in front again: {:?}",
-        said(&mut window)
+        said(&window)
     );
 }
 
 /// The sidebar's places the window shows now, inside its frame: a phone's window keeps the ones it
 /// is not showing behind what it shows.
-fn places_in_front(window: &mut Window, (width, height): (u32, u32)) -> Vec<String> {
+fn places_in_front(window: &Window, (width, height): (u32, u32)) -> Vec<String> {
     accessible(window)
         .into_iter()
         .filter(|node| node.role == ui::a11y::Role::TreeItem)
@@ -207,18 +207,20 @@ fn press_window_control(window: &mut Window, id: &str) {
         .nodes()
         .into_iter()
         .find(|node| node.test_id.as_deref() == Some(id))
-        .map(|node| (node.rect[0], node.rect[1], node.rect[2], node.rect[3]))
-        .unwrap_or_else(|| {
-            let ids: Vec<String> = window
-                .harness
-                .inspection()
-                .root
-                .nodes()
-                .into_iter()
-                .filter_map(|node| node.test_id.clone())
-                .collect();
-            panic!("the window's bar offers {id}: {ids:?}")
-        });
+        .map_or_else(
+            || {
+                let ids: Vec<String> = window
+                    .harness
+                    .inspection()
+                    .root
+                    .nodes()
+                    .into_iter()
+                    .filter_map(|node| node.test_id.clone())
+                    .collect();
+                panic!("the window's bar offers {id}: {ids:?}")
+            },
+            |node| (node.rect[0], node.rect[1], node.rect[2], node.rect[3]),
+        );
     window
         .harness
         .click_at(node.0 + node.2 / 2.0, node.1 + node.3 / 2.0);
@@ -259,11 +261,11 @@ fn a_long_name_stays_inside_a_narrow_window() {
     set_reading(&window, "users", "so.tilo.device#Users", &people);
     open_pane(&mut window, "users");
     assert!(
-        shows(&mut window, "Featherstonehaugh"),
+        shows(&window, "Featherstonehaugh"),
         "the pane names the person: {:?}",
-        said(&mut window)
+        said(&window)
     );
-    let problems = past_the_edge(&mut window, PHONE);
+    let problems = past_the_edge(&window, PHONE);
     assert!(
         problems.is_empty(),
         "a long name stays inside the window: {problems:#?}"
@@ -306,7 +308,7 @@ fn a_tall_pane_scrolls_in_a_short_window() {
         before.0,
         after.0
     );
-    let problems = past_the_edge(&mut window, SHORT);
+    let problems = past_the_edge(&window, SHORT);
     assert!(problems.is_empty(), "{problems:#?}");
 }
 

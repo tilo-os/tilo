@@ -75,17 +75,17 @@ pub fn settle_motion(window: &mut Window, bound: ui::time::Duration) {
 }
 
 /// Every word the window shows, as a screen reader reads them.
-pub fn said(window: &mut Window) -> Vec<String> {
+pub fn said(window: &Window) -> Vec<String> {
     ui::a11y::texts(window.harness.root_widget())
 }
 
 /// Whether any word the window shows holds `words`.
-pub fn shows(window: &mut Window, words: &str) -> bool {
+pub fn shows(window: &Window, words: &str) -> bool {
     said(window).iter().any(|text| text.contains(words))
 }
 
 /// Every accessible node of the window, as a screen reader reads it.
-pub fn accessible(window: &mut Window) -> Vec<ui::a11y::AccessNode> {
+pub fn accessible(window: &Window) -> Vec<ui::a11y::AccessNode> {
     let snapshot = window.harness.inspection();
     (snapshot.root.nodes().into_iter())
         .filter_map(|node| node.semantics.as_ref())

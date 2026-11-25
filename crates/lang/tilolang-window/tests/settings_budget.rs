@@ -68,7 +68,10 @@ fn reference() -> u64 {
 
 /// The CPU microseconds a step took, as they would read beside a reference of [`REFERENCE_US`].
 fn held(cpu_us: u64, alongside_us: u64) -> u64 {
-    let scaled = u128::from(cpu_us) * u128::from(REFERENCE_US) / u128::from(alongside_us.max(1));
+    let scaled = u128::from(cpu_us)
+        .checked_mul(u128::from(REFERENCE_US))
+        .and_then(|scaled| scaled.checked_div(u128::from(alongside_us.max(1))))
+        .unwrap_or(u128::MAX);
     u64::try_from(scaled).unwrap_or(u64::MAX)
 }
 
@@ -107,26 +110,36 @@ fn timed(mut step: impl FnMut()) -> Step {
     }
 }
 
+/// The index of the `percentile`th of `len` sorted samples, rounded to the nearest one:
+/// `round((len - 1) * percentile / 100)`, in whole numbers.
+fn at_percentile(len: usize, percentile: usize) -> usize {
+    len.saturating_sub(1)
+        .saturating_mul(percentile)
+        .saturating_add(50)
+        .checked_div(100)
+        .unwrap_or(0)
+}
+
 fn percentiles(label: &str, values: &[u64], raw: &[u64]) -> u64 {
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
-    let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q).round() as usize];
+    let at = |percentile: usize| sorted[at_percentile(sorted.len(), percentile)];
     let (raw_p50, raw_p99) = if raw.is_empty() {
         (0, 0)
     } else {
         let mut raw = raw.to_vec();
         raw.sort_unstable();
-        let at_raw = |q: f64| raw[((raw.len() - 1) as f64 * q).round() as usize];
-        (at_raw(0.5), at_raw(0.99))
+        let at_raw = |percentile: usize| raw[at_percentile(raw.len(), percentile)];
+        (at_raw(50), at_raw(99))
     };
     eprintln!(
         "perf {label}: n={} held p50={}us p99={}us max={}us (raw p50={raw_p50}us p99={raw_p99}us, reference {REFERENCE_US}us)",
         sorted.len(),
-        at(0.5),
-        at(0.99),
-        sorted[sorted.len() - 1]
+        at(50),
+        at(99),
+        sorted[sorted.len().saturating_sub(1)]
     );
-    at(0.5)
+    at(50)
 }
 
 fn budget(label: &str, p50: u64, limit_us: u64) {

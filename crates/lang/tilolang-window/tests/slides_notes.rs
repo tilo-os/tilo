@@ -56,7 +56,7 @@ fn settle(window: &mut Window) {
 }
 
 /// Every accessible node of the window, as a screen reader reads it.
-fn accessible(window: &mut Window) -> Vec<ui::a11y::AccessNode> {
+fn accessible(window: &Window) -> Vec<ui::a11y::AccessNode> {
     let snapshot = window.harness.inspection();
     snapshot
         .root
@@ -73,14 +73,16 @@ fn press(window: &mut Window, name: &str) {
     let at = accessible(window)
         .into_iter()
         .find(|node| node.name.as_deref() == Some(name) && node.bounds.is_some())
-        .map(|node| node.bounds.expect("the control's bounds"))
-        .unwrap_or_else(|| {
-            let names: Vec<String> = accessible(window)
-                .into_iter()
-                .filter_map(|node| node.name)
-                .collect();
-            panic!("the window offers `{name}`: {names:?}")
-        });
+        .map_or_else(
+            || {
+                let names: Vec<String> = accessible(window)
+                    .into_iter()
+                    .filter_map(|node| node.name)
+                    .collect();
+                panic!("the window offers `{name}`: {names:?}")
+            },
+            |node| node.bounds.expect("the control's bounds"),
+        );
     window
         .harness
         .click_at(f64::midpoint(at.x0, at.x1), f64::midpoint(at.y0, at.y1));
@@ -123,7 +125,7 @@ fn click_the_notes(window: &mut Window) {
 }
 
 /// The deck as the app reads it: its outline, with each slide's notes under it.
-fn deck_outline(window: &mut Window) -> String {
+fn deck_outline(window: &Window) -> String {
     let host = window.instance.host().expect("the window runs an instance");
     let ty = host
         .package(APP)
@@ -175,7 +177,7 @@ fn typing_after_choosing_a_slide_does_not_land_in_its_notes() {
     );
     window.harness.type_text("kept");
     settle(&mut window);
-    let outline = deck_outline(&mut window);
+    let outline = deck_outline(&window);
     assert!(
         outline.contains("Notes: kept"),
         "what was typed is the shown slide's notes: {outline}"
@@ -186,7 +188,7 @@ fn typing_after_choosing_a_slide_does_not_land_in_its_notes() {
     press_slide(&mut window, "2");
     window.harness.type_text("lost");
     settle(&mut window);
-    let outline = deck_outline(&mut window);
+    let outline = deck_outline(&window);
     assert!(
         !outline.contains("lost"),
         "what was typed after the choice reached no slide's notes: {outline}"

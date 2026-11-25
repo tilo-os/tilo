@@ -34,11 +34,11 @@ fn a_pane_whose_device_could_not_be_read_says_so() {
     let mut window = open(LAPTOP, ui::Theme::light());
     open_pane(&mut window, "sound");
     assert!(
-        shows(&mut window, "Output"),
+        shows(&window, "Output"),
         "Sound answers first: {:?}",
-        said(&mut window)
+        said(&window)
     );
-    assert!(!shows(&mut window, "could not be read"));
+    assert!(!shows(&window, "could not be read"));
 
     could_not_be_read(
         &window,
@@ -49,30 +49,30 @@ fn a_pane_whose_device_could_not_be_read_says_so() {
     settle(&mut window);
 
     assert!(
-        shows(&mut window, "Sound could not be read"),
+        shows(&window, "Sound could not be read"),
         "the pane says the sound could not be read: {:?}",
-        said(&mut window)
+        said(&window)
     );
     assert!(
-        shows(&mut window, "No sound service answered"),
+        shows(&window, "No sound service answered"),
         "with the reason the device gave: {:?}",
-        said(&mut window)
+        said(&window)
     );
     assert!(
-        !shows(&mut window, "Output"),
+        !shows(&window, "Output"),
         "and draws no section over an empty reading: {:?}",
-        said(&mut window)
+        said(&window)
     );
 
     // The reading answers again: the pane draws what it says.
     set_reading(&window, "sound", "so.tilo.device#Sound", "{}");
     settle(&mut window);
     assert!(
-        shows(&mut window, "Output"),
+        shows(&window, "Output"),
         "the pane draws again once the reading answers: {:?}",
-        said(&mut window)
+        said(&window)
     );
-    assert!(!shows(&mut window, "could not be read"));
+    assert!(!shows(&window, "could not be read"));
 }
 
 /// The Power pane reads a resource of its own, beside the battery's: one that could not be read is
@@ -81,7 +81,7 @@ fn a_pane_whose_device_could_not_be_read_says_so() {
 fn a_pane_says_a_reading_of_its_own_could_not_be_read() {
     let mut window = open(LAPTOP, ui::Theme::light());
     open_pane(&mut window, "power");
-    assert!(shows(&mut window, "Power mode"), "{:?}", said(&mut window));
+    assert!(shows(&window, "Power mode"), "{:?}", said(&window));
 
     could_not_be_read(
         &window,
@@ -92,14 +92,14 @@ fn a_pane_says_a_reading_of_its_own_could_not_be_read() {
     settle(&mut window);
 
     assert!(
-        shows(&mut window, "Power could not be read"),
+        shows(&window, "Power could not be read"),
         "{:?}",
-        said(&mut window)
+        said(&window)
     );
     assert!(
-        !shows(&mut window, "Power mode"),
+        !shows(&window, "Power mode"),
         "its settings are not drawn over the failed reading: {:?}",
-        said(&mut window)
+        said(&window)
     );
 }
 
@@ -111,9 +111,9 @@ fn a_settings_pane_says_it_could_not_be_read() {
     let settings_pane = "Accessibility";
     open_pane(&mut window, "accessibility");
     assert!(
-        shows(&mut window, "Screen reader"),
+        shows(&window, "Screen reader"),
         "{settings_pane} answers first: {:?}",
-        said(&mut window)
+        said(&window)
     );
 
     could_not_be_read(
@@ -124,8 +124,8 @@ fn a_settings_pane_says_it_could_not_be_read() {
     );
     settle(&mut window);
     assert!(
-        shows(&mut window, "Accessibility could not be read"),
+        shows(&window, "Accessibility could not be read"),
         "{:?}",
-        said(&mut window)
+        said(&window)
     );
 }

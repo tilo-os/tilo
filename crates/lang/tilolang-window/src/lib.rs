@@ -30,6 +30,7 @@ pub const EXCHANGES: usize = 8;
 
 /// A file a window opens with, as a page hands one over: its name, the media type it declares,
 /// and bytes this host keeps as the content the app's action reads.
+#[derive(Clone, Copy)]
 pub struct OpenedFile<'a> {
     pub name: &'a str,
     pub media: &'a str,

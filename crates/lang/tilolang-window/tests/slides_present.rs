@@ -67,14 +67,16 @@ fn press(window: &mut Window, name: &str) {
                 && node.name.as_deref() == Some(name)
                 && node.bounds.is_some()
         })
-        .map(|node| node.bounds.expect("the control's bounds"))
-        .unwrap_or_else(|| {
-            let names: Vec<String> = accessible(window)
-                .into_iter()
-                .filter_map(|node| node.name)
-                .collect();
-            panic!("the window offers `{name}`: {names:?}")
-        });
+        .map_or_else(
+            || {
+                let names: Vec<String> = accessible(window)
+                    .into_iter()
+                    .filter_map(|node| node.name)
+                    .collect();
+                panic!("the window offers `{name}`: {names:?}")
+            },
+            |node| node.bounds.expect("the control's bounds"),
+        );
     window.harness.click_at(
         f64::midpoint(node.x0, node.x1),
         f64::midpoint(node.y0, node.y1),
@@ -83,7 +85,7 @@ fn press(window: &mut Window, name: &str) {
 }
 
 /// Every accessible node of the window, as a screen reader reads it.
-fn accessible(window: &mut Window) -> Vec<ui::a11y::AccessNode> {
+fn accessible(window: &Window) -> Vec<ui::a11y::AccessNode> {
     let snapshot = window.harness.inspection();
     snapshot
         .root
