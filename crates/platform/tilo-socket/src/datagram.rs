@@ -180,12 +180,12 @@ impl Datagram {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, feature = "tokio"))]
     pub(crate) fn into_socket(self) -> UnixDatagram {
         self.socket
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "tokio"))]
     pub(crate) fn into_stream(self) -> crate::Stream {
         self.stream
     }

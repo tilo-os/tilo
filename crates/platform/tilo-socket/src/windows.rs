@@ -29,10 +29,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED,
-        ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, ERROR_SEM_TIMEOUT,
-        GENERIC_READ, GENERIC_WRITE, GetLastError, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
-        WAIT_TIMEOUT,
+        ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_MORE_DATA,
+        ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
+        ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE, GetLastError, INVALID_HANDLE_VALUE,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     Storage::FileSystem::{
         CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
@@ -271,7 +271,15 @@ fn overlapped(
     let mut call: OVERLAPPED = unsafe { std::mem::zeroed() };
     call.hEvent = event.as_raw_handle();
     // SAFETY: reads this thread's last error, right after the call.
-    if start(&raw mut call) == 0 && unsafe { GetLastError() } != ERROR_IO_PENDING {
+    // A read of a message-mode pipe whose message is already there and longer than the buffer
+    // ends at once with ERROR_MORE_DATA, having moved the buffer's worth: the rest is read next,
+    // so it is the bytes it moved, as a read that had to wait for the message answers them.
+    if start(&raw mut call) == 0
+        && !matches!(
+            unsafe { GetLastError() },
+            ERROR_IO_PENDING | ERROR_MORE_DATA
+        )
+    {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: the event this call signals; then the call's own handle and OVERLAPPED,
