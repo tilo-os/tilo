@@ -22045,6 +22045,7 @@ dependencies = [
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tilo-workspace-keys",
+ "tilolang-calendar",
  "tokio",
  "tokio-rustls",
  "toml 1.0.6+spec-1.1.0",
