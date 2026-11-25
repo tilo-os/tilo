@@ -636,6 +636,32 @@ tilo_test_env::scenario! {
 /// A record the workspace holds none of is asked for once, however often a list opens it, and
 /// asked for again once something arrived.
 #[test]
+/// A record the workspace holds none of, founded on a kind with no structure, holds no change: there
+/// is nothing to send, so it shows saved rather than waiting for a write that never goes.
+#[test]
+fn a_record_holding_nothing_yet_is_saved() {
+    let port = Rc::new(MemoryWorkspace::default());
+    let workspace = workspace_id();
+    let note = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
+    let mut owners = ResourceOwners::writing(port.clone());
+    let store = owners.open(APP, &workspace).unwrap();
+    assert!(store.open_resource(&note), "opened, founded empty");
+    store.flush().expect("nothing to send");
+    assert_eq!(
+        store.save_status(&note.id).unwrap(),
+        ResourceSaveStatus::Saved
+    );
+    store.with(&note.id, |doc| {
+        put_text(doc, "body", "now");
+        doc.commit();
+    });
+    store.flush().expect("its first change is taken");
+    assert_eq!(
+        store.save_status(&note.id).unwrap(),
+        ResourceSaveStatus::Saved
+    );
+}
+
 fn a_record_not_there_costs_one_question() {
     let port = Rc::new(MemoryWorkspace::default());
     let workspace = workspace_id();

@@ -212,11 +212,14 @@ impl Parked {
         }
     }
 
-    /// Whether the workspace holds the document at `heads`, as far as this store heard.
+    /// Whether the workspace holds the document at `heads`, as far as this store heard. A record
+    /// holding no change yet, founded on a kind with no structure, has nothing to keep: no write
+    /// is sent for it ([`ResourceSet::tick`]), so it is not waiting on one.
     fn keeps(&self, heads: &[ChangeHash]) -> bool {
-        self.stored.as_ref().is_some_and(|stored| {
-            stored.len() == heads.len() && heads.iter().all(|head| stored.contains(head))
-        })
+        heads.is_empty()
+            || self.stored.as_ref().is_some_and(|stored| {
+                stored.len() == heads.len() && heads.iter().all(|head| stored.contains(head))
+            })
     }
 
     /// The workspace holds `heads` of the record, besides what this store wrote: what it brought
