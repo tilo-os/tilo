@@ -563,17 +563,19 @@ fn swapping(node: &UiNode) -> bool {
     token(node, "transition") == Some("cross_fade")
 }
 
-/// Whether `new` shows the same content `old` did, by the identity of the whole tree it holds:
-/// the same nodes, by key and kind, wherever they are. A stage's page swapped for another names
-/// its own places, so the tree's keys change somewhere; a place moved or a zoom asked for changes
-/// only what those same nodes hold, never which they are.
+/// Whether `new` shows the same page `old` did: the stage holds the same nodes, by key and kind.
+/// A stage's page is what stands in it: another branch of the view (a surface for the shell's
+/// places) or another slide's elements, each keyed by what it shows. What changes inside the page
+/// is the page's own: a place moved, a zoom asked for, or a window arriving on a canvas is
+/// reconciled where it stands, so the canvas keeps its camera and pans to what arrived rather
+/// than fading into a canvas of its own.
 fn content_kept(old: &UiNode, new: &UiNode) -> bool {
     old.children.len() == new.children.len()
         && old
             .children
             .iter()
             .zip(&new.children)
-            .all(|(old, new)| old.key == new.key && old.kind == new.kind && content_kept(old, new))
+            .all(|(old, new)| old.key == new.key && old.kind == new.kind)
 }
 
 /// The pace a stage's swap plays at (its `motion:`, the theme's own otherwise) and the room it
@@ -1915,9 +1917,9 @@ impl Reconciler {
         Box::new(swapped)
     }
 
-    /// A stage met again while it swaps: a page swapped for another swaps again, from the page it
-    /// shows; a change of the same page changes the view it shows in place; a swap that has
-    /// played leaves the view it showed standing on its own.
+    /// A stage met again after a swap: a page swapped for another swaps again, from the page it
+    /// shows; a change of the same page changes the view it shows in place, which keeps fading in
+    /// while the swap plays and, once it has played, stands on its own with the change.
     fn swapped_in(
         &mut self,
         swapped: &mut ui::widget::Swapped,
@@ -1929,14 +1931,15 @@ impl Reconciler {
             swapped.swap(self.build(new_node));
             return None;
         }
-        if !swapped.is_swapping() {
-            return Some(std::mem::replace(
-                swapped.current_mut(),
-                Box::new(Spacer::fixed(0.0)),
-            ));
+        let mut shown = std::mem::replace(swapped.current_mut(), Box::new(Spacer::fixed(0.0)));
+        if let Some(built) = self.update_in(&mut shown, old_node, new_node) {
+            shown = built;
         }
-        *swapped.current_mut() = self.build(new_node);
-        None
+        if swapped.is_swapping() {
+            *swapped.current_mut() = shown;
+            return None;
+        }
+        Some(shown)
     }
 
     /// Reconcile the children of `container`, built for `old_node`, with `new_node`'s by key,

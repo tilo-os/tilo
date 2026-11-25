@@ -232,6 +232,69 @@ fn a_change_of_the_same_page_is_reconciled_in_place_and_never_swaps() {
     assert!(shown.shows("a"));
 }
 
+/// A node arriving inside the page shown (a window placed on a canvas) is the page's own change:
+/// the page is reconciled where it stands, holding what arrived, and the stage swaps nothing.
+#[test]
+fn a_node_arriving_inside_the_page_is_reconciled_in_place_and_never_swaps() {
+    let start = ui::time::now();
+    let mut shown = Shown::open("a", Some("cross_fade"), false, start);
+    let mut arriving = UiNode::empty("ui.Text", "a-arriving");
+    arriving
+        .props
+        .insert("value".to_owned(), Value::text("arrived"));
+    shown.change(
+        start,
+        MotionSource::Action,
+        vec![Patch::Insert {
+            parent: vec!["stage".to_owned(), "a".to_owned()],
+            index: 1,
+            node: arriving,
+        }],
+    );
+    shown.frame(start + FRAME);
+    assert!(
+        tilo_ui_base::widget::find_test_id(shown.harness.root_widget(), "stage")
+            .and_then(|widget| widget.as_any())
+            .and_then(|any| any.downcast_ref::<Swapped>())
+            .is_none(),
+        "what arrived on the page is reconciled where it stands"
+    );
+    assert!(shown.shows("a") && shown.shows("a-arriving"));
+}
+
+/// What arrives on the page a swap brought is shown, while the swap plays and after it: the page
+/// is reconciled where it stands, never left as it was when the swap began.
+#[test]
+fn what_arrives_on_the_page_a_swap_brought_is_shown_during_and_after_the_swap() {
+    let start = ui::time::now();
+    let mut shown = Shown::open("a", Some("cross_fade"), false, start);
+    shown.change(start, MotionSource::Pointer, swap_page());
+    shown.frame(start + FRAME);
+    let arrives = |key: &str| {
+        let mut node = UiNode::empty("ui.Text", key);
+        node.props.insert("value".to_owned(), Value::text(key));
+        vec![Patch::Insert {
+            parent: vec!["stage".to_owned(), "b".to_owned()],
+            index: 1,
+            node,
+        }]
+    };
+
+    // While the swap plays, the page fading in takes what arrives.
+    shown.change(start + FRAME, MotionSource::Action, arrives("b-during"));
+    shown.frame(start + FRAME * 2);
+    assert!(shown.stage().is_swapping(), "the swap still plays");
+    assert!(holds(shown.stage().current(), "b-during"));
+
+    // After it has played, the page stands on its own with what arrives.
+    let later = start + Duration::from_secs(1);
+    shown.frame(later);
+    shown.change(later, MotionSource::Action, arrives("b-after"));
+    shown.frame(later + FRAME);
+    assert!(shown.shows("b") && shown.shows("b-during") && shown.shows("b-after"));
+    assert!(!shown.shows("a"), "the page that went stays gone");
+}
+
 /// The swap to a page `b` that holds a button the person presses.
 fn swap_to_pressable() -> Vec<Patch> {
     let mut b = page("b");
