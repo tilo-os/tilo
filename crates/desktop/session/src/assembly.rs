@@ -305,7 +305,7 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) wallpapers: std::sync::Arc<crate::wallpapers::Wallpapers>,
     /// The picture the workspace in front shows, as the views' host draws it under everything.
-    pub(crate) wallpaper: ui::backdrop::wallpaper::Source,
+    pub(crate) wallpaper: ui::part_paint::wallpaper::Source,
     /// The keyboard layouts the person switches between, and which one is
     /// in use, as the lock screen shows them.
     pub(crate) lock_layouts: Vec<String>,

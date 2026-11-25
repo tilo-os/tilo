@@ -1,8 +1,8 @@
 //! `Backdrop`: the shell's wallpaper under everything a view draws.
 //!
 //! The session decodes the person's picture once, into
-//! [`crate::backdrop::wallpaper::Source`], and hands it to the host
-//! ([`crate::backdrop::wallpaper::install`]); a `Backdrop` fills its box with
+//! [`crate::part_paint::wallpaper::Source`], and hands it to the host
+//! ([`crate::part_paint::wallpaper::install`]); a `Backdrop` fills its box with
 //! the picture, scaled to cover it and centred, as a desktop's wallpaper
 //! fills a screen. A shell with no picture shows its gradient instead: the one
 //! the host set, else the theme's own ground, eased toward neutral and falling
@@ -82,10 +82,10 @@ impl Widget for Backdrop {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 || env.should_cull(self.rect) {
             return;
         }
-        let source = crate::backdrop::wallpaper::installed();
+        let source = crate::part_paint::wallpaper::installed();
         if let Some(picture) = source
             .as_ref()
-            .and_then(crate::backdrop::wallpaper::Source::picture)
+            .and_then(crate::part_paint::wallpaper::Source::picture)
         {
             paint_picture(scene, transform, self.rect, &picture);
             return;
@@ -95,7 +95,7 @@ impl Widget for Backdrop {
         // the desktop reads as the colour of the machine whichever theme the person chose.
         let stops = source
             .as_ref()
-            .and_then(crate::backdrop::wallpaper::Source::gradient)
+            .and_then(crate::part_paint::wallpaper::Source::gradient)
             .unwrap_or_else(|| ground_stops(theme));
         let gradient =
             Gradient::new_linear(self.rect.origin(), Point::new(self.rect.x1, self.rect.y1))

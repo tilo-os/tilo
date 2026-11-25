@@ -1,5 +1,6 @@
 use super::*;
 use crate::offscreen::OffscreenRenderer;
+use crate::part_paint::wallpaper;
 use vello::kurbo::{Point, RoundedRect, Size, Vec2};
 
 const PANEL: Rect = Rect::new(64.0, 48.0, 192.0, 144.0);

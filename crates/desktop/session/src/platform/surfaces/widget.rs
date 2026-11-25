@@ -340,7 +340,7 @@ impl WidgetSurface {
         // between frames as much as a frame. A pass that drew without them
         // drew its material over the stand-in, and kept it: the compositor
         // hands a backdrop over again only when what lies below changes.
-        ui::backdrop::provide_backdrops(
+        ui::part_paint::backdrop::provide_backdrops(
             self.provided
                 .iter()
                 .enumerate()

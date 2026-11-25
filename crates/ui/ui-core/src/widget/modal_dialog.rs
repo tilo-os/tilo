@@ -411,11 +411,11 @@ pub fn paint_sheet(
 ) {
     if layout.foot {
     } else if layout.card == layout.scrim {
-        crate::floating_surface::paint_material(
+        crate::part_paint::material::paint_material(
             scene,
             transform,
             &layout.card,
-            crate::floating_surface::Material::Opaque,
+            crate::part_paint::material::Material::Opaque,
             theme,
         );
     } else {

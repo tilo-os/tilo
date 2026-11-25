@@ -252,7 +252,7 @@ impl App {
             self.dismiss_control_notice();
         }
         // A material stage lights where the pointer is: it moving over the window is a new frame.
-        if crate::backdrop::follows_pointer()
+        if crate::part_paint::backdrop::follows_pointer()
             && matches!(
                 &event,
                 WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. }

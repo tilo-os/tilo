@@ -605,7 +605,7 @@ pub struct OffscreenRenderer {
     area_ppt8_attempt_accounting: AreaPpt8AttemptAccounting,
     clip_single_group_attempt_accounting: ClipSingleGroupAttemptAccounting,
     target_valid: bool,
-    backdrop: Option<Arc<crate::backdrop::BackdropFrame>>,
+    backdrop: Option<Arc<crate::part_paint::backdrop::BackdropFrame>>,
     backdrop_blur: Option<crate::backdrop::BackdropBlur>,
     backdrop_stats: crate::backdrop::BackdropStats,
     copy_scratch: crate::scroll_copy::CopyScratch,
@@ -1151,7 +1151,10 @@ impl OffscreenRenderer {
 
     /// Draw the floating surfaces of scenes rendered from now on over `backdrop`, the frame their host
     /// recorded with them; `None` draws them opaque.
-    pub fn set_backdrop(&mut self, backdrop: Option<Arc<crate::backdrop::BackdropFrame>>) {
+    pub fn set_backdrop(
+        &mut self,
+        backdrop: Option<Arc<crate::part_paint::backdrop::BackdropFrame>>,
+    ) {
         self.backdrop = backdrop;
     }
 

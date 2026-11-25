@@ -386,11 +386,11 @@ impl<'a> MediaCardFace<'a> {
             && let Some(target) = self.hover_action_rect(rect, theme)
         {
             let disc = RoundedRect::from_rect(target, target.width() / 2.0);
-            crate::floating_surface::paint_material(
+            crate::part_paint::material::paint_material(
                 ctx.scene,
                 ctx.transform,
                 &disc,
-                crate::floating_surface::Material::Floating,
+                crate::part_paint::material::Material::Floating,
                 theme,
             );
             let glyph = Rect::from_center_size(target.center(), (m.icon, m.icon));
@@ -712,11 +712,11 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
                 art.y1 - pad,
             );
             let shape = RoundedRect::from_rect(pill, pill.height() / 2.0);
-            crate::floating_surface::paint_material(
+            crate::part_paint::material::paint_material(
                 ctx.scene,
                 ctx.transform,
                 &shape,
-                crate::floating_surface::Material::Floating,
+                crate::part_paint::material::Material::Floating,
                 theme,
             );
             ctx.text(
@@ -767,11 +767,11 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
                 art.x1 - pad,
                 art.y0 + pad + side,
             );
-            crate::floating_surface::paint_material(
+            crate::part_paint::material::paint_material(
                 ctx.scene,
                 ctx.transform,
                 &RoundedRect::from_rect(disc, side / 2.0),
-                crate::floating_surface::Material::Floating,
+                crate::part_paint::material::Material::Floating,
                 theme,
             );
             let glyph = Rect::from_center_size(disc.center(), (m.icon * 0.75, m.icon * 0.75));
@@ -806,11 +806,11 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
                 art.x1 - pad,
                 art.y1 - pad,
             );
-            crate::floating_surface::paint_material(
+            crate::part_paint::material::paint_material(
                 ctx.scene,
                 ctx.transform,
                 &RoundedRect::from_rect(plate, pad),
-                crate::floating_surface::Material::Floating,
+                crate::part_paint::material::Material::Floating,
                 theme,
             );
             ctx.text(

@@ -114,7 +114,7 @@ fn cpu_frame(
         damage_regions: &[],
         scroll_copies: &[],
         full_redraw: true,
-        backdrop: &ui::backdrop::BackdropFrame::default(),
+        backdrop: &ui::part_paint::backdrop::BackdropFrame::default(),
     };
     raster
         .rasterize_to_cpu(frame)

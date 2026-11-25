@@ -25,9 +25,9 @@ use vello::peniko::{Color, Fill};
 
 use crate::support::render::write_png;
 use std::sync::Arc;
-use tilo_ui::backdrop::{BackdropFrame, BackdropRecording, layer_scene};
 use tilo_ui::color::contrast_ratio;
 use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::part_paint::backdrop::{BackdropFrame, BackdropRecording, layer_scene};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;

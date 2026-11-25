@@ -1640,6 +1640,7 @@ pub use window_header::{
     merged_row_holds_search, merged_row_width, merged_row_width_in,
 };
 mod nav_list;
+pub use nav_list::nav_row;
 pub use nav_list::{
     NavAction, NavArt, NavDrop, NavEntry, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
     NavListProps, NavPerson, NavSearchTerm, NavSection, NavSectionProps,

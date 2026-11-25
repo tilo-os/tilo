@@ -572,15 +572,15 @@ impl ShellSurface for AppProcess {
         // blurs that and hands it back (`set_backdrops`).
         // The images are this app's: every host on the thread provides its
         // own before it draws.
-        ui::backdrop::provide_backdrops(
+        ui::part_paint::backdrop::provide_backdrops(
             self.provided
                 .iter()
                 .enumerate()
                 .filter_map(|(slot, image)| Some((slot, image.clone()?)))
                 .collect(),
         );
-        let recording = ui::backdrop::BackdropRecording::begin();
-        ui::backdrop::layer_scene(&self.scene, 0);
+        let recording = ui::part_paint::backdrop::BackdropRecording::begin();
+        ui::part_paint::backdrop::layer_scene(&self.scene, 0);
         self.wants =
             self.app
                 .surface_frame_with_damage(&self.surface, &mut self.scene, &mut self.damage);

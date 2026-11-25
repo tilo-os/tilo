@@ -1863,7 +1863,7 @@ impl Session {
             activities,
             live,
             wallpapers,
-            wallpaper: ui::backdrop::wallpaper::Source::new(),
+            wallpaper: ui::part_paint::wallpaper::Source::new(),
             lock_layouts: options.config.keyboard_layouts.clone(),
             lock_layout: Cell::new(0),
             session_actions: options.session_actions,

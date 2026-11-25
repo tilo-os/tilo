@@ -4,7 +4,7 @@
 //! ground, raised controls, floating chrome and bars), one [`Border`] and one [`Depth`].
 //! Legibility never depends on a finish: whatever lies below a translucent or glass
 //! surface is held inside a band around the role's ground before the tint is laid over it
-//! (`crate::backdrop::material_band`), so ink keeps the contrast it has on the opaque
+//! (`crate::part_paint::backdrop::material_band`), so ink keeps the contrast it has on the opaque
 //! ground over the worst backdrop (`crate::theme::ThemeDocument::findings`).
 
 use std::collections::BTreeMap;

@@ -37,8 +37,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
-use tilo_ui::backdrop::{BackdropFrame, BackdropRecording, layer_scene};
 use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::part_paint::backdrop::{BackdropFrame, BackdropRecording, layer_scene};
 use tilo_ui::theme::{Theme, ThemeDocument};
 use tilo_ui::tokens::SurfaceRole;
 

@@ -251,7 +251,7 @@ tilo_test_env::scenario! {
             assert!((opacity - 0.5).abs() < 1e-6, "half-transparent: {opacity}");
             let ground = crate::chrome::panel_ground(&theme);
             assert!(
-                crate::backdrop::see_through_fill(&theme, ground).components[3] < 1.0,
+                crate::part_paint::backdrop::see_through_fill(&theme, ground).components[3] < 1.0,
                 "the bar's fill is translucent"
             );
         }

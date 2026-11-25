@@ -17,9 +17,9 @@
 
 use std::path::{Path, PathBuf};
 
-use tilo_ui::backdrop::{BackdropFrame, BackdropRecording, fill_role, layer_scene};
 use tilo_ui::chrome::{SelectionState, selection_tier_on};
 use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::part_paint::backdrop::{BackdropFrame, BackdropRecording, fill_role, layer_scene};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::{Theme, ThemeDocument};
 use tilo_ui::tokens::SurfaceRole;

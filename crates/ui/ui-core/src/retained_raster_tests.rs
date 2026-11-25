@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
                 damage_regions: &[],
                 scroll_copies: &[],
                 full_redraw: true,
-                backdrop: &crate::backdrop::BackdropFrame::default(),
+                backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
             })
             .expect("the CPU draws the frame");
         let cpu = raster.cpu_frame().expect("the frame is on the CPU");
@@ -188,7 +188,7 @@ tilo_test_env::scenario! {
                     damage_regions: &[],
                     scroll_copies: &[],
                     full_redraw: true,
-                    backdrop: &crate::backdrop::BackdropFrame::default(),
+                    backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
                 })
                 .is_err()
         );

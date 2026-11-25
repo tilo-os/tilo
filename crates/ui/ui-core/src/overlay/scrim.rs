@@ -33,10 +33,10 @@ pub fn whole_view(
     scene: &mut Scene,
     transform: Affine,
     rect: Rect,
-    wallpaper: &crate::backdrop::wallpaper::Source,
+    wallpaper: &crate::part_paint::wallpaper::Source,
     theme: &Theme,
 ) {
-    crate::backdrop::wallpaper::shell(
+    crate::part_paint::wallpaper::shell(
         scene,
         wallpaper,
         transform,

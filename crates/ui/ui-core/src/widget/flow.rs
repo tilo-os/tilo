@@ -522,7 +522,7 @@ impl Flow {
             let prev_vp = env.viewport.take();
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
-            crate::backdrop::nest_scene(&local);
+            crate::part_paint::backdrop::nest_scene(&local);
             let secrets = crate::secret_paint::SecretPaint::begin();
             self.ghosts.retain_drawn();
             let shifts = self.follower_shifts();
@@ -578,7 +578,7 @@ impl Flow {
                 scene,
                 self.cache_parts.as_ref(),
                 Some(transform),
-                |scene| crate::backdrop::append_nested(scene, &local, transform),
+                |scene| crate::part_paint::backdrop::append_nested(scene, &local, transform),
             ) > 0;
             self.subtree_cache = local;
             self.cache_rect = self.rect;

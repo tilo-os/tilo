@@ -200,7 +200,7 @@ const TILE: u32 = 16;
 /// Put what `cache` draws under its chrome below every surface of `backdrop`: a floating
 /// surface drawn in the chrome recorded only the chrome drawn before it as what is behind
 /// it.
-pub fn put_under(cache: &FrameCache, backdrop: &mut crate::backdrop::BackdropFrame) {
+pub fn put_under(cache: &FrameCache, backdrop: &mut crate::part_paint::backdrop::BackdropFrame) {
     if backdrop.is_empty() {
         return;
     }

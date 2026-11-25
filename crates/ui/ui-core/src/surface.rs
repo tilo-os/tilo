@@ -430,7 +430,7 @@ pub fn region(
         return ground;
     }
     if region == Region::Content {
-        crate::backdrop::fill_role(
+        crate::part_paint::backdrop::fill_role(
             scene,
             transform,
             &RoundedRect::from_rect(rect, 0.0),
@@ -652,7 +652,7 @@ pub fn card_on(
 }
 
 /// A floating Panel-role surface (menu, popover, sheet, toast) in one call: the floating
-/// material ([`crate::floating_surface::Material::Floating`], the blurred backdrop under
+/// material ([`crate::part_paint::material::Material::Floating`], the blurred backdrop under
 /// a panel-ground tint, opaque where blur is unavailable) with its 1 px inner hairline
 /// ([`floating_edge`]) — HIG §9.5's Panel row, so an app never spells the fill + stroke
 /// pair itself. The shadow is [`floating_shadow`], painted first by the caller.
@@ -673,11 +673,11 @@ pub fn panel_unsnapped(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    crate::floating_surface::paint_material(
+    crate::part_paint::material::paint_material(
         scene,
         transform,
         &RoundedRect::from_rect(rect, radius),
-        crate::floating_surface::Material::Floating,
+        crate::part_paint::material::Material::Floating,
         theme,
     );
     floating_edge_unsnapped(scene, transform, rect, radius, theme);

@@ -500,7 +500,7 @@ pub fn append(
 }
 
 /// [`append`] for a caller that appends the recorded scene itself (with
-/// [`crate::backdrop::append_nested`], say): `append` must append exactly that scene at
+/// [`crate::part_paint::backdrop::append_nested`], say): `append` must append exactly that scene at
 /// `transform`.
 pub fn append_with<R>(
     scene: &mut Scene,

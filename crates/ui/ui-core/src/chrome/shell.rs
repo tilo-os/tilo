@@ -76,7 +76,7 @@ impl ChromeRole {
     /// The role's opaque surface colour. Reads the *semantic* surface
     /// tokens, never a ramp slot, so it survives a theme whose author never
     /// saw this code. A Panel's body is painted in the floating material
-    /// ([`crate::floating_surface::paint_material`]); this is the colour
+    /// ([`crate::part_paint::material::paint_material`]); this is the colour
     /// that material tints with, and what it is where blur is unavailable.
     pub fn surface(self, theme: &Theme) -> Color {
         let colors = &theme.tokens.colors;

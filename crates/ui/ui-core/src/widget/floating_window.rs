@@ -912,11 +912,11 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     self.rect.x1,
                     self.rect.y0 + self.title_bar_height(),
                 );
-                crate::floating_surface::paint_material(
+                crate::part_paint::material::paint_material(
                     scene,
                     visual,
                     &strip,
-                    crate::floating_surface::Material::Floating,
+                    crate::part_paint::material::Material::Floating,
                     theme,
                 );
                 crate::surface::separator(

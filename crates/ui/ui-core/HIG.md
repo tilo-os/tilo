@@ -1078,7 +1078,7 @@ drawn over a blur of what is behind it, tinted with the panel ground at 72 %
 it by name and never for a radius or an opacity:
 
 ```rust
-ui::floating_surface::paint_material(scene, transform, &shape, Material::Floating, theme);
+ui::part_paint::material::paint_material(scene, transform, &shape, Material::Floating, theme);
 // or, for the whole Panel row (fill + edge):
 ui::surface::panel(scene, transform, rect, radius, theme);
 ```
@@ -1160,7 +1160,7 @@ active step. The window group's tab strip stands on a body of its own
 tab: the floating material (blur and 72 % panel-ground tint, as menus and
 the palette) over the shell behind it. Windows never overlap, so that is
 all that is behind a strip: the session holds one wallpaper source
-(`ui::backdrop::wallpaper::Source`), which the backdrop drawing the shell
+(`ui::part_paint::wallpaper::Source`), which the backdrop drawing the shell
 fills and every surface resting on the shell reads, and the strip is an
 ordinary image fill of the blurred picture, so it costs no blur pass per
 frame, a tab's hover damages only the tab, and a strip panned as a retained

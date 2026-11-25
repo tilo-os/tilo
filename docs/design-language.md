@@ -174,7 +174,7 @@ pixel in from the bezel, so its ground reaches the edge in one colour.
   bar and its selection controls use the **see-through material**: the
   blurred backdrop under `surfaces.overlay` at `surfaces.see_through_opacity`
   (50 %), so the screen under it stays visible
-  (`floating_surface::Material::SeeThrough`). Where there is no backdrop pass
+  (`part_paint::material::Material::SeeThrough`). Where there is no backdrop pass
   it is the half-transparent ground alone. It keeps the floating hairline and
   casts its shadow only outside itself. The bar moves away from what is
   chosen, so the blur never hides it. Reduced transparency, forced colours

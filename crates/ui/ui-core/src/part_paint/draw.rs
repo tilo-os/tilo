@@ -230,13 +230,13 @@ fn encode(
                     },
                 ..
             } => {
-                use crate::backdrop::Shown;
+                use crate::part_paint::backdrop::Shown;
                 let shown = if sampled {
-                    crate::backdrop::fill_backdrop_sample(
+                    crate::part_paint::backdrop::fill_backdrop_sample(
                         out,
                         transform,
                         path,
-                        crate::backdrop::Sample {
+                        crate::part_paint::backdrop::Sample {
                             blur: *blur,
                             lens: *lens,
                             radius: f64::from(tokens.radius),
@@ -257,7 +257,13 @@ fn encode(
                     Shown::Provided => true,
                 };
                 if held {
-                    crate::backdrop::hold_in_band(out, transform, path, theme, tokens.fill);
+                    crate::part_paint::backdrop::hold_in_band(
+                        out,
+                        transform,
+                        path,
+                        theme,
+                        tokens.fill,
+                    );
                 }
             }
             Op::Fill {
@@ -267,7 +273,7 @@ fn encode(
             } => {
                 let rect = path.bounding_box();
                 if sampled
-                    && crate::backdrop::fill_stage(
+                    && crate::part_paint::backdrop::fill_stage(
                         out,
                         transform,
                         (path, rect),

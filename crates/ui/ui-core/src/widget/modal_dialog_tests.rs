@@ -305,8 +305,8 @@ tilo_test_env::scenario! {
         assert!(l.body.y0 >= l.title.y1, "the body starts under the title");
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
-        let recording = crate::backdrop::BackdropRecording::begin();
-        crate::backdrop::layer_scene(&scene, 0);
+        let recording = crate::part_paint::backdrop::BackdropRecording::begin();
+        crate::part_paint::backdrop::layer_scene(&scene, 0);
         paint_backdrop(&mut scene, Affine::IDENTITY, &mut tr, &theme, &l, &spec);
         let regions = recording.finish();
         assert_eq!(regions.len(), 1, "the sheet is one material region");
@@ -366,8 +366,8 @@ tilo_test_env::scenario! {
                     Some(ModalHit::Card)
                 );
                 let mut scene = Scene::new();
-                let recording = crate::backdrop::BackdropRecording::begin();
-                crate::backdrop::layer_scene(&scene, 0);
+                let recording = crate::part_paint::backdrop::BackdropRecording::begin();
+                crate::part_paint::backdrop::layer_scene(&scene, 0);
                 paint_backdrop(
                     &mut scene,
                     Affine::IDENTITY,
@@ -733,8 +733,8 @@ fn a_modal_scrim_runs_under_the_foreground_materials_recorded_backdrop() {
             &window,
         );
         let original = scene.clone();
-        let recording = crate::backdrop::BackdropRecording::begin();
-        crate::backdrop::layer_scene(&scene, 0);
+        let recording = crate::part_paint::backdrop::BackdropRecording::begin();
+        crate::part_paint::backdrop::layer_scene(&scene, 0);
         paint_backdrop(
             &mut scene,
             Affine::IDENTITY,

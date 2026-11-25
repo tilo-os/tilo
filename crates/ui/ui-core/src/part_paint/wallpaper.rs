@@ -19,7 +19,7 @@ use vello::peniko::{
     BlendMode, Brush, Color, Extend, Fill, Gradient, ImageBrush, ImageData, ImageFormat,
 };
 
-use crate::floating_surface::Material;
+use super::material::Material;
 use crate::theme::Theme;
 
 const MAX_EDGE: u32 = 512;
@@ -171,7 +171,7 @@ pub(crate) fn shell(
     theme: &Theme,
     ground: Color,
 ) {
-    let blur = super::blurs(Material::Floating, theme)
+    let blur = super::backdrop::blurs(Material::Floating, theme)
         .then_some(theme.tokens.colors.surfaces.material_blur_px);
     paint_shell(scene, source, transform, shape, blur, ground);
 }

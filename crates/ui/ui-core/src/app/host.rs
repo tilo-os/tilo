@@ -179,7 +179,7 @@ fn draw_frame_content_owning(
         crate::widget::native_view_frame_start(app.root_widget.as_mut());
         let widgets: &mut Scene = match culled.as_deref_mut() {
             Some(culled) => {
-                crate::backdrop::nest_scene(&culled.widgets);
+                crate::part_paint::backdrop::nest_scene(&culled.widgets);
                 crate::draw_cull::bind(&culled.widgets);
                 &mut culled.widgets
             }
@@ -211,7 +211,7 @@ fn draw_frame_content_owning(
     // Culled, what is painted over the widgets is drawn apart from them.
     let scene: &mut Scene = match culled {
         Some(culled) => {
-            crate::backdrop::nest_scene(&culled.layers);
+            crate::part_paint::backdrop::nest_scene(&culled.layers);
             &mut culled.layers
         }
         None => scene,
@@ -404,9 +404,9 @@ struct DrawnFrame {
 /// `drawn`'s transform: what the frame left out turned out to be repainted.
 fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, drawn: &DrawnFrame) {
     let widgets = &mut culled.widgets;
-    crate::backdrop::forget_nested(widgets);
+    crate::part_paint::backdrop::forget_nested(widgets);
     widgets.reset();
-    crate::backdrop::nest_scene(widgets);
+    crate::part_paint::backdrop::nest_scene(widgets);
     let prev_vp = app.presence_ctx.push_viewport(drawn.window_rect);
     let secrets = crate::secret_paint::SecretPaint::begin();
     let draw = || {
@@ -437,8 +437,8 @@ fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, d
 /// Compose a culled frame's widgets and layers into `scene`, carrying
 /// any floating surface drawn into them.
 fn compose_culled(scene: &mut Scene, culled: &crate::draw_cull::Scenes) {
-    crate::backdrop::append_nested(scene, &culled.widgets, Affine::IDENTITY);
-    crate::backdrop::append_nested(scene, &culled.layers, Affine::IDENTITY);
+    crate::part_paint::backdrop::append_nested(scene, &culled.widgets, Affine::IDENTITY);
+    crate::part_paint::backdrop::append_nested(scene, &culled.layers, Affine::IDENTITY);
 }
 
 /// Paint the tooltip on screen, if any, and return every pixel it painted

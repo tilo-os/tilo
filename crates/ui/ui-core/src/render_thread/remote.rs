@@ -459,7 +459,7 @@ struct FrameJob<'a> {
     damage: &'a [Rect],
     copies: &'a [crate::scroll_copy::DeviceCopy],
     full: bool,
-    backdrop: &'a crate::backdrop::BackdropFrame,
+    backdrop: &'a crate::part_paint::backdrop::BackdropFrame,
 }
 
 enum Lost {

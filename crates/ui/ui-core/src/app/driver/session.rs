@@ -29,7 +29,7 @@ pub(super) struct FrameRecords {
     /// The parts lifted out of the last frame drawn, bottom first.
     lifted: Vec<crate::lift::Lifted>,
     /// The surfaces the last frame drew its blurred material over.
-    backdrops: std::sync::Arc<crate::backdrop::BackdropFrame>,
+    backdrops: std::sync::Arc<crate::part_paint::backdrop::BackdropFrame>,
     /// The layout failure last reported to a host, once it was read: a host whose log is not
     /// `tracing`'s reads it ([`Driver::take_skip_report`]).
     reported_skip: Option<String>,
@@ -39,7 +39,7 @@ pub(super) struct FrameRecords {
 pub(super) struct Recording {
     parts: Option<crate::scene_parts::Recording>,
     lift: Option<crate::lift::Recording>,
-    backdrops: crate::backdrop::BackdropRecording,
+    backdrops: crate::part_paint::backdrop::BackdropRecording,
 }
 
 impl FrameRecords {
@@ -47,8 +47,8 @@ impl FrameRecords {
     /// lifted layers when they are lifted, and the surfaces drawn in blurred material always, since
     /// a host asks what lies under them every frame.
     pub(super) fn begin(&self, scene: &Scene) -> Recording {
-        let backdrops = crate::backdrop::BackdropRecording::begin();
-        crate::backdrop::layer_scene(scene, 0);
+        let backdrops = crate::part_paint::backdrop::BackdropRecording::begin();
+        crate::part_paint::backdrop::layer_scene(scene, 0);
         let parts = self.track_parts.then(crate::scene_parts::Recording::begin);
         if parts.is_some() {
             crate::scene_parts::track(scene);
@@ -76,14 +76,18 @@ impl FrameRecords {
                 lifted.parts = recorded.of(&lifted.scene);
             }
         }
-        self.backdrops = std::sync::Arc::new(crate::backdrop::BackdropFrame::from_single_scene(
-            recording.backdrops.finish(),
-        ));
+        self.backdrops = std::sync::Arc::new(
+            crate::part_paint::backdrop::BackdropFrame::from_single_scene(
+                recording.backdrops.finish(),
+            ),
+        );
     }
 
     /// The backdrops of the frame drawn last, for a renderer that blurs the material drawn over
     /// them.
-    pub(super) fn captured_backdrops(&self) -> std::sync::Arc<crate::backdrop::BackdropFrame> {
+    pub(super) fn captured_backdrops(
+        &self,
+    ) -> std::sync::Arc<crate::part_paint::backdrop::BackdropFrame> {
         std::sync::Arc::clone(&self.backdrops)
     }
 }
@@ -124,7 +128,7 @@ impl Driver {
     /// The backdrops the frame drawn last draws its blurred material over: what a compositor blurs
     /// and hands back.
     #[must_use]
-    pub fn backdrops(&self) -> &crate::backdrop::BackdropFrame {
+    pub fn backdrops(&self) -> &crate::part_paint::backdrop::BackdropFrame {
         &self.records.backdrops
     }
 }

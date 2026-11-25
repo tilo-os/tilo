@@ -243,7 +243,7 @@ impl RetainedRaster {
             )
         };
         let raster_frame = FrameContent {
-            backdrop: &crate::backdrop::BackdropFrame::default(),
+            backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
             ..frame
         };
         let rasterized =
@@ -693,7 +693,7 @@ pub struct FrameContent<'a> {
     pub scroll_copies: &'a [crate::scroll_copy::DeviceCopy],
     /// Repaint everything: the target is not current, or the frame says so.
     pub full_redraw: bool,
-    pub backdrop: &'a crate::backdrop::BackdropFrame,
+    pub backdrop: &'a crate::part_paint::backdrop::BackdropFrame,
 }
 
 /// What a target holds and how a scene is placed on it: a frame drawn for another key cannot be

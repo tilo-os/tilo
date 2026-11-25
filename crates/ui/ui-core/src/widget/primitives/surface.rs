@@ -149,7 +149,7 @@ pub fn paint_window_card(
         radius,
         &theme.tokens.elevation.window,
     );
-    crate::backdrop::fill_role(
+    crate::part_paint::backdrop::fill_role(
         scene,
         transform,
         &body,
@@ -275,11 +275,11 @@ pub fn paint_see_through(
     scene.push_clip_layer(Fill::EvenOdd, transform, &outside);
     crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
     scene.pop_layer();
-    crate::floating_surface::paint_material(
+    crate::part_paint::material::paint_material(
         scene,
         transform,
         &body,
-        crate::floating_surface::Material::SeeThrough,
+        crate::part_paint::material::Material::SeeThrough,
         theme,
     );
     crate::surface::floating_edge(scene, transform, rect, radius, theme);

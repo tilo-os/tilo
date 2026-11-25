@@ -262,7 +262,7 @@ fn pixels(h: &Driver, ground: vello::peniko::Color) -> Vec<u8> {
             damage_regions: &[],
             scroll_copies: &[],
             full_redraw: true,
-            backdrop: &crate::backdrop::BackdropFrame::default(),
+            backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
         })
         .expect("the frame rasterizes");
     canvas.pixels().to_vec()

@@ -295,7 +295,9 @@ impl GroupDrawing {
             scene,
             drawing.parts.as_ref(),
             Some(Affine::IDENTITY),
-            |scene| crate::backdrop::append_nested(scene, &drawing.scene, Affine::IDENTITY),
+            |scene| {
+                crate::part_paint::backdrop::append_nested(scene, &drawing.scene, Affine::IDENTITY)
+            },
         )
     }
 
@@ -5329,7 +5331,7 @@ impl GroupRow {
         (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
     ) -> GroupDrawing {
         local.reset();
-        crate::backdrop::nest_scene(&local);
+        crate::part_paint::backdrop::nest_scene(&local);
         let secrets = crate::secret_paint::SecretPaint::begin();
         let group = &mut self.groups[i];
         let (id, rect) = (group.id, group.get_rect());

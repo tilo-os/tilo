@@ -9,10 +9,13 @@
 //! ([`draw`]); * the clock its transitions run on ([`PartMotion`]); * the painted shape that takes the
 //! pointer ([`hit_contains`]).
 
+pub mod backdrop;
 pub mod builtin;
 mod draw;
+pub mod material;
 mod motion;
 pub(crate) mod shader;
+pub mod wallpaper;
 pub mod wasm;
 
 #[cfg(test)]

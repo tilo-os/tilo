@@ -210,7 +210,7 @@ mod tests {
                 damage_regions: damage,
                 scroll_copies: &[],
                 full_redraw: full,
-                backdrop: &crate::backdrop::BackdropFrame::default(),
+                backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
             })
             .expect("valid CPU frame");
     }

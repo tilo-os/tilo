@@ -1525,7 +1525,7 @@ impl AppHandler {
                 scroll_copies: Vec::new(),
                 full_redraw: true,
                 partial: false,
-                backdrop: crate::backdrop::BackdropFrame::default(),
+                backdrop: crate::part_paint::backdrop::BackdropFrame::default(),
                 layers: None,
             })
             .is_err()
@@ -2159,7 +2159,7 @@ impl AppHandler {
                 partial: false,
                 // The compositor puts this window over the shell; nothing
                 // under its surfaces is in this scene to blur.
-                backdrop: crate::backdrop::BackdropFrame::default(),
+                backdrop: crate::part_paint::backdrop::BackdropFrame::default(),
                 layers: None,
             })
             .is_err()
@@ -2653,8 +2653,8 @@ impl AppHandler {
         // Floating chrome (menus, popovers, sheets, the palette, tooltips)
         // records what lies below it, and the render worker blurs that
         // backdrop under the material before the frame renders.
-        let backdrop_recording = crate::backdrop::BackdropRecording::begin();
-        crate::backdrop::layer_scene(&scene, 0);
+        let backdrop_recording = crate::part_paint::backdrop::BackdropRecording::begin();
+        crate::part_paint::backdrop::layer_scene(&scene, 0);
         // The local render worker repaints only the damage from each scene,
         // over the pixels it presented last: a frame that repaints neither
         // whole nor under layers the widgets' damage does not describe is
@@ -2715,13 +2715,16 @@ impl AppHandler {
         // its scene once they are composed into it.
         let mut backdrop_recording = Some(backdrop_recording);
         let mut backdrop = if culled {
-            crate::backdrop::BackdropFrame::default()
+            crate::part_paint::backdrop::BackdropFrame::default()
         } else {
-            backdrop_recording
-                .take()
-                .map_or_else(crate::backdrop::BackdropFrame::default, |recording| {
-                    crate::backdrop::BackdropFrame::from_single_scene(recording.finish())
-                })
+            backdrop_recording.take().map_or_else(
+                crate::part_paint::backdrop::BackdropFrame::default,
+                |recording| {
+                    crate::part_paint::backdrop::BackdropFrame::from_single_scene(
+                        recording.finish(),
+                    )
+                },
+            )
         };
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         // Peer pointers, names and activity paint over the widgets and damage
@@ -2923,7 +2926,9 @@ impl AppHandler {
             app.set_secret_on_screen(secret);
             compose_culled(&mut scene, &culling.scenes);
             if let Some(recording) = backdrop_recording.take() {
-                backdrop = crate::backdrop::BackdropFrame::from_single_scene(recording.finish());
+                backdrop = crate::part_paint::backdrop::BackdropFrame::from_single_scene(
+                    recording.finish(),
+                );
             }
             culling.repainted(&damage_regions, !scroll_copies.is_empty());
             app.layout.cull = culling;

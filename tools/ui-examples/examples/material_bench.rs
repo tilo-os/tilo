@@ -6,8 +6,8 @@
 use std::time::{Duration, Instant};
 
 use tilo_ui::TextRole;
-use tilo_ui::backdrop::{BackdropFrame, BackdropRecording, layer_scene};
 use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::part_paint::backdrop::{BackdropFrame, BackdropRecording, layer_scene};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::SurfaceRole;
@@ -107,7 +107,7 @@ fn frame(theme: &Theme, text: &mut TextRenderer, shift: f64) -> (Scene, Backdrop
     // The top bar.
     let bar = RoundedRect::from_rect(Rect::new(0.0, 0.0, f64::from(WIDTH), BAR), 0.0);
     if theme.tokens.finishes.bar.is_some() {
-        tilo_ui::backdrop::fill_role(
+        tilo_ui::part_paint::backdrop::fill_role(
             &mut scene,
             Affine::IDENTITY,
             &bar,

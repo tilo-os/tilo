@@ -71,7 +71,7 @@ pub enum RenderRequest {
         partial: bool,
         /// The backdrops the scene's floating surfaces were recorded over (`crate::backdrop`), in
         /// physical pixels.
-        backdrop: crate::backdrop::BackdropFrame,
+        backdrop: crate::part_paint::backdrop::BackdropFrame,
         /// The frame drawn as layers (`crate::strip_layers::LayerRecording`), whose `scene` is their
         /// composition: a worker keeping their textures pans the strip by copying instead of
         /// rasterising it.
@@ -1826,7 +1826,7 @@ mod retained_damage_tests {
         scene
     }
 
-    static EMPTY_BACKDROP: std::sync::OnceLock<crate::backdrop::BackdropFrame> =
+    static EMPTY_BACKDROP: std::sync::OnceLock<crate::part_paint::backdrop::BackdropFrame> =
         std::sync::OnceLock::new();
 
     fn content<'a>(
@@ -1836,7 +1836,8 @@ mod retained_damage_tests {
         full_redraw: bool,
     ) -> FrameContent<'a> {
         FrameContent {
-            backdrop: EMPTY_BACKDROP.get_or_init(crate::backdrop::BackdropFrame::default),
+            backdrop: EMPTY_BACKDROP
+                .get_or_init(crate::part_paint::backdrop::BackdropFrame::default),
             scene,
             width: WIDTH,
             height: HEIGHT,
@@ -2278,7 +2279,7 @@ mod retained_damage_tests {
             }
             let scene = scene_of(&items);
             let content = FrameContent {
-                backdrop: &crate::backdrop::BackdropFrame::default(),
+                backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
                 scene: &scene,
                 width: WIDTH,
                 height: HEIGHT,
@@ -2307,7 +2308,7 @@ mod retained_damage_tests {
                 &mut oracle,
                 &mut oracle_cache,
                 &FrameContent {
-                    backdrop: &crate::backdrop::BackdropFrame::default(),
+                    backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
                     full_redraw: true,
                     ..content
                 },

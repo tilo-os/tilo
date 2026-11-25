@@ -206,7 +206,7 @@ impl Surface {
         let scene = compose(layers, order, (width, height), composed);
         // Without a device the blur behind a floating surface cannot be drawn:
         // the surface shows over what is under it, unblurred.
-        let unblurred = ui::backdrop::BackdropFrame::default();
+        let unblurred = ui::part_paint::backdrop::BackdropFrame::default();
         let content = FrameContent {
             scene,
             width,
@@ -572,26 +572,26 @@ fn copy_swizzled(
 fn backdrop_frame(
     frame: &mut Frame,
     resources: &dyn Resources,
-) -> Result<ui::backdrop::BackdropFrame, WireError> {
+) -> Result<ui::part_paint::backdrop::BackdropFrame, WireError> {
     let regions = std::mem::take(&mut frame.backdrops)
         .into_iter()
         .map(|backdrop| {
             let image = resources
                 .image(ImageId(backdrop.image.0))
                 .ok_or(WireError::UnknownResource("a backdrop image"))?;
-            Ok(ui::backdrop::BackdropRegion {
+            Ok(ui::part_paint::backdrop::BackdropRegion {
                 image,
                 rect: kurbo_rect(backdrop.rect),
                 blur_px: f64::from(backdrop.blur_px),
                 sampling: if backdrop.sampling == 1 {
-                    ui::backdrop::Sampling::Blocky
+                    ui::part_paint::backdrop::Sampling::Blocky
                 } else {
-                    ui::backdrop::Sampling::Smooth
+                    ui::part_paint::backdrop::Sampling::Smooth
                 },
                 cell_px: f64::from(backdrop.cell_px),
                 refraction: {
                     let [strength, band, radius, dispersion] = backdrop.refraction.map(f64::from);
-                    ui::backdrop::Refraction {
+                    ui::part_paint::backdrop::Refraction {
                         strength,
                         band,
                         radius,
@@ -600,7 +600,7 @@ fn backdrop_frame(
                 },
                 legible: {
                     let [dark, light, ground] = backdrop.legible.map(f64::from);
-                    ui::backdrop::Legible {
+                    ui::part_paint::backdrop::Legible {
                         dark,
                         light,
                         ground,
@@ -610,12 +610,12 @@ fn backdrop_frame(
                 ground: Color::new(backdrop.ground),
                 // Checked against the stage contract before the service compiles it
                 // (`BackdropBlur`): a client's frame carries what it likes.
-                stage: backdrop.stage.map(|stage| ui::backdrop::Stage {
+                stage: backdrop.stage.map(|stage| ui::part_paint::backdrop::Stage {
                     wgsl: stage.wgsl.into(),
                     uniforms: stage.uniforms,
                 }),
             })
         })
         .collect::<Result<_, WireError>>()?;
-    Ok(ui::backdrop::BackdropFrame { regions })
+    Ok(ui::part_paint::backdrop::BackdropFrame { regions })
 }

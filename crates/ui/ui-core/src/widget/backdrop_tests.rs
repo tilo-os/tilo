@@ -5,7 +5,7 @@ use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData, ImageFormat};
 
 use super::Backdrop;
-use crate::backdrop::wallpaper::{self, Source};
+use crate::part_paint::wallpaper::{self, Source};
 use crate::presence::PresenceCtx;
 use crate::theme::Theme;
 use crate::widget::Widget;
