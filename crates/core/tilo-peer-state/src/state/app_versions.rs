@@ -11,7 +11,8 @@
 
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::roles::governance;
+use tilo_action_policy::Change;
+use tilo_action_policy::roles::{self, governance};
 use tilo_user_identity::DeviceCert;
 
 use super::facades::PeerGovernance;
@@ -59,19 +60,29 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.check_app_governance(caller, now)?;
-        if self
-            .governance()
-            .app_version(&release.app)
+        let installed = self.governance().app_version(&release.app);
+        if installed
+            .as_ref()
             .is_some_and(|installed| &installed.release == release)
         {
             return Ok(false);
         }
+        // Installing the app gives it its own records, in the same change, as the member who
+        // installed it: a grant the members see and may revoke. Moving an installed app to
+        // another version gives nothing again, so a grant a member revoked stays revoked.
+        let granted = installed.is_none().then(|| {
+            Change::Grant(roles::app_records_grant(
+                &self.core.workspace,
+                &release.app,
+                &member,
+            ))
+        });
         let row = InstalledApp {
             release: release.clone(),
             installed_by: member,
             installed_at_ns: now_ns(now),
         };
-        self.put_app_version(&release.app, Some(&row), key, now)
+        self.put_app_version(&release.app, Some(&row), granted, key, now)
     }
 
     fn apply_uninstall_app(
@@ -85,7 +96,20 @@ impl StatePeer {
         if self.governance().app_version(app).is_none() {
             return Ok(false);
         }
-        self.put_app_version(app, None, key, now)
+        // Uninstalling takes back the grant installing gave, in the same change.
+        let id = roles::app_records_grant_id(app);
+        let revoked = self
+            .core
+            .workspace_doc
+            .as_ref()
+            .is_some_and(|doc| {
+                doc.workspace_policy(&self.core.workspace)
+                    .grants
+                    .iter()
+                    .any(|grant| grant.id == id)
+            })
+            .then(|| Change::Revoke(id));
+        self.put_app_version(app, None, revoked, key, now)
     }
 
     /// The person behind `caller`, when the workspace lets them install apps.
@@ -103,11 +127,14 @@ impl StatePeer {
         Ok(person_of(&member)?.to_owned())
     }
 
-    /// Write or remove the version of `app` in one governed commit.
+    /// Write or remove the version of `app` in one governed commit, with `grant`, the grant
+    /// installing gives the app or uninstalling takes back, recorded in the same change as the
+    /// caller's change to the workspace's grants: every member admits it as they admit any.
     fn put_app_version(
         &mut self,
         app: &str,
         row: Option<&InstalledApp>,
+        grant: Option<Change>,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
@@ -129,7 +156,18 @@ impl StatePeer {
                 .map_err(err)?,
             None => doc.delete(&versions, app).map_err(err)?,
         }
-        self.write_governance(doc, &before, key, now)
+        match grant {
+            Some(change) => self.write_membership(
+                doc,
+                &before,
+                key,
+                now,
+                Some(crate::members::MembershipOpCommand::Project {
+                    changes: vec![change],
+                }),
+            ),
+            None => self.write_governance(doc, &before, key, now),
+        }
     }
 
     /// The surface the version of `app` the workspace runs names, when it runs one: what a change

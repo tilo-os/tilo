@@ -320,18 +320,26 @@ mod tests {
                 Answer::Deny,
                 "an app holds no person's grants, the owner's included"
             );
+            // Installing Notes gave it its own records, and nothing beyond them.
             let mut policy = policy();
-            policy.grants.push(Grant::new(
-                "notes-keeps-its-records",
-                Grantee::app("so.tilo.notes"),
-                TreePath::workspace(WORKSPACE).app("so.tilo.notes"),
-                KindSet::UNDOABLE,
-                Answer::Allow,
-                Grantee::person("owner"),
+            policy.grants.push(crate::roles::app_records_grant(
+                WORKSPACE,
+                "so.tilo.notes",
+                "owner",
             ));
             assert_eq!(
                 answer(&app, &policy, &[], ActionKind::Undoable),
                 Answer::Allow
+            );
+            let elsewhere = TreePath::workspace(WORKSPACE)
+                .app("so.tilo.chat")
+                .kind("chat.messages");
+            assert_eq!(
+                Authority::of_acting(&app, &policy, &[])
+                    .decide(&elsewhere, ActionKind::Undoable, &Context::at_secs(1))
+                    .answer,
+                Answer::Deny,
+                "another app's records are no part of what installing gave"
             );
         }
 

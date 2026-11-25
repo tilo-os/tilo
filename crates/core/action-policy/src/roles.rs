@@ -698,6 +698,42 @@ pub fn own_records(workspace: &str, person: &str) -> Vec<(TreePath, KindSet)> {
     own
 }
 
+/// The id of the grant that lets `app` keep its own records ([`app_records_grant`]).
+#[must_use]
+pub fn app_records_grant_id(app: &str) -> GrantId {
+    GrantId(format!("app-records:{app}"))
+}
+
+/// The grant installing `app` in `workspace` gives it: reading and changing its own records, the
+/// resources under its app id, when it acts by itself (a trigger, a migration, its own
+/// connection). It is a person's grant to an app like any other, given by the member who
+/// installed it (`installed_by`), so members see it among the workspace's grants and may revoke
+/// it, and it stands only while that member reaches the app's records themselves
+/// ([`Grant::stands_in`]). Anything beyond the app's own records still asks.
+#[must_use]
+pub fn app_records_grant(workspace: &str, app: &str, installed_by: &str) -> Grant {
+    Grant {
+        id: app_records_grant_id(app),
+        grantee: Grantee::app(app),
+        node: TreePath::workspace(workspace).app(app),
+        kinds: KindSet::READ_UNDOABLE,
+        answer: Answer::Allow,
+        lifetime: Lifetime::UntilRevoked,
+        granted_by: Grantee::person(installed_by.to_owned()),
+    }
+}
+
+/// Whether `grant` is the one installing its app gave it ([`app_records_grant`]): an app's own
+/// records, on its own node.
+#[must_use]
+pub fn is_app_records_grant(grant: &Grant) -> bool {
+    grant.grantee.app_id().is_some_and(|app| {
+        grant.id == app_records_grant_id(app)
+            && grant.node.id_at(Level::App) == Some(app)
+            && grant.node.id_at(Level::Kind).is_none()
+    })
+}
+
 /// The id of the grant that bans `person` from a workspace.
 #[must_use]
 pub fn block_grant_id(person: &str) -> GrantId {

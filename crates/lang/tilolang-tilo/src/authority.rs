@@ -318,8 +318,10 @@ impl Authority for TiloAuthority {
             _ => person,
         });
         // An app acting by itself (a migration of its package updating its documents, or one of
-        // its triggers) runs on the workspace's origin: no person's grants decide it, the
-        // package's code still bounds it.
+        // its triggers) is no person, and what it writes is decided where every write is: the
+        // workspace's admission, by the grants naming the app (installing it gave it its own
+        // records, which a member may take back). Nothing here stands in for that decision, as
+        // with no member access; the package's code still bounds it.
         let alone = invoker.app().is_some();
         let person_party = match (&access, person, agent) {
             _ if alone => Party::default().owning(TreePath::root()),

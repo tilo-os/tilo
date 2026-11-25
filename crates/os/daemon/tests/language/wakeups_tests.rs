@@ -31,8 +31,8 @@ use tilo_workspace_service::workspaces::fixtures::{
 };
 use tilo_workspace_service::workspaces::person_workspace;
 
-const APP: &str = "so.tilo.clocks";
-const CLOCKS: (&str, &str) = (
+pub(super) const APP: &str = "so.tilo.clocks";
+pub(super) const CLOCKS: (&str, &str) = (
     include_str!("../../../../../apps/tl/clocks/app.tl"),
     include_str!("../../../../../apps/tl/clocks/app.ids"),
 );
@@ -131,7 +131,7 @@ async fn clocks(
 }
 
 /// An alarm at `hour`:`minute`, once, ringing on `rings_on`.
-async fn alarm(
+pub(super) async fn alarm(
     workspaces: &Workspaces,
     workspace: &str,
     packages: &Packages,
@@ -195,6 +195,10 @@ async fn an_alarm_for_this_device_rings_from_its_own_wakeup_and_once() {
         APP,
         &packages.surface(APP).expect("Clocks declares its surface"),
     );
+    // The person installs Clocks, which gives it its own records: its trigger writes the notice.
+    tilo_workspace_service::workspaces::fixtures::install_app(&workspaces, &workspace, APP)
+        .await
+        .expect("the person installs Clocks");
     let package = Package::Compiled(Compiled::new(packages.clone()));
     let platform = Arc::new(Platform::default());
     let mut wakeups = Wakeups::new(
@@ -343,9 +347,8 @@ async fn an_alarm_for_this_device_rings_from_its_own_wakeup_and_once() {
     assert_eq!(rang.len(), 1, "the device knows it rang: {rang:?}");
 
     // The device that runs the trigger rings the alarm for the workspace at that moment and
-    // writes the notice, as Clocks, which the person let keep its records; the device that rang
-    // it already shows it no second time, where one that did not would.
-    super::triggers_tests::let_app_write(&workspaces, &workspace, APP, &cert).await;
+    // writes the notice, as Clocks, which keeps its records since the person installed it; the
+    // device that rang it already shows it no second time, where one that did not would.
     let who = member(tilo_actions::MemberId::person(person.clone()));
     let ran = with_tl_record(
         &workspaces,

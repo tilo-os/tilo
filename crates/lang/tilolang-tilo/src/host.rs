@@ -1764,6 +1764,11 @@ impl Host {
             {
                 tracing::warn!(%error, "a migration that ran is not marked");
             }
+            // A write the workspace refused is said in the app's window, in the workspace's
+            // words: the person learns the app could not keep its records.
+            if let Some(refused) = self.inner.store.take_refusal() {
+                self.say_refused(refused);
+            }
             match outcome {
                 Ok(InvokeOutcome::Done(answer)) => {
                     self.inner.store.turn_done(
@@ -1783,6 +1788,16 @@ impl Host {
             }
         }
         ran
+    }
+
+    /// Say `refused`, why the workspace refused a write the app made by itself (a trigger, a
+    /// migration), in the app's window: the workspace words it for the person.
+    pub(crate) fn say_refused(&self, refused: String) {
+        self.inner.runtime.say(tilolang_runtime::notice::Said {
+            text: refused,
+            kind: tilolang_runtime::notice::Kind::Error,
+            undo: false,
+        });
     }
 
     /// Whether a migration [`Self::migrate`] met waits for its turn: it is worth running again

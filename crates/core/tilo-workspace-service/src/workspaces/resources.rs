@@ -1891,25 +1891,42 @@ impl Workspaces {
             if *more {
                 return Err("the record's changes reach this device only as a whole write".into());
             }
+            // Whether a change is the app's own, made with no person at it: a refusal of one is
+            // said as the app's ([`Self::app_write_refused`]).
+            let by_app = std::sync::atomic::AtomicBool::new(false);
             // A change's label names whoever made it: the caller writing, or the invoker of an
             // invocation the app serves for them. One naming nobody is its signer's own.
-            let names_caller = |stamp: &tilo_resource_store::Stamp| match stamp.invoked_by() {
-                None => true,
-                Some(named) => {
-                    acting.as_ref() == Some(&named)
-                        || context
-                            .invoker_of(&stamp.invocation)
-                            .is_some_and(|invoker| invoker.by == named)
+            let names_caller = |stamp: &tilo_resource_store::Stamp| {
+                if app_records::by_app(stamp, context.app_id()) {
+                    by_app.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                match stamp.invoked_by() {
+                    None => true,
+                    Some(named) => {
+                        acting.as_ref() == Some(&named)
+                            || context
+                                .invoker_of(&stamp.invocation)
+                                .is_some_and(|invoker| invoker.by == named)
+                    }
                 }
             };
-            self.opened_record_change(
-                workspace,
-                (context.app_id(), context.kind(), opened()?),
-                (&changes.0, commit.as_ref()),
-                &names_caller,
-                context.founding_refusal(),
-            )
-            .await?;
+            let written = self
+                .opened_record_change(
+                    workspace,
+                    (context.app_id(), context.kind(), opened()?),
+                    (&changes.0, commit.as_ref()),
+                    &names_caller,
+                    context.founding_refusal(),
+                )
+                .await;
+            if let Err(error) = written {
+                return Err(if by_app.load(std::sync::atomic::Ordering::Relaxed) {
+                    self.app_write_refused(workspace, context.app_id(), error)
+                        .await
+                } else {
+                    error
+                });
+            }
             return Ok(tilo_resource_store::wire::Reply::Written);
         }
         if !writing {
@@ -1923,8 +1940,16 @@ impl Workspaces {
         if let Some(viewer) = context.viewer() {
             may_write_as_viewer(&governed, viewer, context.app_id(), &unserved)?;
         }
-        self.write_resources(governed, device, context.app_id(), command)
+        let by_app = app_records::written_by_app(&command, context.app_id());
+        match self
+            .write_resources(governed, device, context.app_id(), command)
             .await
+        {
+            Err(error) if by_app => Err(self
+                .app_write_refused(workspace, context.app_id(), error)
+                .await),
+            written => written,
+        }
     }
 
     /// Carry out `command` on `app`'s record of `workspace` for this device's own roles (the agent
@@ -1956,9 +1981,14 @@ impl Workspaces {
             .await
             .map_err(|error| RecordFailure::Failed(error.to_string()))?;
         let governed = state.lock_owned().await;
-        self.write_resources(governed, device, app, command)
-            .await
-            .map_err(RecordFailure::Refused)
+        let by_app = app_records::written_by_app(&command, app);
+        match self.write_resources(governed, device, app, command).await {
+            Ok(reply) => Ok(reply),
+            Err(error) if by_app => Err(RecordFailure::Refused(
+                self.app_write_refused(workspace, app, error).await,
+            )),
+            Err(error) => Err(RecordFailure::Refused(error)),
+        }
     }
 
     /// This device's changes of `app`'s `record` in `workspace` that no other device keeping the
@@ -2484,6 +2514,8 @@ fn may_read(reader: String) -> impl Fn(&str) -> bool {
     move |readers| tilo_resource_store::wire::reads_as(&reader)(readers)
 }
 
+#[cfg(any(feature = "apps", feature = "agents"))]
+mod app_records;
 #[cfg(feature = "apps")]
 mod record_changes;
 

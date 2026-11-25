@@ -2,6 +2,7 @@
 //! the one it links: the agents and triggers that read and change the records of the built-in
 //! apps are driven here, and the packages those records are of compile from their sources.
 
+mod app_records_tests;
 mod calendar_bridge_tests;
 mod hosted_own_agent_tests;
 mod mail_bridge_tests;

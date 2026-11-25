@@ -19,29 +19,6 @@ use tilo_workspace_service::workspaces::fixtures::{
 
 use super::{Device, Write, mount, write};
 
-/// Let the installed app `app` write and change the records it keeps in `workspace`, as the
-/// person whose device `cert` names grants it: what a workspace grants an app it runs, so its
-/// origin's writes are its own rather than one person's.
-pub(super) async fn let_app_write(
-    workspaces: &tilo_workspace_service::workspaces::Workspaces,
-    workspace: &str,
-    app: &str,
-    cert: &tilo_user_identity::DeviceCert,
-) {
-    let grant = tilo_action_policy::Grant::new(
-        format!("{app}-keeps-its-records"),
-        tilo_action_policy::Grantee::app(app),
-        tilo_action_policy::TreePath::workspace(workspace),
-        tilo_action_policy::KindSet::UNDOABLE,
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
-    );
-    workspaces
-        .put_workspace_grants(workspace, cert, [23; 32], vec![grant])
-        .await
-        .unwrap();
-}
-
 /// An app's write of a record a saved shortcut watches fires it once, on the device that wrote
 /// it; looking again at the same record fires nothing more. A write whose resource the
 /// trigger's filter does not match, by the fields the write left it with, fires nothing.
@@ -753,7 +730,10 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         workspaces.join_keys(&workspace).await,
         "the workspace's keys open what its records are kept in"
     );
-    let_app_write(workspaces, &workspace, MAIL, &cert).await;
+    // Installed as a member installs it, Mail keeps its own records: nothing else lets it.
+    tilo_workspace_service::workspaces::fixtures::install_app(workspaces, &workspace, MAIL)
+        .await
+        .expect("the member installs Mail");
     save_signed(
         workspaces,
         &workspace,
@@ -971,7 +951,10 @@ async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
         workspaces.join_keys(&workspace).await,
         "the workspace's keys open what its records are kept in"
     );
-    let_app_write(workspaces, &workspace, MAIL, &cert).await;
+    // Installed as a member installs it, Mail keeps its own records: nothing else lets it.
+    tilo_workspace_service::workspaces::fixtures::install_app(workspaces, &workspace, MAIL)
+        .await
+        .expect("the member installs Mail");
     save_signed(
         workspaces,
         &workspace,

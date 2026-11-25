@@ -36,6 +36,11 @@ tilo-servers-ask-retirement = Einen Server bitten, sich stillzulegen
 # their language when they found it.
 workspace-default-name = Mein Arbeitsbereich
 
+# Said in an app's window when the workspace refuses what the app wrote by itself
+# (a trigger, an update of its records) because a member took back the
+# permission installing it gave: it keeps nothing until that is given back.
+app-records-taken-back = { $app } kann seine Einträge in diesem Arbeitsbereich nicht mehr führen und hat angehalten. Ein Mitglied hat ihm die Berechtigung entzogen; installiere { $app } erneut oder gib sie unter „Berechtigungen“ des Arbeitsbereichs zurück, damit es weitermacht.
+
 # Why a person's own model gave no answer to work done for them, said where
 # they read it, with what they can do about it.
 model-none-linked = Für diese Art von Arbeit ist kein Modell verknüpft. Wähle eines in den Einstellungen unter Agentenmodelle.

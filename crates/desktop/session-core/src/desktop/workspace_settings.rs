@@ -209,6 +209,10 @@ pub fn capability_allows(cap: &CapOverride, apps: &dyn AppDirectory) -> String {
 /// answer to use another app says which: "Use “Post a message” in Chat".
 pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) -> String {
     use tilo_action_policy::agent_answers::AnswerScope;
+    // What installing an app gave it: its own records, listed under the app's name.
+    if tilo_action_policy::roles::is_app_records_grant(grant) {
+        return t("workspace-settings-allows-own-records");
+    }
     let used = AnswerScope::of_node(&grant.node).filter(|_| {
         grant.grantee.app_id().is_some() && grant.answer == tilo_action_policy::Answer::Allow
     });
@@ -2009,6 +2013,33 @@ mod permissions_tests {
             .find(|row| row.allows.contains("Post view"))
             .expect("the catalogue names no post-view");
         assert_eq!(unnamed.allows, "Use \u{201c}Post view\u{201d} in Chat");
+    }
+
+    /// What installing an app gave it lists under the app's name, as keeping its own records,
+    /// given by the member who installed it; whoever may revoke a grant there revokes it.
+    #[test]
+    fn an_apps_own_records_list_under_its_name_and_revoke() {
+        let mut ws = Workspace::new(WorkspaceId::from_u128(7), "own-records");
+        ws.policy.set_owner(OWNER);
+        let front = ws.id().to_string();
+        let grant = tilo_action_policy::roles::app_records_grant(&front, "so.tilo.clocks", OWNER);
+        ws.policy.grant(grant.clone());
+        let listed = listed_permissions(&ws, &ChatCatalogue, OWNER);
+        let row = listed
+            .iter()
+            .find(|row| row.id == grant.id.as_str())
+            .expect("the grant installing Clocks gave is listed");
+        assert_eq!(row.holder, "Clocks");
+        assert_eq!(row.allows, "Keep its own records");
+        assert_eq!(row.granted_by.as_deref(), Some("granted by you"));
+
+        apply_revoke(&mut ws, OWNER, grant.id.as_str()).expect("the owner revokes it");
+        assert!(
+            !listed_permissions(&ws, &ChatCatalogue, OWNER)
+                .iter()
+                .any(|row| row.id == grant.id.as_str()),
+            "revoked, it lists no more"
+        );
     }
 }
 
