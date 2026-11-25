@@ -209,14 +209,20 @@ d-76ulubho-goes = Geht
 d-76ulubho-take = Nimm
 
 d-4jncxnhw = Als vCard exportieren
+    .export = vCard
     .doc = Ein Kontakt als Datei: seine Karte, nach ihm benannt.
 
 d-4jncxnhw-version = Format
 
 d-5ceccmwk = Alle als vCard exportieren
+    .export = vCard 4.0
     .doc = Jeder Kontakt als eine vCard-Datei, die ein anderes Adressbuch ganz liest.
 
 d-5ceccmwk-version = Format
+
+d-mcisoxmg = Alle als vCard 3.0 exportieren
+    .export = vCard 3.0
+    .doc = Jeder Kontakt als eine vCard-3.0-Datei, die ein Adressbuch öffnet, das keine 4.0-Karte liest.
 
 d-btp4fqga = vCards importieren
     .doc = Importiert die Kontakte, die eine vCard-Datei enthält, ins Buch, jede neue Karte ein eigener Kontakt, und antwortet, was er getan hat. Eine Karte, deren Kennung das Buch schon unverändert führt, ist niemand Neues; eine, die etwas anderes über die Person sagt, wartet in der Prüfung des Buchs, und der Kontakt bleibt, wie er ist, bis jemand sagt, welche Karte die eigene ist. Eine Datei über dem, was diese App liest, wird ganz abgelehnt: die Ablehnung sagt, warum.
@@ -332,12 +338,10 @@ d-6o6vmpkz = Adressbuchfenster
     .w-sort = Sortieren
     .w-by-name = Nach Name
     .w-by-organization = Nach Organisation
-    .w-export-all-contacts-as-vcard-3 = Alle Kontakte als vCard 3.0 exportieren…
     .w-contacts = Kontakte
     .w-all-contacts = Alle Kontakte
     .w-file = Datei
     .w-import-vcards = vCards importieren…
-    .w-export-all-contacts = Alle Kontakte exportieren…
     .w-new-contact = Neuer Kontakt
     .w-no-contacts-yet = Noch keine Kontakte
     .w-nobody-here = Niemand hier
@@ -366,7 +370,6 @@ d-nhhj3wnt = Kontaktseite
     .w-possibly-the-same-person = Möglicherweise dieselbe Person
     .w-notes = Notizen
     .w-anything-worth-remembering-about-them = Alles, was über sie festzuhalten lohnt
-    .w-export-this-contact = Diesen Kontakt exportieren
     .w-delete-this-contact = Diesen Kontakt löschen
 
 d-6ltzv265 = Telefonnummern

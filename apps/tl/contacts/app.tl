@@ -560,10 +560,12 @@ fn birthday_line(day: Date, with_year: Bool, version: VCardVersion) -> Text {
     }
 }
 
-/// A contact as a file: their card, named for them.
+/// A contact as a file: their card, named for them. The system's one Export… lists it and saves
+/// it where the person says.
 action export_contact(c: Contact, version: VCardVersion = .v4) -> File (
     icon: .download,
     label: "Export as vCard",
+    export: "vCard",
 ) {
     File.of_text("{file_name(c)}.vcf", vcard_of(c, version))
 }
@@ -572,9 +574,19 @@ action export_contact(c: Contact, version: VCardVersion = .v4) -> File (
 action export_book(book: Book, version: VCardVersion = .v4) -> File (
     icon: .download,
     label: "Export all as vCard",
+    export: "vCard 4.0",
 ) {
     let cards = book.contacts.sort_by(c -> c.name.lower()).map(c -> vcard_of(c, version))
     File.of_text("Contacts.vcf", cards.join(""))
+}
+
+/// Every contact as one vCard 3.0 file, which an address book that reads no 4.0 card opens.
+action export_book_v3(book: Book) -> File (
+    icon: .download,
+    label: "Export all as vCard 3.0",
+    export: "vCard 3.0",
+) {
+    export_book(book, version: .v3)
 }
 
 /// Every contact as the text of one card file, or the one `name` calls: for an agent or a script
@@ -1458,13 +1470,6 @@ view book_window(book: Book) {
                         accept: ["text/vcard", "text/x-vcard"],
                     )
                 }
-                ui.MenuItem("Export all contacts…", icon: .download) {
-                    on choose: file.save(export_book(book), name: "Contacts.vcf")
-                }
-                // The older format, for an address book that reads no 4.0 card.
-                ui.MenuItem("Export all contacts as vCard 3.0…", icon: .download) {
-                    on choose: file.save(export_book(book, version: .v3), name: "Contacts.vcf")
-                }
             }
             ui.MenuButton("Sort", icon: .arrow_up_down) {
                 ui.MenuItem("By name", checked: order == .name) {
@@ -1807,9 +1812,6 @@ view contact_page(c: Contact) {
                 }
                 std.after_body {
                     row(gap: .related, align: .center, wrap: true) {
-                        ui.Button("Export this contact", icon: .download) {
-                            on press: export_contact(c)
-                        }
                         ui.Button("Delete this contact", icon: .trash, role: .destructive) {
                             on press: delete(book, c, contacts.directory)
                         }

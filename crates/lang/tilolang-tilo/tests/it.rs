@@ -39,6 +39,7 @@ mod chat_small;
 mod chat_system;
 mod composer;
 mod contacts;
+mod contacts_export;
 mod containers;
 mod db_client_search;
 mod device_roots;

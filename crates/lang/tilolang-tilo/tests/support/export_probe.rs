@@ -134,15 +134,26 @@ pub fn tell(instance: &mut Instance, far: &mut End, message: ToApp) {
     instance.update();
 }
 
-/// The formats the window's bar lists under the system's one Export…, in the order the app
-/// declares them: the rows of the bar's overflow that fold into it.
-pub fn bar_formats(tree: &UiNode) -> Vec<String> {
-    tree.of_kind("ui.Button")
-        .into_iter()
-        .filter(|row| row.props.get("in_menu") == Some(&Value::Int(1)))
-        .filter(|row| row.props.get("group") == Some(&Value::text("Export…")))
-        .filter_map(|row| row.props.get("label")?.as_text().map(str::to_owned))
-        .collect()
+/// The formats the window lists under the system's one Export…, in the order the app declares
+/// them. A window without a title line keeps its actions in the bar, as buttons of its overflow;
+/// one with a title puts them behind the title's "…", as menu rows. Either way the rows of one
+/// run fold into one Export….
+pub fn export_formats(tree: &UiNode) -> Vec<String> {
+    fn walk(node: &UiNode, out: &mut Vec<String>) {
+        let a_row = matches!(node.kind.as_str(), "ui.Button" | "ui.MenuItem");
+        if a_row
+            && node.props.get("group") == Some(&Value::text("Export…"))
+            && let Some(label) = node.props.get("label").and_then(Value::as_text)
+        {
+            out.push(label.to_owned());
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(tree, &mut out);
+    out
 }
 
 /// Whether `node` presents `item`.
