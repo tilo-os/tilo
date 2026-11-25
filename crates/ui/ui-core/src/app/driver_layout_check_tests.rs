@@ -204,3 +204,70 @@ fn a_page_shows_a_charts_paint_as_its_picture_drawn_once_while_it_stays() {
         );
     }
 }
+
+/// A part that paints nothing is no picture: a page shows nothing where it stands, never an
+/// image of nothing.
+#[test]
+fn a_part_that_paints_nothing_is_no_picture() {
+    // A region holding nothing: a box, and no child to draw in it.
+    let mut driver = Driver::new(
+        crate::State::new(),
+        Box::new(crate::widget::Spacer::fixed(24.0)),
+        (200, 120),
+    );
+    let mut composition = driver.composition();
+    assert!(
+        composition.root.picture.is_some(),
+        "the walk takes a part with no words for its paint"
+    );
+    assert!(
+        composition.root.rect[2] > 0.0 && composition.root.rect[3] > 0.0,
+        "it stands with an area"
+    );
+    driver.paint_pictures(&mut composition);
+    assert!(
+        composition.root.picture.is_none(),
+        "a part that paints nothing is no picture: {}",
+        composition.root.path
+    );
+    assert!(
+        pictures(&composition).is_empty(),
+        "nothing on the page is drawn for nothing: {:?}",
+        pictures(&composition)
+    );
+    let html = crate::composition::page::Page::new().render(&composition);
+    assert!(
+        !html.contains("tilo-paint"),
+        "the page shows no picture of nothing: {html}"
+    );
+}
+
+/// A control shown in one state is a picture of itself whatever it paints now: the window hides it
+/// from assistive technology because what it shows is a picture, not one to use.
+#[test]
+fn a_part_the_window_hides_from_assistive_technology_stays_a_picture() {
+    // A sample holding nothing: what makes it a picture is the window's saying so, not the paint
+    // it would have had.
+    let sample = crate::widget::InState::new(
+        crate::widget::shown::State::Rest,
+        Box::new(crate::widget::Spacer::fixed(24.0)),
+    );
+    assert!(
+        crate::widget::Widget::accessibility_hidden(&sample),
+        "the window hides the sample from assistive technology"
+    );
+    let mut driver = Driver::new(crate::State::new(), Box::new(sample), (200, 120));
+    let mut composition = driver.composition();
+    driver.paint_pictures(&mut composition);
+    assert!(
+        composition.root.picture.is_some(),
+        "the sample is a picture of itself, painted or not: {}",
+        composition.root.path
+    );
+    assert!(
+        pictures(&composition)
+            .iter()
+            .all(|(_, picture)| picture.is_none()),
+        "nothing painted it, so no host drew it"
+    );
+}

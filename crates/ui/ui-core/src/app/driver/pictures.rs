@@ -2,7 +2,7 @@
 //! ([`crate::composition::page::shows_paint`]): what a host that renders the app's composition
 //! with elements of its own ([`Driver::composition`]) shows for a chart's marks or a drawing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use base64::Engine as _;
@@ -27,6 +27,11 @@ impl Driver {
     /// widget a page shows as its paint ([`crate::composition::page::shows_paint`]): its paint
     /// alone, drawn at twice its size for a sharp screen. A picture is drawn again only when
     /// what the widget paints changed.
+    ///
+    /// A part the walk took for its paint alone, because it says nothing else of itself, is no
+    /// picture where its paint is nothing: the page shows what the part says, or nothing, and is
+    /// never handed an image of nothing. A part the window shows as a picture of its own paint — a
+    /// control still in one state, hidden from assistive technology — stays one whatever it paints.
     pub fn paint_pictures(&mut self, composition: &mut Composition) {
         let mut wanted = Vec::new();
         for node in std::iter::once(&composition.root).chain(&composition.layers) {
@@ -35,12 +40,20 @@ impl Driver {
         let mut drawn = std::mem::take(&mut self.pictures.0);
         let mut targets = None;
         let mut shown = HashMap::with_capacity(wanted.len());
+        // What paints nothing, by the path of its part: a region that holds no child to draw, a
+        // control resting between its own paints.
+        let mut blank = HashSet::new();
         for (path, rect) in wanted {
-            let Some((scene, [_, _, width, height])) = self.scene_of(&path, rect, &mut targets)
+            let Some((scene, [_, _, width, height], of_its_own)) =
+                self.scene_of(&path, rect, &mut targets)
             else {
+                blank.insert(path);
                 continue;
             };
             if scene.encoding().is_empty() {
+                if !of_its_own {
+                    blank.insert(path);
+                }
                 continue;
             }
             let version = scene_version(&scene, width, height);
@@ -54,19 +67,20 @@ impl Driver {
             }
         }
         for node in std::iter::once(&mut composition.root).chain(&mut composition.layers) {
-            hand_pictures(node, &shown);
+            hand_pictures(node, &shown, &blank);
         }
         self.pictures.0 = shown;
     }
 
     /// The paint of the widget at `path`, with its box's top left at the origin, at the picture's
-    /// scale; none for a path no laid-out widget has.
+    /// scale, and whether the window hides it from assistive technology: what it shows is then a
+    /// picture of itself, painted or not. None for a path no laid-out widget has.
     fn scene_of(
         &mut self,
         path: &str,
         rect: [f64; 4],
         targets: &mut Option<HashMap<String, NodeId>>,
-    ) -> Option<(Scene, [f64; 4])> {
+    ) -> Option<(Scene, [f64; 4], bool)> {
         let node = *targets
             .get_or_insert_with(|| self.named_target_nodes())
             .get(path)?;
@@ -82,6 +96,7 @@ impl Driver {
                 &app.layout.node_map,
                 node,
                 |widget| {
+                    let of_its_own = widget.accessibility_hidden();
                     let mut scene = Scene::new();
                     let transform =
                         Affine::scale(PICTURE_SCALE) * Affine::translate((-rect[0], -rect[1]));
@@ -93,7 +108,7 @@ impl Driver {
                         theme,
                         &presence.draw_env(),
                     );
-                    (scene, rect)
+                    (scene, rect, of_its_own)
                 },
             )
         }
@@ -151,9 +166,16 @@ fn painted_parts(node: &Composed, out: &mut Vec<(String, [f64; 4])>) {
     }
 }
 
-/// `node` with each picture of `shown` handed to the widget it is of.
-fn hand_pictures(node: &mut Composed, shown: &HashMap<String, (u64, Arc<str>)>) {
-    if let Some(picture) = &mut node.picture {
+/// `node` with each picture of `shown` handed to the widget it is of, and each part `blank` says
+/// paints nothing no longer a picture.
+fn hand_pictures(
+    node: &mut Composed,
+    shown: &HashMap<String, (u64, Arc<str>)>,
+    blank: &HashSet<String>,
+) {
+    if blank.contains(&node.path) {
+        node.picture = None;
+    } else if let Some(picture) = &mut node.picture {
         match shown.get(&node.path) {
             Some((version, drawn)) => {
                 picture.version = *version;
@@ -163,6 +185,6 @@ fn hand_pictures(node: &mut Composed, shown: &HashMap<String, (u64, Arc<str>)>) 
         }
     }
     for child in &mut node.children {
-        hand_pictures(child, shown);
+        hand_pictures(child, shown, blank);
     }
 }

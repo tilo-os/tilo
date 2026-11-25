@@ -41,7 +41,9 @@ pub struct Composed {
     /// summoned it, the caret, a context menu's pointer ([`crate::widget::Widget::appears_from`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub appears_from: Option<[f64; 2]>,
-    /// It shows as a picture of its paint ([`page::shows_paint`]).
+    /// It shows as a picture of its paint ([`page::shows_paint`]). The host that draws it hands
+    /// the picture over, and takes back the claim it made only because the part says nothing else
+    /// where that paint is nothing: a page never shows an image of nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub picture: Option<Picture>,
     /// The live picture it shows, by its address in the window's live pictures
