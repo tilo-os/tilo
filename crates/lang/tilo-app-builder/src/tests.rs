@@ -3816,8 +3816,11 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
             .replace("thin = [\"dep:runtime-dylib\"]\n", "")
             .lines()
             .filter(|line| !line.starts_with("runtime-dylib"))
-            .map(|line| format!("{line}\n"))
-            .collect();
+            .fold(String::new(), |mut text, line| {
+                text.push_str(line);
+                text.push('\n');
+                text
+            });
         std::fs::write(&cargo, published).expect("published-SDK manifest");
         let target = NativeTarget::resolve(
             &destination,

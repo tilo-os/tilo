@@ -3090,7 +3090,7 @@ type = "gui"
             // No push reaches an app that did not declare it, and an app that did takes its
             // distributor's messages and taps.
             assert!(!xml.contains("so.tilo.android.TiloPush"));
-            let mut pushing = metadata.clone();
+            let mut pushing = metadata;
             pushing.unified_push = true;
             let xml = android_manifest(&pushing, "field_notes", false, false);
             assert!(xml.contains(r#"android:name="so.tilo.android.TiloPush""#));
