@@ -198,7 +198,7 @@ fn the_writer_and_the_spreadsheet_offer_the_files_they_open() {
     let writer = offers("so.tilo.word-processor");
     assert_eq!(
         writer.opens_ext,
-        ["docx", "odt", "rtf", "epub", "html", "md", "markdown", "txt"],
+        ["docx", "odt", "rtf", "epub", "html", "htm", "md", "markdown", "txt"],
         "the Writer's extensions"
     );
     assert_eq!(

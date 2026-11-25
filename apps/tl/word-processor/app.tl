@@ -473,6 +473,7 @@ action open_document(d: Document, file: File) -> Document (
     .rtf,
     .epub,
     .html,
+    .htm,
     .md,
     .markdown,
     .txt,
