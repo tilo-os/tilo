@@ -278,10 +278,13 @@ tilo_test_env::scenario! {
         assert_eq!(file.results.len(), 19, "show all means all");
         assert!(!file.is_capped());
 
-        let more = show_all_entry("more:0", "Actions", 66);
-        assert!(more.label.starts_with("Show all") && more.label.contains("66"));
-        assert_eq!(more.group.as_deref(), Some("Actions"));
-        assert_eq!(more.group_total, Some(66));
+        #[cfg(feature = "model")]
+        {
+            let more = show_all_entry("more:0", "Actions", 66);
+            assert!(more.label.starts_with("Show all") && more.label.contains("66"));
+            assert_eq!(more.group.as_deref(), Some("Actions"));
+            assert_eq!(more.group_total, Some(66));
+        }
     }
 }
 tilo_test_env::scenario! {

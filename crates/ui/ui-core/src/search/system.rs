@@ -1,4 +1,5 @@
 //! Native and browser system-search policy. Activation payloads remain host-owned.
+#[cfg(feature = "model")]
 use crate::CommandEntry;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -908,6 +909,7 @@ impl<Row> KindGroup<Row> {
 /// The row under a group [`trim_groups`] cut short that lists the rest of it in place:
 /// "Show all 59".
 #[must_use]
+#[cfg(feature = "model")]
 pub fn show_all_entry(id: impl Into<String>, group: &str, total: usize) -> CommandEntry {
     CommandEntry::new(
         id,
