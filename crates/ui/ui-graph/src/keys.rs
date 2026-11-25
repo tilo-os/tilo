@@ -75,6 +75,51 @@ enum Modifier {
     System,
 }
 
+/// The chord's parts as it is written: each modifier name, then the key, each trimmed.
+fn parts_of(text: &str) -> Vec<&str> {
+    let text = text.trim();
+    // `Ctrl+=` and `Ctrl+-` name the equals and minus keys, which a split on `+` would read
+    // as no key at all: a key that is the separator's neighbour is the chord's last
+    // character.
+    let (modifiers, own) = match text.strip_suffix(['=', '-']) {
+        // Only after a modifier: a chord of the equals key alone is a part split on `+`
+        // reads as the key it is.
+        Some(rest) if rest.contains('+') => (rest.trim_end_matches('+'), text.get(rest.len()..)),
+        _ => (text, None),
+    };
+    let mut parts: Vec<&str> = modifiers.split('+').map(str::trim).collect();
+    if let Some(own) = own {
+        parts.push(own);
+    }
+    parts
+}
+
+/// The chord as it is written, with the modifiers in the names every chord uses
+/// (`Ctrl+Shift+Down` for `control+shift+Down`): the text a control's `key:` shows, so a menu row
+/// reads as the app wrote it. A press parses it as [`Chord::parse`] does, so a spelling and a
+/// modifier order never change which press it answers.
+///
+/// # Errors
+///
+/// What [`Chord::parse`] refuses.
+pub fn written(text: &str) -> Result<String, String> {
+    let _ = Chord::parse(text)?;
+    let parts = parts_of(text);
+    let last = parts.len().saturating_sub(1);
+    let shown: Vec<&str> = parts
+        .iter()
+        .enumerate()
+        .map(|(at, part)| match (at == last, modifier(part)) {
+            (true, _) | (false, None) => *part,
+            (false, Some(Modifier::Command)) => "Ctrl",
+            (false, Some(Modifier::System)) => "Super",
+            (false, Some(Modifier::Shift)) => "Shift",
+            (false, Some(Modifier::Alt)) => "Alt",
+        })
+        .collect();
+    Ok(shown.join("+"))
+}
+
 /// A key with the modifiers held with it, as a shortcut is written: `Ctrl+Enter`, `Ctrl+Shift+K`,
 /// `Alt+Up`, `F2`, `e`.
 // A key press reports each modifier as a flag of its own, so a chord holds four of them.
@@ -103,21 +148,7 @@ impl Chord {
     /// twice, a key before a modifier, or an empty part.
     pub fn parse(text: &str) -> Result<Self, String> {
         let text = text.trim();
-        // `Ctrl+=` and `Ctrl+-` name the equals and minus keys, which a split on `+` would read
-        // as no key at all: a key that is the separator's neighbour is the chord's last
-        // character.
-        let (modifiers, own) = match text.strip_suffix(['=', '-']) {
-            // Only after a modifier: a chord of the equals key alone is a part split on `+`
-            // reads as the key it is.
-            Some(rest) if rest.contains('+') => {
-                (rest.trim_end_matches('+'), text.get(rest.len()..))
-            }
-            _ => (text, None),
-        };
-        let mut parts: Vec<&str> = modifiers.split('+').map(str::trim).collect();
-        if let Some(own) = own {
-            parts.push(own);
-        }
+        let mut parts = parts_of(text);
         if text.is_empty() || parts.iter().any(|part| part.is_empty()) {
             return Err(format!(
                 "`{text}` is no shortcut: it is modifiers and one key, such as `Ctrl+Enter`"
@@ -251,5 +282,26 @@ mod tests {
             let error = Chord::parse(wrong).expect_err(wrong);
             assert!(error.contains(said), "`{wrong}`: {error}");
         }
+    }
+
+    /// A chord is written with the modifiers in the names every chord uses, and the key as its app
+    /// wrote it: what a control's `key:` shows, whatever spelling of the press its app chose.
+    #[test]
+    fn a_chord_is_written_as_its_app_wrote_the_key() {
+        assert_eq!(written("Ctrl+S").expect("a chord"), "Ctrl+S");
+        assert_eq!(
+            written("control+shift+Down").expect("a chord"),
+            "Ctrl+Shift+Down"
+        );
+        assert_eq!(written("Super+/").expect("a chord"), "Super+/");
+        assert_eq!(written("Ctrl+=").expect("a chord"), "Ctrl+=");
+        for spelling in ["Ctrl+Enter", "control+Return", "shift+cTrL+ENTER"] {
+            assert_eq!(
+                Chord::parse(&written(spelling).expect("a chord")).expect("the written chord"),
+                Chord::parse(spelling).expect("the press"),
+                "{spelling} writes the press it names"
+            );
+        }
+        assert!(written("Ctrl+").is_err(), "what is no chord is not written");
     }
 }

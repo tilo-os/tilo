@@ -880,17 +880,18 @@ impl Checker<'_> {
 
     /// A control's `key:`: the shortcut its press answers while the view that writes it is shown.
     /// A key written as text is checked with the parser an action's `key:` uses and kept in one
-    /// spelling, so the shortcut a control shows and the one a press matches are the same text,
-    /// and `true` says it is handled; one computed where the view runs (`false`) is left to the
-    /// caller, which types it as the prop it is. Where the key is written is kept for
+    /// spelling for comparison, so two spellings of one press are one key; the control's prop keeps
+    /// the key as the view wrote it, so a menu row shows `Ctrl+S` as the app declared it. `true`
+    /// says it is handled; one computed where the view runs (`false`) is left to the caller, which
+    /// types it as the prop it is. Where the key is written is kept for
     /// [`Self::check_shortcuts`], since a key answers a view, not a file.
     fn shortcut_prop(&mut self, n: LocalId, name: &str, value: &ast::Expr) -> bool {
         self.last_shortcut = None;
         let Some(text) = crate::resolve::plain_text(value) else {
             return false;
         };
-        match crate::resolve::shortcut_text(&text) {
-            Ok(key) => {
+        match crate::resolve::shortcut_key(&text) {
+            Ok((key, shown)) => {
                 self.control_keys.push((
                     self.st.view_id.clone(),
                     key.clone(),
@@ -898,8 +899,8 @@ impl Checker<'_> {
                     None,
                     self.st.arms.clone(),
                 ));
-                self.last_shortcut = Some((key.clone(), value.span));
-                self.prop(Ex::local(n, Ty::View), name, Ex::str(&key), value.span);
+                self.last_shortcut = Some((key, value.span));
+                self.prop(Ex::local(n, Ty::View), name, Ex::str(&shown), value.span);
             }
             Err(said) => {
                 self.err("E090", value.span, said);

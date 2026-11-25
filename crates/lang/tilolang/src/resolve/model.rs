@@ -267,6 +267,22 @@ pub struct Presentation {
 /// modifiers in one order and the key's own token (`Ctrl+Shift+enter`), so `Ctrl+Enter` and
 /// `control+Return` are one shortcut.
 pub(crate) fn shortcut_text(text: &str) -> Result<String, String> {
+    Ok(checked_chord(text)?.text())
+}
+
+/// The shortcut a control's `key:` declares: its press as [`shortcut_text`] compares it, and the
+/// text the control shows, with the modifiers in the toolkit's names and the key as the view wrote
+/// it (`Ctrl+S`, `Shift+Alt+Down`), so a menu row reads as the app wrote it while a press of any
+/// spelling of it matches.
+pub(crate) fn shortcut_key(text: &str) -> Result<(String, String), String> {
+    let chord = checked_chord(text)?;
+    let shown = tilo_ui_graph::keys::written(text)
+        .map_err(|said| format!("`key:` takes a shortcut: {said}"))?;
+    Ok((chord.text(), shown))
+}
+
+/// The chord a `key:` writes, checked: one shortcut, and none the desktop keeps for itself.
+fn checked_chord(text: &str) -> Result<tilo_ui_graph::keys::Chord, String> {
     let chord = tilo_ui_graph::keys::Chord::parse(text)
         .map_err(|said| format!("`key:` takes a shortcut: {said}"))?;
     // F1 names every key the desktop answers, so nothing may be bound to it.
@@ -276,7 +292,7 @@ pub(crate) fn shortcut_text(text: &str) -> Result<String, String> {
             chord.text()
         ));
     }
-    Ok(chord.text())
+    Ok(chord)
 }
 
 /// [`shortcut_text`] of the text a `key:` is written with, or its error when it is not a string.
