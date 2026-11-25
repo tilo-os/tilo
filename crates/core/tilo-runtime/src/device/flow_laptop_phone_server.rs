@@ -1257,8 +1257,12 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
             std::time::SystemTime::now(),
         )
         .expect_err("the studio refuses the removed server's write, however its certificate reads");
+    // Its row stays on the member list, marked removed, for what history names: the studio
+    // holds it as no device of its own.
     assert!(
-        refused.to_string().contains("absent from governed roster"),
+        governed
+            .permissions(laptop_cert.device_public_key, std::time::SystemTime::now())
+            .is_err(),
         "the removed server is no device of the studio: {refused}"
     );
 
@@ -1419,8 +1423,24 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
         "the refused reconnection wrote nothing of the removed server back"
     );
 
-    // `servers add` is the way back: the studio is handed to the machine again, and its admission
-    // writes the row the removal took out.
+    // `servers add` is the way back, and only the device that keeps the person's root takes it:
+    // the studio is handed to the machine again, and the root's device writes back the row the
+    // removal took out.
+    let refused = hosted
+        .add_server(&studio, &line, tilo_peer_state::CopyRole::KeyHolder)
+        .await
+        .expect_err("a device that does not keep the root brings no removed server back");
+    assert!(
+        refused.contains("Only the device that keeps your identity adds it back"),
+        "the server is told who brings it back: {refused}"
+    );
+    tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
+        &hosted,
+        &root,
+        &server_cert,
+    )
+    .await
+    .expect("the root marks the server as the device that keeps it");
     hosted
         .add_server(&studio, &line, tilo_peer_state::CopyRole::KeyHolder)
         .await
@@ -1612,6 +1632,42 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         "the join answers the removal in words: {message}"
     );
 
+    // An invitation from a device that does not keep the person's root brings the removed machine
+    // no way back either: the challenge refuses it as removed.
+    let issued = hosted
+        .issue(
+            &studio,
+            &server_cert,
+            tilo_server_protocol::workspaces::IssueInvitationRequest {
+                request_id: [23; 32],
+                role: tilo_server_protocol::workspaces::Role::Editor,
+                recipient_user_public_key: Some(laptop_cert.user_public_key),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+                inviter_name: None,
+            },
+        )
+        .await
+        .expect("the server invites the machine");
+    let answer = hosted
+        .join_service()
+        .handle(
+            device,
+            JoinTransportRequest::Challenge(tilo_peer_state::join::JoinChallengeRequest {
+                signed_invitation: issued.signed_invitation,
+                device_cert: laptop_cert.clone(),
+                request_id: [123; 32],
+            }),
+        )
+        .await;
+    let JoinTransportResponse::Error { message, .. } = answer else {
+        panic!("a removed machine invited by a device without the root is refused: {answer:?}");
+    };
+    assert!(
+        message.contains("removed from the workspace"),
+        "the invitation answers the removal in words: {message}"
+    );
+
     // The device that held the invited machine's admission, and the owner's other devices, still
     // write.
     let held = |seed: u8| tilo_peer_state::HeldCopy {
@@ -1643,7 +1699,23 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         "the owner's other device still writes"
     );
 
-    // `servers add` is a deliberate admission: it clears the mark and the machine writes again.
+    // `servers add` is a deliberate admission, which only the device that keeps the person's root
+    // makes: it clears the mark and the machine writes again.
+    let refused = hosted
+        .add_server(&studio, &line, tilo_peer_state::CopyRole::KeyHolder)
+        .await
+        .expect_err("a device that does not keep the root brings no removed machine back");
+    assert!(
+        refused.contains("Only the device that keeps your identity adds it back"),
+        "the machine is told who brings it back: {refused}"
+    );
+    tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
+        &hosted,
+        &root,
+        &server_cert,
+    )
+    .await
+    .expect("the root marks the server as the device that keeps it");
     hosted
         .add_server(&studio, &line, tilo_peer_state::CopyRole::KeyHolder)
         .await
@@ -1668,7 +1740,8 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         "the studio takes the machine's write again"
     );
 
-    // A fresh invitation is the other way back: removed again, it is admitted anew by invitation.
+    // A fresh invitation from the device that keeps the root is the other way back: removed
+    // again, it is taken back by that root and admitted anew by invitation.
     let removed = hosted
         .remove_server(&studio, &hex::encode(device))
         .await

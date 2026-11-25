@@ -574,6 +574,45 @@ impl Workspaces {
         Ok(changed)
     }
 
+    /// Take `device`, a device `workspace` removed, back onto its member list, signed by this
+    /// device, which keeps its person's root: `servers add` naming a server the workspace took
+    /// off is the deliberate admission that brings it back, and only that root makes it. The
+    /// change carries the root's mark of this device ([`super::person_workspace::devices::root_mark`])
+    /// for every receiver to check. A device the workspace lists, or never met, changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not held here, it removed `device` and this device does not keep its
+    /// person's root, or the workspace refused the change.
+    pub(super) async fn readmit_removed(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+    ) -> Result<(), String> {
+        let removed = {
+            let held = self
+                .workspace(workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            let governed = held.lock().await;
+            governed.peer().governance().removed_from_member_list(device)
+        };
+        if !removed {
+            return Ok(());
+        }
+        let Some(root) =
+            super::person_workspace::devices::root_mark(self, &self.inner.host.cert).await
+        else {
+            return Err("The workspace removed this server. Only the device that keeps your \
+                        identity adds it back."
+                .into());
+        };
+        self.name_host(workspace, |governance, key, now| {
+            governance.readmit_device(device, root, key, now)
+        })
+        .await
+    }
+
     /// Refuse `device` when `workspace` keeps it as a revoked key, saying so:
     /// it is invited into it no more, and its holder tells its person to
     /// approve another.
@@ -2190,6 +2229,28 @@ impl JoinWorkspaces for Workspaces {
             )
             .await,
         )
+    }
+
+    async fn readmit_invited(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        signed_invitation: &[u8],
+        now: u64,
+    ) -> Result<(), CollaborationError> {
+        let issuer = tilo_peer_state::join_log::invitation_issuer(signed_invitation, now)?;
+        // A device that did not issue the invitation, or keeps no root, takes no removed device
+        // back: the challenge then refuses it as removed.
+        if issuer != self.inner.host.cert.device_public_key
+            || super::person_workspace::devices::root_mark(self, &self.inner.host.cert)
+                .await
+                .is_none()
+        {
+            return Ok(());
+        }
+        self.readmit_removed(workspace, device)
+            .await
+            .map_err(CollaborationError::new)
     }
 }
 

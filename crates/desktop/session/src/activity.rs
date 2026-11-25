@@ -52,6 +52,8 @@ impl tilo_session_core::desktop::activity::GovernanceReader for GovernanceValues
             // The document's history starting over from a base: a record kept beside the member
             // list that changes no membership, and nothing a person did.
             MembershipOpCommand::Compact { .. } => MembershipWrite::Recorded,
+            // A removed device taken back onto the member list: the row it names says which.
+            MembershipOpCommand::Readmit { .. } => MembershipWrite::Recorded,
         })
     }
 

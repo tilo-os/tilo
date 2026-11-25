@@ -225,7 +225,37 @@ fn operations_name_rows(
         .unwrap_or_else(|| (governance_of(Some(at)), governance_of(Some(after))));
     let mut declared: Vec<GovernanceRow> = Vec::new();
     let mut admitted = false;
-    for op in added_ops(before, candidate, written) {
+    let ops = added_ops(before, candidate, written);
+    // A readmission is judged first: the rows it takes back are its own, and the batch's other
+    // operations are judged on the rest of the member list.
+    let mut readmitted: Vec<String> = Vec::new();
+    for op in &ops {
+        if let MembershipOpCommand::Readmit { device, root } = &op.command {
+            readmits(
+                workspace,
+                (at, after),
+                (&governance.0, &governance.1),
+                op,
+                (device, root),
+            )?;
+            readmitted.push(hex::encode(device));
+        }
+    }
+    // The devices that write their own row in the batch: each such row is judged under its own
+    // device's operation, and under no other, where the one that carried that operation wrote it.
+    let writers: Vec<[u8; 32]> = ops
+        .iter()
+        .filter(|op| match &op.command {
+            MembershipOpCommand::Governance { rows } => rows.contains(&GovernanceRow::Identities),
+            MembershipOpCommand::Admit { .. } => true,
+            _ => false,
+        })
+        .filter(|op| vouched(after, op))
+        .map(|op| op.author.device_public_key)
+        .collect();
+    // The member list rows each operation was judged on, as its own author wrote them.
+    let mut judged_rows: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for op in ops {
         let rows: &[GovernanceRow] = match &op.command {
             MembershipOpCommand::Governance { rows } => rows,
             // An admission writes the device it admits, and names that row
@@ -240,18 +270,21 @@ fn operations_name_rows(
                 }
                 if held_rows.contains(&GovernanceRow::Identities) {
                     let identities = [GovernanceRow::Identities];
+                    let judged = own_rows(&governance, (at, after), written, &op);
+                    judged_rows.extend(changed_identities(&judged));
                     rows_permitted(
                         workspace,
                         (at, after),
-                        (&governance.0, &governance.1),
+                        (&judged.0, &judged.1),
                         &op,
                         &identities,
-                        now_ns,
+                        (now_ns, &judged_elsewhere(&op, &readmitted, &writers)),
                     )?;
                     admitted = true;
                 }
                 continue;
             }
+            MembershipOpCommand::Readmit { .. } => continue,
             MembershipOpCommand::Project { .. } | MembershipOpCommand::Compact { .. } => continue,
         };
         // A batch carries every change its writer made since the receiver's
@@ -262,16 +295,34 @@ fn operations_name_rows(
                 declared.push(*row);
             }
         }
+        let judged = own_rows(&governance, (at, after), written, &op);
+        if rows.contains(&GovernanceRow::Identities) {
+            judged_rows.extend(changed_identities(&judged));
+        }
         rows_permitted(
             workspace,
             (at, after),
-            (&governance.0, &governance.1),
+            (&judged.0, &judged.1),
             &op,
             rows,
-            now_ns,
+            (now_ns, &judged_elsewhere(&op, &readmitted, &writers)),
         )?;
     }
     if admitted && !declared.contains(&GovernanceRow::Identities) {
+        declared.push(GovernanceRow::Identities);
+    }
+    // Each member list row the batch changed is one an operation was judged on as its own
+    // author's, or one a readmission took back: a row no operation's author wrote is judged by
+    // none, and refused.
+    if let Some(device) = changed_identities(&governance)
+        .into_iter()
+        .find(|device| !judged_rows.contains(device) && !readmitted.contains(device))
+    {
+        return Err(MembershipRefusal::Refused(format!(
+            "device {device} writes its own row: no other device writes it in"
+        )));
+    }
+    if !readmitted.is_empty() && !declared.contains(&GovernanceRow::Identities) {
         declared.push(GovernanceRow::Identities);
     }
     if keeps_checkpoints {
@@ -294,6 +345,125 @@ fn operations_name_rows(
         return Err(MembershipRefusal::NotMembership);
     }
     Ok(())
+}
+
+/// The devices whose member list row `governance`'s two sides hold differently.
+fn changed_identities(governance: &(WorkspaceGovernance, WorkspaceGovernance)) -> Vec<String> {
+    let (was, is) = (&governance.0.identities, &governance.1.identities);
+    was.keys()
+        .chain(is.keys())
+        .filter(|device| was.get(*device) != is.get(*device))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// `governance`, the rows a batch wrote, with its member list narrowed to the rows `op`'s author
+/// wrote and those written in the change that keeps `op`: a batch carries the changes of every
+/// device since the receiver's heads, and each operation is judged on the member list rows written
+/// with it, not on another device's own row written beside it. Where the batch's changes are not
+/// at hand, the whole batch.
+fn own_rows(
+    governance: &(WorkspaceGovernance, WorkspaceGovernance),
+    (at, after): (&AutoCommit, &AutoCommit),
+    written: Option<&[automerge::Change]>,
+    op: &SignedMembershipOp,
+) -> (WorkspaceGovernance, WorkspaceGovernance) {
+    // The changes its author's device wrote, and the one that keeps the operation itself, whoever's
+    // actor wrote it: a host takes a device's signed entry in under its own.
+    let device = op.author.device_public_key;
+    let actors = [
+        automerge::ActorId::from(device.to_vec()),
+        crate::state::workspace_host_actor(&device),
+    ];
+    let key = op.id().ok().map(crate::members::op::op_key);
+    let own: Option<Vec<automerge::Change>> = written.map(|written| {
+        written
+            .iter()
+            .filter(|change| {
+                actors.contains(change.actor_id())
+                    || key.as_ref().is_some_and(|key| {
+                        super::rows::touched(after, std::slice::from_ref(change))
+                            .is_some_and(|touched| touched.contains_key(key))
+                    })
+            })
+            .cloned()
+            .collect()
+    });
+    let (mut was, mut is) = governance.clone();
+    if let Some((own_was, own_is)) = own.and_then(|own| written_rows((at, after), &own)) {
+        was.identities = own_was.identities;
+        is.identities = own_is.identities;
+    }
+    // Its author's own row is its to answer for, wherever the batch carried it, when the one that
+    // carried the operation wrote the row as it stands.
+    let author = hex::encode(device);
+    if !vouched(after, op) {
+        return (was, is);
+    }
+    for (row, whole) in [(&mut was, &governance.0), (&mut is, &governance.1)] {
+        match whole.identities.get(&author) {
+            Some(bytes) => {
+                row.identities.insert(author.clone(), bytes.clone());
+            }
+            None => {
+                row.identities.remove(&author);
+            }
+        }
+    }
+    (was, is)
+}
+
+/// Whether the member list row of `op`'s author, as `after` holds it, was written by the actor
+/// that keeps `op` itself: the row stands as the one who carried the device's signed operation
+/// wrote it, never as another device wrote it beside that.
+fn vouched(after: &AutoCommit, op: &SignedMembershipOp) -> bool {
+    use automerge::ReadDoc as _;
+    let actor_of = |id: automerge::ObjId| match id {
+        automerge::ObjId::Id(_, actor, _) => Some(actor),
+        automerge::ObjId::Root => None,
+    };
+    let Ok(id) = op.id() else {
+        return false;
+    };
+    let carrier = after
+        .get(automerge::ROOT, crate::members::op::op_key(id).as_str())
+        .ok()
+        .flatten()
+        .and_then(|(_, id)| actor_of(id));
+    let row = after
+        .get(automerge::ROOT, "peer_identities_v1")
+        .ok()
+        .flatten()
+        .and_then(|(_, identities)| {
+            after
+                .get(&identities, hex::encode(op.author.device_public_key).as_str())
+                .ok()
+                .flatten()
+        })
+        .and_then(|(_, id)| actor_of(id));
+    carrier.is_some() && carrier == row
+}
+
+/// The member list rows `op` is not judged on, though they stand in what it is judged against:
+/// those a readmission of the batch took back, and those of every other device that writes its
+/// own row in the batch ([`vouched`]), which answers for that row under its own operation.
+fn judged_elsewhere(
+    op: &SignedMembershipOp,
+    readmitted: &[String],
+    writers: &[[u8; 32]],
+) -> Vec<String> {
+    readmitted
+        .iter()
+        .cloned()
+        .chain(
+            writers
+                .iter()
+                .filter(|writer| **writer != op.author.device_public_key)
+                .map(hex::encode),
+        )
+        .collect()
 }
 
 /// The operations `candidate`, `before` with `written` on it, adds to the
@@ -459,7 +629,7 @@ fn rows_permitted(
     (before, written): (&WorkspaceGovernance, &WorkspaceGovernance),
     op: &SignedMembershipOp,
     rows: &[GovernanceRow],
-    now_ns: u64,
+    (now_ns, elsewhere): (u64, &[String]),
 ) -> Result<(), MembershipRefusal> {
     let held = crate::workspace::policy_of(at, workspace);
     let wanted = crate::workspace::policy_of(after, workspace);
@@ -501,6 +671,7 @@ fn rows_permitted(
                     &invited,
                     (writer, &op.author.device_public_key),
                     (before, written),
+                    elsewhere,
                 )?;
             }
             _ => {
@@ -948,6 +1119,7 @@ fn identities(
         &[u8; 32],
     ),
     (before, written): (&WorkspaceGovernance, &WorkspaceGovernance),
+    elsewhere: &[String],
 ) -> Result<(), MembershipRefusal> {
     let decoded = |bytes: &[u8]| {
         GovernedIdentity::decode(bytes)
@@ -959,7 +1131,8 @@ fn identities(
     let author = hex::encode(author);
     for (device, bytes) in &written.identities {
         let held_row = before.identities.get(device);
-        if held_row == Some(bytes) {
+        // A row another operation of the batch answers for is judged under that one.
+        if held_row == Some(bytes) || elsewhere.contains(device) {
             continue;
         }
         let person = person_of(bytes)?;
@@ -997,7 +1170,7 @@ fn identities(
         }
     }
     for (device, bytes) in &before.identities {
-        if written.identities.contains_key(device) {
+        if written.identities.contains_key(device) || elsewhere.contains(device) {
             continue;
         }
         let person = person_of(bytes)?;
@@ -1012,6 +1185,89 @@ fn identities(
         && held.members.values().all(|role| *role != Role::Owner)
     {
         return Err(MembershipRefusal::Refused("the owner's role".into()));
+    }
+    Ok(())
+}
+
+/// Whether `op` may take `device`, a device the workspace removed, back onto its member list with
+/// the mark `root`: its author's device keeps its person's root, as `root` (that root's own
+/// signature) shows, and its person may add members where the batch was made. The row it writes
+/// gives the device its place back and nothing else: the row the workspace marked removed with
+/// the mark taken off, or where the removal took the row out, a bare row of the device's own
+/// certificate for a person the workspace has. The mirror of [`takes_out`]: a removed device
+/// never writes itself back in.
+fn readmits(
+    workspace: &str,
+    (at, after): (&AutoCommit, &AutoCommit),
+    (before, written): (&WorkspaceGovernance, &WorkspaceGovernance),
+    op: &SignedMembershipOp,
+    (device, root): (&[u8; 32], &[u8; 64]),
+) -> Result<(), MembershipRefusal> {
+    if !tilo_user_identity::root_holder::keeps_root(&op.author, root) {
+        return Err(MembershipRefusal::Refused(
+            "a removed device is taken back only by a device that keeps its person's root".into(),
+        ));
+    }
+    let held = crate::workspace::policy_of(at, workspace);
+    let actor = op.person();
+    let foreign = op.author.capabilities.foreign && !held.is_owner(&actor);
+    let authority = held.person_on_device(&actor, foreign);
+    let cx = Context::at(op.at_ns / 1_000_000);
+    held.check_action(&authority, governance::ADD_MEMBER, &cx, false)
+        .map_err(|refusal| {
+            MembershipRefusal::Refused(format!("a readmission takes add-member: {refusal}"))
+        })?;
+    let key = hex::encode(device);
+    let decoded = |bytes: &[u8]| {
+        GovernedIdentity::decode(bytes)
+            .map_err(|error| MembershipRefusal::Malformed(error.to_string()))
+    };
+    let encoded = |row: &GovernedIdentity| {
+        row.encode()
+            .map_err(|error| MembershipRefusal::Malformed(error.to_string()))
+    };
+    let Some(is) = written.identities.get(&key) else {
+        return Err(MembershipRefusal::Refused(format!(
+            "device {key} is taken back onto a row of its own"
+        )));
+    };
+    let mut is = decoded(is)?;
+    if is.removed || is.device_cert.device_public_key != *device {
+        return Err(MembershipRefusal::Refused(format!(
+            "device {key} is taken back under its own certificate, unmarked"
+        )));
+    }
+    match before.identities.get(&key) {
+        Some(was) => {
+            let was = decoded(was)?;
+            // A copy that holds the device's row as the readmission writes it, unmarked, takes
+            // nothing back: the change gives the device nothing there.
+            if !was.removed && encoded(&is)? == encoded(&was)? {
+                return Ok(());
+            }
+            is.removed = true;
+            if !was.removed || encoded(&is)? != encoded(&was)? {
+                return Err(MembershipRefusal::Refused(format!(
+                    "device {key} is given its place back and nothing else"
+                )));
+            }
+        }
+        None => {
+            tilo_user_identity::verify_device_cert(&is.device_cert)
+                .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
+            let person = hex::encode(is.device_cert.user_public_key);
+            let bare = is.revocations.is_empty()
+                && is.admission.is_none()
+                && is.admissions.is_empty()
+                && is.delegate.is_none()
+                && is.workspace_delegations.is_empty();
+            let wanted = crate::workspace::policy_of(after, workspace);
+            if !bare || (!wanted.is_owner(&person) && wanted.role_of(&person).is_none()) {
+                return Err(MembershipRefusal::Refused(format!(
+                    "device {key} is given its place back and nothing else"
+                )));
+            }
+        }
     }
     Ok(())
 }

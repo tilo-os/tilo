@@ -103,6 +103,26 @@ pub trait JoinWorkspaces: Send + Sync {
         let _ = (remote_endpoint, request, now);
         std::future::ready(None)
     }
+
+    /// Take `device`, which `workspace` removed, back onto its member list for the invitation
+    /// `signed_invitation` it brings, where this device issued that invitation and keeps its
+    /// person's root: the invitation is then that root's deliberate admission, and the change
+    /// clearing the mark is recorded as this device's. A device that keeps no root brings no
+    /// removed device back, whatever it invited, and a device that was not removed is left as it
+    /// is.
+    ///
+    /// # Errors
+    /// The readmission could not be written.
+    fn readmit_invited(
+        &self,
+        workspace: &str,
+        device: &tilo_user_identity::DeviceCert,
+        signed_invitation: &[u8],
+        now: u64,
+    ) -> impl Future<Output = Result<(), JoinError>> + Send {
+        let _ = (workspace, device, signed_invitation, now);
+        std::future::ready(Ok(()))
+    }
 }
 
 /// The workspace-join exchange answered for the workspaces in `S`.
@@ -240,9 +260,26 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
             JoinTransportRequest::Challenge(request) => {
                 let nonce = store.nonce()?;
                 store
+                    .readmit_invited(
+                        &workspace,
+                        &request.device_cert,
+                        &request.signed_invitation,
+                        now,
+                    )
+                    .await?;
+                store
                     .with_workspace(&workspace, |workspace| {
                         let mut log = workspace.log().clone();
                         let governed = workspace.governed();
+                        // A device the workspace removed is invited back only by a device that
+                        // keeps its person's root, which took it back above.
+                        if governed
+                            .peer
+                            .governance()
+                            .removed_from_member_list(&request.device_cert)
+                        {
+                            return Err(JoinError::new(crate::REMOVED_DEVICE_REFUSED));
+                        }
                         // The challenge is issued only once the invitation
                         // verified for the device at the authenticated
                         // endpoint: only then is it given the governance it

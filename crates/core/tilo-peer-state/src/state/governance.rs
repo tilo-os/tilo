@@ -533,6 +533,9 @@ impl PeerGovernance<'_> {
                 crate::members::MembershipOpCommand::Governance { rows } => {
                     format!("governance of {} rows", rows.len())
                 }
+                crate::members::MembershipOpCommand::Readmit { device, .. } => {
+                    format!("readmission of {}", hex::encode(device))
+                }
                 crate::members::MembershipOpCommand::Project { changes } => {
                     format!("{changes:?}").chars().take(400).collect()
                 }
@@ -1231,6 +1234,81 @@ impl PeerGovernanceMut<'_> {
         .map_err(err)?;
         self.peer.write_governance(doc, &before, key, now)
     }
+    /// Take `device`, which the workspace removed, back onto its member list, as `key`'s device:
+    /// the row the removal marked loses its mark and keeps the admission, delegation and
+    /// revocations it carries; a row the removal took out is written again bare, under
+    /// `device`'s own certificate. `root` is the root of `key`'s person marking `key`'s device as
+    /// the one keeping it ([`tilo_user_identity::root_holder`]), which the change carries for
+    /// every receiver to check: only a device that keeps its person's root takes a removed device
+    /// back, and a removed device never writes itself back in. Whether the member list changed:
+    /// a device it lists already changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// `device` does not verify, or governance cannot be updated; receivers, and this copy taking
+    /// the change in as they do, refuse it where `root` does not mark `key`'s device, its person
+    /// may not add members, or `device`'s person is no member.
+    pub fn readmit_device(
+        self,
+        device: &DeviceCert,
+        root: [u8; 64],
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        tilo_user_identity::verify_device_cert_at(device, now_ns(now)).map_err(err)?;
+        let mut doc = self
+            .peer
+            .core
+            .workspace_doc
+            .clone()
+            .ok_or("workspace governance missing")?;
+        let id = hex::encode(device.device_public_key);
+        let row = match doc
+            .identities()
+            .get(&id)
+            .and_then(|row| row.as_ref().ok().cloned())
+        {
+            Some(row) if !row.removed => return Ok(false),
+            Some(mut row) => {
+                row.removed = false;
+                row
+            }
+            None => GovernedIdentity {
+                device_cert: device.clone(),
+                revocations: Vec::new(),
+                admission: None,
+                admissions: Vec::new(),
+                delegate: None,
+                workspace_delegations: Vec::new(),
+                removed: false,
+            },
+        };
+        let identities = doc
+            .get(ROOT, "peer_identities_v1")
+            .map_err(err)?
+            .ok_or("governed identities missing")?
+            .1;
+        let before = doc.get_heads();
+        doc.set_actor(self.peer.workspace_actor_of(key));
+        doc.put(
+            &identities,
+            id,
+            automerge::ScalarValue::Bytes(row.encode().map_err(err)?),
+        )
+        .map_err(err)?;
+        self.peer.write_membership(
+            doc,
+            &before,
+            key,
+            now,
+            Some(crate::members::MembershipOpCommand::Readmit {
+                device: device.device_public_key,
+                root,
+            }),
+        )?;
+        Ok(true)
+    }
+
     /// Take out of the workspace's governance every device row whose
     /// certificate has expired: a device whose certificate no longer verifies
     /// is no member device any more ([`Self::governed_access`] leaves it out),

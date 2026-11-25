@@ -488,6 +488,7 @@ impl Workspaces {
         }
         let reached = self.reach_host(device, addr).await?;
         let member = reached.certificate.clone();
+        self.readmit_removed(workspace, &member).await?;
         let named_before = self.names_server(workspace, device).await;
         // The hand-over carries this device's change naming the server among the
         // workspace's holders; the server takes the workspace in only once it is

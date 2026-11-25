@@ -542,7 +542,8 @@ fn own_operations(
                     *rows == [super::GovernanceRow::Identities]
                 }
                 crate::members::MembershipOpCommand::Project { .. }
-                | crate::members::MembershipOpCommand::Compact { .. } => false,
+                | crate::members::MembershipOpCommand::Compact { .. }
+                | crate::members::MembershipOpCommand::Readmit { .. } => false,
             }
     });
     if !own {

@@ -240,7 +240,12 @@ impl StatePeer {
             Some(crate::members::MembershipOpCommand::Admit { person, .. }) => Some(*person),
             _ => None,
         };
-        let admits = admitted.is_some();
+        // An admission, and a readmission, each name the one device row they write.
+        let admits = admitted.is_some()
+            || matches!(
+                &membership,
+                Some(crate::members::MembershipOpCommand::Readmit { .. })
+            );
         // The agents whose delegation the change withdraws, read before the membership operation
         // is written: it writes no identity row, and the document read with it still open is read
         // whole.

@@ -71,17 +71,7 @@ const MAX_NAME: usize = 32;
 /// The longest name of the agent a device runs.
 const MAX_AGENT: usize = 64;
 
-/// What the person's root signs to mark the device that keeps it, beside that device's key.
-const ROOT_HOLDER_DOMAIN: &[u8] = b"tilo-root-holder-v1\0";
-
-/// The digest the person's root signs to mark `device` as the one that keeps it.
-#[must_use]
-pub fn root_holder_digest(device: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(ROOT_HOLDER_DOMAIN);
-    hasher.update(device);
-    *hasher.finalize().as_bytes()
-}
+pub use tilo_user_identity::root_holder::root_holder_digest;
 
 /// The fact under which a device's entry keeps when a session of it was last
 /// with a host, ms since the epoch, little-endian.
@@ -1930,20 +1920,32 @@ pub async fn keeps_root(workspaces: &super::Workspaces, cert: &DeviceCert) -> bo
         .contains(&cert.device_public_key)
 }
 
+/// The mark the person's devices record keeps for `cert`'s device as the one keeping their root:
+/// that root's own signature over [`root_holder_digest`] of its key, which a change only the root
+/// makes carries for its receivers to check ([`tilo_user_identity::root_holder::keeps_root`]).
+/// None where the record marks it as no such device, or the device was revoked.
+pub async fn root_mark(workspaces: &super::Workspaces, cert: &DeviceCert) -> Option<[u8; 64]> {
+    let person = cert.user_public_key;
+    let listed = workspaces
+        .devices_of(&person)
+        .await
+        .listed(&person)
+        .into_iter()
+        .find(|listed| listed.cert.device_public_key == cert.device_public_key)?;
+    if listed.device.revoked(&listed.cert) {
+        return None;
+    }
+    let mut mark = [0; 64];
+    hex::decode_to_slice(listed.device.keeps_root.as_deref()?, &mut mark).ok()?;
+    tilo_user_identity::root_holder::keeps_root(cert, &mark).then_some(mark)
+}
+
 /// Whether `signature` (hex) is the root `cert` names signing [`root_holder_digest`] of the key
 /// `cert` certifies.
 fn root_signed(cert: &DeviceCert, signature: &str) -> bool {
     let mut bytes = [0; 64];
-    if hex::decode_to_slice(signature, &mut bytes).is_err() {
-        return false;
-    }
-    ed25519_dalek::VerifyingKey::from_bytes(&cert.user_public_key).is_ok_and(|root| {
-        root.verify_strict(
-            &root_holder_digest(&cert.device_public_key),
-            &ed25519_dalek::Signature::from_bytes(&bytes),
-        )
-        .is_ok()
-    })
+    hex::decode_to_slice(signature, &mut bytes).is_ok()
+        && tilo_user_identity::root_holder::keeps_root(cert, &bytes)
 }
 
 /// What the certificate `certificate` (postcard in hex) certifies: a device when it does not read.

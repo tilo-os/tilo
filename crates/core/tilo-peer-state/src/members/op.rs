@@ -88,6 +88,16 @@ pub enum MembershipOpCommand {
         generation: u64,
         base: [u8; 32],
     },
+    /// Its author's device took `device`, which the workspace had removed, back onto its member
+    /// list, as `servers add` brings a removed server back: the row loses its removal mark and
+    /// gains nothing else. Only a device that keeps its person's root does this, and `root` shows
+    /// it: that root's signature marking the author's device as the one keeping it
+    /// ([`tilo_user_identity::root_holder::keeps_root`]), which every receiver checks itself.
+    Readmit {
+        device: [u8; 32],
+        #[serde(with = "serde_bytes")]
+        root: [u8; 64],
+    },
 }
 
 /// One member's change to a workspace's authority, signed by their device.
