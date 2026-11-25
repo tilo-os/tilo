@@ -20,7 +20,9 @@ use zeroize::Zeroizing;
 #[cfg(unix)]
 mod child_wait;
 /// The `Command` helpers domains share: `which`, `run` and bounded capture with one error
-/// vocabulary.
+/// vocabulary. Native only: the page's build links this crate through the UI's speech engine,
+/// and a browser page has no subprocesses to look up or start.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod command;
 #[cfg(unix)]
 pub use child_wait::{WakeFd, Wakeup, wait_child_or};
