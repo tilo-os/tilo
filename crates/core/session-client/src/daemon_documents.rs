@@ -555,6 +555,27 @@ impl DeviceDocuments for DaemonDocuments {
         }
     }
 
+    fn member_changes(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<tilo_peer_state::workspace_documents::MemberChange>, String> {
+        match self.0.ask_blocking(ShellCall::MemberChanges {
+            workspace: workspace.to_owned(),
+        })? {
+            ShellReply::MemberChanges(changes) => Ok(changes?
+                .into_iter()
+                .map(
+                    |change| tilo_peer_state::workspace_documents::MemberChange {
+                        change: change.change,
+                        message: change.message,
+                        time: change.time,
+                    },
+                )
+                .collect()),
+            other => Err(unexpected(&other)),
+        }
+    }
+
     fn workspaces(&self) -> Vec<String> {
         match self.0.ask_blocking(ShellCall::Workspaces) {
             Ok(ShellReply::Workspaces(workspaces)) => workspaces,

@@ -48,7 +48,7 @@ pub(super) fn actor_of_grantee(by: &Grantee) -> Option<Actor> {
 /// governance change of it names, so a watcher of the workspace tells a ban
 /// from a removal.
 pub(super) fn stamped(verb: &'static str, by: Option<Actor>) -> Option<ActionStamp> {
-    by.map(|by| ActionStamp { verb, by })
+    by.map(|by| ActionStamp::new(verb, by))
 }
 
 /// The name an invitation carries for a person: what the workspace shows them

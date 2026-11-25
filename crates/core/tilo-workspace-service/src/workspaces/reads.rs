@@ -158,6 +158,31 @@ impl Workspaces {
         Ok(held.replica.read(crate::documents::listing))
     }
 
+    /// Every change of `workspace`'s members its governance names, oldest first, the actions
+    /// its bases kept among them ([`tilo_peer_state::workspace::base::named_changes`]).
+    ///
+    /// # Errors
+    ///
+    /// This service holds no such workspace.
+    pub(crate) fn member_changes(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<tilo_peer_state::workspace_documents::MemberChange>, String> {
+        let held = self
+            .inner
+            .readings
+            .held(workspace)
+            .ok_or("this service does not hold the workspace")?;
+        Ok(held.replica.read(|peer| {
+            peer.admitted_workspace()
+                .map(tilo_peer_state::workspace::base::named_changes)
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect()
+        }))
+    }
+
     /// The workspaces this service holds, by their ids.
     pub(crate) fn held_workspaces(&self) -> Vec<String> {
         self.inner.readings.workspaces()

@@ -95,6 +95,38 @@ pub trait DeviceDocuments: collab_types::signer::MaybeSendSync + 'static {
 
     /// The workspaces the service holds, by their ids.
     fn workspaces(&self) -> Vec<String>;
+
+    /// Every change of `workspace`'s members its governance names, oldest first
+    /// ([`crate::workspace::base::named_changes`]): what a feed of the workspace's changes lists
+    /// as changes of its members' resource. A reader holding no workspace's governance names none.
+    ///
+    /// # Errors
+    ///
+    /// The service is not open or holds no such workspace.
+    fn member_changes(&self, workspace: &str) -> Result<Vec<MemberChange>, String> {
+        let _ = workspace;
+        Ok(Vec::new())
+    }
+}
+
+/// One change of a workspace's members as its governance names it: the change's hash, the
+/// message naming the action it carried out and who decided it, and the time its commit carries
+/// (Unix seconds).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MemberChange {
+    pub change: [u8; 32],
+    pub message: String,
+    pub time: i64,
+}
+
+impl From<crate::workspace::base::KeptChange> for MemberChange {
+    fn from(kept: crate::workspace::base::KeptChange) -> Self {
+        Self {
+            change: kept.change.0,
+            message: kept.message,
+            time: kept.time,
+        }
+    }
 }
 
 /// What a write of a document came to: the write as the workspace took it, or why it took none.

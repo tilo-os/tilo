@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use runtime_collab::wire::Reply;
 use runtime_collab::wire::shell::{
-    DocumentWritten, PROCESSES_MAGIC, SHELL_MAGIC, ShellCall, ShellReply, ShellWrite,
+    DocumentWritten, PROCESSES_MAGIC, SHELL_MAGIC, ShellCall, ShellMemberChange, ShellReply,
+    ShellWrite,
 };
 use tilo_actions::remote::{
     Caller, InvokeArgument, ReceiptStatus, RemoteActionMessage, ResourceReadRequest, resource_parts,
@@ -305,6 +306,24 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
             )
         }
         ShellCall::Workspaces => ShellReply::Workspaces(services.documents.workspaces()),
+        ShellCall::MemberChanges { workspace } => {
+            let documents = Arc::clone(&services.documents);
+            ShellReply::MemberChanges(
+                tokio::task::spawn_blocking(move || documents.member_changes(&workspace))
+                    .await
+                    .map_err(|_| "the read stopped before it answered".to_owned())?
+                    .map(|changes| {
+                        changes
+                            .into_iter()
+                            .map(|change| ShellMemberChange {
+                                change: change.change,
+                                message: change.message,
+                                time: change.time,
+                            })
+                            .collect()
+                    }),
+            )
+        }
         call @ ShellCall::Write { .. } => write(&services, call).await?,
         ShellCall::Served {
             workspace,

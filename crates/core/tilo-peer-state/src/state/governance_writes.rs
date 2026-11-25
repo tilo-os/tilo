@@ -24,15 +24,30 @@ pub struct ActionStamp {
     /// Who decided it: the person whose device asked, or the workspace's
     /// moderation bot.
     pub by: tilo_action_policy::Actor,
+    /// The one administration it is part of: every governance change it
+    /// makes names it, so a reader takes a ban's removal and its block as the
+    /// one action they are.
+    pub invocation: String,
 }
 
 impl ActionStamp {
-    /// The stamp this governance change commits as: its verb and invoker, no
-    /// arguments (one may be a secret) and no invocation of its own.
+    /// The action `verb` decided by `by`, as one administration of its own.
+    #[must_use]
+    pub fn new(verb: &'static str, by: tilo_action_policy::Actor) -> Self {
+        Self {
+            verb,
+            by,
+            invocation: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+
+    /// The stamp this governance change commits as: its verb, invoker and
+    /// invocation, and no arguments (one may be a secret).
     fn as_stamp(&self) -> collab_types::Stamp {
         collab_types::Stamp {
             verb: self.verb.to_owned(),
             invoker: collab_types::Stamp::by(&self.by),
+            invocation: self.invocation.clone(),
             ..collab_types::Stamp::default()
         }
     }
@@ -71,7 +86,7 @@ impl StatePeer {
     /// tells a ban from a removal. Order, admission and what is written stay
     /// exactly as they are.
     pub fn stamp_action(&mut self, verb: &'static str, by: tilo_action_policy::Actor) {
-        self.action_stamp = Some(ActionStamp { verb, by });
+        self.action_stamp = Some(ActionStamp::new(verb, by));
     }
 
     /// Stop naming an action in this copy's governance changes
