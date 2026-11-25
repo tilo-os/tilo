@@ -114,17 +114,6 @@ impl Session {
                 app_wire.layout.set_people(&workspace, people);
             }
         }
-        // Whose view this device follows: their window here comes forward each time the place they
-        // work in moves, and their app where no window here shows it. The apps of the workspace
-        // are told whom this person follows, so a window shows where that person works.
-        if let Some((workspace, member)) = self.shared.follow_people()
-            && let Some(follow) = self
-                .app_wire
-                .as_ref()
-                .and_then(crate::app_wire::AppWire::follow_dispatcher)
-        {
-            follow.set(&workspace, member);
-        }
         // Where this person is on this session, so a page here draws their pointer, follows them to the
         // record they work in and shows a mini view of their screen.
         self.say_where_i_am(sync);
@@ -133,6 +122,22 @@ impl Session {
         // What became of the invitations redeemed is the directory's to say, and the shell's to
         // show.
         self.shared.follow_enrollments();
+    }
+
+    /// Whose view this device follows: their window here comes forward each time the place they
+    /// work in moves, and their app where no window here shows it. The apps of the workspace are
+    /// told whom this person follows, so a window shows where that person works. It runs after the
+    /// shell's asks, so the press on the chip that keeps the view it follows is applied before this
+    /// pass reads the person as working.
+    pub(crate) fn follow_whose_view(&self) {
+        if let Some((workspace, member)) = self.shared.follow_people()
+            && let Some(follow) = self
+                .app_wire
+                .as_ref()
+                .and_then(crate::app_wire::AppWire::follow_dispatcher)
+        {
+            follow.set(&workspace, member);
+        }
     }
 
     /// Say where this person is on this session, in the workspace in front: the pointer over the tile

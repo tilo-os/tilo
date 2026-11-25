@@ -822,6 +822,9 @@ impl Session {
         // What the async work this session started answered since the last pass.
         self.shared.landings.land();
         self.settle_asks()?;
+        // Whose view this device follows, after what the shell asked this pass: the press on the
+        // chip that keeps the follow through its own gesture is an ask, and is applied above.
+        self.follow_whose_view();
         // Who each workspace on the shell is whose, once this pass has opened the ones it was asked
         // for: the person's own are theirs, and one joined keeps its host's owner. A workspace the
         // session shows is claimed in the pass that shows it, never a pass later — a person's action in
