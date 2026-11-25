@@ -100,7 +100,9 @@ pub(crate) fn start_application_launch(
 #[must_use]
 pub fn api_error(error: &ActionCallError) -> ApiError {
     match error {
-        ActionCallError::Unavailable { reason } | ActionCallError::Refused { reason } => {
+        ActionCallError::Unavailable { reason }
+        | ActionCallError::Refused { reason }
+        | ActionCallError::InvalidRequest { reason } => {
             ApiError::Unavailable {
                 code: error.code().into(),
                 reason: reason.clone(),
