@@ -239,7 +239,7 @@ fn a_cpu_receipt_is_normalized_with_its_observation_summary() {
 fn a_cpu_claim_that_contradicts_its_own_observations_is_refused() {
     let cases = [
         changed(RMS, |receipt| {
-            receipt["status"] = serde_json::json!("failed")
+            receipt["status"] = serde_json::json!("failed");
         }),
         changed(RMS, |receipt| {
             receipt["primary_revision"] = serde_json::json!("main");
