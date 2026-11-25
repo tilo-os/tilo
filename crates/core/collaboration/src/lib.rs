@@ -1735,7 +1735,7 @@ pub fn install_channel_settings() {
 
 /// The person sitting at this machine. Actions are stamped with this so
 /// undo can tell members apart (see
-/// [`crate::state::State::undo_as`]): the id must be **stable** across a
+/// the toolkit's `State::undo_as`): the id must be **stable** across a
 /// document's life and **distinct** between people, or one person's
 /// Ctrl+Z reverts another's work.
 ///

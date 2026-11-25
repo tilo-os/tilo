@@ -1,4 +1,4 @@
-//! The history and undo a document keeps, beside the [`State`](crate::state::State) holding it.
+//! The history and undo a document keeps, beside the app state holding it.
 //!
 //! The implementation is the store's ([`tilo_resource_store::history`]): the steps,
 //! their revert and the process's own undo stack work on a document alone, and
