@@ -1117,22 +1117,22 @@ fn trouble_words(text: Text, degrees: Bool, answer: Float, memory: Float) -> Tex
 /// What a parse that failed at `code` says happened.
 fn fail_words(code: Float) -> Text {
     if code == 1.0 {
-        "The expression ends where a value belongs"
+        std.say("The expression ends where a value belongs")
     } else if code == 2.0 {
-        "A bracket is not closed"
+        std.say("A bracket is not closed")
     } else if code == 3.0 {
-        "There is a character a calculation does not use"
+        std.say("There is a character a calculation does not use")
     } else if code == 4.0 {
-        "There is nothing by that name here"
+        std.say("There is nothing by that name here")
     } else if code == 5.0 {
-        "There is no function by that name"
+        std.say("There is no function by that name")
     } else if code == 6.0 {
-        "That function is given the wrong number of values"
+        std.say("That function is given the wrong number of values")
     } else if code == 7.0 {
-        "The integral is written in a way this calculator cannot read"
+        std.say("The integral is written in a way this calculator cannot read")
     } else if code == 8.0 {
-        "There is more after the calculation"
-    } else { "That is not a calculation" }
+        std.say("There is more after the calculation")
+    } else { std.say("That is not a calculation") }
 }
 
 /// Ends a parse that failed at `why`, keeping the first reason it met.
