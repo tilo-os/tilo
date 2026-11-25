@@ -245,6 +245,10 @@ fn home_with_apps(installs: bool) -> (tilo_test_env::TestHome, Option<std::path:
         &crate::common::dev_apps::runtimes().trusted,
     );
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
+    // The device's daemon runs in this process, so the launcher is not beside its program as it
+    // is for an installed device: the daemon finds the run's own launcher by the variable a
+    // debug build honours, and starts the tilolang hosts the fixture's apps' windows run in.
+    home.env().set("TILO_LAUNCHER_BIN", &launcher);
     (home, Some(launcher))
 }
 
