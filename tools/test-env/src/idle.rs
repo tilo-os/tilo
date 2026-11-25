@@ -541,6 +541,7 @@ pub fn idle_wakeups(root: u32, settle: Duration, window: Duration) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use crate::SpawnUnderEnvLock as _;
     use crate::scenario;
 
