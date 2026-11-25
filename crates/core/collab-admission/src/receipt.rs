@@ -248,17 +248,12 @@ fn decide_op_settled(
                 .source()
                 .filter(|_| op.surface.is_some() || pinned.is_some())
             else {
-                let changes = changes_of(op)?;
-                let decided = decide_as_document_edit(
-                    changes.as_deref(),
-                    document,
+                return decide_as_document_edit(
+                    changes_of(op)?.as_deref(),
+                    (document, holding),
                     allows,
                     (imported, signer),
-                )?;
-                if let Some(changes) = &changes {
-                    check_genesis_first(changes, holding)?;
-                }
-                return Ok(decided);
+                );
             };
             let surface_for =
                 |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
@@ -384,7 +379,11 @@ fn check_genesis_first(
             continue;
         }
         let made_before = change.deps().iter().any(|dep| {
-            match changes[..at].iter().find(|earlier| earlier.hash() == *dep) {
+            match changes
+                .iter()
+                .take(at)
+                .find(|earlier| earlier.hash() == *dep)
+            {
                 Some(earlier) => !derived(earlier),
                 None => {
                     copy.is_some_and(|record| record.has_change(dep) && !kept_derived(record, dep))
@@ -408,10 +407,11 @@ fn check_genesis_first(
 
 /// A change of an app that publishes no surface (and of a document that names
 /// none), decided as an edit of the document by whoever made each of its
-/// changes, as far as the receiver reads them.
+/// changes, as far as the receiver reads them. A genesis among them is decided last against the
+/// record as this receiver keeps it, `holding`, so a change refused its grant says so first.
 fn decide_as_document_edit(
     changes: Option<&[automerge::Change]>,
-    document: &WrittenDocument<'_>,
+    (document, holding): (&WrittenDocument<'_>, Option<&automerge::Automerge>),
     allows: &Allows<'_>,
     (imported, signer): (Option<&Acting>, Option<&Acting>),
 ) -> Result<Receipt, ReceiptRefusal> {
@@ -437,6 +437,9 @@ fn decide_as_document_edit(
         .iter()
         .all(|invoker| allows(invoker.as_ref(), &node, ActionKind::Undoable))
     {
+        if let Some(changes) = changes {
+            check_genesis_first(changes, holding)?;
+        }
         Ok(Receipt::Admit)
     } else {
         Err(ReceiptRefusal::NotGranted {
