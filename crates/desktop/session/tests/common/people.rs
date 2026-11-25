@@ -56,6 +56,7 @@ use tilo_actions::remote::{
 };
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_server::workspaces::{EntryRefusal, Listed};
 use tilo_server_protocol::directory::{EntryJoin, Listing, entry_path};
 use tilo_server_protocol::workspaces::Role;
 use tilo_test_env::DiesWithTheTest as _;
@@ -141,6 +142,9 @@ pub struct Site {
     pub name: String,
     /// Where the site is reached: its entry, as a link names it.
     pub entry: String,
+    /// The role the entry admits people at, as [`Self::publish`] set it: what the site's owner
+    /// invites a device at when the entry itself takes the person in.
+    published: Mutex<Option<Role>>,
     /// The entry the site serves, kept up until the site is dropped.
     _entry: Responder,
     state: tempfile::TempDir,
@@ -229,6 +233,7 @@ impl Site {
             workspace,
             name: name.to_owned(),
             entry,
+            published: Mutex::new(None),
             _entry: responder,
             state,
         }
@@ -271,11 +276,18 @@ impl Site {
                 },
             ))
             .expect("the workspace is published");
+        *self.published.lock().expect("the site's published role") = Some(role);
     }
 
     /// Admit `person` at the site's entry, as their own entry through it asks
-    /// it, and answer the invitation the entry lets them in with: one only
-    /// they can redeem.
+    /// it, and answer the invitation their session joins by: one only they
+    /// can redeem.
+    ///
+    /// A device that asks an open entry signs its own admission under the entry
+    /// the workspace records, in the process that holds its key. A session does
+    /// not sign that way: it joins by redeeming an invitation, and its device is
+    /// the only writer of its key, so the site's owner invites it at the role
+    /// the entry admits people at.
     ///
     /// # Panics
     ///
@@ -293,22 +305,33 @@ impl Site {
     ///
     /// What the entry said, when it says no.
     pub fn try_admit(&self, person: [u8; 32]) -> Result<Invitation, String> {
-        let listed = self
-            .runtime
-            .block_on(self.workspaces.admit_listed(
-                &self.workspace,
-                &EntryJoin {
-                    user_public_key: hex::encode(person),
-                    display_name: "Someone".to_owned(),
-                },
-            ))
-            .map_err(|refusal| refusal.to_string())?;
-        let tilo_workspace_service::workspaces::Listed::Invited(issued) = listed else {
-            return Err("the entry takes anyone who asks".to_owned());
+        let listed = self.runtime.block_on(self.workspaces.admit_listed(
+            &self.workspace,
+            &EntryJoin {
+                user_public_key: hex::encode(person),
+                display_name: "Someone".to_owned(),
+            },
+        ));
+        let role = || {
+            self.published
+                .lock()
+                .expect("the site's published role")
+                .expect("an entry admits people once it is published")
         };
-        Ok(tilo_workspace_join::encode_invitation_text(
-            &issued.signed_invitation,
-        ))
+        match listed {
+            Ok(Listed::Invited(issued)) => Ok(tilo_workspace_join::encode_invitation_text(
+                &issued.signed_invitation,
+            )),
+            Ok(Listed::Open) => Ok(self.invite(person, role())),
+            // The entry tells a person it already has in to add the device from a device of
+            // theirs that is in: the site's owner invites it, and the entry still refuses it.
+            Err(EntryRefusal::Refused(said))
+                if said == tilo_peer_state::workspace::membership::ENTRY_NAMES_ANOTHER_DEVICE =>
+            {
+                Ok(self.invite(person, role()))
+            }
+            Err(refusal) => Err(refusal.to_string()),
+        }
     }
 
     /// Make `person` one of the workspace's `role` , as its owner does: a moderator invites and
