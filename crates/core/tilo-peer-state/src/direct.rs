@@ -394,11 +394,13 @@ impl LinkScope {
 enum Carries {
     /// Its own device's frames alone, as the scope says
     /// ([`LinkScope::own_frames_only`]).
+    #[cfg(not(target_arch = "wasm32"))]
     OwnFrames,
     /// Its own device's frames, and another device's while that device keeps
     /// the workspace: a link this side accepted. Read for each frame, so a
     /// device named to keep the workspace after its link came up passes on
     /// what the others wrote from then, and one no longer named stops.
+    #[cfg(not(target_arch = "wasm32"))]
     OthersWhileKept,
     /// Any device's: the side that dialled, which dialled the device it meant
     /// to reach.
@@ -510,8 +512,14 @@ impl LinkAdmit {
         if by_remote(&authored.message, authored.from, remote) {
             return true;
         }
+        // A browser only dials, never accepts a link, so no frame it is sent waits on who keeps
+        // the workspace.
+        #[cfg(target_arch = "wasm32")]
+        let _ = keeps_workspace;
         match self.carries {
+            #[cfg(not(target_arch = "wasm32"))]
             Carries::OwnFrames => false,
+            #[cfg(not(target_arch = "wasm32"))]
             Carries::OthersWhileKept => keeps_workspace(),
             Carries::AnyDevice => true,
         }

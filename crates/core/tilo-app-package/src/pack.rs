@@ -32,8 +32,11 @@ pub enum SigningIdentity {
 #[derive(Clone)]
 pub struct ExternalSigner {
     public_key: [u8; 32],
-    sign: std::sync::Arc<dyn Fn(&[u8]) -> Result<[u8; 64], String> + Send + Sync>,
+    sign: std::sync::Arc<Sign>,
 }
+
+/// The call that asks the process keeping a key for a signature over a message.
+type Sign = dyn Fn(&[u8]) -> Result<[u8; 64], String> + Send + Sync;
 
 impl ExternalSigner {
     /// A signer for a key kept elsewhere: `sign` asks that place for a signature over a message,
