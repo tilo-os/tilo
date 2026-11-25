@@ -101,7 +101,6 @@ impl super::AppBrokerState {
         if instance.is_some() {
             return instance;
         }
-        drop(windows);
         self.channels
             .lock()
             .ok()?
