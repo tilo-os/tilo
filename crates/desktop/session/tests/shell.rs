@@ -44,6 +44,9 @@ fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
+        // The shell keeps the person's control hints in their settings, through the settings
+        // service's actions, as the session the desktop runs always does.
+        services: vec![Box::new(settings_sections::service::SettingsService::new())],
         ..Options::default()
     }
 }
