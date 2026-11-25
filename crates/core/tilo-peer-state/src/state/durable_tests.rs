@@ -12,7 +12,7 @@ use tilo_user_identity::DeviceCapabilities;
 const KEPT_WORKSPACE: &str = "302d59e0-f586-42e1-a59e-3aa613f0f866";
 
 /// The digest of the kept state's bytes: the layout, as it is written.
-const KEPT_LAYOUT: &str = "b47c8726855468e32f56713b1bbd8a070ab7d56954ef1645ba590de56b969262";
+const KEPT_LAYOUT: &str = "f74cd1f27104cb01a72342627a8d9669e25075842d0002f6f1386a556f2be13a";
 
 /// The durable layout version the kept bytes were written at. A layout change
 /// writes new kept bytes: bump [`DURABLE_VERSION`] and this together, so a

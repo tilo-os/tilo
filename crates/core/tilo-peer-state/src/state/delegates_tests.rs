@@ -614,62 +614,30 @@ fn agent_key(
 
 #[test]
 fn one_agent_on_two_devices_is_one_agent_in_permissions_and_in_history() {
-    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);
-    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    // The person owns the workspace; their devices hold its keys.
+    let (mut peer, authority, _, _, now) = crate::admission_tests::seeded();
+    let workspace = peer.workspace_id().to_owned();
     let person = SigningKey::from_bytes(&ROOT_SEED);
-    let owner_key = SigningKey::from_bytes(&[2; 32]);
-    let mut owner = DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: owner_key.verifying_key().to_bytes(),
-        device_label: "laptop".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut owner, &person).unwrap();
-    // The same agent of the person's, on their laptop and on their phone: a key each.
-    let laptop = agent_key(&person, 8, workspace, now);
-    let phone = agent_key(&person, 9, workspace, now);
+    // The same agent of the person's, on their laptop and on their phone: a key each, which
+    // redeems its person's invitation as every key of theirs does.
+    let laptop = agent_key(&person, 8, &workspace, now);
+    let phone = agent_key(&person, 9, &workspace, now);
+    for (seed, (key, cert)) in [(80, &laptop), (90, &phone)] {
+        assert!(
+            crate::admission_tests::redeem_key(&mut peer, &authority, (key, cert), now, seed),
+            "{}",
+            cert.device_label
+        );
+    }
     // A key of the same agent whose grant names another workspace alone.
     let elsewhere = agent_key(&person, 10, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", now);
-    let roster = [
-        owner.clone(),
-        laptop.1.clone(),
-        phone.1.clone(),
-        elsewhere.1.clone(),
-    ];
-    let mut peer = StatePeer::new(
-        workspace,
-        owner.clone(),
-        roster.to_vec(),
-        tilo_user_identity::RevocationList::new(),
+    let admitted = crate::admission_tests::redeem_key(
+        &mut peer,
+        &authority,
+        (&elsewhere.0, &elsewhere.1),
         now,
-    )
-    .unwrap();
-    let mut document = AutoCommit::new();
-    document.put(ROOT, "value", "native").unwrap();
-    collab_types::CommitNamed::commit_edit(
-        &mut document,
-        "fixture",
-        "value",
-        &owner.user_public_key,
+        100,
     );
-    peer.install_seed(
-        crate::SeedState {
-            workspace_changes: crate::seed_workspace(workspace, &owner, &roster).unwrap(),
-            documents: vec![crate::SeedDocument {
-                app_id: "test.app".into(),
-                document_id: "tab:1".into(),
-                kind: "test".into(),
-                bytes: document.save(),
-            }],
-        },
-        &owner_key,
-        now,
-    )
-    .unwrap();
 
     // Permissions: both keys are the one agent, for its person, and never the person.
     let one = tilo_action_policy::MemberId::agent(
@@ -687,10 +655,11 @@ fn one_agent_on_two_devices_is_one_agent_in_permissions_and_in_history() {
     }
 
     // The certificate's grant bounds where the agent acts: a key granted another workspace alone
-    // acts in none here, though the roster lists it.
+    // acts in none here, whether or not its redemption was taken.
     assert!(
-        peer.permissions(elsewhere.1.device_public_key, now).is_err(),
-        "a grant for another workspace reaches none here"
+        peer.permissions(elsewhere.1.device_public_key, now)
+            .is_err(),
+        "a grant for another workspace reaches none here (redeemed: {admitted})"
     );
 
     // History: what either key writes as that agent is taken as that agent's.

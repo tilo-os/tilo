@@ -1149,6 +1149,73 @@ pub(crate) fn add_member_with(
     (device, cert, root.verifying_key().to_bytes())
 }
 
+/// Redeem, with the key `key` that `cert` certifies, an invitation for its person that the
+/// owner's device `authority` issues at `now` (`seed` makes its nonces): whether the workspace
+/// took the key in.
+pub(crate) fn redeem_key(
+    peer: &mut StatePeer,
+    authority: &SigningKey,
+    (key, cert): (&SigningKey, &DeviceCert),
+    now: SystemTime,
+    seed: u8,
+) -> bool {
+    use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
+    let now_ns = u64::try_from(
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap();
+    let owner = peer
+        .certificates()
+        .into_iter()
+        .find(|owner| owner.device_public_key == authority.verifying_key().to_bytes())
+        .unwrap();
+    let signed = issue_invitation(
+        InviteGrant {
+            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
+            issuer: owner,
+            role: Role::Editor,
+            nonce: [seed; 16],
+            recipient_user_public_key: Some(cert.user_public_key),
+            invitee_name: Some(cert.device_label.clone()),
+            expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
+            transport: vec![],
+        },
+        authority,
+    )
+    .unwrap();
+    let Ok(join) = crate::join::decode_and_verify_invitation(
+        &signed,
+        Some(cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    ) else {
+        return false;
+    };
+    let Ok(challenge) = JoinChallenge::new(
+        &join,
+        cert,
+        [seed.wrapping_add(1); 32],
+        [seed.wrapping_add(2); 32],
+        now_ns.checked_add(1_000_000_000).unwrap(),
+        now_ns,
+    ) else {
+        return false;
+    };
+    let Ok(proof) = sign_join_proof(challenge.clone(), key) else {
+        return false;
+    };
+    let Ok(redemption) =
+        crate::join::verify_join_proof(&proof, &challenge, cert, &RevocationList::new(), now_ns)
+    else {
+        return false;
+    };
+    peer.governance_mut()
+        .admit_invited_member(&redemption, key, now)
+        .unwrap_or(false)
+}
+
 /// An invitation to `base`'s workspace as an editor, which its owner's device
 /// `key` signs at `now`.
 fn editor_invitation(base: &StatePeer, key: &SigningKey, now: SystemTime) -> Vec<u8> {
