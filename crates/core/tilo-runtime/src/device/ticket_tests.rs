@@ -1045,6 +1045,7 @@ async fn a_founding_issues_the_first_tickets_its_person_asked_for_as_their_own_a
         state.path().join("desk"),
         tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys")),
     );
+    // Its certificate is kept here, as its daemon keeps it: the one process that took the key.
     let _desk_daemon = the_daemons_key(desk_place.keys(), &desk_key);
     let desk = Tickets::new(
         (desk_key.clone(), desk_cert),
