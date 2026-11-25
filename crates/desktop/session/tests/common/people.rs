@@ -293,7 +293,7 @@ impl Site {
     ///
     /// What the entry said, when it says no.
     pub fn try_admit(&self, person: [u8; 32]) -> Result<Invitation, String> {
-        let (issued, _token) = self
+        let listed = self
             .runtime
             .block_on(self.workspaces.admit_listed(
                 &self.workspace,
@@ -303,6 +303,9 @@ impl Site {
                 },
             ))
             .map_err(|refusal| refusal.to_string())?;
+        let tilo_workspace_service::workspaces::Listed::Invited(issued) = listed else {
+            return Err("the entry takes anyone who asks".to_owned());
+        };
         Ok(tilo_workspace_join::encode_invitation_text(
             &issued.signed_invitation,
         ))
