@@ -291,7 +291,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-runtime) and binary(it) and "
-                  "(test(app_views::) or test(keeping_pages::))",
+                  "(test(app_views::) or test(keeping_pages::) or test(chat::) or "
+                  "test(hosted_turns::))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the apps whose views its tests lay out",
             )
@@ -327,7 +328,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-session-client) and binary(it) and "
                                  "test(node_workspace::)": "page-bundle",
                                  "package(tilo-runtime) and binary(it) and "
-                                 "(test(app_views::) or test(keeping_pages::))":
+                                 "(test(app_views::) or test(keeping_pages::) or "
+                                 "test(chat::) or test(hosted_turns::))":
                                      "view-siblings",
                                  # The values only some packages' tests need, for those packages:
                                  # given to the run's environment, each would key every build
