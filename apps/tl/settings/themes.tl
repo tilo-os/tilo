@@ -11,10 +11,7 @@ view themes_pane(s: Settings) {
     state base: Text = "tilo-dark"
     // The packages installed on this device, read beside the appearance: a device that has none
     // says so rather than showing an empty section.
-    std.readable(
-        of: settings.theme_packages,
-        message: "Theme packages could not be read",
-    ) {
+    std.readable(of: settings.theme_packages, message: "Theme packages could not be read") {
         let a = settings.appearance
         let packages = settings.theme_packages
         if let chosen = a.theme_package {
@@ -112,7 +109,10 @@ view themes_pane(s: Settings) {
                 // A theme saved with Export on another workspace, taken in whole: every role, tuned
                 // value and glass shader, under an id made from its name.
                 ui.Button("Import", icon: .upload, size: .small) {
-                    on press: file.choose(import_theme(s), accept: [".theme.json", "application/json"])
+                    on press: file.choose(
+                        import_theme(s),
+                        accept: [".theme.json", "application/json"],
+                    )
                 }
             }
         }
