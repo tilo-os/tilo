@@ -35,7 +35,9 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ROOT};
 use collab_types::CommitNamed as _;
 
-use crate::common::{Linked, TestDevice, TestServer, TestUser, spawn_server};
+use crate::common::{
+    Linked, TestDevice, TestServer, TestUser, spawn_server, spawn_server_serving_apps,
+};
 use tilo_server::hosted_browser::APP;
 use tilo_workspace_service::agents::windows::PAGE_RESOURCE;
 use tilo_workspace_service::environment::vm_placed_records;
@@ -606,13 +608,25 @@ async fn window_actions(server: &Server, material: &Joined, asks: Asks) -> Arc<M
     window_served(server, material, asks).await.0
 }
 
-/// [`window_actions`], and the window's own action service, which serves any
-/// other link a device holds open to it.
+/// [`window_actions`], the host's actions asked from the window's own session
+/// link: the link it holds open to the host, which it serves itself, so a page
+/// action the host hands it reaches its window.
+async fn window_session(
+    server: &Server,
+    material: &Joined,
+    asks: Asks,
+) -> (Arc<Mutex<Vec<Handed>>>, RemoteDevice) {
+    let (seen, _, remote) = window_served(server, material, asks).await;
+    (seen, remote)
+}
+
+/// [`window_actions`], and the window's own action service, which serves the
+/// link its session dialled to the host: the host asks it back over that one.
 async fn window_served(
     server: &Server,
     material: &Joined,
     asks: Asks,
-) -> (Arc<Mutex<Vec<Handed>>>, ActionService) {
+) -> (Arc<Mutex<Vec<Handed>>>, ActionService, RemoteDevice) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let device = DeviceIdentity::of(material);
     let host = server
@@ -640,16 +654,21 @@ async fn window_served(
         .await
         .expect("the server holds the workspace");
     actions.hold(Replica::new(state));
-    // The link the window holds to the host, recorded with the host's action
-    // service as the way a page action reaches the window.
+    // What the device answers under, as a device's service does: the certificate the host
+    // certified it with, which the host reads to take it in as placed.
+    actions.answer_under(material.device.clone());
+    // The session's own link: the window's side names no device, as a page's
+    // session does, and the host's names the window, so the host hands a page
+    // action back over this one and the window asks over it.
     let (host_end, window_end) = duplex(Some(device.device_pubkey()), None);
-    actions.serve_link(window_end);
+    actions.serve_link(Arc::clone(&window_end));
+    let remote = actions.remote_over(window_end, host, WS_NAME);
     server
         .workspaces()
         .expect("the server holds workspaces")
         .action_service()
-        .reach_device_at(device.device_pubkey(), host_end);
-    (seen, actions)
+        .serve_link(host_end);
+    (seen, actions, remote)
 }
 
 /// The test device a VM joined as: what the daemon in the environment is.
@@ -732,7 +751,18 @@ fn unplaced(
             )
             .with_reconnect(reconnect),
         );
-        let server = Box::new(Box::pin(spawn_server(&user, host, &[], &[])).await);
+        // The host starts as a hosting server does: its Browser is the app action server its
+        // workspaces answer their devices' app frames with.
+        let server = Box::new(
+            Box::pin(spawn_server_serving_apps(
+                &user,
+                host,
+                &[],
+                &[],
+                Arc::clone(&browsers) as Arc<dyn tilo_server::AppActionServer>,
+            ))
+            .await,
+        );
         // The person made both workspaces on their server, and their agent's
         // device entered each.
         let workspaces = server
@@ -1696,7 +1726,8 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
     let key = fixture.key(true);
     fixture.list_environment_and(&key).await;
     let material = fixture.environments.material();
-    let (seen, window) = window_served(&fixture.server.server, &material, Asks::Acting).await;
+    let (seen, window, _remote) =
+        window_served(&fixture.server.server, &material, Asks::Acting).await;
     let window_device = material.device.device_public_key;
     let confirmed = || {
         RemoteActionMessage::Invoke(page_with(
@@ -2443,55 +2474,47 @@ async fn an_environment_stops_when_the_session_that_held_it_ends() {
     );
 }
 
-/// The device holding the workspace's window, linked: what the session in
-/// the VM is, reporting the departures its page holds to the server. Its
-/// actions are asked over its link, as every device asks its host's.
-async fn window_device(fixture: &Fixture, material: &Joined) -> (Linked, RemoteDevice) {
-    let device = DeviceIdentity::of(material);
-    let linked = member_link(&fixture.server.server, &device).await;
-    let remote = asking(&linked, WS_NAME).await;
-    (linked, remote)
-}
-
 /// A departure the window holds, reported as the session in the VM reports
 /// one: the call that would release it, named by the id the window published it
 /// with, and the departure itself in its context — the page it leaves from,
 /// what it sends and where — as the window states it.
-fn reported_departure(asker: &TestDevice, invocation: InvocationId, id: u32) -> InvokeRequest {
-    as_asked(
-        asker,
-        InvokeRequest {
-            on_behalf_of: None,
-            invocation,
-            target: RemoteActionTarget {
-                provider: WINDOW.into(),
-                address: ActionAddress::new(PAGE_RESOURCE, "send-held-request"),
-            },
-            argument: InvokeArgument::Json(serde_json::Map::from_iter([(
-                "id".to_owned(),
-                id.to_string().into(),
-            )])),
-            context: Some(tilo_actions::ActionContext {
-                purpose: Some("POST https://orders.example".into()),
-                facets: [
-                    ("page", "https://orders.example"),
-                    ("kind", "submit"),
-                    ("method", "POST"),
-                    ("destination", "https://orders.example"),
-                    ("picture", "tilo.content:5f2b"),
-                ]
-                .into_iter()
-                .map(|(name, value)| tilo_actions::remote::browser::departure_facet(name, value))
-                .collect(),
-                ..tilo_actions::ActionContext::default()
-            }),
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
+/// A departure the window holds, reported as the session in the VM reports
+/// one: the call that would release it, named by the id the window published it
+/// with, and the departure itself in its context — the page it leaves from,
+/// what it sends and where — as the window states it. The session makes it over
+/// its own link, which proves the device; it carries no other caller's word.
+fn reported_departure(invocation: InvocationId, id: u32) -> InvokeRequest {
+    InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: RemoteActionTarget {
+            provider: WINDOW.into(),
+            address: ActionAddress::new(PAGE_RESOURCE, "send-held-request"),
         },
-    )
+        argument: InvokeArgument::Json(serde_json::Map::from_iter([(
+            "id".to_owned(),
+            id.to_string().into(),
+        )])),
+        context: Some(tilo_actions::ActionContext {
+            purpose: Some("POST https://orders.example".into()),
+            facets: [
+                ("page", "https://orders.example"),
+                ("kind", "submit"),
+                ("method", "POST"),
+                ("destination", "https://orders.example"),
+                ("picture", "tilo.content:5f2b"),
+            ]
+            .into_iter()
+            .map(|(name, value)| tilo_actions::remote::browser::departure_facet(name, value))
+            .collect(),
+            ..tilo_actions::ActionContext::default()
+        }),
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
 }
 
 /// A departure the page started on its own waits on nobody's invocation, so
@@ -2501,16 +2524,16 @@ fn reported_departure(asker: &TestDevice, invocation: InvocationId, id: u32) -> 
 async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_releases_it() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let seen = window_actions(&fixture.server.server, &material, Asks::Departing).await;
-    let (window, remote) = window_device(&fixture, &material).await;
+    let (seen, remote) = window_session(&fixture.server.server, &material, Asks::Departing).await;
     let asker = DeviceIdentity::of(&material);
-    let caller = window.caller(fixture.user.user_pk);
+    // The window asks as the device the host placed it as.
+    let caller = Caller::authenticated(fixture.user.user_pk, asker.device_pubkey());
     let approver = fixture.approving_device().await;
     let approver_actions = asking(&approver, WS_NAME).await;
     let approver_caller = approver.caller(fixture.user.user_pk);
 
     let id = InvocationId::new();
-    let receipt = ActionProvider::invoke(&remote, &caller, reported_departure(&asker, id, 2))
+    let receipt = ActionProvider::invoke(&remote, &caller, reported_departure(id, 2))
         .await
         .expect("the host answers")
         .expect("the departure waits for the person");
@@ -2539,7 +2562,7 @@ async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_rele
 
     // The same call asked again under its id is kept as the same record: one departure is
     // one question.
-    let again = ActionProvider::invoke(&remote, &caller, reported_departure(&asker, id, 2))
+    let again = ActionProvider::invoke(&remote, &caller, reported_departure(id, 2))
         .await
         .expect("the host answers")
         .expect("the departure still waits for the person");
@@ -2588,16 +2611,16 @@ async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_rele
 async fn a_departure_the_person_does_not_allow_is_answered_kept() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let material = fixture.environments.material();
-    let seen = window_actions(&fixture.server.server, &material, Asks::Departing).await;
-    let (window, remote) = window_device(&fixture, &material).await;
+    let (seen, remote) = window_session(&fixture.server.server, &material, Asks::Departing).await;
     let asker = DeviceIdentity::of(&material);
-    let caller = window.caller(fixture.user.user_pk);
+    // The window asks as the device the host placed it as.
+    let caller = Caller::authenticated(fixture.user.user_pk, asker.device_pubkey());
     let approver = fixture.approving_device().await;
     let approver_actions = asking(&approver, WS_NAME).await;
     let approver_caller = approver.caller(fixture.user.user_pk);
 
     let id = InvocationId::new();
-    let receipt = ActionProvider::invoke(&remote, &caller, reported_departure(&asker, id, 3))
+    let receipt = ActionProvider::invoke(&remote, &caller, reported_departure(id, 3))
         .await
         .expect("the host answers")
         .expect("the departure waits for the person");
@@ -2637,14 +2660,11 @@ async fn only_the_device_of_the_window_releases_what_it_holds() {
     let approver_actions = asking(&approver, WS_NAME).await;
     let approver_caller = approver.caller(fixture.user.user_pk);
 
-    let refused = ActionProvider::invoke(
-        &remote,
-        &caller,
-        reported_departure(&fixture.agent, InvocationId::new(), 4),
-    )
-    .await
-    .expect("the host answers")
-    .expect_err("the host refuses it");
+    let refused =
+        ActionProvider::invoke(&remote, &caller, reported_departure(InvocationId::new(), 4))
+            .await
+            .expect("the host answers")
+            .expect_err("the host refuses it");
     assert_eq!(
         refused,
         ActionCallError::NotPermitted,

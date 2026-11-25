@@ -1345,7 +1345,11 @@ impl Answers {
         // A device a host placed reaches a provider registered on this device, which decides it as
         // that device ([`super::providers::Providers::serve_placed`]), and the records its
         // certificate names. Nothing else this device answers is its to call.
+        // What the host that placed it answers is the host's, not a provider's: its own
+        // environment's asks reach the app serving that certified it
+        // ([`crate::app_serving::AppActionServer::route`]), which decides who may.
         if let Some(placed) = caller.placed_records()
+            && tilo_actions::remote::environment_device::action_of(&request.target).is_none()
             && !self.work.providers.serves(&request.target.provider)
             && self
                 .work

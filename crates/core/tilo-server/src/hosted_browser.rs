@@ -1671,6 +1671,73 @@ impl HostedBrowsers {
     }
 }
 
+/// The Browser a host serves is what answers the app frames its workspaces' devices ask it: where
+/// a page action of a window it placed goes, and how what the window answered is read. A host's
+/// embedder supplies it as the service's app action server, beside its own apps.
+impl crate::app_serving::AppActionServer for HostedBrowsers {
+    /// What the workspaces publish: a listing this host answers is the one its [`ActionProvider`]
+    /// query answers, the workspace's own providers and the window it placed. Every other call
+    /// reaches the Browser as a provider on its device's registry, and what it places elsewhere
+    /// it routes ([`Self::route`]).
+    fn serve(
+        &self,
+        _workspace_id: WorkspaceId,
+        caller: &Caller,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        let RemoteActionMessage::CatalogueRequest {
+            correlation, query, ..
+        } = message
+        else {
+            return None;
+        };
+        let runtime = self.runtime()?;
+        let answered = ActionProvider::query(self, caller, query);
+        let (completer, answer) = pending();
+        runtime.spawn(async move {
+            if let Some(result) = answered.await {
+                completer.complete(RemoteActionMessage::CatalogueResponse {
+                    correlation,
+                    result,
+                });
+            }
+        });
+        Some(answer)
+    }
+
+    fn route(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        HostedBrowsers::route(self, workspace_id, caller, message)
+    }
+
+    fn route_certified(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        HostedBrowsers::route_certified(self, workspace_id, caller, certificate, message)
+    }
+
+    fn relayed(
+        &self,
+        workspace_id: WorkspaceId,
+        from: [u8; 32],
+        message: &RemoteActionMessage,
+    ) -> Option<RemoteActionMessage> {
+        HostedBrowsers::relayed(self, workspace_id, from, message)
+    }
+
+    fn answers_for_host(&self, workspace_id: WorkspaceId, from: [u8; 32], to: [u8; 32]) -> bool {
+        HostedBrowsers::answers_for_host(self, workspace_id, from, to)
+    }
+}
+
 /// The provider this host is on its device's dispatch: the open of Browser it places, and the page
 /// actions of the windows it placed.
 impl ActionProvider for HostedBrowsers {

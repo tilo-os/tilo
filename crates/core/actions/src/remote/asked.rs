@@ -644,8 +644,15 @@ pub fn asked_person(caller: &super::Caller) -> Option<String> {
     caller
         .acting_for_person()
         .or_else(|| caller.acting().person_id())
-        .filter(|person| !person.is_empty())
+        // A device a host placed acts for nobody, and the host that placed it acts for its
+        // person: what it holds for that person is put to them.
         .map(str::to_owned)
+        .or_else(|| {
+            caller
+                .placed_records()
+                .map(|placed| hex::encode(placed.person()))
+        })
+        .filter(|person| !person.is_empty())
 }
 
 /// The person `caller` answers as: a person acting themselves, or a view acting for the
