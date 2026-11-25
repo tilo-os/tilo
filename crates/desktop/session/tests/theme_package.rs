@@ -190,10 +190,11 @@ fn an_applied_theme_package_draws_the_session_on_the_compiled_store() {
     // Settings' Appearance page applies it: the section's own action, named by the package id.
     let lookups = tilo_wasm_aot::lookups();
     session
-        .invoke(
+        .invoke_with_actor(
+            &common::as_person(PERSON),
             APPEARANCE,
             "apply-theme",
-            &arguments(json!({ "package": PACKAGE })),
+            &json!({ "package": PACKAGE }),
         )
         .expect("the action runs");
     step(&mut session, 300);
@@ -248,7 +249,7 @@ fn an_applied_theme_package_draws_the_session_on_the_compiled_store() {
     // Undo takes the person's step back: nothing is applied, and the theme the mode shows is the
     // one drawn again.
     session
-        .invoke(APPEARANCE, "undo", &Map::new())
+        .invoke_with_actor(&common::as_person(PERSON), APPEARANCE, "undo", &json!({}))
         .expect("the action runs");
     step(&mut session, 300);
     assert_eq!(published(&session), Value::Null, "no package is applied");
@@ -263,10 +264,11 @@ fn an_applied_theme_package_draws_the_session_on_the_compiled_store() {
     // Applied once more, then the package is taken away: this device falls back to the theme the
     // mode shows, and the appearance still names the package for the devices that have it.
     session
-        .invoke(
+        .invoke_with_actor(
+            &common::as_person(PERSON),
             APPEARANCE,
             "apply-theme",
-            &arguments(json!({ "package": PACKAGE })),
+            &json!({ "package": PACKAGE }),
         )
         .expect("the action runs");
     step(&mut session, 300);
