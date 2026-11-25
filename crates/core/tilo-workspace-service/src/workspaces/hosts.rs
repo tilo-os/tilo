@@ -162,12 +162,52 @@ impl HandedAbsent {
     }
 }
 
+/// A hand-over of a workspace to a server under way ([`Workspaces::handing_to`]), until dropped:
+/// then those following the workspace's governance read it again, the server holding it or not.
+struct Handing<'a> {
+    workspaces: &'a Workspaces,
+    key: (String, [u8; 32]),
+}
+
+impl<'a> Handing<'a> {
+    fn begin(workspaces: &'a Workspaces, workspace: &str, device: [u8; 32]) -> Self {
+        let key = (workspace.to_owned(), device);
+        workspaces.inner.handing.lock_recover().insert(key.clone());
+        Self { workspaces, key }
+    }
+}
+
+impl Drop for Handing<'_> {
+    fn drop(&mut self) {
+        self.workspaces
+            .inner
+            .handing
+            .lock_recover()
+            .remove(&self.key);
+        // No one may be following the changes now; the next to follow reads the holders anew.
+        let _ = self.workspaces.inner.changes.send(self.key.0.clone());
+    }
+}
+
 /// The device a signed host address names.
 const fn host_device(hint: &TransportHint) -> [u8; 32] {
     hint.host.device_public_key
 }
 
 impl Workspaces {
+    /// Whether `device` is being handed `workspace` now ([`Self::attach_server`]): named among
+    /// those keeping it, but not yet saying it keeps all of it. A device entering its person's
+    /// workspaces through one of their servers goes to none of these: the hand-over may still
+    /// fail and the server be named no more. Once it answers, the workspace's governance
+    /// changes say so again.
+    #[must_use]
+    pub fn handing_to(&self, workspace: &str, device: &[u8; 32]) -> bool {
+        self.inner
+            .handing
+            .lock_recover()
+            .contains(&(workspace.to_owned(), *device))
+    }
+
     /// Every holder of `workspace`, each its own signed address, by device
     /// key: the holders are equal, so nothing here comes first. A host the
     /// workspace's governance does not name yet (one founded here before it
@@ -421,6 +461,9 @@ impl Workspaces {
         if device == host.cert.device_public_key {
             return Err("this device holds the workspace already".into());
         }
+        // Named before it keeps the workspace, the server is not one to go to yet: whoever reads
+        // the workspace's holders to enter through one passes it over until this answers.
+        let _handing = Handing::begin(self, workspace, device);
         // The list of the person's workspaces lives in their own workspace.
         // Opening that workspace's group here, on the device handing it over,
         // before the hand-over means the server that takes it in joins a group

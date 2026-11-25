@@ -252,6 +252,7 @@ pub(crate) fn hold(daemon: &Arc<Daemon>, home: PathBuf, stop: &Stop) -> Result<s
     *NOT_IN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    PART_ENDED.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Err(error) = &served {
         tracing::error!(%error, "this holder ends: it could not serve");
     }
@@ -834,6 +835,11 @@ pub(crate) fn peer() -> Option<Arc<super::peer::Peer>> {
 }
 /// Why this holder's device is not in the workspace, while it is not.
 pub(crate) static NOT_IN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Whether a person's part ended in this process: what it held (the workspaces' port among it)
+/// may still be let go of as the next one starts.
+pub(crate) static PART_ENDED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Open the peer's stores at `state`, waiting while another holder still has them open: the one
 /// that held the lock before this one let go of it before its process ended, and the databases it

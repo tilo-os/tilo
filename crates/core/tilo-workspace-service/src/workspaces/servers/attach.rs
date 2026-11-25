@@ -20,6 +20,7 @@
 //! makes, so a caller that wants to know what it did reads it too.
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use iroh_base::EndpointAddr;
 use tilo_peer_state::CopyRole;
@@ -155,10 +156,17 @@ fn endpoint(server: &Server) -> Option<EndpointAddr> {
     )
 }
 
+/// How long [`Workspaces::follow_servers`] waits to apply the servers' document again after it
+/// was not applied once; each failure after it doubles the wait, up to [`LAST_RETRY`].
+const FIRST_RETRY: Duration = Duration::from_secs(1);
+/// The longest [`Workspaces::follow_servers`] waits to apply the servers' document again.
+const LAST_RETRY: Duration = Duration::from_secs(300);
+
 impl Workspaces {
     /// Apply the servers' document to the workspaces this device governs now
     /// and again after each change to it or to a workspace's keeping devices,
-    /// for as long as this device keeps the workspace. A server handed a
+    /// for as long as this device keeps the workspace, and after a pass that
+    /// failed, again after a wait that grows with each. A server handed a
     /// workspace after it started is attached as the document says, whoever
     /// governs the workspace: a desktop that approved it and a server of the
     /// person alike.
@@ -171,6 +179,10 @@ impl Workspaces {
         };
         let admin = person_workspace_id(&self.device_cert().user_public_key);
         runtime.spawn(async move {
+            // A pass that failed is not made again on the next change alone: what it changed
+            // itself (a server named, then named no more) would start the next at once. It is
+            // made again after a wait that grows with each failure, or on a change after that.
+            let mut failed = Duration::ZERO;
             loop {
                 let Some(inner) = workspaces.upgrade() else {
                     return;
@@ -180,27 +192,39 @@ impl Workspaces {
                     tracing::warn!(%error, "the Servers workspace was not founded again under this device");
                 }
                 match attach_named(&this).await {
-                    Ok(attached) if !attached.none() => {
-                        tracing::info!(?attached, "the servers' document applied");
+                    Ok(attached) => {
+                        failed = Duration::ZERO;
+                        if !attached.none() {
+                            tracing::info!(?attached, "the servers' document applied");
+                        }
                     }
-                    Ok(_) => {}
                     Err(error) => {
-                        tracing::warn!(%error, "the servers' document was not applied");
+                        failed = failed.saturating_mul(2).clamp(FIRST_RETRY, LAST_RETRY);
+                        tracing::warn!(%error, retry_in_s = failed.as_secs(), "the servers' document was not applied");
                     }
                 }
                 drop(this);
-                tokio::select! {
-                    write = writes.recv() => match write {
-                        // The document names the servers; a change to any
-                        // other document says nothing about a holder.
-                        Ok(write) if write.workspace == admin && write.app != super::SERVERS.0 => {}
-                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                    },
-                    change = governance.recv() => match change {
-                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                    },
+                if !failed.is_zero() {
+                    tokio::time::sleep(failed).await;
+                    // What changed meanwhile is read by the pass made now.
+                    writes = writes.resubscribe();
+                    governance = governance.resubscribe();
+                    continue;
+                }
+                loop {
+                    tokio::select! {
+                        write = writes.recv() => match write {
+                            // The document names the servers; a change to any other document
+                            // says nothing about a holder.
+                            Ok(write) if write.workspace != admin || write.app != super::SERVERS.0 => {}
+                            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        },
+                        change = governance.recv() => match change {
+                            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        },
+                    }
                 }
             }
         });

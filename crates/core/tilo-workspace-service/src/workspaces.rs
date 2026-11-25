@@ -1197,6 +1197,9 @@ struct WorkspacesInner {
     creating: creating::Creating,
     /// The workspace UUID after each settled governance decision.
     changes: tokio::sync::broadcast::Sender<String>,
+    /// The servers being handed a workspace now, by workspace and device: named among those
+    /// keeping it, but not yet saying they keep all of it ([`Workspaces::handing_to`]).
+    handing: std::sync::Mutex<std::collections::BTreeSet<(String, [u8; 32])>>,
     /// The workspace UUID each time this device's copy turns current with
     /// another of its holders ([`Workspaces::holders_reached`]).
     reached: tokio::sync::broadcast::Sender<String>,
@@ -1628,6 +1631,7 @@ impl Workspaces {
                 tilolang: std::sync::OnceLock::new(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
+                handing: std::sync::Mutex::default(),
                 reached: tokio::sync::broadcast::Sender::new(64),
                 deletions: tokio::sync::broadcast::channel(64).0,
                 branches: tokio::sync::broadcast::channel(64).0,

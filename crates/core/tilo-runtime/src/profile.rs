@@ -119,6 +119,9 @@ impl MediaHost {
     }
 }
 
+/// How long a media host that ends may take to close its store.
+const CLOSING_MEDIA: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl Drop for MediaHost {
     /// Release the store's database so the profile can be served again in
     /// this process; the server thread then only answers with errors.
@@ -127,11 +130,17 @@ impl Drop for MediaHost {
             return;
         };
         let store = Arc::clone(&self.store);
-        let _ = std::thread::spawn(move || {
-            let _ = runtime.block_on(store.shutdown());
-            runtime.shutdown_background();
-        })
-        .join();
+        crate::device::serve::ending_step(
+            None,
+            "the media host's store",
+            CLOSING_MEDIA,
+            move || {
+                if let Err(error) = runtime.block_on(store.shutdown()) {
+                    tracing::warn!(%error, "the media host's store did not close cleanly");
+                }
+                runtime.shutdown_background();
+            },
+        );
     }
 }
 

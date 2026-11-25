@@ -477,10 +477,12 @@ const GAINS_A_SERVER_TEST: &str =
 /// process ends, whatever step it is in, rather than hanging the run.
 const GAINS_A_SERVER_BOUND: Duration = Duration::from_secs(240);
 
-/// A person founded on this computer adds their own server: their own workspace names it, so the
-/// person's part ends and starts again through it, in the same process. The part that ended is
-/// gone (its services, links and stores let go), the one that starts shows the same folders,
-/// and an agent's call is answered by it rather than refused as not started.
+/// A person founded on this computer adds their own server: once it keeps their own workspace,
+/// the person's part ends and starts again through it, in the same process. The part that ended
+/// is gone (its services, links and stores let go), the one that starts shows the same folders,
+/// and an agent's call is answered by it rather than refused as not started. The daemon started
+/// afresh enters through the server too: the hand-over finished before the part ended, so the
+/// workspace still names it.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -686,6 +688,27 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
     );
     drop(agent);
     assert!(again.strong_count() > 0, "the part that started still runs");
+    running.stop().unwrap();
+
+    // The daemon started afresh, the person's own workspace naming their server from its
+    // start: the person's part serves through it, and an agent's call is answered.
+    let running = crate::daemon::Running::start(&profile).unwrap();
+    let socket = running.native_socket().to_owned();
+    running
+        .wait_for_person(Duration::from_secs(120))
+        .expect("the person's services run after a fresh start");
+    wait_for_the_person_serving(&socket);
+    let who = ask(&socket, &json!({"native": "account#who"}));
+    assert_eq!(
+        who["home"]["server_cert"], named,
+        "a fresh start enters through the person's server: {who}"
+    );
+    let (agent, init) = agent_initialized(&socket);
+    assert_eq!(
+        init["result"]["serverInfo"]["name"], "tilo-runtime",
+        "the person's part started afresh answers the agent: {init}"
+    );
+    drop(agent);
     running.stop().unwrap();
     serving.block_on(server.shutdown());
     drop(environment);

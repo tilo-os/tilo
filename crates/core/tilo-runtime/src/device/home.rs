@@ -88,7 +88,8 @@ impl Home {
 
     /// A server the copy names that this home does not enter through yet, once the copy names
     /// one: the device as it enters through it. Waits on the copy's governance changes, so a
-    /// server named after this daemon started is entered through as soon as it is named.
+    /// server named after this daemon started is entered through as soon as it keeps the
+    /// person's workspace: one this device is still handing it to is not gone to yet.
     pub(crate) async fn moved(&self) -> Device {
         let person = self.person();
         let mut governance = self.workspaces.copies().governance_changes();
@@ -141,15 +142,18 @@ impl Home {
 async fn named_in(own: &ServiceWorkspaces, cert: &DeviceCert) -> Option<Device> {
     let person = tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key);
     // This device's workspace service serves as the device's own key, which is a host of the
-    // workspace too, and never this device's server.
-    let service = own.copies().device_cert().device_public_key;
-    let hosts: Vec<_> = own
-        .copies()
+    // workspace too, and never this device's server. A server this device is handing the
+    // workspace to is named before it keeps it, and named no more if the hand-over fails: it is
+    // gone to once it says it keeps all of it.
+    let copies = own.copies();
+    let service = copies.device_cert().device_public_key;
+    let hosts: Vec<_> = copies
         .hosts(&person)
         .await
         .ok()?
         .into_iter()
         .filter(|hint| hint.host.device_public_key != service)
+        .filter(|hint| !copies.handing_to(&person, &hint.host.device_public_key))
         .collect();
     let server = server_among(&hosts, &cert.device_public_key)?;
     let relay_url = server

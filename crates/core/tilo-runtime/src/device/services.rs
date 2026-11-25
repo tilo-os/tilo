@@ -6792,6 +6792,10 @@ impl crate::key_sessions::PersonNotices for AppNotices {
 /// whatever port the machine gives it otherwise. Its relays are the person's
 /// ([`tilo_endpoint_reachability::relays`]): a runtime on a machine of theirs
 /// relays and resolves as their other devices do.
+/// How long the person's part that starts again waits for the one that ended to let go of the
+/// workspaces' port.
+const PORT_LET_GO: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub(super) fn listen_endpoint(key: &SigningKey, listen: Option<u16>) -> io::Result<iroh::Endpoint> {
     let relays = tilo_endpoint_reachability::relays();
     let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -6804,18 +6808,47 @@ pub(super) fn listen_endpoint(key: &SigningKey, listen: Option<u16>) -> io::Resu
     }
     if let Some(port) = listen {
         // One program on a computer takes its workspaces' work on this port: a second runtime of a
-        // login here is told so, not left with the socket layer's words.
-        if let Err(error) = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
+        // login here is told so, not left with the socket layer's words. The person's part that
+        // ended in this process lets go of it as its endpoint's last task ends, which the part
+        // starting now waits for, a while.
+        let started = std::time::Instant::now();
+        let waits = if super::serve::PART_ENDED.load(std::sync::atomic::Ordering::Relaxed) {
+            PORT_LET_GO
+        } else {
+            std::time::Duration::ZERO
+        };
+        let mut waited = false;
+        while let Err(error) = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
             && error.kind() == io::ErrorKind::AddrInUse
         {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!(
-                    "another program on this computer holds UDP port {port}, where a logged-in \
-                     Tilo runtime takes its workspaces' work: most likely another `tilo-runtime` \
-                     of a Tilo login here. Stop it, then start this one again."
-                ),
-            ));
+            if started.elapsed() >= waits {
+                let holder = if waits.is_zero() {
+                    "most likely another `tilo-runtime` of a Tilo login here. Stop it, then start \
+                     this one again."
+                        .to_owned()
+                } else {
+                    format!(
+                        "this daemon's person's part that ended still held it after {} seconds",
+                        waits.as_secs()
+                    )
+                };
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!(
+                        "another program on this computer holds UDP port {port}, where a \
+                         logged-in Tilo runtime takes its workspaces' work: {holder}"
+                    ),
+                ));
+            }
+            waited = true;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if waited {
+            tracing::info!(
+                waited_ms = started.elapsed().as_millis(),
+                port,
+                "the person's part that ended let go of the workspaces' port"
+            );
         }
         builder =
             tilo_server_client::host::listening_on(builder, port).map_err(io::Error::other)?;
