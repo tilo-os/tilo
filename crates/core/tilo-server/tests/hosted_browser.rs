@@ -997,8 +997,7 @@ async fn a_page_action_past_the_allowance_is_refused_and_says_how_to_continue() 
                 "fill-page",
             )))
             .await
-            .and_then(Result::ok)
-            .expect("the host answers"),
+            .and_then(Result::ok),
     );
     assert_eq!(receipt.invocation, id);
     let ReceiptStatus::Rejected {
