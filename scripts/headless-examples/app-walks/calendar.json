@@ -876,6 +876,79 @@
           }
         ]
       }
+    },
+    {
+      "id": "place-palette",
+      "said": "Choose Upcoming tasks from the palette, then Week: the window goes to each",
+      "ops": {
+        "tl": [
+          {
+            "do_app": {
+              "app": "so.tilo.calendar",
+              "operation": "show-upcoming"
+            }
+          },
+          {
+            "must": [
+              "New task"
+            ]
+          },
+          {
+            "must_not": [
+              "Previous month"
+            ]
+          },
+          {
+            "do_app": {
+              "app": "so.tilo.calendar",
+              "operation": "show-week"
+            }
+          },
+          {
+            "must": [
+              "Previous week"
+            ]
+          },
+          {
+            "must_not": [
+              "Previous month"
+            ]
+          }
+        ]
+      },
+      "budget_ms": 15000
+    },
+    {
+      "id": "place-closed",
+      "said": "With Calendar closed, choose Today's tasks: Calendar opens on them",
+      "ops": {
+        "tl": [
+          {
+            "close_app": "calendar"
+          },
+          {
+            "do_app": {
+              "app": "so.tilo.calendar",
+              "operation": "show-today"
+            }
+          },
+          {
+            "wait_window": "calendar"
+          },
+          {
+            "must": [
+              "New task"
+            ]
+          },
+          {
+            "must_not": [
+              "Previous month"
+            ]
+          }
+        ]
+      },
+      "dark": true,
+      "budget_ms": 30000
     }
   ]
 }
