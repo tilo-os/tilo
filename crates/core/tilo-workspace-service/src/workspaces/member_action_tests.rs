@@ -570,7 +570,7 @@ async fn a_person_accepting_an_invitation_is_listed_once_as_joining() {
     let workspaces = server.workspaces();
     let workspace = made_workspace(&workspaces, "Joined").await;
     let documents = crate::device_documents::ServiceDocuments::of(workspaces.clone());
-    let mut log = tilo_resource_store::history::feed::ChangeLog::new();
+    let mut log = collab_types::history::feed::ChangeLog::new();
     let cursor = feed_after(&documents, &mut log, &workspace, None).cursor;
     let started = i64::try_from(tilo_clock::unix_now()).unwrap_or(i64::MAX) * 1000;
     let token = [9u8; 8];
