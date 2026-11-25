@@ -164,9 +164,9 @@ fn today_reads_notes(
     today: &package::BuiltApp,
     notes: &package::BuiltApp,
 ) -> tilolang_tilo::bundle::Bundle {
-    let surface = collab_types_surface(&std::fs::read(today.payload.join("surface.toml")).unwrap());
+    let surface = collab_types_surface(&std::fs::read(today.payload.join("surface.json")).unwrap());
     let notes_surface =
-        collab_types_surface(&std::fs::read(notes.payload.join("surface.toml")).unwrap());
+        collab_types_surface(&std::fs::read(notes.payload.join("surface.json")).unwrap());
     assert!(
         surface.reads_any_of(&notes_surface),
         "Today's surface declares that it reads Notes' kinds"
@@ -855,7 +855,7 @@ fn a_package_that_carries_a_program_ships_it_beside_its_module() {
     for file in [
         "app.wasm",
         "app.ids",
-        "surface.toml",
+        "surface.json",
         "main.js",
         "src/tilo.js",
     ] {

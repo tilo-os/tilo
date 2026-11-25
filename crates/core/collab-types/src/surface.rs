@@ -491,17 +491,20 @@ writes = ["document", "comments.*"]
                 let surface = SurfaceFile::compiled(&bytes)
                     .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
                 assert!(surface.own_resource().is_some(), "{}", file.display());
-                // It is what the authored file beside it compiles to.
+                // It is what the authored file beside it compiles to; a surface a model
+                // publishes has no authored file, and is compiled straight from its code.
                 let authored = file.with_file_name("surface.toml");
-                let compiled = tilo_surface_compile::compile_file(&authored)
-                    .unwrap_or_else(|error| panic!("{}: {error}", authored.display()));
-                assert_eq!(
-                    compiled,
-                    text,
-                    "{} is the compiled form of {}",
-                    file.display(),
-                    authored.display()
-                );
+                if authored.is_file() {
+                    let compiled = tilo_surface_compile::compile_file(&authored)
+                        .unwrap_or_else(|error| panic!("{}: {error}", authored.display()));
+                    assert_eq!(
+                        compiled,
+                        text,
+                        "{} is the compiled form of {}",
+                        file.display(),
+                        authored.display()
+                    );
+                }
                 parsed += 1;
             }
             assert!(parsed > 0, "found the apps' surfaces");

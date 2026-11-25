@@ -613,9 +613,11 @@ actions that queued an outside consequence undo through their inverse action.
   resources are the person's own (`person`), declared with the app
   (`ResourceApp::PERSON_RESOURCES`) rather than with the window showing them;
   `tilolang check` and CI fail when code and file disagree. A
-  rename is allowed and shows up in review. The packaged surface is also what
-  a receiver without the app decides its changes against, the person's
-  resources among them.
+  rename is allowed and shows up in review. The compiled `surface.json` beside
+  it is the one form the system commits, ships, addresses and hashes: the
+  package carries it, and it is what a receiver without the app decides its
+  changes against, the person's resources among them. Only the build tools read
+  `surface.toml`.
 - **Storage changes are migrations.** `#[resource(version = N, migrate = path)]`
   declares the current schema version; `migrate` converts a document from any
   older version, reading old shapes with the model helpers. It runs once, as a

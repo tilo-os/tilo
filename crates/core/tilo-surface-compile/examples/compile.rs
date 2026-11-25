@@ -21,8 +21,12 @@ fn main() -> Result<(), String> {
     } else {
         tilo_surface_compile::compile_file(&source)?
     };
-    match arguments.next().map(PathBuf::from) {
-        Some(destination) => std::fs::write(&destination, compiled)
+    match arguments.next().map(PathBuf::from).as_deref() {
+        Some(destination) if destination == std::path::Path::new("--hash") => {
+            println!("{}", blake3::hash(compiled.as_bytes()).to_hex());
+            Ok(())
+        }
+        Some(destination) => std::fs::write(destination, compiled)
             .map_err(|error| format!("{}: {error}", destination.display())),
         None => {
             println!("{compiled}");

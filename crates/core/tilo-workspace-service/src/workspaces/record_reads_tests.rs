@@ -717,8 +717,8 @@ async fn an_app_changes_its_own_records_and_no_kind_it_did_not_declare() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_app_keeps_open_only_the_records_its_manifest_declares() {
     static NOTE_KINDS: &[u8] =
-        b"[[resources]]\nkind = \"tilo.notes.Note\"\nlabel = \"Note\"\nversion = 1\n";
-    static READS_NOTES: &[u8] = b"reads = [\"tilo.notes.Note\"]\n\n[[resources]]\nkind = \"test.reader.Card\"\nlabel = \"Card\"\nversion = 1\n";
+        b"{\"resources\":[{\"kind\":\"tilo.notes.Note\",\"label\":\"Note\",\"version\":1}]}";
+    static READS_NOTES: &[u8] = b"{\"reads\":[\"tilo.notes.Note\"],\"resources\":[{\"kind\":\"test.reader.Card\",\"label\":\"Card\",\"version\":1}]}";
     collab_types::app_surface::register_package(NOTES, NOTE_KINDS);
     collab_types::app_surface::register_package("test.notes-reader", READS_NOTES);
     let h = host().await;

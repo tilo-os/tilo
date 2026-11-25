@@ -29,7 +29,7 @@ RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify
 # The daemon, and the Discord connector's outside worker beside it (the
 # connector finds `<app>-worker` next to the server it runs under).
 COPY bin/ /usr/local/bin/
-# Every version of the built-in apps' surface.toml, which the server publishes
+# Every version of the built-in apps' compiled surface, which the server publishes
 # into its content store at start: history written by an older version than this
 # build runs is decided with the surface it was written with.
 COPY surfaces/ /usr/local/share/tilo/surfaces/

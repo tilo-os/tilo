@@ -1,7 +1,7 @@
 /**
  * Types for Discussion (`so.tilo.lang.discussion`), from the app's surface.
  *
- * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
+ * `tilo sdk gen --lang ts` writes this file from the app's `surface.json`; write
  * it again rather than editing it.
  *
  * `Notice` is a `Resource` of the app's `tl.tilo.host.Notice`, made by its factory with the

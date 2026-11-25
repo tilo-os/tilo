@@ -1672,7 +1672,7 @@ made_from() {
 }
 
 # The server's files as the image's context lays them out (lounge-context.sh,
-# the image's own build step): the programs, the app surfaces from
+# the image's own build step): the programs, the compiled app surfaces from
 # the apps' history and the product font catalog (lounge-fonts.sh, made again when its sources change).
 # TILO_SH_LOUNGE names a context laid out already, which is what a check hands
 # the stack: laying it out reads the apps' history and the catalog, seconds a

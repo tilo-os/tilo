@@ -17,35 +17,7 @@ use tilolang_tilo::host::Host;
 const APP: &str = "t.kitchen";
 
 /// A kitchen whose oven can be dismissed, and a counter that stores nothing code reads.
-const OVEN_ONLY: &str = r#"
-[[resources]]
-kind = "kitchen.oven"
-label = "Oven"
-version = 1
-fields = [{ path = "heat", type = "int" }]
-
-[[resources.verbs]]
-id = "dismiss"
-kind = "outside"
-params = []
-
-[[resources]]
-kind = "kitchen.timer"
-label = "Timer"
-version = 1
-fields = [{ path = "left", type = "int" }]
-
-[[resources]]
-kind = "kitchen.counter"
-label = "Counter"
-version = 1
-fields = []
-
-[[resources.verbs]]
-id = "wipe"
-kind = "outside"
-params = [{ name = "cloth", required = true, type = "text", schema = { type = "string" } }]
-"#;
+const OVEN_ONLY: &str = "{\"resources\":[{\"fields\":[{\"path\":\"heat\",\"type\":\"int\"}],\"kind\":\"kitchen.oven\",\"label\":\"Oven\",\"verbs\":[{\"id\":\"dismiss\",\"kind\":\"outside\",\"params\":[]}],\"version\":1},{\"fields\":[{\"path\":\"left\",\"type\":\"int\"}],\"kind\":\"kitchen.timer\",\"label\":\"Timer\",\"version\":1},{\"fields\":[],\"kind\":\"kitchen.counter\",\"label\":\"Counter\",\"verbs\":[{\"id\":\"wipe\",\"kind\":\"outside\",\"params\":[{\"name\":\"cloth\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]}],\"version\":1}]}";
 
 /// The same kitchen, where the timer and the counter offer `dismiss` too.
 fn kitchen() -> String {

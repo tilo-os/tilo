@@ -1,7 +1,7 @@
 /**
  * Types for On-Screen Keyboard (`so.tilo.osk`), from the app's surface.
  *
- * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
+ * `tilo sdk gen --lang ts` writes this file from the app's `surface.json`; write
  * it again rather than editing it.
  *
  * `Keyboard` is a `Resource` of the app's `osk.keyboard`, made by its factory with the

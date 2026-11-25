@@ -50,7 +50,7 @@ release=$(<"$work/runtime-version")
 # The repository the pack reads: only Clocks, as a release selects a subset.
 repo=$work/repo
 mkdir -p "$repo/apps/$app" "$repo/apps/$app-model-wasm" "$repo/bin"
-cp "apps/$app/tilo-app.toml" "apps/$app/surface.toml" "$repo/apps/$app/"
+cp "apps/$app/tilo-app.toml" "apps/$app/surface.json" "$repo/apps/$app/"
 # The app declares its model by keeping a guest crate beside it; the module
 # itself comes from the app-models output, so the crate needs no content here.
 printf '[package]\nname = "%s-model-wasm"\nversion = "0.1.0"\n' "$app" \

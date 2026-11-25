@@ -19464,8 +19464,9 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "serde_json",
  "syn 2.0.117",
- "tilo-surface-compile",
+ "tilo-canonical-json",
  "workspace-hack",
 ]
 
@@ -20836,6 +20837,7 @@ dependencies = [
 name = "tilo-surface-compile"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "serde_json",
  "tilo-canonical-json",
  "toml 1.0.6+spec-1.1.0",

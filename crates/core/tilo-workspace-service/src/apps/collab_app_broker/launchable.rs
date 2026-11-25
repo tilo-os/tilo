@@ -2686,7 +2686,8 @@ mod tests {
         {
             collab_types::app_surface::register_package(
                 APP,
-                b"[[resources]]\nkind = \"files.app\"\nlabel = \"Files\"\nversion = 1\nshows = [\"open-person\"]\n",
+                "{\"resources\":[{\"kind\":\"files.app\",\"label\":\"Files\",\"shows\":[\"open-person\"],\"version\":1}]}"
+                    .as_bytes(),
             );
             let (state, workspace) = broker(&workspace());
             let (_windowless, asked) = app_starts_windowless(&state, 9);

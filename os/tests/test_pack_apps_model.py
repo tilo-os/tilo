@@ -43,7 +43,7 @@ class Packer:
         app = self.repo / 'apps/poker'
         app.mkdir(parents=True)
         shutil.copy(REPO / 'apps/poker/tilo-app.toml', app / 'tilo-app.toml')
-        shutil.copy(REPO / 'apps/poker/surface.toml', app / 'surface.toml')
+        shutil.copy(REPO / 'apps/poker/surface.json', app / 'surface.json')
         (self.repo / 'apps/poker-model-wasm').mkdir()
         (self.repo / 'apps/poker-model-wasm/Cargo.toml').write_text(
             '[package]\nname = "poker-model-wasm"\nversion = "0.1.0"\n')

@@ -1,6 +1,6 @@
 """Types for Remote Desktop (`so.tilo.remote`), from the app's surface.
 
-`tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
+`tilo sdk gen --lang python` writes this file from the app's `surface.json`;
 write it again rather than editing it.
 
 `ConnectionList` is the app's `remote.connection-list` at `remote/<resource>`, read with

@@ -872,7 +872,7 @@ fn app_release_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "surface",
             ParamType::Text,
-            "The BLAKE3 hash of the package's surface.toml in the form it is kept by, 64 hex characters; none for a package that publishes no surface.",
+            "The BLAKE3 hash of the package's compiled surface, 64 hex characters; none for a package that publishes no surface.",
         ),
         ActionParam::optional(
             "package",

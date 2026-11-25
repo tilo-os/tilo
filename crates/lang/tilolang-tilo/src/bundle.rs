@@ -320,7 +320,7 @@ impl Bundle {
         crate::surface::surface_bytes_reading(&[&self.meta], &reads, &tilolang_runtime::SourceWords)
             .map_err(|error| BundleError::Surface {
                 app: self.meta.app.clone(),
-                reason: error.to_string(),
+                reason: error,
             })
     }
 
@@ -342,7 +342,7 @@ impl Bundle {
                 .map(|surface| (import.meta.app.clone(), surface))
                 .map_err(|error| BundleError::Surface {
                     app: import.meta.app.clone(),
-                    reason: error.to_string(),
+                    reason: error,
                 })
             })
             .collect()

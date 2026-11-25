@@ -165,11 +165,11 @@ mod workspace_document_ownership {
                 let cluster = workspace.route.cluster_id.clone();
                 collab_types::app_surface::register_package(
                     "test.ownership-tasks",
-                    b"[[resources]]\nkind = \"test.ownership-tasks.Task\"\nlabel = \"Task\"\nversion = 1\n",
+                    "{\"resources\":[{\"kind\":\"test.ownership-tasks.Task\",\"label\":\"Task\",\"version\":1}]}".as_bytes(),
                 );
                 collab_types::app_surface::register_package(
                     "test.ownership-planner",
-                    b"reads = [\"test.ownership-tasks.Task\"]\n\n[[resources]]\nkind = \"test.ownership-planner.Plan\"\nlabel = \"Plan\"\nversion = 1\n",
+                    "{\"reads\":[\"test.ownership-tasks.Task\"],\"resources\":[{\"kind\":\"test.ownership-planner.Plan\",\"label\":\"Plan\",\"version\":1}]}".as_bytes(),
                 );
                 let read = |route: &CrdtRoute| {
                     launched_as("test.ownership-planner", &workspace, &identity, route, &socket)

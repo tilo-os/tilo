@@ -44,10 +44,10 @@ fn app_files() -> BTreeMap<String, String> {
     }
     for entry in std::fs::read_dir(repo.join("apps")).expect("apps reads") {
         let app = entry.expect("an entry").path();
-        if !(app.join("tilo-app.toml").is_file() && app.join("surface.toml").is_file()) {
+        if !(app.join("tilo-app.toml").is_file() && app.join("surface.json").is_file()) {
             continue;
         }
-        for name in ["tilo-app.toml", "surface.toml"] {
+        for name in ["tilo-app.toml", "surface.json"] {
             let shown = app
                 .join(name)
                 .strip_prefix(&repo)

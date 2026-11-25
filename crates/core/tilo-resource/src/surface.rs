@@ -1,6 +1,6 @@
 //! A resource's public surface as data (`tilo_actions::surface`), read from
 //! its declarations and stored shape. `tilolang surface` writes it to the
-//! app's `surface.toml` and `tilolang check` compares it with the code, so a
+//! app's `surface.toml` and compiled `surface.json`, and `tilolang check` compares it with the code, so a
 //! rename or an incompatible storage change shows up in review, and it is
 //! what the OS knows about an app that is not running and what another
 //! language compiles its actions and types against.

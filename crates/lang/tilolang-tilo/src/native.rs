@@ -12,7 +12,7 @@
 //! The app's answer is its model's JSON. Its shape is the app's, not the language's: a set is an
 //! object of members or a list, a collection is a list of items without their ids, rich text is
 //! markdown. So this module reads each field as the app's surface declares it ([`crate::schema`]:
-//! the package [`crate::catalogue`] derived from the app's `surface.toml`), and a program sees a
+//! the package [`crate::catalogue`] derived from the app's compiled surface), and a program sees a
 //! field of the type its package names: `issue.assignee` is the text the issue holds there,
 //! `issue.labels` a set, `issue.body` rich text.
 //!

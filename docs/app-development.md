@@ -88,7 +88,8 @@ connection can install one; a key, a visitor or another account is refused.
 
 A new app is a Cargo project: `src/` holds the app, `tilo-app.toml` is the
 package manifest (id, entrypoint, sandbox), `surface.toml` records the public
-surface, `locales/` holds the text, `tests/` the tests and `AGENTS.md` a short
+surface and `surface.json` is its canonical compiled form (what the package
+ships and a receiver reads), `locales/` holds the text, `tests/` the tests and `AGENTS.md` a short
 guide for coding agents.
 
 ## The model: resources, actions, bound views
@@ -177,7 +178,8 @@ What this gives you without more code:
 - **Permissions.** Roles decide who may invoke which action; a viewer sees the
   state and cannot change it.
 - **Search, palette, scripts and agents.** The resource and its actions are
-  published (`tilolang surface` writes them to `surface.toml`), so system
+  published (`tilolang surface` writes them to `surface.toml` and the compiled `surface.json`),
+  so system
   search, the command palette and agents find and invoke them.
 
 Apps start empty. Sample content belongs in tests, screenshots

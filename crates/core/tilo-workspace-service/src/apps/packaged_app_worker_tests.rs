@@ -601,10 +601,10 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
     static NOTES: &[u8] =
-        b"[[resources]]\nkind = \"test.journal-notes.Note\"\nlabel = \"Note\"\nversion = 1\n";
-    static TODAY: &[u8] = b"reads = [\"test.journal-notes.Note\"]\n\n[[resources]]\nkind = \"test.journal-today.Day\"\nlabel = \"Day\"\nversion = 1\n";
+        b"{\"resources\":[{\"kind\":\"test.journal-notes.Note\",\"label\":\"Note\",\"version\":1}]}";
+    static TODAY: &[u8] = b"{\"reads\":[\"test.journal-notes.Note\"],\"resources\":[{\"kind\":\"test.journal-today.Day\",\"label\":\"Day\",\"version\":1}]}";
     static TASKS: &[u8] =
-        b"[[resources]]\nkind = \"test.journal-tasks.Task\"\nlabel = \"Task\"\nversion = 1\n";
+        b"{\"resources\":[{\"kind\":\"test.journal-tasks.Task\",\"label\":\"Task\",\"version\":1}]}";
     collab_types::app_surface::register_package("test.journal-notes", NOTES);
     collab_types::app_surface::register_package("test.journal-today", TODAY);
     collab_types::app_surface::register_package("test.journal-tasks", TASKS);

@@ -4,7 +4,7 @@
 //! A directory with `.tl` files directly in it is a package: those files are its module, its
 //! `locales/*.ftl` its catalogues, its `media/**` the files its views and scenarios name as
 //! `pkg:media/…`, and its `app.ids` its ids lock. A file under `media` travels base64, since a
-//! page's answer is JSON text. A directory with a `tilo-app.toml` and a `surface.toml` is a native
+//! page's answer is JSON text. A directory with a `tilo-app.toml` and a compiled `surface.json` is a native
 //! app, which a package imports as the metadata its surface publishes.
 
 use std::collections::BTreeMap;

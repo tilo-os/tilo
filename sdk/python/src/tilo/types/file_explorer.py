@@ -1,6 +1,6 @@
 """Types for Files (`so.tilo.file-explorer`), from the app's surface.
 
-`tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
+`tilo sdk gen --lang python` writes this file from the app's `surface.json`;
 write it again rather than editing it.
 
 `Notice` is the app's `tl.tilo.host.Notice` at `file-explorer/<resource>`, read with

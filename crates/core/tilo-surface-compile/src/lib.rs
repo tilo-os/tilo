@@ -82,3 +82,60 @@ pub fn write_compiled(app_dir: &Path) -> Result<Option<PathBuf>, String> {
     std::fs::write(&path, compiled).map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(Some(path))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A surface as an author writes it.
+    const AUTHORED: &str = r#"
+[[resources]]
+kind = "so.tilo.test.note"
+label = "Note"
+version = 1
+fields = [
+  { path = "title", type = "text", stored = "value" },
+  { path = "items", type = { collection = "item" }, stored = "collection" },
+]
+
+[[resources.verbs]]
+id = "add"
+kind = "undoable"
+params = [
+  { name = "title", required = true, type = "text" },
+]
+"#;
+
+    /// Its compiled form: one address, the same on every target and every build.
+    const COMPILED: &str = r#"{"resources":[{"fields":[{"path":"title","stored":"value","type":"text"},{"path":"items","stored":"collection","type":{"collection":"item"}}],"kind":"so.tilo.test.note","label":"Note","verbs":[{"id":"add","kind":"undoable","params":[{"name":"title","required":true,"type":"text"}]}],"version":1}]}"#;
+
+    /// The BLAKE3 of [`COMPILED`]: what a change of this surface's app names.
+    const ADDRESS: &str = "c6100ca8877209905e1a31149043ee2279972c3a05e66347853670b8734f677a";
+
+    #[test]
+    fn compiling_gives_the_one_canonical_address() {
+        let compiled = compile(AUTHORED).expect("the authored surface compiles");
+        assert_eq!(compiled, COMPILED);
+        assert!(is_canonical(&compiled));
+        assert_eq!(compile(AUTHORED).expect("it compiles"), compiled);
+        assert_eq!(
+            blake3::hash(compiled.as_bytes()).to_hex().to_string(),
+            ADDRESS,
+            "the same surface hashes to the same bytes wherever it is compiled"
+        );
+    }
+
+    #[test]
+    fn an_authored_form_is_not_canonical_and_a_pretty_json_is_not_either() {
+        assert!(!is_canonical(AUTHORED));
+        assert!(!is_canonical("{\n  \"resources\": []\n}"));
+        assert!(is_canonical("{\"resources\":[]}"));
+    }
+
+    #[test]
+    fn the_same_surface_has_one_address_however_its_keys_were_written() {
+        let one = compile("[[resources]]\nkind = \"k\"\nlabel = \"L\"\nversion = 1\n").unwrap();
+        let other = compile("[[resources]]\nversion = 1\nlabel = \"L\"\nkind = \"k\"\n").unwrap();
+        assert_eq!(one, other);
+    }
+}

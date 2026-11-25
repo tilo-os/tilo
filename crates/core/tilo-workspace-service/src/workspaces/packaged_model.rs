@@ -43,7 +43,7 @@ pub fn package_surface(package: &[u8], app: &str) -> Result<Vec<u8>, Collaborati
         .meta
         .collection
         .entries
-        .get("surface.toml")
+        .get("surface.json")
         .ok_or_else(|| CollaborationError::new("the package carries no surface"))?;
     blobs
         .get(hash)

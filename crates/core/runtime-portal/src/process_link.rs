@@ -1253,7 +1253,7 @@ mod tests {
                 App::Surface {
                     app: "so.tilo.chat".into(),
                     title: "Chat".into(),
-                    surface: "[[resources]]\nkind = \"chat.workspace\"\n".into(),
+                    surface: "{\"resources\":[{\"kind\":\"chat.workspace\"}]}".into(),
                 },
             ];
             assert_eq!(decode_apps(&encode_apps(&apps)).unwrap(), apps);

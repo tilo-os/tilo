@@ -114,7 +114,7 @@ impl Packages {
             .map_or("", |package| package.meta.app.as_str())
     }
 
-    /// The `surface.toml` of `app` among the packages: the types and verbs a workspace's store
+    /// The compiled surface of `app` among the packages: the types and verbs a workspace's store
     /// judges the app's records' writes by.
     #[must_use]
     pub fn surface(&self, app: &str) -> Option<Vec<u8>> {

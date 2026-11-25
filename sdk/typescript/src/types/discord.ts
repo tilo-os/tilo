@@ -1,7 +1,7 @@
 /**
  * Types for Discord (`so.tilo.discord`), from the app's surface.
  *
- * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
+ * `tilo sdk gen --lang ts` writes this file from the app's `surface.json`; write
  * it again rather than editing it.
  *
  * `Guild` is a `Resource` of the app's `discord.guild`, made by its factory with the

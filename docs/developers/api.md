@@ -291,7 +291,7 @@ session typed by hand.
 
 ## Types and versions
 
-Each app publishes its surface (`surface.toml`), and its digest is the surface's version
+Each app publishes its compiled surface (`surface.json`, compiled from the author's `surface.toml`), and its digest is the surface's version
 (`<app>@<first 16 hex of its SHA-256>`). Generated types name it: a call made through one sends
 `Tilo-Surface`, and a workspace whose app publishes another surface answers
 `409 surface_changed`, naming both, instead of running it: `tilo sdk gen` writes the types again.

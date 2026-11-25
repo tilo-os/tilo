@@ -29,7 +29,7 @@ pub const PYTHON_OUT: &str = "tilo_types";
 pub const TYPESCRIPT_OUT: &str = "tilo-types";
 pub const OPENAPI_OUT: &str = ".";
 const OPENAPI_FILE: &str = "openapi.json";
-const SURFACE_FILE: &str = "surface.toml";
+const SURFACE_FILE: &str = "surface.json";
 
 /// The names the SDK's own resource answers to, which an app's field or action of the same
 /// name cannot be reached by: `document.path` is the resource's path whatever field the app

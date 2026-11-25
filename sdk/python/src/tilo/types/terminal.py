@@ -1,6 +1,6 @@
 """Types for Terminal (`so.tilo.terminal`), from the app's surface.
 
-`tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
+`tilo sdk gen --lang python` writes this file from the app's `surface.json`;
 write it again rather than editing it.
 
 `Session` is the app's `terminal.session` at `terminal/<resource>`, read with

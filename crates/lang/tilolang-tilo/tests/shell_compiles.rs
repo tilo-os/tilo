@@ -1,5 +1,5 @@
 //! The shell package (`apps/tl/shell`) compiles over the session's actions as
-//! `apps/tl/session/surface.toml` declares them, the same compile a session starting it runs.
+//! `apps/tl/session/surface.json` declares them, the same compile a session starting it runs.
 //! A shell calling an action the session no longer declares fails here, by its diagnostic,
 //! instead of as every session test and walk dying at startup.
 

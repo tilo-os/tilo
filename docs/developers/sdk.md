@@ -39,7 +39,8 @@ and land in history like any other action.
 
 Each app publishes its surface: its resource kinds, their fields with types and which are
 read-only, and its actions with their parameters (`surface.toml`, written by
-`tilolang surface`, signed with the app). tilolang already compiles programs against this
+`tilolang surface`, and the canonical `surface.json` compiled from it, which the package ships
+and signs). tilolang already compiles programs against this
 catalogue, using the loader `tilolang check` uses. The SDK generates its types from the same
 catalogue:
 
@@ -67,7 +68,7 @@ tilo sdk gen --lang python --check        # says whether the checked-in types ar
   generated file says so where it is.
 - The package ships the built-in apps' types, and `tilo sdk gen --check` is what the
   `sdk-types` check runs, so a surface change writes them again. `gen -w` writes the apps
-  installed in that workspace, including ones added later: each app's `surface.toml` is what
+  installed in that workspace, including ones added later: each app's compiled surface is what
   the workspace's own read of the app answers, so an app that never ran there is not among
   them. Without generated types, everything still works through `ws.do(path, **args)`.
 - Python imports an app's module directly (`from tilo.types.pdf_viewer import Document`);

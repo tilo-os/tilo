@@ -162,17 +162,17 @@ mod read_surface_tests {
 
         phase a_reader_holds_the_surface_of_an_installed_app_it_reads_that_is_not_running;
         {
-            let reader = b"reads = [\"so.tilo.test.owner.note\"]\n\n[[resources]]\nkind = \"so.tilo.test.reader\"\nlabel = \"Reader\"\nversion = 1\nfields = []\n";
-            let owner = b"[[resources]]\nkind = \"so.tilo.test.owner.note\"\nlabel = \"Note\"\nversion = 1\nfields = []\n";
-            let other = b"[[resources]]\nkind = \"so.tilo.test.unread.item\"\nlabel = \"Item\"\nversion = 1\nfields = []\n";
+            let reader = "{\"reads\":[\"so.tilo.test.owner.note\"],\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.reader\",\"label\":\"Reader\",\"version\":1}]}";
+            let owner = "{\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.owner.note\",\"label\":\"Note\",\"version\":1}]}";
+            let other = "{\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.unread.item\",\"label\":\"Item\",\"version\":1}]}";
             assert!(!collab_types::app_surface::reads_app(
                 "so.tilo.test.reader",
                 "so.tilo.test.owner"
             ));
-            super::register_package_surface_and_reads("so.tilo.test.reader", reader, || {
+            super::register_package_surface_and_reads("so.tilo.test.reader", reader.as_bytes(), || {
                 [
-                    ("so.tilo.test.owner".to_string(), owner.to_vec()),
-                    ("so.tilo.test.unread".to_string(), other.to_vec()),
+                    ("so.tilo.test.owner".to_string(), owner.as_bytes().to_vec()),
+                    ("so.tilo.test.unread".to_string(), other.as_bytes().to_vec()),
                 ]
             });
             assert!(
@@ -188,10 +188,10 @@ mod read_surface_tests {
 
         phase a_surface_that_reads_nothing_never_lists_the_installed_packages;
         {
-            let surface = b"[[resources]]\nkind = \"so.tilo.test.alone\"\nlabel = \"Alone\"\nversion = 1\nfields = []\n";
+            let surface = "{\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.alone\",\"label\":\"Alone\",\"version\":1}]}";
             super::register_package_surface_and_reads(
                 "so.tilo.test.alone",
-                surface,
+                surface.as_bytes(),
                 || -> Vec<(String, Vec<u8>)> {
                     panic!("listed the installed packages for a surface that reads nothing")
                 },
@@ -208,7 +208,7 @@ mod running_surface_tests {
     fn a_package_surface_this_process_runs_is_served_by_its_hash_only() {
         let app = "so.tilo.test.running-surface";
         let file = tilo_surface_compile::compile(
-            "[[resources]]\nkind = \"so.tilo.test.running-surface.note\"\nlabel = \"Note\"\nversion = 1\nfields = []\n",
+            "{\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.running-surface.note\",\"label\":\"Note\",\"version\":1}]}",
         )
         .unwrap();
         let file = file.as_bytes();

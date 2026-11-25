@@ -21,34 +21,25 @@ fn krate() -> Tokens {
     quote!(#name)
 }
 
-/// The app's surface, compiled from the `surface.toml` an author
-/// writes while the crate that expands it is built: `Option<&'static str>`,
-/// `Some` when it has a `surface.toml` at its root, else `None`.
+/// The app's compiled surface, the file `tilolang surface --write` writes beside its authored
+/// `surface.toml`: `Option<&'static str>`, `Some` when it has a `surface.json` at its root, else
+/// `None`.
 ///
-/// The value is the canonical compiled form (`tilo_surface_compile`), the one
-/// form the system commits, addresses and sends, so the shell's built-in apps
-/// and the web desktop read their surfaces without a TOML parser. A file that
-/// does not parse fails the build, where such a process would otherwise find
-/// that the surface declares nothing.
+/// The value is the canonical compiled form, the one form the system commits, addresses and
+/// sends, so the shell's built-in apps and the web desktop read their surfaces without a TOML
+/// parser. A file that is not the canonical compiled form fails the build, where such a process
+/// would otherwise find that the surface declares nothing.
 #[proc_macro]
 pub fn committed_surface(_input: TokenStream) -> TokenStream {
-    let path = std::env::var_os("CARGO_MANIFEST_DIR")
-        .map(std::path::PathBuf::from)
-        .map(|dir| dir.join("surface.toml"))
-        .filter(|path| path.is_file());
-    let Some(path) = path else {
+    let dir = std::env::var_os("CARGO_MANIFEST_DIR").map(std::path::PathBuf::from);
+    let Some(dir) = dir else {
         return quote::quote! { ::core::option::Option::<&'static str>::None }.into();
     };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) => {
-            let error = format!("{}: {error}", path.display());
-            return syn::Error::new(Span::call_site(), error)
-                .to_compile_error()
-                .into();
-        }
-    };
-    let json = match tilo_surface_compile::compile(&text) {
+    let path = dir.join("surface.json");
+    if !path.is_file() {
+        return quote::quote! { ::core::option::Option::<&'static str>::None }.into();
+    }
+    let json = match std::fs::read_to_string(&path) {
         Ok(json) => json,
         Err(error) => {
             let error = format!("{}: {error}", path.display());
@@ -57,12 +48,33 @@ pub fn committed_surface(_input: TokenStream) -> TokenStream {
                 .into();
         }
     };
-    // The file is an input of the crate's build like its sources: a changed surface rebuilds
-    // the crate, rather than leaving the surface it was built with in a cached build.
+    let canonical = serde_json::from_str::<serde_json::Value>(&json)
+        .map(|value| tilo_canonical_json::to_string(&value));
+    if !canonical.is_ok_and(|canonical| canonical == json) {
+        let error = format!(
+            "{}: not the canonical compiled form of a surface; run `tilolang surface --write`",
+            path.display()
+        );
+        return syn::Error::new(Span::call_site(), error)
+            .to_compile_error()
+            .into();
+    }
+    // The files are inputs of the crate's build like its sources: a changed surface rebuilds the
+    // crate, rather than leaving the surface it was built with in a cached build.
     let tracked = path.display().to_string();
+    let authored = dir.join("surface.toml");
+    let thumb = authored.is_file().then(|| authored.display().to_string());
+    let tracked = if let Some(authored) = thumb {
+        quote::quote! {
+            const _: &[u8] = ::core::include_bytes!(#tracked);
+            const _: &[u8] = ::core::include_bytes!(#authored);
+        }
+    } else {
+        quote::quote! { const _: &[u8] = ::core::include_bytes!(#tracked); }
+    };
     quote::quote! {
         {
-            const _: &[u8] = ::core::include_bytes!(#tracked);
+            #tracked
             ::core::option::Option::Some(#json)
         }
     }

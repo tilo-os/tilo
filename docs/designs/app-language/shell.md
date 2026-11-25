@@ -468,8 +468,9 @@ carries its own actions:
 | `Clock`, `TrayItem`, `Task` | the time, a tray item, a running task | their own, if any |
 
 - The session describes these the way a native app describes its own (`surface.toml`, generated
-  from what it publishes and checked for drift). A shell imports them with `use so.tilo.session
-  as session` and calls the actions directly: `w.focus()`, `n.dismiss()`,
+  from what it publishes and checked for drift, and the compiled `surface.json` a receiver
+  reads). A shell imports them with `use so.tilo.session as session` and calls the actions
+  directly: `w.focus()`, `n.dismiss()`,
   `session.surfaces.launcher.show()`. Nothing in the shell turns a string into an action, and the
   shell declares no wrapper action around one of these.
 - No reading bundles them. `Shell` (the old chrome's every input in one resource) and the

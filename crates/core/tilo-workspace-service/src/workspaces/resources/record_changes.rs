@@ -510,21 +510,7 @@ mod tests {
     const NOTE: &str = "tilo.notes.note";
     /// The notes app's surface: one kind, whose content a window types into, keeping its items in
     /// a list.
-    const SURFACE: &str = r#"format = 2
-
-[[resources]]
-kind = "tilo.notes.note"
-label = "Note"
-version = 1
-fields = [
-  { path = "title", type = "string" },
-  { path = "items", type = { list = "text" } },
-]
-
-[[resources.verbs]]
-id = "type"
-kind = "undoable"
-"#;
+    const SURFACE: &str = "{\"format\":2,\"resources\":[{\"fields\":[{\"path\":\"title\",\"type\":\"string\"},{\"path\":\"items\",\"type\":{\"list\":\"text\"}}],\"kind\":\"tilo.notes.note\",\"label\":\"Note\",\"verbs\":[{\"id\":\"type\",\"kind\":\"undoable\"}],\"version\":1}]}";
 
     /// `len` characters of text that compresses poorly.
     fn noise(len: usize, seed: u64) -> String {

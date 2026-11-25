@@ -2508,13 +2508,23 @@ fn stage_app(app: &str, directory: &Path, programs: &[(PathBuf, &str)]) -> (Path
         link_tree(&catalog, &payload.join("bin").join("fonts"));
     }
     let manifest = manifest_of(app, directory).into_bytes();
-    let surface_path = directory.join("surface.toml");
-    let surface = std::fs::read(&surface_path)
-        .unwrap_or_else(|error| panic!("{app}'s surface at {}: {error}", surface_path.display()));
+    // A built-in app commits its compiled surface; an example ships only the surface its author
+    // writes, which is compiled here as the packer compiles it.
+    let compiled_path = directory.join("surface.json");
+    let surface = if compiled_path.is_file() {
+        std::fs::read(&compiled_path).unwrap_or_else(|error| {
+            panic!("{app}'s surface at {}: {error}", compiled_path.display())
+        })
+    } else {
+        let authored = directory.join("surface.toml");
+        tilo_surface_compile::compile_file(&authored)
+            .unwrap_or_else(|error| panic!("{app}'s surface: {error}"))
+            .into_bytes()
+    };
     std::fs::write(payload.join("manifest.toml"), &manifest).expect("the app's manifest");
-    std::fs::write(payload.join("surface.toml"), &surface).expect("the app's surface");
+    std::fs::write(payload.join("surface.json"), &surface).expect("the app's surface");
     let collection =
-        Collection::from_entries([("surface.toml".to_string(), BlobHash::of(&surface))]);
+        Collection::from_entries([("surface.json".to_string(), BlobHash::of(&surface))]);
     let collection_bytes = collection.encode();
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&[19_u8; 32]);
     let mut signed = SignedRoot::unsigned(

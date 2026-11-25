@@ -21,3 +21,7 @@ workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# The pinned address of a compiled surface.
+blake3.workspace = true

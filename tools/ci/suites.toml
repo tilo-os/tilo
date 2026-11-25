@@ -825,7 +825,7 @@ readers = [
 [[cargo]]
 package = "tilo-migrate"
 # The provider's test holds the engine to the package's manifest and committed surface.
-inputs = ["apps/tl/migrate-engine/tilo-app.toml", "apps/tl/migrate-engine/surface.toml"]
+inputs = ["apps/tl/migrate-engine/tilo-app.toml", "apps/tl/migrate-engine/surface.json"]
 readers = ["crates/import/migrate/src/provider/tests.rs"]
 
 [[cargo]]
@@ -904,13 +904,13 @@ inputs = [
   "apps/tl/gallery/",
   "apps/moderation-model/surface.json",
   "crates/lang/tilolang-tilo/tests/native-chat/",
-  "crates/lang/tilolang-tilo/tests/native-tasks/surface.toml",
+  "crates/lang/tilolang-tilo/tests/native-tasks/surface.json",
   "crates/lang/tilolang/tests/fixtures/",
   "crates/desktop/device-surfaces/device-surface.json",
-  "crates/desktop/settings-sections/published.toml",
+  "crates/desktop/settings-sections/published.json",
   "crates/desktop/session/activity-surface.json",
   "crates/desktop/session/host-account-surface.json",
-  "crates/desktop/session/window-menu-surface.toml",
+  "crates/desktop/session/window-menu-surface.json",
   "crates/core/tilo-workspace-service/mcp-server-surface.json",
   "crates/core/tilo-workspace-service/models-surface.json",
   "crates/core/tilo-workspace-service/styles-surface.json",
@@ -921,7 +921,7 @@ inputs = [
   "crates/services/crash-reports/crash-reports-surface.json",
   "crates/sdk/tilo-app-window/locales/en-US.ftl",
   "crates/core/tilo-contact-directory/surface.json",
-  "crates/core/tilo-workspace-service/workspace-surface.toml",
+  "crates/core/tilo-workspace-service/workspace-surface.json",
   # The runtime's version is keyed alike by the packing's shell helper and by the crate.
   "tools/apps/tilolang_packages.sh",
   "crates/lang/tilolang-process/tilo-runtime.toml",
@@ -1030,7 +1030,7 @@ readers = [
 package = "tilolang-web"
 # The page's tests compile and run every app below apps/tl from its sources, as a page holds them,
 # and read every native app's manifest and surface.
-inputs = ["apps/tl/", "apps/*/tilo-app.toml", "apps/*/surface.toml"]
+inputs = ["apps/tl/", "apps/*/tilo-app.toml", "apps/*/surface.json"]
 readers = ["crates/lang/tilolang-web/tests/apps.rs"]
 
 [[cargo]]
@@ -1065,7 +1065,7 @@ inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
   "crates/lang/tilolang-tilo/tests/native-chat/",
-  "crates/lang/tilolang-tilo/tests/native-tasks/surface.toml",
+  "crates/lang/tilolang-tilo/tests/native-tasks/surface.json",
   "crates/sdk/tilo-app-window/locales/",
   "crates/lang/tilolang-tilo/tests/legacy/rust_notes.hex",
   "crates/ui/ui-core/locales/",
@@ -1583,7 +1583,7 @@ inputs = [
   "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
   "tools/protocols/airdrop_sender.py",
   "apps/tl/vault/tilo-app.toml",
-  "apps/tl/vault/surface.toml",
+  "apps/tl/vault/surface.json",
 ]
 readers = [
   "crates/core/tilo-workspace-service/src/vault_actions.rs",
@@ -1634,7 +1634,7 @@ readers = [
 [[cargo]]
 package = "tilo-collab-types"
 # Every app's committed surface must parse as a receiver reads it.
-inputs = ["apps/*/surface.toml"]
+inputs = ["apps/*/surface.toml", "apps/*/surface.json"]
 readers = ["crates/core/collab-types/src/surface.rs"]
 
 [[cargo]]
@@ -1691,7 +1691,7 @@ inputs = [
   "crates/engines/paint-stream/tests/fixtures/layers.top.json",
   # The settings sections' committed surface, which the session's own API types their
   # setters by.
-  "crates/desktop/settings-sections/published.toml",
+  "crates/desktop/settings-sections/published.json",
   # What the host account reads as, which this session's tests hold the reading to.
   "crates/desktop/session/host-account-surface.json",
   # The example Rust app a test installs beside its built binary.

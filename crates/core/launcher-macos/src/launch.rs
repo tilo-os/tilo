@@ -391,10 +391,11 @@ fn app_argv(executable: &Path, args: &[OsString]) -> Vec<OsString> {
         .collect()
 }
 
-/// The surface the package ships (`surface.toml` at its payload root), by path and hash: the app
-/// reads it, checks the hash and names it in every change it signs. None for a package without one.
+/// The compiled surface the package ships (`surface.json` at its payload root), by path and hash:
+/// the app reads it, checks the hash and names it in every change it signs. None for a package
+/// without one.
 fn surface_env(payload_dir: &Path) -> Vec<(String, String)> {
-    let file = payload_dir.join("surface.toml");
+    let file = payload_dir.join("surface.json");
     let Ok(bytes) = std::fs::read(&file) else {
         return Vec::new();
     };

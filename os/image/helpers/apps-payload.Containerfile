@@ -3,7 +3,7 @@
 # OUT) in the OS builder, whose rootfs is the base the runtime bundle collects its
 # native closure from. Nothing here compiles, and nothing reads the sources: the
 # compile left what the packing takes of them in the tree (each app's manifest,
-# public surface and model crate under apps/, the language packs, the product
+# compiled public surface and model crate under apps/, the language packs, the product
 # fonts), so a change to a crate that ships no app leaves this stage's inputs as
 # they were. The scripts it runs are copied, each to its repository path.
 FROM builder-base AS apps-payload

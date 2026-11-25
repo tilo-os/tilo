@@ -49,7 +49,7 @@ impl crate::apps::services::LauncherServices for Installed {
 
 /// What the Notes package publishes, as its signed surface.
 const SURFACE: &str =
-    "[[resources]]\nkind = \"notes.notebook\"\nlabel = \"Notebook\"\nversion = 1\n";
+    "{\"resources\":[{\"kind\":\"notes.notebook\",\"label\":\"Notebook\",\"version\":1}]}";
 
 /// A launcher holding the reader from the Notes package: its row is offered
 /// with what its package publishes, so an agent generates its types before

@@ -1,4 +1,5 @@
-//! An app's committed public surface: `surface.toml`.
+//! An app's committed public surface: the `surface.toml` an author writes and the compiled
+//! `surface.json` the system commits, addresses and ships.
 //!
 //! The app's own binary reports what its resource publishes (its verbs, their
 //! parameters and kinds, its stored fields) and which of its view's controls
@@ -1403,7 +1404,7 @@ pub(crate) fn with_offers(manifest: &str, offers: &[Value]) -> String {
             "icon",
         ] {
             let Some(value) = offer.get(key).filter(|value| {
-                !matches!(
+                let defaulted = matches!(
                     (key, value.as_str()),
                     ("kind", Some("undoable")) | ("operation", Some("effect"))
                 ) && (key != "asks" || !value.as_array().is_some_and(Vec::is_empty))

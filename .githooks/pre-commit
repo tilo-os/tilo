@@ -199,7 +199,7 @@ fi
 # notices. Regenerating them is not a judgement call, so do it here and stage
 # what it wrote; a tree that can do neither below is told the one command that
 # writes them, rather than left stale.
-if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; then
+if grep -qE '^apps/[^/]+/(surface\.(toml|json)|tilo-app\.toml)$' <<< "$lock_staged_names"; then
   sdk_paths="sdk/python/src/tilo/types sdk/typescript/src/types docs/api"
   sdk_langs="python:sdk/python/src/tilo/types ts:sdk/typescript/src/types openapi:docs/api"
   # Which generated files the person is editing by hand: those are left
@@ -260,7 +260,7 @@ if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; th
       sdk_failed=""
       # All a generator reads from a checkout: each app's surface and manifest.
       sdk_inputs=$(git ls-tree -r --name-only HEAD -- apps 2>/dev/null \
-        | grep -E '^apps/[^/]+/(surface|tilo-app)\.toml$' || true)
+        | grep -E '^apps/[^/]+/(surface\.(toml|json)|tilo-app\.toml)$' || true)
       if [ -n "$sdk_inputs" ]; then
         # shellcheck disable=SC2086
         git archive HEAD -- $sdk_inputs | tar -x -C "$sdk_scratch/head" || sdk_failed=1

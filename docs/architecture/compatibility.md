@@ -178,7 +178,7 @@ because it boots the staged deployment that holds them.
   moves by hand only when the change is breaking, to the version before the
   change, once this build no longer reads or writes that version's wire.
 - `interface.toml` is written from the code, the way `tilolang surface` writes
-  an app's `surface.toml`: every type the interface carries, read from its
+  an app's compiled surface: every type the interface carries, read from its
   sources with the serde attributes that shape the wire.
   A list of words both sides hold alike though no type carries it is recorded
   there too, a line a word (`words` in the file's header): the keywords a

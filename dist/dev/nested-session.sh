@@ -576,8 +576,8 @@ while IFS=$'\t' read -r name binary id version manifest; do
     rm -rf "$work"
     mkdir -p "$work/payload/bin"
     install -pm 0755 "$built" "$work/payload/bin/$binary"
-    surface=$repo_root/$(dirname "$manifest")/surface.toml
-    [[ -f $surface ]] && install -pm 0644 "$surface" "$work/payload/surface.toml"
+    surface=$repo_root/$(dirname "$manifest")/surface.json
+    [[ -f $surface ]] && install -pm 0644 "$surface" "$work/payload/surface.json"
     staged=$work/manifest.toml
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged"

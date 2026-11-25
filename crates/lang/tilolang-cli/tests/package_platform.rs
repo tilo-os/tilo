@@ -114,7 +114,7 @@ fn desktop_packages_ship_one_executable_under_a_signed_target() {
         );
         assert_eq!(
             read.meta.collection.entries.keys().collect::<Vec<_>>(),
-            [module, "surface.toml"]
+            [module, "surface.json"]
         );
     }
 

@@ -1,7 +1,7 @@
 /**
  * Types for Settings sections (`so.tilo.settings.sections`), from the app's surface.
  *
- * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
+ * `tilo sdk gen --lang ts` writes this file from the app's `surface.json`; write
  * it again rather than editing it.
  *
  * `Appearance` is a `Resource` of the app's `settings.appearance`, made by its factory with the

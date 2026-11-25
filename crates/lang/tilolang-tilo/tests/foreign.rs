@@ -17,19 +17,7 @@ use tilolang_tilo::host::Host;
 
 /// The surface of the app this host does not run: its player has a level, and a verb that sets
 /// it.
-const SERVICE: &str = r#"
-[[resources]]
-kind = "sound.player"
-label = "Player"
-version = 1
-fields = [{ path = "level", type = "float" }, { path = "rows", type = { list = "int" } }]
-
-[[resources.verbs]]
-id = "set-level"
-label = "Set level"
-kind = "undoable"
-params = [{ name = "level", required = true, type = "float", schema = { type = "number" } }]
-"#;
+const SERVICE: &str = "{\"resources\":[{\"fields\":[{\"path\":\"level\",\"type\":\"float\"},{\"path\":\"rows\",\"type\":{\"list\":\"int\"}}],\"kind\":\"sound.player\",\"label\":\"Player\",\"verbs\":[{\"id\":\"set-level\",\"kind\":\"undoable\",\"label\":\"Set level\",\"params\":[{\"name\":\"level\",\"required\":true,\"schema\":{\"type\":\"number\"},\"type\":\"float\"}]}],\"version\":1}]}";
 
 /// A view over another app's player: what it reads is the app's reading, what its button
 /// invokes is the app's verb.
@@ -177,31 +165,9 @@ tilo_test_env::scenario! {
 }
 
 /// Two apps that each publish a verb of the same name: an alarm and a timer, both `cancel`.
-const ALARM: &str = r#"
-[[resources]]
-kind = "alarm.alarm"
-label = "Alarm"
-version = 1
-fields = [{ path = "ringing", type = "bool" }]
+const ALARM: &str = "{\"resources\":[{\"fields\":[{\"path\":\"ringing\",\"type\":\"bool\"}],\"kind\":\"alarm.alarm\",\"label\":\"Alarm\",\"verbs\":[{\"id\":\"cancel\",\"kind\":\"undoable\",\"label\":\"Cancel\"}],\"version\":1}]}";
 
-[[resources.verbs]]
-id = "cancel"
-label = "Cancel"
-kind = "undoable"
-"#;
-
-const TIMER: &str = r#"
-[[resources]]
-kind = "timer.timer"
-label = "Timer"
-version = 1
-fields = [{ path = "left", type = "float" }]
-
-[[resources.verbs]]
-id = "cancel"
-label = "Cancel"
-kind = "undoable"
-"#;
+const TIMER: &str = "{\"resources\":[{\"fields\":[{\"path\":\"left\",\"type\":\"float\"}],\"kind\":\"timer.timer\",\"label\":\"Timer\",\"verbs\":[{\"id\":\"cancel\",\"kind\":\"undoable\",\"label\":\"Cancel\"}],\"version\":1}]}";
 
 /// A view over each app's resource, each with a button for that app's `cancel`.
 const BOTH: &str = r#"app test.kitchen "Kitchen"
@@ -335,21 +301,7 @@ fn the_same_reading_twice_changes_nothing() {
 }
 
 /// Settings' notification policy: the quiet hours are a record held in one of its fields.
-const NOTIFICATIONS: &str = r#"
-[[resources]]
-kind = "settings.notifications"
-label = "Notifications"
-version = 1
-fields = [
-  { path = "show_banners", type = "bool" },
-  { path = "focus", type = { named = "FocusSchedule" }, stored = "record" },
-  { path = "focus.enabled", type = "bool" },
-]
-
-[[resources.types]]
-name = "FocusSchedule"
-fields = [{ name = "enabled", type = "bool" }]
-"#;
+const NOTIFICATIONS: &str = "{\"resources\":[{\"fields\":[{\"path\":\"show_banners\",\"type\":\"bool\"},{\"path\":\"focus\",\"stored\":\"record\",\"type\":{\"named\":\"FocusSchedule\"}},{\"path\":\"focus.enabled\",\"type\":\"bool\"}],\"kind\":\"settings.notifications\",\"label\":\"Notifications\",\"types\":[{\"fields\":[{\"name\":\"enabled\",\"type\":\"bool\"}],\"name\":\"FocusSchedule\"}],\"version\":1}]}";
 
 /// A view whose switch edits a field of the record held in the policy's `focus` field: the
 /// person's quiet hours, set where they stand.
@@ -659,30 +611,27 @@ view switcher(m: settings.AgentModels) {
     }
 }
 
-/// The surface of an app that names a type of its own after each of `names` and keeps one of
-/// each, under the name in lower case. An app's author names their types without knowing which
-/// names the language holds a type of its own under.
+/// The compiled surface of an app that names a type of its own after each of `names` and keeps
+/// one of each, under the name in lower case. An app's author names their types without knowing
+/// which names the language holds a type of its own under.
 fn named_as_the_language(names: &[&str]) -> String {
     let fields = names
         .iter()
-        .map(|name| {
-            let path = name.to_lowercase();
-            format!("  {{ path = \"{path}\", type = {{ named = \"{name}\" }} }},\n")
-        })
-        .collect::<Vec<_>>()
-        .concat();
+        .map(|name| json!({ "path": name.to_lowercase(), "type": { "named": name } }))
+        .collect::<Vec<_>>();
     let types = names
         .iter()
-        .map(|name| {
-            format!(
-                "\n[[resources.types]]\nname = \"{name}\"\nfields = [{{ name = \"said\", type = \"text\" }}]\n"
-            )
-        })
-        .collect::<Vec<_>>()
-        .concat();
-    format!(
-        "[[resources]]\nkind = \"post.tray\"\nlabel = \"Tray\"\nversion = 1\nfields = [\n{fields}]\n{types}"
-    )
+        .map(|name| json!({ "name": name, "fields": [{ "name": "said", "type": "text" }] }))
+        .collect::<Vec<_>>();
+    tilo_surface_compile::canonical(&json!({
+        "resources": [{
+            "kind": "post.tray",
+            "label": "Tray",
+            "version": 1,
+            "fields": fields,
+            "types": types,
+        }],
+    }))
 }
 
 #[test]
@@ -715,19 +664,7 @@ fn a_type_an_app_names_as_the_language_names_one_of_its_own_stays_the_apps_in_a_
 
 /// The surface of an app whose kind is named as the language names a type of its own: the
 /// kind `post.view` is the app's `View`, and its verb takes it.
-const KIND_NAMED_AS_THE_LANGUAGE: &str = r#"
-[[resources]]
-kind = "post.view"
-label = "Post"
-version = 1
-fields = [{ path = "title", type = "text" }]
-
-[[resources.verbs]]
-id = "show-all"
-label = "Show all"
-kind = "undoable"
-params = []
-"#;
+const KIND_NAMED_AS_THE_LANGUAGE: &str = "{\"resources\":[{\"fields\":[{\"path\":\"title\",\"type\":\"text\"}],\"kind\":\"post.view\",\"label\":\"Post\",\"verbs\":[{\"id\":\"show-all\",\"kind\":\"undoable\",\"label\":\"Show all\",\"params\":[]}],\"version\":1}]}";
 
 /// A view over that kind, whose button calls the kind's verb on it.
 const CALLER: &str = r#"app test.caller "Caller"
@@ -1056,29 +993,7 @@ fn a_directory_of_ten_thousand_people_sends_no_picture() {
 
 /// A reading whose rows are resources of their own: each network in the radio's reading carries
 /// its address, and its kind's surface offers its own `join`.
-const RADIO: &str = r#"
-[[resources]]
-kind = "radio.radio"
-label = "Radio"
-version = 1
-fields = [{ path = "networks", type = { list = { named = "Net" } } }]
-types = [{ name = "Net", doc = "A network in reach.", fields = [
-  { name = "$address", type = { resource = "radio.net" } },
-  { name = "name", type = "text" },
-  { name = "joined", type = "bool" },
-] }]
-
-[[resources]]
-kind = "radio.net"
-label = "Network"
-version = 1
-fields = []
-
-[[resources.verbs]]
-id = "join"
-label = "Join"
-kind = "outside"
-"#;
+const RADIO: &str = "{\"resources\":[{\"fields\":[{\"path\":\"networks\",\"type\":{\"list\":{\"named\":\"Net\"}}}],\"kind\":\"radio.radio\",\"label\":\"Radio\",\"types\":[{\"doc\":\"A network in reach.\",\"fields\":[{\"name\":\"$address\",\"type\":{\"resource\":\"radio.net\"}},{\"name\":\"name\",\"type\":\"text\"},{\"name\":\"joined\",\"type\":\"bool\"}],\"name\":\"Net\"}],\"version\":1},{\"fields\":[],\"kind\":\"radio.net\",\"label\":\"Network\",\"verbs\":[{\"id\":\"join\",\"kind\":\"outside\",\"label\":\"Join\"}],\"version\":1}]}";
 
 /// A view of the radio: each network's row drawn in the view itself and by a view of its own,
 /// and a press on the first network's row joining it.

@@ -98,22 +98,7 @@ fn create() -> Stamp {
 /// The entry's surface: the address a visitor leaves and the verbs the workspace's entry opens
 /// to any key. The entry is the workspace's own setting rather than a package this build carries,
 /// so a test declares it as an installed app's surface is declared.
-const ENTRY_SURFACE: &str = r#"format = 2
-
-[[resources]]
-kind = "entry.request"
-label = "Request"
-version = 1
-fields = [
-  { path = "title", type = "text" },
-]
-verbs = [
-  { id = "join", label = "Ask to join", kind = "undoable" },
-  { id = "confirm", label = "Confirm the address", kind = "undoable" },
-  { id = "leave", label = "Take the address off", kind = "undoable" },
-  { id = "remove", label = "Remove", kind = "undoable" },
-]
-"#;
+const ENTRY_SURFACE: &str = "{\"format\":2,\"resources\":[{\"fields\":[{\"path\":\"title\",\"type\":\"text\"}],\"kind\":\"entry.request\",\"label\":\"Request\",\"verbs\":[{\"id\":\"join\",\"kind\":\"undoable\",\"label\":\"Ask to join\"},{\"id\":\"confirm\",\"kind\":\"undoable\",\"label\":\"Confirm the address\"},{\"id\":\"leave\",\"kind\":\"undoable\",\"label\":\"Take the address off\"},{\"id\":\"remove\",\"kind\":\"undoable\",\"label\":\"Remove\"}],\"version\":1}]}";
 
 fn context(workspace: &str, cert: &tilo_user_identity::DeviceCert) -> ResourceRequestContext {
     ResourceRequestContext::authenticated(

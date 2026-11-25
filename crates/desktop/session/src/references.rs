@@ -274,20 +274,7 @@ pub(crate) mod testing {
     pub(crate) const NOTES: &str = "so.tilo.notes";
 
     /// What Notes' package declares: one kind of record, a note with a title.
-    const NOTES_TYPES: &[u8] = br#"format = 2
-
-[[resources]]
-kind = "notes.note"
-label = "Note"
-version = 1
-fields = [
-  { path = "title", type = "text" },
-]
-
-[[resources.verbs]]
-id = "add"
-kind = "undoable"
-"#;
+    const NOTES_TYPES: &[u8] = b"{\"format\":2,\"resources\":[{\"fields\":[{\"path\":\"title\",\"type\":\"text\"}],\"kind\":\"notes.note\",\"label\":\"Note\",\"verbs\":[{\"id\":\"add\",\"kind\":\"undoable\"}],\"version\":1}]}";
 
     /// Run `command` on `app`'s records of `workspace` as the device's person, as a window of the
     /// app does.

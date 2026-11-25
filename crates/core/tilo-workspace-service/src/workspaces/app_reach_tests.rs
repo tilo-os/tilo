@@ -30,11 +30,11 @@ fn person_record(app: &str, record: &str) -> ResourceAddress {
 /// The manifests these cases register: what each app may read, and the person's own record one
 /// of them declares.
 static NOTES: &[u8] =
-    b"[[resources]]\nkind = \"tl.test.lang-notes.Note\"\nlabel = \"Note\"\nversion = 1\n";
-static BOARD: &[u8] = b"reads = [\"tl.test.lang-notes.Note\"]\n\n[[resources]]\nkind = \"tl.test.lang-board.Card\"\nlabel = \"Card\"\nversion = 1\n";
+    b"{\"resources\":[{\"kind\":\"tl.test.lang-notes.Note\",\"label\":\"Note\",\"version\":1}]}";
+static BOARD: &[u8] = b"{\"reads\":[\"tl.test.lang-notes.Note\"],\"resources\":[{\"kind\":\"tl.test.lang-board.Card\",\"label\":\"Card\",\"version\":1}]}";
 static CHAT: &[u8] =
-    b"[[resources]]\nkind = \"tl.test.lang-chat.Message\"\nlabel = \"Message\"\nversion = 1\n";
-static READER: &[u8] = b"[[resources]]\nkind = \"test-person.accounts\"\nlabel = \"Accounts\"\nperson = true\nversion = 1\n";
+    b"{\"resources\":[{\"kind\":\"tl.test.lang-chat.Message\",\"label\":\"Message\",\"version\":1}]}";
+static READER: &[u8] = b"{\"resources\":[{\"kind\":\"test-person.accounts\",\"label\":\"Accounts\",\"person\":true,\"version\":1}]}";
 
 /// An app changes only its own records. Another app's record it reads only when its manifest
 /// declares that it reads that app's kinds; it changes such a record only through the owning
@@ -127,9 +127,9 @@ fn person_records_of_another_app_are_read_never_changed() {
 #[test]
 fn an_app_reaches_the_persons_workspace_only_for_the_records_it_declares() {
     static SETTINGS: &[u8] =
-        b"[[resources]]\nkind = \"tilo.accounts\"\nlabel = \"Accounts\"\nversion = 1\n";
-    static MAIL: &[u8] = b"reads = [\"tilo.accounts\"]\n\n[[resources]]\nkind = \"test-mail.Message\"\nlabel = \"Message\"\nversion = 1\n";
-    static TERMINAL: &[u8] = b"[[resources]]\nkind = \"test-person.session\"\nlabel = \"Session\"\nversion = 1\n\n[[resources]]\nkind = \"test-person.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n\n[[resources]]\nkind = \"test-person.accounts\"\nlabel = \"Accounts\"\nperson = true\nversion = 1\n";
+        b"{\"resources\":[{\"kind\":\"tilo.accounts\",\"label\":\"Accounts\",\"version\":1}]}";
+    static MAIL: &[u8] = b"{\"reads\":[\"tilo.accounts\"],\"resources\":[{\"kind\":\"test-mail.Message\",\"label\":\"Message\",\"version\":1}]}";
+    static TERMINAL: &[u8] = b"{\"resources\":[{\"kind\":\"test-person.session\",\"label\":\"Session\",\"version\":1},{\"kind\":\"test-person.history\",\"label\":\"History\",\"person\":true,\"version\":1},{\"kind\":\"test-person.accounts\",\"label\":\"Accounts\",\"person\":true,\"version\":1}]}";
     collab_types::app_surface::register_package("test.person-terminal", TERMINAL);
     let history = collab_types::person_document_id("test-person.history");
     let accounts = collab_types::person_document_id("test-person.accounts");
@@ -225,8 +225,8 @@ fn an_app_reaches_the_persons_workspace_only_for_the_records_it_declares() {
 #[test]
 fn an_app_opens_its_own_records_and_reads_those_it_declares_in_the_persons_workspace() {
     static CONTACTS: &[u8] =
-        b"[[resources]]\nkind = \"tilo.contacts.identities\"\nlabel = \"People\"\nversion = 1\n";
-    static MESSAGES: &[u8] = b"reads = [\"tilo.contacts.identities\"]\n\n[[resources]]\nkind = \"tilo.messages\"\nlabel = \"Messages\"\nversion = 1\n";
+        b"{\"resources\":[{\"kind\":\"tilo.contacts.identities\",\"label\":\"People\",\"version\":1}]}";
+    static MESSAGES: &[u8] = b"{\"reads\":[\"tilo.contacts.identities\"],\"resources\":[{\"kind\":\"tilo.messages\",\"label\":\"Messages\",\"version\":1}]}";
     collab_types::app_surface::register_package("so.tilo.contacts", CONTACTS);
     let messages = "so.tilo.messages";
     collab_types::app_surface::register_package(messages, MESSAGES);

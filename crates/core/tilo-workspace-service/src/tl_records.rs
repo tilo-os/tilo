@@ -52,7 +52,7 @@ pub trait Records: Send + Sync {
     /// Whether this build carries a package of `app`.
     fn built_in(&self, app: &str) -> bool;
 
-    /// The `surface.toml` this build's own sources compile to for `app`: the types and verbs a
+    /// The compiled surface this build's own sources compile to for `app`: the types and verbs a
     /// workspace's store judges the app's records' writes by.
     fn surface(&self, app: &str) -> Option<Vec<u8>>;
 
