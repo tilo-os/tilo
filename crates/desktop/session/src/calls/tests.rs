@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use std::time::{Duration, Instant};
 use tilo_live::live_session::LiveSession;
+use tilo_live::presence::Own;
+use tilo_live::speaker::Speaker;
 
 use crate::platform::fabric::Continuity;
 use crate::sync::Event;
@@ -391,6 +393,8 @@ struct Carrier {
     probe: Arc<Mutex<Vec<f32>>>,
     /// What carries the workspace's live session's objects to the calls, while a live session is attached.
     _heard: Option<tokio::task::JoinHandle<()>>,
+    /// What says the device is in the call, for as long as it carries it.
+    _speaker: Option<Arc<Speaker>>,
 }
 
 /// Wait until `client` 's endpoint has bound: a call runs on it.
@@ -429,14 +433,16 @@ fn workspace_keys() -> key_group::ContentKeys {
         .expect("the workspace's keys")
 }
 
-/// `device` 's live session in the test workspace, on `relay` , hearing and heard by `devices` .
+/// `device` 's live session in the test workspace, on `relay` , hearing and heard by `devices` ,
+/// in the channel's call as the device's daemon puts it there: its word says the call, and the
+/// session holds the call's keys (here the workspace's, which every device of the test holds).
 fn live_session(
     relay: &Relay,
     device: [u8; 32],
     devices: &[[u8; 32]],
     keys: &key_group::ContentKeys,
-) -> crate::live::Sessions {
-    Arc::new(
+) -> InCall {
+    let session = Arc::new(
         LiveSession::local(
             relay,
             &Join {
@@ -449,14 +455,33 @@ fn live_session(
             },
         )
         .expect("a local live session"),
-    ) as crate::live::Sessions
+    );
+    session.set_call_keys(CHANNEL, 0, keys.clone());
+    let speaker = Speaker::start(&session, WORKSPACE, device, Own::default());
+    speaker.set_joined(Some(tilo_live::presence::Call {
+        call: collab_types::presence::CallPresence {
+            channel: CHANNEL.to_owned(),
+            name: "Standup".to_owned(),
+            bridge: None,
+        },
+        camera: false,
+        screen: false,
+        muted: false,
+        deafened: false,
+    }));
+    InCall {
+        session: session as crate::live::Sessions,
+        speaker,
+    }
 }
 
-fn carrier(
-    client: &Client,
-    keys: &KeyProvider,
-    heard_on: Option<crate::live::Sessions>,
-) -> Carrier {
+/// A device's live session in the channel's call, and what says its word there.
+struct InCall {
+    session: crate::live::Sessions,
+    speaker: Arc<Speaker>,
+}
+
+fn carrier(client: &Client, keys: &KeyProvider, heard_on: Option<InCall>) -> Carrier {
     let calls = Calls::new();
     calls.follow(client, None);
     let probe = Arc::new(Mutex::new(Vec::new()));
@@ -474,26 +499,35 @@ fn carrier(
     });
     // What the session's own pass does with a live session's objects: hand them to the calls playing that
     // workspace, voice and pictures alike.
-    let draining = heard_on.map(|live_session| {
-        calls
-            .live_sessions
-            .lock_recover()
-            .insert(WORKSPACE.to_owned(), Arc::clone(&live_session));
-        let calls = Arc::clone(&calls);
-        tokio::spawn(async move {
-            loop {
-                while let Some(heard) = live_session.try_recv() {
-                    calls.hear(WORKSPACE, heard);
+    let speaker = heard_on
+        .as_ref()
+        .map(|in_call| Arc::clone(&in_call.speaker));
+    let draining = heard_on.map(
+        |InCall {
+             session: live_session,
+             ..
+         }| {
+            calls
+                .live_sessions
+                .lock_recover()
+                .insert(WORKSPACE.to_owned(), Arc::clone(&live_session));
+            let calls = Arc::clone(&calls);
+            tokio::spawn(async move {
+                loop {
+                    while let Some(heard) = live_session.try_recv() {
+                        calls.hear(WORKSPACE, heard);
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-        })
-    });
+            })
+        },
+    );
     Carrier {
         calls,
         factory,
         probe,
         _heard: draining,
+        _speaker: speaker,
     }
 }
 
