@@ -223,6 +223,7 @@ fn an_app_granted_the_call_joins_it_with_no_window_and_carries_audio_without_a_k
         lane.take(&RemoteActionMessage::CallHeard(CallAudio {
             speaker: DANA.into(),
             opus: frame.clone(),
+            skipped: 0,
         })),
         Take::Silent
     ));
