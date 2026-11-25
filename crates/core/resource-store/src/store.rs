@@ -1176,6 +1176,13 @@ impl Store {
     /// `kinds` (every document when it names none), so it says the same on every replica and after
     /// a restart, and needs no list of what the caller wrote. What an app's `undo` of its last
     /// steps takes back, where the store was opened for the call that asked.
+    ///
+    /// What makes a record — the platform's own making of a package's root, and its initial
+    /// content — is housekeeping about the record rather than a step of whoever asked for it, so
+    /// no undo takes it back: [`tilo_actions::CREATE_ACTION`] and a change an [`ChangeKind`]
+    /// outside the content name no step.
+    ///
+    /// [`ChangeKind`]: tilo_actions::ChangeKind
     pub fn steps(
         &mut self,
         steps: usize,
@@ -1220,6 +1227,21 @@ impl Store {
                 let Some(stamp) = collab_types::Stamp::of(&change) else {
                     continue;
                 };
+                // What makes a record is the platform's, not the step of a person naming the
+                // record's kind: a root made at a host's start names the person it made it for,
+                // and undo would otherwise take that making back instead of their last edit.
+                if stamp.verb == tilo_actions::CREATE_ACTION {
+                    continue;
+                }
+                // Housekeeping and content from outside are no one's step
+                // ([`tilo_actions::ChangeKind`]).
+                if stamp
+                    .context
+                    .as_ref()
+                    .is_some_and(|context| !context.change.is_content())
+                {
+                    continue;
+                }
                 if stamp.invocation.is_empty() || stamp.invoked_by().as_ref() != Some(&by) {
                     continue;
                 }
