@@ -337,7 +337,14 @@ impl AppBrokerState {
             .certificate
             .as_ref()
             .ok_or("original certificate unavailable")?;
-        if caller.acting().person_id() != Some(admission.admitted.actor_key.as_str())
+        // The caller is the person the certificate names, or an agent of theirs acting for them
+        // under that same key: what the agent may do is still the workspace's grants, never the
+        // person's own.
+        let person = caller
+            .acting()
+            .person_id()
+            .or_else(|| caller.acting().acted_for_person());
+        if person != Some(admission.admitted.actor_key.as_str())
             || caller.user_public_key() != Some(&certificate.user_public_key)
             || caller.device_public_key() != Some(&certificate.device_public_key)
         {
