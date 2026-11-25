@@ -342,8 +342,103 @@ fn handed_stream(
 pub(super) type ShellAnswer =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<Reply, String>>>>;
 
-/// Answer `call` for `shell`; a connection that is no shell is refused.
+/// How long a shell's call runs before the daemon says it still does, and the wait doubles each
+/// time it says so again.
+const SLOW_CALL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How much of a call a slow one says it asked.
+const ASKING_SHOWN: usize = 300;
+
+/// Answer `call` for `shell`; a connection that is no shell is refused. A call that runs long
+/// says what it asked while it runs: every other ask of the shell's that waits on it, and the
+/// desktop that waits on those, is found from it.
 pub(super) fn answer(shell: Option<Shell>, call: ShellCall) -> ShellAnswer {
+    // The shell's follow of the writes it took waits for the next one by design.
+    if matches!(call, ShellCall::Writes) {
+        return answered(shell, call);
+    }
+    let asking = asking(&call);
+    Box::pin(watched(answered(shell, call), asking))
+}
+
+/// `answer`, saying what it asked every time it ran as long again as it had.
+async fn watched(mut answer: ShellAnswer, asking: String) -> Result<Reply, String> {
+    let started = tilo_clock::now();
+    let mut patience = SLOW_CALL;
+    loop {
+        if let Ok(answered) = tokio::time::timeout(patience, &mut answer).await {
+            if patience > SLOW_CALL {
+                tracing::warn!(
+                    running_ms = running_ms(started),
+                    asking = %asking,
+                    "a shell's call was answered after a long wait"
+                );
+            }
+            return answered;
+        }
+        tracing::warn!(
+            running_ms = running_ms(started),
+            asking = %asking,
+            "a shell's call is still running"
+        );
+        patience = patience.saturating_mul(2);
+    }
+}
+
+/// How long a call that started at `started` has run, in milliseconds.
+fn running_ms(started: tilo_clock::time::Instant) -> u64 {
+    let running = tilo_clock::now().saturating_duration_since(started);
+    u64::try_from(running.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// What `call` asks, as a slow one says it: an action's message rather than its frame's bytes,
+/// a write's document rather than its changes, and no more of either than is shown.
+fn asking(call: &ShellCall) -> String {
+    use std::fmt::Write as _;
+    /// Takes what is written up to [`ASKING_SHOWN`] bytes, and refuses the rest.
+    struct Start(String);
+    impl std::fmt::Write for Start {
+        fn write_str(&mut self, written: &str) -> std::fmt::Result {
+            let room = ASKING_SHOWN.saturating_sub(self.0.len());
+            let mut end = written.len().min(room);
+            while !written.is_char_boundary(end) {
+                end = end.saturating_sub(1);
+            }
+            self.0.push_str(written.get(..end).unwrap_or_default());
+            if end < written.len() {
+                return Err(std::fmt::Error);
+            }
+            Ok(())
+        }
+    }
+    let mut start = Start(String::new());
+    let written = match call {
+        ShellCall::Action {
+            workspace, frame, ..
+        } => match tilo_actions::remote::RemoteActionFrame::decode(frame) {
+            Ok(frame) => write!(start, "Action in {workspace:?}: {:?}", frame.message),
+            Err(error) => write!(
+                start,
+                "Action in {workspace:?}: a frame that does not decode: {error}"
+            ),
+        },
+        ShellCall::Write {
+            workspace,
+            app,
+            document,
+            ..
+        } => write!(start, "Write of {app} {document} in {workspace}"),
+        other => write!(start, "{other:?}"),
+    };
+    // A call longer than what is shown stops the writing there, and says it goes on.
+    if written.is_err() {
+        start.0.push('…');
+    }
+    start.0
+}
+
+/// [`answer`], unwatched.
+fn answered(shell: Option<Shell>, call: ShellCall) -> ShellAnswer {
     Box::pin(async move {
         let shell = shell.ok_or("this connection is not the person's shell")?;
         let services = Arc::clone(&shell.services);
