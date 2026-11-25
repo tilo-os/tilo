@@ -1386,7 +1386,8 @@ impl crate::Shared {
             return;
         };
         let mut settled = false;
-        for enrolled in sync.take_enrolled() {
+        let settling = std::mem::take(&mut *self.joins.borrow_mut());
+        for enrolled in settling {
             let key = enrolled.workspace_id.to_string();
             let named_on_shell = self.handle.read(|tree| {
                 tree.workspaces

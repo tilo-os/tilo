@@ -198,12 +198,10 @@ tilo_test_env::scenario! {
         let publisher = device(0x31);
         let (outgoing, mut said) = tokio::sync::mpsc::unbounded_channel();
         let (heard, arrived) = std::sync::mpsc::channel();
-        let (_landed, enrolled) = std::sync::mpsc::channel();
         let sync = Client::over(
             Transport {
                 outgoing: Arc::new(outgoing),
                 arrived,
-                enrolled,
                 saying: None,
             },
             Device {
@@ -1051,12 +1049,10 @@ tilo_test_env::scenario! {
         let publisher = device(0x33);
         let (outgoing, _said) = tokio::sync::mpsc::unbounded_channel();
         let (_heard, arrived) = std::sync::mpsc::channel();
-        let (_landed, enrolled) = std::sync::mpsc::channel();
         let sync = Client::over(
             Transport {
                 outgoing: Arc::new(outgoing),
                 arrived,
-                enrolled,
                 saying: None,
             },
             Device {
@@ -1091,12 +1087,10 @@ tilo_test_env::scenario! {
         let publisher = device(0x32);
         let (outgoing, mut said) = tokio::sync::mpsc::unbounded_channel();
         let (_heard, arrived) = std::sync::mpsc::channel();
-        let (_landed, enrolled) = std::sync::mpsc::channel();
         let sync = Client::over(
             Transport {
                 outgoing: Arc::new(outgoing),
                 arrived,
-                enrolled,
                 saying: None,
             },
             Device {

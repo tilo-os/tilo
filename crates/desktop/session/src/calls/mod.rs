@@ -122,9 +122,9 @@ impl Calls {
         // is: whom a channel list leaves out.
         let mut rules = BTreeMap::new();
         let mut persons = BTreeMap::new();
-        if let Some(engine) = sync.engine() {
+        if let Some(view) = sync.view() {
             for workspace in live_sessions_of(sync).keys() {
-                let (its_rules, its_persons) = engine.call_gate(workspace);
+                let (its_rules, its_persons) = view.call_gate(workspace);
                 rules.extend(its_rules);
                 persons.extend(its_persons);
             }

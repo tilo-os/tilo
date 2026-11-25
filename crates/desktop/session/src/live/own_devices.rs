@@ -194,8 +194,15 @@ impl OwnDevices {
 
 /// The person's own workspace, as this session's device names its person.
 fn person_workspace(shared: &Shared) -> WorkspaceId {
-    let root = shared.engine.identity().device_cert.user_public_key;
+    let root = shared.cert.user_public_key;
     WorkspaceId::from(collab_types::workspace_id::person_workspace(&root))
+}
+
+/// The keys `workspace`'s live scopes are sealed with, as this session holds them: none, since
+/// a workspace's keys stay with the device's daemon and the daemon does not yet carry a scope of
+/// the person's devices for the session.
+fn own_keys(_workspace: WorkspaceId) -> Option<LiveKeys> {
+    None
 }
 
 /// Join the scope of the person's device `device`, at its relay: publishing to it from here
@@ -210,16 +217,11 @@ async fn open(
 ) -> Option<LiveSession> {
     let links = Arc::clone(shared.links.get()?);
     let workspace = person_workspace(shared);
-    let keys = match shared.engine.seal_keys(workspace) {
-        Ok(crate::engine::SealKeys::Here(keys)) => LiveKeys::from(keys),
-        Ok(_) => {
-            tracing::debug!("the person's own workspace's keys are not here");
-            return None;
-        }
-        Err(error) => {
-            tracing::warn!(%error, "the person's own workspace's keys could not be read");
-            return None;
-        }
+    // The person's own workspace's keys stay with this device's daemon, which seals nothing of
+    // this scope for the session yet: until it does, no other device of theirs is driven from here.
+    let Some(keys) = own_keys(workspace) else {
+        tracing::debug!("the person's own workspace's keys are not here");
+        return None;
     };
     let scope = Scope::device(workspace.to_string(), device);
     let epoch = keys.epoch();

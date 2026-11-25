@@ -670,10 +670,6 @@ impl Session {
                 &writes,
             );
         }
-        // The broker's side of the workspaces' sealed records the apps hold open.
-        let channels_broker = std::sync::Arc::new(std::sync::Mutex::new(
-            tilo_broker_core::collab_core::BrokerChannels::default(),
-        ));
         // What the broker shows the apps that hold a record's route open.
         let channels_fanout =
             std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
@@ -757,7 +753,7 @@ impl Session {
                 (&own_workspace, tilo_live::link::SESSIONS),
                 options.wake.handle(),
             );
-            sync.live_through(link.clone(), turned, sessions);
+            sync.live_through(link.clone(), view.clone(), turned, sessions);
         }
         // What other members send here is the workspaces' to admit: their
         // policies are read from the shell this session shows.

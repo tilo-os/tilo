@@ -13,8 +13,7 @@ use tilo_network_actor::{DeviceIdentity, NetCmd, NetEvent};
 use tilo_session_client::Cmd;
 use tilo_session_client::network::Event;
 
-use super::adopt::enter;
-use super::{DesktopEvent, Engine, Enrolled, HostCmd, KeyLink, endpoint_for};
+use super::{DesktopEvent, HostCmd, endpoint_for};
 use tilo_network_actor::WorkspaceId;
 
 /// What the peer actor heard, as the client's own vocabulary says it: the transport keeps the
@@ -113,23 +112,18 @@ pub(crate) struct Serving {
 impl Serving {
     /// What the session serves on the endpoint it is about to bind: the endpoint it fills in once
     /// bound, and what answers beside the workspaces' traffic.
-    pub(crate) fn new(
-        bound: Bound,
-        link: Option<Arc<KeyLink>>,
-        protocols: tilo_network_actor::own_service::Protocols,
-    ) -> Self {
+    pub(crate) fn new(bound: Bound, protocols: tilo_network_actor::own_service::Protocols) -> Self {
         Self {
             bound,
-            beside: Beside { link, protocols },
+            beside: Beside { protocols },
         }
     }
 }
 
-/// What the session serves on this device's endpoint beside the workspaces' traffic: the channels
-/// they use, this device's app wire, and whatever else the session was handed — this device as
-/// an exit for the person's other devices.
+/// What the session serves on this device's endpoint beside the workspaces' traffic: this
+/// device's app wire, and whatever else the session was handed — this device as an exit for the
+/// person's other devices.
 pub(crate) struct Beside {
-    pub(crate) link: Option<Arc<KeyLink>>,
     /// The protocols the session answers besides its own, handed over before the endpoint binds: an
     /// endpoint's protocols are fixed once it is bound, so whatever answers on it is here from the
     /// first pass.
@@ -244,12 +238,10 @@ impl Bound {
 /// What this device answers on from the moment its endpoint is bound: the peer actor the session's
 /// commands go to, the events it hears, and what runs beside it until the session stops.
 struct Listening {
-    endpoint: iroh::Endpoint,
     actor: tokio::sync::mpsc::Sender<NetCmd>,
     events: tokio::sync::mpsc::Sender<NetEvent>,
     actor_task: tokio::task::JoinHandle<()>,
     carrying: tokio::task::JoinHandle<()>,
-    attending: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// The session's ends of the peer network's thread: what the client hears, what only this desktop keeps,
@@ -257,7 +249,6 @@ struct Listening {
 pub(super) struct Wire {
     pub(super) arrivals: std::sync::mpsc::Sender<Event>,
     pub(super) desktop_events: std::sync::mpsc::Sender<DesktopEvent>,
-    pub(super) enrollments: std::sync::mpsc::Sender<Enrolled>,
     pub(super) ready:
         std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
 }
@@ -266,7 +257,6 @@ pub(super) struct Wire {
 /// until it is told to stop.
 pub(super) fn run(
     identity: Option<DeviceIdentity>,
-    engine: Option<Arc<Engine>>,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<HostCmd>,
     wire: Wire,
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -275,22 +265,17 @@ pub(super) fn run(
     let Wire {
         arrivals,
         desktop_events,
-        enrollments,
         ready,
     } = wire;
     let Some(runtime) = network_runtime(&ready) else {
         return;
     };
-    // The channels' side of the peer network, which the loop below carries what the session says to.
-    let link = beside.link.clone();
     runtime.block_on(async move {
         let Some(Listening {
-            endpoint,
             actor,
             events,
             actor_task,
             carrying,
-            attending,
         }) = listening(
             identity.as_ref(),
             arrivals,
@@ -304,22 +289,11 @@ pub(super) fn run(
         else {
             return;
         };
-        // What asks a workspace's host runs beside this loop, so what the session says meanwhile is
-        // still carried.
-        let asking = Asking {
-            landed: enrollments,
-            endpoint,
-            network: actor.clone(),
-            events: events.clone(),
-            link,
-            engine,
-            identity,
-        };
         while let Some(command) = commands.recv().await {
             if let HostCmd::Network(command) = &command {
                 bound.workspace_devices.note(command);
             }
-            let Some(taken) = carry_host(&actor, &events, &asking, command).await else {
+            let Some(taken) = carry_host(&actor, &events, command).await else {
                 break;
             };
             if !taken {
@@ -329,9 +303,6 @@ pub(super) fn run(
         }
         drop(events);
         carrying.abort();
-        if let Some(attending) = attending {
-            attending.abort();
-        }
         actor_task.abort();
     });
 }
@@ -341,16 +312,10 @@ pub(super) fn run(
 async fn carry_host(
     actor: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
-    asking: &Asking,
     command: HostCmd,
 ) -> Option<bool> {
     Some(match command {
         HostCmd::Network(Cmd::Stop) => return None,
-        HostCmd::Enter(request) => {
-            asking.ask(Ask::Entry(request));
-            true
-        }
-        HostCmd::TakePart(connect) => actor.send(NetCmd::NativeConnect(connect)).await.is_ok(),
         HostCmd::Fabric {
             user_public_key,
             target,
@@ -373,71 +338,6 @@ async fn carry_host(
     })
 }
 
-/// What asking a workspace's host needs, held for the peer network's loop: the loop never waits on a host,
-/// so an ask runs on its own task and hands what became of it back as an [`Enrolled`].
-struct Asking {
-    landed: std::sync::mpsc::Sender<Enrolled>,
-    endpoint: iroh::Endpoint,
-    network: tokio::sync::mpsc::Sender<NetCmd>,
-    events: tokio::sync::mpsc::Sender<NetEvent>,
-    link: Option<Arc<KeyLink>>,
-    engine: Option<Arc<Engine>>,
-    identity: Option<DeviceIdentity>,
-}
-
-/// One of the person's own workspaces, asked of the device serving it to take this device in.
-enum Ask {
-    Entry(Box<super::Entering>),
-}
-
-impl Asking {
-    /// Ask `ask` beside the loop, and hand what became of it back. A session built without a
-    /// workspace engine answers at once that it takes nothing in.
-    fn ask(&self, ask: Ask) {
-        let Ask::Entry(request) = ask;
-        let (workspace_id, member, name, held) = (
-            request.workspace_id,
-            true,
-            Some(request.name.clone()),
-            request.held,
-        );
-        let landed = self.landed.clone();
-        let (Some(engine), Some(identity)) = (self.engine.clone(), self.identity.clone()) else {
-            let _ = landed.send(Enrolled {
-                workspace_id,
-                member,
-                name,
-                result: Err("this session keeps no workspaces".into()),
-                held,
-            });
-            return;
-        };
-        let endpoint = self.endpoint.clone();
-        let network = self.network.clone();
-        let events = self.events.clone();
-        let channels = self.link.clone();
-        tokio::spawn(async move {
-            let result = enter(
-                endpoint,
-                identity,
-                engine,
-                &network,
-                &events,
-                *request,
-                channels.as_deref(),
-            )
-            .await;
-            let _ = landed.send(Enrolled {
-                workspace_id,
-                member,
-                name,
-                result,
-                held,
-            });
-        });
-    }
-}
-
 /// Bind this device's endpoint, serve the peer actor and its app wire on it, and say where the
 /// session's apps reach this device — or say why it could not, and answer nothing.
 async fn listening(
@@ -446,7 +346,7 @@ async fn listening(
     desktop_events: std::sync::mpsc::Sender<DesktopEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
-    Beside { link, protocols }: Beside,
+    Beside { protocols }: Beside,
     bound: &Bound,
 ) -> Option<Listening> {
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
@@ -502,61 +402,31 @@ async fn listening(
         None,
         served,
     );
-    let (events, carrying, attending) =
-        heard(identity.is_some(), arrivals, desktop_events, wake, link);
+    let (events, carrying) = heard(arrivals, desktop_events, wake);
     if ready.send(Ok((publisher, addr, reachability))).is_err() {
         return None;
     }
     Some(Listening {
-        endpoint,
         actor,
         events,
         actor_task,
         carrying,
-        attending,
     })
 }
 
-/// Hear the peer actor: what it says reaches the client, and what a workspace's host says after
-/// this device joined it of the workspace's governance is taken in where this device's workspaces
-/// are kept, on a thread of its own and in the host's order.
+/// Hear the peer actor: what it says reaches the client, and what only this desktop keeps
+/// reaches the desktop.
 fn heard(
-    holds_ownership: bool,
     arrivals: std::sync::mpsc::Sender<Event>,
     desktop_events: std::sync::mpsc::Sender<DesktopEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
-    link: Option<Arc<KeyLink>>,
 ) -> (
     tokio::sync::mpsc::Sender<NetEvent>,
     tokio::task::JoinHandle<()>,
-    Option<tokio::task::JoinHandle<()>>,
 ) {
-    let replayed = link.clone();
-    let (admissions, attending) = if holds_ownership {
-        let (say, hear) = tokio::sync::mpsc::unbounded_channel();
-        let attending = tokio::spawn(async move { take_in(hear, link).await });
-        (Some(say), Some(attending))
-    } else {
-        (None, None)
-    };
     let (events, mut heard) = tokio::sync::mpsc::channel::<NetEvent>(256);
     let carrying = tokio::spawn(async move {
         while let Some(event) = heard.recv().await {
-            match (&event, admissions.as_ref()) {
-                (NetEvent::NativeInput(input), Some(say)) => {
-                    let _ = say.send(Taken::Input(input.clone()));
-                }
-                // Its replay ended, behind the replay's writes: told after they are taken in.
-                (NetEvent::HostReady { ws, .. }, Some(say)) => {
-                    let _ = say.send(Taken::Ready(*ws));
-                }
-                (NetEvent::HostReady { ws, .. }, None) => {
-                    if let Some(link) = &replayed {
-                        link.host_ready(*ws);
-                    }
-                }
-                _ => {}
-            }
             match event_of(event) {
                 Some(Ok(event)) => {
                     if arrivals.send(event).is_err() {
@@ -573,120 +443,7 @@ fn heard(
             (wake)();
         }
     });
-    (events, carrying, attending)
-}
-
-/// What a host says that is taken in on the replay's own thread, in the order it said it.
-enum Taken {
-    /// A write it replays or carries into a workspace this device holds.
-    Input(Box<tilo_network_actor::native_ingress::Input>),
-    /// It finished replaying what it retains of the workspace on this topic.
-    Ready(WorkspaceId),
-}
-
-/// Take what hosts replay of the governance of the workspaces this device holds, as it arrives:
-/// each run of one session admitted together and in the order the host said it, on a blocking
-/// thread so no replay holds up the peer network. An app's record is not taken in here: this
-/// device's workspace service holds every workspace's records, and its apps read and hear them
-/// there.
-async fn take_in(
-    mut replayed: tokio::sync::mpsc::UnboundedReceiver<Taken>,
-    link: Option<Arc<KeyLink>>,
-) {
-    while let Some(taken) = replayed.recv().await {
-        let mut waiting = vec![taken];
-        while let Ok(next) = replayed.try_recv() {
-            waiting.push(next);
-        }
-        let mut run: Vec<tilo_network_actor::native_ingress::Input> = Vec::new();
-        for taken in waiting {
-            let input = match taken {
-                Taken::Input(input) => *input,
-                Taken::Ready(ws) => {
-                    admit(std::mem::take(&mut run), link.as_deref()).await;
-                    if let Some(link) = &link {
-                        link.host_ready(ws);
-                    }
-                    continue;
-                }
-            };
-            // The channels' governance is between the workspace's devices: its governor never
-            // admits it, and the channel service settles the groups with it instead.
-            if link
-                .as_ref()
-                .is_some_and(|link| link.dispatch(input.message()))
-            {
-                continue;
-            }
-            if matches!(
-                input.message(),
-                neighbour_wire::NeighbourMsg::AppDocument { .. }
-            ) {
-                continue;
-            }
-            if run
-                .first()
-                .is_some_and(|first: &tilo_network_actor::native_ingress::Input| {
-                    !first.same_session(&input)
-                })
-            {
-                admit(run, link.as_deref()).await;
-                run = Vec::new();
-            }
-            run.push(input);
-        }
-        admit(run, link.as_deref()).await;
-    }
-}
-
-/// Admit one session's inputs, as one commit of the workspace they belong to.
-async fn admit(inputs: Vec<tilo_network_actor::native_ingress::Input>, link: Option<&KeyLink>) {
-    let Some(workspace) = inputs
-        .first()
-        .map(tilo_network_actor::native_ingress::Input::workspace)
-    else {
-        return;
-    };
-    let admitted = match tokio::task::spawn_blocking(move || {
-        tilo_network_actor::native_ingress::Input::admit_batch(inputs)
-    })
-    .await
-    {
-        Ok(admitted) => admitted,
-        Err(error) => {
-            tracing::warn!(%error, %workspace, "a workspace's state was not taken in");
-            return;
-        }
-    };
-    let mut replay_wanted = false;
-    for (_, report) in admitted.inputs {
-        match report {
-            Ok(report) => replay_wanted |= report.replay_wanted,
-            Err(error) if error.is_device_failure() => {
-                tracing::warn!(
-                    %error,
-                    %workspace,
-                    "this computer could not take a workspace's state in; nothing was refused"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(%error, %workspace, "a workspace's state was not taken in");
-            }
-        }
-    }
-    if let Some(link) = link {
-        if replay_wanted {
-            // A message waited on something the workspace's host sends of its own accord as well,
-            // such as the checkpoint a sealed record is founded on: the host replays what it
-            // retains, and the message is decided again.
-            link.ask_replay(workspace);
-        }
-        if admitted.changed {
-            // The workspace's governance moved with it: its channels and the devices it admits are
-            // read again, and the peer network told what it admits now.
-            link.workspace_changed(workspace);
-        }
-    }
+    (events, carrying)
 }
 
 /// Give one command from the client to the peer network: whether it was taken, or `None` when it is the

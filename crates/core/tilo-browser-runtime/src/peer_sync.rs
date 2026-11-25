@@ -68,7 +68,6 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
         return;
     };
     let (_heard, arrived) = std::sync::mpsc::channel();
-    let (_landed, enrolled) = std::sync::mpsc::channel();
     #[cfg_attr(
         all(target_arch = "wasm32", target_os = "unknown"),
         expect(
@@ -80,7 +79,6 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
         Transport {
             outgoing: std::sync::Arc::new(handle.clone()),
             arrived,
-            enrolled,
             saying: Some(tilo_session_client::Saying::Frames(
                 tilo_session_client::saying(handle),
             )),

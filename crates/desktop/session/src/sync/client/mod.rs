@@ -33,33 +33,25 @@ use tilo_session_client::client::Shell as PolicyShell;
 use tilo_session_client::message_policy::WorkspaceAction;
 use tilo_session_client::{Client as SessionClient, Device, OwnPresence, Transport};
 #[cfg(target_os = "linux")]
-use tilo_session_client::{Cmd, Enrolled, Event, Outbox, Topic};
+use tilo_session_client::{Cmd, Event, Outbox, Topic};
 #[cfg(target_os = "linux")]
 use tilo_session_core::desktop::here::{Here, LiveMember, Person};
 #[cfg(target_os = "linux")]
 use tilo_session_core::desktop::state::DesktopHandle;
 
 #[cfg(target_os = "linux")]
-use super::Entering;
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
-use crate::engine::Engine;
 #[cfg(target_os = "linux")]
 use crate::platform::fabric::DeviceId;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 use crate::platform::fabric::{Continuity, Reach, SessionFabric};
 #[cfg(target_os = "linux")]
-use crate::workspace_keys::KeyLink;
-#[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::{Need, Reachability};
 #[cfg(target_os = "linux")]
 use tilo_identity::identity_store::DeviceIdentity;
 #[cfg(target_os = "linux")]
-use tilo_network_actor::{WorkspaceId, native_ingress};
+use tilo_network_actor::WorkspaceId;
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
-mod adopt;
 #[cfg(target_os = "linux")]
 mod network;
 
@@ -91,19 +83,6 @@ fn wait_for_bound(
         .map_err(std::io::Error::other)
 }
 
-/// Hand what the endpoint that bound carries to what speaks on it: the channels' link says
-/// through it.
-#[cfg(target_os = "linux")]
-fn attach_bound(
-    link: Option<&Arc<KeyLink>>,
-    outbox: HostOutbox,
-    endpoint: Option<&iroh::Endpoint>,
-) {
-    if endpoint.is_some() {
-        link.inspect(|link| link.attach(Arc::new(outbox)));
-    }
-}
-
 /// What this desktop's endpoint carries beside the client's own commands: the ownership sessions and
 /// records its workspaces are held through, its device fabric, and the transfers between the
 /// person's devices.
@@ -112,10 +91,6 @@ fn attach_bound(
 pub(crate) enum HostCmd {
     /// One of the client's own commands.
     Network(Cmd),
-    /// Take part in a workspace through this device's own ownership session with its host.
-    TakePart(native_ingress::Connect),
-    /// Take one of the person's workspaces in as their further device, at the host the list names.
-    Enter(Box<Entering>),
     /// Send this device's fabric to the person's other devices, or to the one at `target`.
     Fabric {
         user_public_key: [u8; 32],
@@ -274,11 +249,9 @@ pub(crate) struct Local {
     /// The workspaces whose host said their owner deleted them since the last call: what the
     /// session takes off the shell and out of this device's record ([`Self::take_deleted`]).
     deleted: RefCell<Vec<tilo_desktop_model::WorkspaceId>>,
-    /// This device's workspaces: `None` when the session keeps no state to hold them in.
-    engine: Option<Arc<Engine>>,
-    /// What the session's channels hear and say on this peer network. What the engine holds, so a session
-    /// that runs no channel service has none.
-    link: Option<Arc<KeyLink>>,
+    /// This device's workspaces as its daemon says them: `None` until the session reaches the
+    /// daemon ([`Client::live_through`]), and on a session that keeps none.
+    view: RefCell<Option<Arc<crate::workspace_view::WorkspaceView>>>,
     /// The member's devices the peer network heard at another peer protocol version since the last
     /// call: what the person is answered.
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
@@ -358,26 +331,6 @@ impl std::fmt::Debug for Local {
 impl Local {
     /// What this desktop's peer network does with one message of the client's own.
     fn heard(&self, event: &Event, client: &SessionClient) -> bool {
-        // What a workspace says of its channels' governance is the session's channels' to take in,
-        // wherever the message came from; a record a host answered for decides what a reading of it
-        // waits on.
-        if let Some(link) = &self.link {
-            match event {
-                Event::Msg { msg, .. } => link.heard(msg),
-                // The person's other devices hand this one the group frames it lacks, and ask
-                // for the ones they lack.
-                Event::SiblingMsg { peer, msg } => link.heard_from_sibling(*peer.as_bytes(), msg),
-                Event::DocumentOpened {
-                    ws,
-                    channel,
-                    answer,
-                    ..
-                } => {
-                    link.resource_opened(*ws, *channel, *answer);
-                }
-                _ => {}
-            }
-        }
         // The devices a workspace's topic carries are the ones live rows follow; a record's
         // content is the device's daemon's, which asks them itself.
         self.follow_present_devices(event, client);
@@ -638,9 +591,6 @@ impl Local {
                     if let Some(fabric) = &self.fabric {
                         fabric.sibling(peer, &certs, &revocations);
                     }
-                    if let Some(link) = &self.link {
-                        link.sibling_arrived();
-                    }
                 }
                 DesktopEvent::SiblingLeft { peer } => {
                     if let Some(fabric) = &self.fabric {
@@ -705,10 +655,10 @@ impl Local {
         std::cell::Ref::filter_map(self.live.borrow(), Option::as_ref).ok()
     }
 
-    /// This device's workspaces, when this session holds any.
+    /// This device's workspaces as its daemon says them, once the session reached it.
     #[must_use]
-    pub(crate) fn engine(&self) -> Option<&Arc<Engine>> {
-        self.engine.as_ref()
+    pub(crate) fn view(&self) -> Option<Arc<crate::workspace_view::WorkspaceView>> {
+        self.view.borrow().clone()
     }
 
     /// The member's devices the peer network heard at another peer protocol version since the last
@@ -728,9 +678,8 @@ impl Local {
         if client.anyone_else_here(own) {
             return Some("a workspace is shown with someone else");
         }
-        self.engine
-            .as_ref()
-            .is_some_and(|engine| engine.invitations_open(tilo_clock::wall()))
+        self.view()
+            .is_some_and(|view| view.invitations_open(tilo_clock::wall()))
             .then_some("a link into a workspace is out")
     }
 
@@ -1007,20 +956,9 @@ impl Roster {
 #[cfg(target_os = "linux")]
 impl Host for Hosting {
     fn governed_person(&self, workspace: &str, device: EndpointId) -> Option<String> {
-        let local = &self.local;
-        let engine = local.engine.as_ref()?;
-        let identity = tilo_desktop_model::WorkspaceId::parse(workspace)?;
-        let now = tilo_clock::wall();
-        engine
-            .owner()
-            .with_current(identity, |view| {
-                view.peer()
-                    .permissions(*device.as_bytes(), now)
-                    .map_err(|error| error.to_string())
-                    .map(|member| member.person_id().map(str::to_owned))
-            })
-            .ok()
-            .flatten()
+        // The call gate names whose each of the workspace's member devices is.
+        let (_, persons) = self.local.view()?.call_gate(workspace);
+        persons.get(device.as_bytes()).cloned()
     }
 
     fn heard(&self, event: &Event, client: &SessionClient) -> bool {
@@ -1036,20 +974,9 @@ impl Host for Hosting {
     }
 
     fn workspace_host(&self, workspace: &str) -> Option<[u8; 32]> {
-        let engine = self.local.engine.as_ref()?;
-        engine.holder_of(tilo_desktop_model::WorkspaceId::parse(workspace)?)
-    }
-
-    fn joined(&self, workspace: &str) {
-        let local = &self.local;
-        let Some(engine) = local.engine.as_ref() else {
-            return;
-        };
-        if let Some(connect) = tilo_desktop_model::WorkspaceId::parse(workspace)
-            .and_then(|session| native_ingress::Connect::new(engine.owner().clone(), session).ok())
-        {
-            let _ = local.commands.send(HostCmd::TakePart(connect));
-        }
+        self.local
+            .view()?
+            .holder_of(tilo_desktop_model::WorkspaceId::parse(workspace)?)
     }
 
     fn pass(&self, client: &SessionClient) {
@@ -1176,13 +1103,10 @@ impl Client {
         beside: tilo_network_actor::own_service::Protocols,
     ) -> std::io::Result<Self> {
         let (identity, wake) = (entry.identity, entry.wake);
-        // Until the live call moves to the daemon, what read the session's own copy reads none.
-        let engine: Option<Arc<Engine>> = None;
         let live_rows = tilo_workspace_service::live::LiveRows::default();
         let (commands, host_commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
         let (desktop_events, desktop_arrived) = std::sync::mpsc::channel();
-        let (enrollments, enrolled) = std::sync::mpsc::channel();
         let (ready, bound) = std::sync::mpsc::channel();
         let (user, device) = certified_as(identity.as_ref());
         // What this device hears on its local network wakes the session, which shows which of the
@@ -1192,7 +1116,6 @@ impl Client {
             commands: commands.clone(),
         };
         let outgoing: Arc<dyn Outbox> = Arc::new(host_outbox.clone());
-        let link_outbox = host_outbox.clone();
         // What is the person's alone, read from their own workspace once the session reaches the
         // device's daemon that keeps it ([`crate::person_store::DaemonPersonStore`]).
         let person = crate::PersonResources::default();
@@ -1205,36 +1128,30 @@ impl Client {
         );
         // What the actor serves is installed before it starts: every actor built after answers it.
         let versions = crate::network::install(fabric.as_ref(), questions);
-        // The channels' side of the peer network is the engine's, opened before the peer network starts.
-        let link = engine.as_ref().and_then(|engine| engine.link());
-        let (network_link, enrolling) = (link.clone(), engine.clone());
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let binding = network::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
         // The workspaces' live sessions run through this device's daemon, which holds the relay
         // and the device's endpoint ([`Self::live_through`]).
-        let live = engine
-            .as_ref()
-            .map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(&wake)));
+        let live = identity.as_ref().map(|identity| {
+            crate::live::Live::new(identity.device_cert.clone(), Arc::clone(&wake))
+        });
         let served = beside.iter().map(|(alpn, _)| alpn.clone()).collect();
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || {
                 run(
                     identity,
-                    enrolling,
                     host_commands,
                     Wire {
                         arrivals,
                         desktop_events,
-                        enrollments,
                         ready,
                     },
                     wake,
-                    Serving::new(binding, network_link, beside),
+                    Serving::new(binding, beside),
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
-        attach_bound(link.as_ref(), link_outbox, endpoint_handle.get());
         // This device's presence is its daemon's to say: the session tells it the person's word.
         let saying = live.as_ref().map(|live| {
             tilo_session_client::Saying::Word(
@@ -1245,7 +1162,6 @@ impl Client {
             Transport {
                 outgoing: Arc::clone(&outgoing),
                 arrived,
-                enrolled,
                 saying,
             },
             Device {
@@ -1261,8 +1177,6 @@ impl Client {
         let hosting = Local::hosting(Hosted {
             commands,
             desktop_events: desktop_arrived,
-            engine,
-            link,
             versions,
             fabric,
             live_rows,
@@ -1358,7 +1272,6 @@ impl Client {
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
         let (outgoing, said) = tokio::sync::mpsc::unbounded_channel();
         let (_unheard, arrived) = std::sync::mpsc::channel();
-        let (_unlanded, enrolled) = std::sync::mpsc::channel();
         let (commands, _host_commands) = tokio::sync::mpsc::unbounded_channel();
         let (_desktop_events, desktop_arrived) = std::sync::mpsc::channel();
         let outbox: Arc<dyn Outbox> = Arc::new(outgoing);
@@ -1366,7 +1279,6 @@ impl Client {
             Transport {
                 outgoing: Arc::clone(&outbox),
                 arrived,
-                enrolled,
                 saying: None,
             },
             Device {
@@ -1567,13 +1479,18 @@ impl Client {
     pub(crate) fn live_through(
         &self,
         daemon: runtime_collab::ShellClient,
+        view: Option<Arc<crate::workspace_view::WorkspaceView>>,
         turned: crate::followed_resource::FollowedReading<crate::live::TurnedAwayLists>,
         sessions: crate::followed_resource::FollowedReading<crate::live::SessionRows>,
     ) {
+        self.hosting.local.view.replace(view.clone());
         let mut held = self.hosting.local.live.borrow_mut();
         let Some(live) = held.as_mut() else {
             return;
         };
+        if let Some(view) = view {
+            live.follow_workspaces(view);
+        }
         live.follow_turned_away(turned);
         live.follow_sessions(sessions);
         live.tell_through(daemon.clone());
@@ -1694,29 +1611,11 @@ impl Client {
         *self.hosting.local.session.borrow_mut() = Some(session);
     }
 
-    /// This device's workspaces, when this session holds any.
+    /// This device's workspaces as its daemon says them, once the session reached it.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub fn engine(&self) -> Option<&Arc<Engine>> {
-        self.hosting.local.engine()
-    }
-
-    /// Take `request`'s workspace in as this person's further device, off the loop: what the
-    /// workspace holds before arrives with the host's answer. [`Self::take_enrolled`] says what
-    /// became of it.
-    ///
-    /// # Errors
-    /// The peer network takes no entry: this session holds no workspaces, or it has stopped.
-    #[cfg(target_os = "linux")]
-    pub fn enter(&self, request: Entering) -> Result<(), String> {
-        if self.hosting.local.engine.is_none() {
-            return Err("this session keeps no workspaces to take in".into());
-        }
-        self.hosting
-            .local
-            .commands
-            .send(HostCmd::Enter(Box::new(request)))
-            .map_err(|_| "the peer network is gone".to_owned())
+    pub(crate) fn view(&self) -> Option<Arc<crate::workspace_view::WorkspaceView>> {
+        self.hosting.local.view()
     }
 
     /// Dial the holders of workspace `ws` again now: the person pressed "Try again" in a window
@@ -1818,8 +1717,6 @@ impl Client {
 struct Hosted {
     commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
     desktop_events: std::sync::mpsc::Receiver<DesktopEvent>,
-    engine: Option<Arc<Engine>>,
-    link: Option<Arc<KeyLink>>,
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     fabric: Option<Arc<SessionFabric>>,
     live_rows: tilo_workspace_service::live::LiveRows,
@@ -1834,8 +1731,6 @@ impl Local {
         Hosted {
             commands,
             desktop_events,
-            engine,
-            link,
             versions,
             fabric,
             live_rows,
@@ -1854,8 +1749,7 @@ impl Local {
                 window_objects: RefCell::new(Vec::new()),
                 share_objects: RefCell::new(Vec::new()),
                 deleted: RefCell::new(Vec::new()),
-                engine,
-                link,
+                view: RefCell::new(None),
                 versions,
                 topologies: RefCell::new(std::collections::BTreeMap::new()),
                 fabric,
@@ -1888,8 +1782,7 @@ impl Local {
             window_objects: RefCell::new(Vec::new()),
             share_objects: RefCell::new(Vec::new()),
             deleted: RefCell::new(Vec::new()),
-            engine: None,
-            link: None,
+            view: RefCell::new(None),
             versions,
             topologies: RefCell::new(std::collections::BTreeMap::new()),
             fabric: None,

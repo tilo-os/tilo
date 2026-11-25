@@ -12,7 +12,6 @@ use collab_types::presence::{Presence as Frame, ShellPresence};
 use iroh_base::{EndpointAddr, EndpointId};
 use tilo_desktop_model::Layout;
 
-use crate::Enrolled;
 use crate::network::{Cmd, Device, Event, Outbox, Topic, Transport, topic_of};
 use crate::presence::OwnPresence;
 
@@ -66,8 +65,6 @@ pub struct Client {
     arrived: std::sync::mpsc::Receiver<Event>,
     /// The person this device belongs to, by their root key, as its certificate names them.
     user: Option<[u8; 32]>,
-    /// What became of the enrollments asked for since the last call.
-    enrolled: std::sync::mpsc::Receiver<Enrolled>,
     /// The shell this session shows, which the workspace check reads every message from another
     /// member against: `None` until the session hands it over.
     shell: RefCell<Option<Rc<dyn Shell>>>,
@@ -112,7 +109,6 @@ impl Client {
         let Transport {
             outgoing,
             arrived,
-            enrolled,
             saying,
         } = network;
         Self {
@@ -120,7 +116,6 @@ impl Client {
             outgoing,
             arrived,
             user: device.person,
-            enrolled,
             shell: RefCell::new(None),
             host: RefCell::new(None),
             endpoint: device.endpoint,
@@ -340,11 +335,6 @@ impl Client {
         self.outgoing.send(command).is_ok()
     }
 
-    /// Take what became of the enrollments and entries asked for since the last call.
-    pub fn take_enrolled(&self) -> Vec<Enrolled> {
-        self.enrolled.try_iter().collect()
-    }
-
     /// Where other devices reach this one, as it answers now: the endpoint it bound, with the
     /// addresses and the relay it is reached through at this moment. A device that has not bound
     /// one is reached where it was handed.
@@ -398,12 +388,10 @@ impl Client {
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
         let (outgoing, said) = tokio::sync::mpsc::unbounded_channel();
         let (_unheard, arrived) = std::sync::mpsc::channel();
-        let (_unlanded, enrolled) = std::sync::mpsc::channel();
         let client = Self::over(
             Transport {
                 outgoing: std::sync::Arc::new(outgoing),
                 arrived,
-                enrolled,
                 saying: None,
             },
             Device {

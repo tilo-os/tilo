@@ -31,7 +31,6 @@ use tilo_live::link::Opening;
 use tilo_live::link_call::Call;
 use tilo_lock::MutexRecover as _;
 
-use crate::engine::Engine;
 use crate::followed_resource::FollowedReading;
 
 mod own_devices;
@@ -192,8 +191,11 @@ impl std::fmt::Debug for Live {
 }
 
 struct Shared {
-    engine: Arc<Engine>,
+    /// This device's certificate: what a grant to join a live session presents.
+    cert: tilo_user_identity::DeviceCert,
     device: [u8; 32],
+    /// The workspaces the device's daemon keeps, whose live sessions this desktop takes part in.
+    view: std::sync::OnceLock<Arc<crate::workspace_view::WorkspaceView>>,
     /// This workspace's link, by workspace: the one place this desktop is in its live session.
     calls: Mutex<BTreeMap<WorkspaceId, Arc<Call>>>,
     /// How long each workspace waits before it asks its daemon for a link again.
@@ -216,12 +218,16 @@ struct Shared {
 impl Live {
     /// This session's live session. Nothing runs until [`Self::open_links`] hands it the way to
     /// its daemon.
-    pub(crate) fn new(engine: Arc<Engine>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
-        let device = engine.identity().device_cert.device_public_key;
+    pub(crate) fn new(
+        cert: tilo_user_identity::DeviceCert,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        let device = cert.device_public_key;
         Self {
             shared: Arc::new(Shared {
-                engine,
+                cert,
                 device,
+                view: std::sync::OnceLock::new(),
                 calls: Mutex::default(),
                 waits: Mutex::default(),
                 moves: AtomicU64::new(0),
@@ -268,6 +274,13 @@ impl Live {
 
     /// Run for the rest of the session, opening each workspace's link with `links` on the
     /// daemon's socket. Only the first call counts.
+    /// Take part in the live sessions of the workspaces `view` reads the daemon keeping, from now
+    /// on: one the daemon takes in later is opened as it arrives.
+    pub(crate) fn follow_workspaces(&self, view: Arc<crate::workspace_view::WorkspaceView>) {
+        let _ = self.shared.view.set(view);
+        self.shared.readopt.notify_one();
+    }
+
     pub(crate) fn open_links(&mut self, links: Links) {
         if self.shared.links.set(links).is_err() {
             return;
@@ -384,12 +397,24 @@ fn run(shared: Arc<Shared>, mut stopped: tokio::sync::mpsc::UnboundedReceiver<()
     runtime.spawn(tell_daemon(Arc::clone(&shared)));
     runtime.block_on(async move {
         loop {
-            let workspaces = shared.engine.workspaces();
+            let view = shared.view.get().cloned();
+            let seen = view.as_ref().map_or(0, |view| view.revision());
+            let workspaces = view
+                .as_ref()
+                .map(|view| view.workspaces())
+                .unwrap_or_default();
             for workspace in &workspaces {
                 open_or_keep(&shared, *workspace).await;
             }
+            let changed = async {
+                match &view {
+                    Some(view) => view.until(|view| view.revision() != seen).await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 () = shared.readopt.notified() => {}
+                () = changed => {}
                 _ = stopped.recv() => return,
                 () = tokio::time::sleep(RETRY_LONGEST) => {}
             }
@@ -459,8 +484,7 @@ impl Shared {
         scope: &collab_types::scope::Scope,
         epoch: u64,
     ) -> Result<Vec<u8>, String> {
-        let certificate = serde_json::to_vec(&self.engine.identity().device_cert)
-            .map_err(|error| error.to_string())?;
+        let certificate = serde_json::to_vec(&self.cert).map_err(|error| error.to_string())?;
         tilo_live::grant::Native::new(
             *workspace.as_uuid().as_bytes(),
             &scope.id(),

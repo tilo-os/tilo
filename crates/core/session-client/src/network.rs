@@ -16,8 +16,6 @@ pub struct Transport {
     pub outgoing: std::sync::Arc<dyn Outbox>,
     /// What the peer network heard, as the client reads it.
     pub arrived: std::sync::mpsc::Receiver<Event>,
-    /// What became of the enrollments and entries asked for since the last call.
-    pub enrolled: std::sync::mpsc::Receiver<crate::Enrolled>,
     /// The workspace presence tracks this host says on: this desktop's live session, or a page's own
     /// endpoint. `None` where the host says presence nowhere.
     pub saying: Option<Saying>,

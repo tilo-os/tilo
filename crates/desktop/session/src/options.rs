@@ -12,7 +12,6 @@ use crate::displays::Backlights;
 use crate::rotation::Accelerometer;
 use crate::{AppActions, Launches, SearchOptions, Service, SessionAction, SessionConfig, Vpn};
 use crate::{capture, controllers, desktop_services, portal_link, surfaces, sync, unlock};
-use tilo_session_core::desktop::state::DesktopHandle;
 
 /// What a session starts with.
 pub struct Options {

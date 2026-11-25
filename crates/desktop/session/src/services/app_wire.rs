@@ -227,7 +227,7 @@ pub(crate) fn start_app_wire(
     // session says the channel in its presence, and what the workspace says of its calls is what
     // the app's channels show.
     let calls = crate::calls::Calls::new();
-    let calls_service = calls_service(sync, &calls, options);
+    let calls_service = calls_service(sync, view.as_ref(), &calls, options);
     // Files' clipboard lives beside the link, its copies reaching the compositor's loop alike.
     let file_clipboard = std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
         options.wake.handle(),
@@ -394,6 +394,7 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
 /// The calls the apps reach on this session's peer network, or none when it has no endpoint.
 fn calls_service(
     sync: Option<&crate::sync::Client>,
+    view: Option<&std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     calls: &std::sync::Arc<crate::calls::Calls>,
     options: &Options,
 ) -> Option<tilo_native_media::NativeMediaService> {
@@ -403,22 +404,23 @@ fn calls_service(
     // A call's stream runs on the session's own endpoint, sealed with the workspace's channel keys
     // and admitted by the workspace's governance: what every member of the workspace needs to be in
     // the channel's call.
-    let roster = sync.engine().map_or_else(
+    let roster = view.map_or_else(
         || {
             std::sync::Arc::new(|_: &str| Vec::new())
                 as std::sync::Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>
         },
-        |engine| {
-            let engine = std::sync::Arc::clone(engine);
+        |view| {
+            let view = std::sync::Arc::clone(view);
             std::sync::Arc::new(move |workspace: &str| {
-                engine.roster_devices(workspace).unwrap_or_default()
+                view.roster_devices(workspace).unwrap_or_default()
             })
         },
     );
     let sources = crate::calls::Sources::carrier(
         std::sync::Arc::clone(calls),
         sync.endpoint_handle(),
-        sync.engine().map(|engine| engine.keys()),
+        // The channels' keys are the device daemon's: a call is carried once it seals through it.
+        None,
         roster,
         options.asks.as_ref().map(|(asks, _)| asks.clone()),
         sync.own().user,
