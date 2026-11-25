@@ -16,9 +16,10 @@ const BATCH: usize = 1000;
 
 /// Fill the root collection of the app `app`'s first root with `n` items at the instant `at`:
 /// the first text field of each `Item <i>`, the others `Text of item <i>`, every third item's
-/// yes/no fields set, each set of texts holding `inbox`, and every second item's optional days
-/// the day of `at`: a workspace a person adds work to day by day, where a place that filters by
-/// the day holds some items and not others. Returns how many items were written.
+/// yes/no fields set (one an action settles by running that action on it), each set of texts
+/// holding `inbox`, and every second item's optional days the day of `at`: a workspace a person
+/// adds work to day by day, where a place that filters by the day holds some items and not
+/// others. Returns how many items were written.
 ///
 /// # Errors
 /// The app is not loaded, its first root holds no collection, or the store refused a write.
@@ -46,7 +47,7 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
         .filter(|field| field.kind == MergeKind::Text)
         .map(|field| field.id.as_str())
         .collect();
-    let flags: Vec<&str> = item
+    let all_flags: Vec<&str> = item
         .fields
         .iter()
         .filter(|field| {
@@ -54,6 +55,25 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
                 && matches!(field.ty, Some(tilolang_runtime::meta::Ty::Bool))
         })
         .map(|field| field.id.as_str())
+        .collect();
+    // A flag an action settles is set by that action, as every write of it from outside the
+    // app's own code is: what the action keeps in step with it (a task's status with its done
+    // box) follows, so a seeded item is one the app could have made. The rest are written whole.
+    let actions = host
+        .package(app)
+        .map(|package| package.meta.actions)
+        .unwrap_or_default();
+    let settler_of = |field: &str| {
+        actions
+            .iter()
+            .find(|action| !action.scenario && action.settles.as_deref() == Some(field))
+            .map(|action| action.id.clone())
+    };
+    let settled: Vec<String> = all_flags.iter().filter_map(|id| settler_of(id)).collect();
+    let flags: Vec<&str> = all_flags
+        .iter()
+        .copied()
+        .filter(|id| settler_of(id).is_none())
         .collect();
     let sets: Vec<&str> = item
         .fields
@@ -116,11 +136,30 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
                 }
             })
             .collect();
-        host.runtime()
+        let made = host
+            .runtime()
             .write_edit_for(Some(host.viewer().clone()), Some(at.to_owned()), |change| {
                 change.write(writes)
             })
             .map_err(|error| error.to_string())?;
+        if !settled.is_empty() {
+            for (i, item) in (from.saturating_add(written)..).zip(made) {
+                let Some(item) = item.filter(|_| i % 3 == 0) else {
+                    continue;
+                };
+                for settler in &settled {
+                    let args = vec![Value::resource(&item), Value::Bool(true)];
+                    match host
+                        .runtime()
+                        .invoke_action(host.viewer(), (settler.as_str(), args))
+                        .map_err(|error| error.to_string())?
+                    {
+                        tilolang_runtime::InvokeOutcome::Done(_) => {}
+                        other => return Err(format!("{app}'s {settler} on item {i}: {other:?}")),
+                    }
+                }
+            }
+        }
         written = end;
     }
     Ok(written)
