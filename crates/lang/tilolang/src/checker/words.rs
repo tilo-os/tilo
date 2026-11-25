@@ -190,7 +190,7 @@ impl Checker<'_> {
                 }
             }
         }
-        let key = self.word_key(&text);
+        let key = crate::messages::module_word_key(&self.word_key(&text));
         let message = format!("{}.{key}", crate::messages::key_of(&self.words_owner()));
         let list = self.text_pairs(args);
         let call = Ex::host(
@@ -218,6 +218,14 @@ impl Checker<'_> {
                 None => break,
             }
         }
+        let short = crate::messages::module_word_key(&key);
+        assert!(
+            !self
+                .words
+                .iter()
+                .any(|w| w.view == view && crate::messages::module_word_key(&w.key) == short),
+            "the words {text:?} and another text of the same view hash to one key; reword one"
+        );
         self.words.push(WordMeta {
             view,
             key: key.clone(),

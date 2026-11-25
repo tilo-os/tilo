@@ -13,6 +13,64 @@ pub const SOURCE_LOCALE: &str = "en-US";
 
 pub const LOCALES_DIR: &str = "locales";
 
+/// The attribute a module names the words `key` (`w-` and their slug) by: `w` and six letters of the
+/// slug's hash. The slug is for the person writing a translation; the module, which carries each key
+/// in its code and in every catalogue, takes the short one. It is the same wherever it is computed, so
+/// a template expanded in another package says the key its own package's catalogue has.
+#[must_use]
+pub fn module_word_key(key: &str) -> String {
+    const LETTERS: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    // FNV-1a: stable across builds and platforms, unlike the standard library's hasher.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in key.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    let mut out = String::with_capacity(7);
+    out.push('w');
+    for n in 0..6 {
+        out.push(char::from(LETTERS[((hash >> (n * 5)) & 31) as usize]));
+    }
+    out
+}
+
+/// A catalogue as a module carries it: each words attribute under the name [`module_word_key`] gives
+/// it, and no comment or blank line, which only the person reading the file needs. Applying it again
+/// changes nothing.
+#[must_use]
+pub fn module_catalogue(catalogue: &str) -> String {
+    let mut out = String::with_capacity(catalogue.len());
+    let mut lines = catalogue.lines().peekable();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        // A blank line inside a pattern of several lines is part of its text; one before the next
+        // entry is not.
+        let ends_entry = lines
+            .peek()
+            .is_none_or(|next| !next.starts_with(char::is_whitespace));
+        if (trimmed.is_empty() && ends_entry)
+            || (trimmed.starts_with('#') && !line.starts_with(char::is_whitespace))
+        {
+            continue;
+        }
+        let attribute = line
+            .starts_with(char::is_whitespace)
+            .then(|| trimmed.strip_prefix('.'))
+            .flatten()
+            .filter(|name| name.starts_with("w-"));
+        match attribute.and_then(|rest| rest.split_once('=')) {
+            Some((name, value)) => {
+                let _ = writeln!(out, "    .{} ={value}", module_word_key(name.trim_end()));
+            }
+            None => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 /// The key of the message of the declaration with the stable id `id`. A key is a Fluent message id:
 /// letters, digits, `_` and `-` only, so the `~` of a written view's id becomes `-`. A catalogue
 /// with one invalid key parses as nothing at all, so no app's words would read.

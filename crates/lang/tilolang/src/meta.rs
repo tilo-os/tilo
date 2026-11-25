@@ -56,7 +56,11 @@ pub fn append_locales(wasm: &mut Vec<u8>, locales: &[(String, String)]) {
     if locales.is_empty() {
         return;
     }
-    append_json_section(wasm, LOCALES_SECTION, locales);
+    let locales: Vec<(&str, String)> = locales
+        .iter()
+        .map(|(locale, text)| (locale.as_str(), crate::messages::module_catalogue(text)))
+        .collect();
+    append_json_section(wasm, LOCALES_SECTION, &locales);
 }
 
 #[must_use]

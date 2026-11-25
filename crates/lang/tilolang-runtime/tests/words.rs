@@ -88,10 +88,14 @@ view inbox(i: Inbox) {
                     .map(|(_, v)| v.clone())
                     .unwrap_or_default()
             };
-            match key.rsplit_once('.').map(|(_, attr)| attr) {
-                Some("w-new-messages") => format!("{} neue Nachrichten", arg("unread")),
-                Some("w-at-work") => "Bei der Arbeit".to_owned(),
-                Some("w-help") => "Hilfe".to_owned(),
+            let attr = key.rsplit_once('.').map(|(_, attr)| attr);
+            // The module names a text by its slug's short key.
+            let says =
+                |slug: &str| attr == Some(tilolang::messages::module_word_key(slug).as_str());
+            match attr {
+                _ if says("w-new-messages") => format!("{} neue Nachrichten", arg("unread")),
+                _ if says("w-at-work") => "Bei der Arbeit".to_owned(),
+                _ if says("w-help") => "Hilfe".to_owned(),
                 // What a type calls one of its records while its title is empty.
                 Some("untitled") => "Ohne Titel".to_owned(),
                 // The app's title, keyed by the app's id, and a filter's label, keyed by its
