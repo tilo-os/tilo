@@ -1,14 +1,19 @@
 # Written by `tilolang surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "generated.greeting"
 label = "Greeting"
 version = 1
 fields = [
-  { path = "name", type = "String" },
+  { path = "name", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "clear"
 kind = "undoable"
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"

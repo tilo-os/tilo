@@ -1,12 +1,14 @@
 # Written by `tilolang surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "generated.items"
 label = "Items"
 version = 1
 fields = [
-  { path = "items", type = "Collection<Item>", stored = "collection" },
-  { path = "items.*.title", type = "String", label = true },
+  { path = "items", type = { collection = { named = "Item" } }, stored = "collection" },
+  { path = "items.*.title", type = "text", label = true },
   { path = "items.*.done", type = "bool" },
 ]
 
@@ -14,13 +16,23 @@ fields = [
 id = "add"
 kind = "undoable"
 params = [
-  { name = "title", required = true, schema = { type = "string" } },
+  { name = "title", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "remove"
 kind = "undoable"
 params = [
-  { name = "item", required = true, schema = { type = "string" } },
+  { name = "item", type = "text", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.types]]
+name = "Item"
+fields = [
+  { name = "title", type = "text" },
+  { name = "done", type = "bool" },
+]

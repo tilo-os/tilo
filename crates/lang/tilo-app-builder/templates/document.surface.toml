@@ -1,20 +1,22 @@
 # Written by `tilolang surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "generated.document"
 label = "Document"
 version = 1
 fields = [
-  { path = "title", type = "String" },
-  { path = "body", type = "String" },
+  { path = "title", type = "text" },
+  { path = "body", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "set-content"
 kind = "undoable"
 params = [
-  { name = "title", required = true, schema = { type = "string" } },
-  { name = "body", required = true, schema = { type = "string" } },
+  { name = "title", type = "text", required = true, schema = { type = "string" } },
+  { name = "body", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -22,3 +24,6 @@ id = "clear"
 destructive = true
 kind = "undoable"
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
