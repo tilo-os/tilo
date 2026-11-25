@@ -67,6 +67,14 @@ run_lounge() {
   lounge_pids+=("$lounge_pid")
 }
 
+# Where the Lounge's daemon answers: the link its profile (the volume) names its
+# native endpoint with, to the socket among the account's own sockets it binds.
+# Only this link says which socket is this daemon's; another socket of that name
+# elsewhere under the volume is not its endpoint.
+lounge_native() {
+  printf '%s\n' "$lounge_volume/native.sock"
+}
+
 # Wait for the Lounge run_lounge started to serve, as the deployment's probe
 # asking it. The daemon answers on its native endpoint from its start, where
 # the device's own actions are served, wherever its profile keeps it: one that
@@ -75,7 +83,7 @@ run_lounge() {
 await_lounge() {
   local deadline=$((SECONDS + ${LOUNGE_ANSWER_SECONDS:-30})) socket
   while :; do
-    socket=$(find "$lounge_volume" -name native.sock -print -quit 2>/dev/null)
+    socket=$(lounge_native)
     # The profile names its endpoint with a link, and the link answers only while the daemon
     # bound the socket it names: one left by a stopped daemon is no answer.
     [[ -n $socket && -S $socket ]] && break
@@ -92,8 +100,8 @@ await_lounge() {
 # key instead of the root, fails.
 verify_founded() {
   local socket people directory entry
-  socket=$(find "$lounge_volume" -name native.sock -print -quit 2>/dev/null)
-  [[ -n $socket ]] || lounge_fail 'the Lounge keeps no native endpoint'
+  socket=$(lounge_native)
+  [[ -S $socket ]] || lounge_fail "the Lounge answers at no native endpoint ($socket)"
   people=$(python3 - "$socket" <<'PYTHON'
 import json, socket, sys
 call = {
