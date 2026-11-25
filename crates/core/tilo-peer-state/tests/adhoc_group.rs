@@ -756,6 +756,9 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
     // What a page reads from the desktop handed the workspace, its service's
     // own copy, is all of it too, before it ever starts again.
     let served = a2.service.workspaces();
+    // The copy's sealed record, as its own link holds it: `resource_document` reads the
+    // workspace's store, which holds records an app declares, never this one.
+    let served_link = served.direct().link(workspace());
     let mut writes = served.document_writes();
     tilo_test_env::within(
         "the copy of the desktop handed the workspace holds all of it",
@@ -763,11 +766,9 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
             loop {
                 let mut all = true;
                 for (resource, made) in RESOURCES.iter().zip(&made) {
-                    let changes = served
-                        .resource_document(WORKSPACE, APP, resource)
-                        .await
-                        .ok()
-                        .flatten()
+                    let changes = served_link
+                        .as_ref()
+                        .and_then(|link| link.read(|peer| opened(peer, &KEYS, (APP, resource))))
                         .map(|doc| {
                             AutoCommit::load(&doc)
                                 .unwrap()
