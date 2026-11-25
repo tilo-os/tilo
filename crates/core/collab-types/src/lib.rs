@@ -95,7 +95,10 @@ pub const DOCUMENT_URI_SCHEME: &str = "tilo-document";
 // Convenience re-exports so downstream callers can do
 // `use collab_types::{SignedOp, Role, OpKind, ArtifactKind, ...}`
 // without reaching into individual modules.
-pub use artifact::{ArtifactId, FILES_TREE_KIND, file_content_artifact};
+pub use artifact::{
+    ArtifactId, FILES_OPEN_VERBS, FILES_TREE_KIND, file_content_artifact, files_open_puts,
+    files_open_step,
+};
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
     Access, CapDecision, CapOverride, DeviceCap, Effect, FsAuthority, LaunchGrants, ResourceRef,

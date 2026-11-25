@@ -348,9 +348,11 @@ pub fn verb_node(node: Option<&str>, verb: &str) -> tilo_actions::policy::TreePa
 
 /// The verbs of the tree, as grants and History name them.
 pub mod verbs {
-    pub const NEW_FOLDER: &str = "new-folder";
-    pub const NEW_FILE: &str = "new-file";
-    pub const WRITE: &str = "write";
+    // The verbs a `files#open` given content takes, named once where a call naming that open is
+    // checked as asking for them.
+    pub const NEW_FOLDER: &str = collab_types::FILES_OPEN_VERBS[0];
+    pub const NEW_FILE: &str = collab_types::FILES_OPEN_VERBS[1];
+    pub const WRITE: &str = collab_types::FILES_OPEN_VERBS[2];
     pub const MOVE: &str = "move";
     pub const TRASH: &str = "trash";
     pub const RESTORE: &str = "restore";

@@ -26,16 +26,24 @@ fn owner_id() -> String {
     "a1".repeat(32)
 }
 
-/// What reached the workspace's folder.
+/// What reached the workspace's folder, and the context its change was to be made in.
 #[derive(Default)]
-struct Recorder(Mutex<Vec<(String, Map<String, Value>)>>);
+struct Recorder(
+    Mutex<
+        Vec<(
+            String,
+            Map<String, Value>,
+            Option<tilo_actions::ActionContext>,
+        )>,
+    >,
+);
 
 impl FilesTreePuts for Recorder {
     fn put(
         &self,
         workspace: WorkspaceId,
         arguments: &Map<String, Value>,
-        _acting: Option<tilo_actions::ActionContext>,
+        acting: Option<tilo_actions::ActionContext>,
         confirm: &dyn Fn() -> bool,
     ) -> Result<Value, String> {
         if !confirm() {
@@ -44,7 +52,7 @@ impl FilesTreePuts for Recorder {
         self.0
             .lock()
             .unwrap()
-            .push((workspace.to_string(), arguments.clone()));
+            .push((workspace.to_string(), arguments.clone(), acting));
         Ok(json!({
             "path": "Inbox/plan.md",
             "content": arguments.get("content").cloned().unwrap_or_default(),
@@ -214,6 +222,13 @@ async fn a_person_puts_a_file_and_a_caller_the_workspace_does_not_let_is_refused
             reached[0].1.get("name").and_then(Value::as_str),
             Some("plan.md")
         );
+        let acting = reached[0].2.as_ref().expect("the change names who made it");
+        assert_eq!(acting.source_invocation, Some(request.invocation));
+        assert_eq!(
+            acting.invoker.as_ref().map(|invoker| &invoker.acting),
+            Some(caller.acting()),
+            "the person's change is theirs"
+        );
     }
 
     // An agent the workspace lets write the folder puts as its person's device does.
@@ -231,7 +246,18 @@ async fn a_person_puts_a_file_and_a_caller_the_workspace_does_not_let_is_refused
     )
     .await;
     assert_eq!(answer["path"], "Inbox/plan.md", "{answer}");
-    assert_eq!(fixture.recorder.0.lock().unwrap().len(), 2);
+    {
+        let reached = fixture.recorder.0.lock().unwrap();
+        assert_eq!(reached.len(), 2);
+        let acting = reached[1].2.as_ref().expect("the change names who made it");
+        let invoker = acting.invoker.as_ref().expect("an invoker");
+        assert_eq!(
+            &invoker.acting,
+            porter.acting(),
+            "the agent's change names the agent, never only its person"
+        );
+        assert!(invoker.acting.is_agent());
+    }
 
     // A member who may read the workspace writes none of its files.
     let commenter = Caller::local_person("ada")

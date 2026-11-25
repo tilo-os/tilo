@@ -383,6 +383,9 @@ fn outside_call(
     app: &str,
     published_name: Option<PublishedName<'_>>,
 ) -> bool {
+    if puts_files(context, target, app) {
+        return false;
+    }
     let named = &target.address.resource;
     let in_resource = match &context.resource {
         Some(resource) => &resource.kind == named || &resource.id == named,
@@ -396,6 +399,42 @@ fn outside_call(
         _ => true,
     };
     !(in_resource && names_verb)
+}
+
+/// Whether the change `context` records, in a record of `app`, is the put of files the call
+/// `target` asked for: Files' `open` given content, carried out as the tree's verbs that put
+/// files ([`collab_types::files_open_step`]), each verb of the change one of them. An open the
+/// change keeps the argument of must name content: a plain open of the app changes no file.
+fn puts_files(
+    context: &tilo_actions::ActionContext,
+    target: &tilo_actions::remote::RemoteActionTarget,
+    app: &str,
+) -> bool {
+    let (Some(resource), Some(what)) = (&context.resource, &context.what) else {
+        return false;
+    };
+    let step = |did: &tilo_actions::Did| match did {
+        tilo_actions::Did::Verb(verb) => {
+            verb.action.kind == resource.kind
+                && collab_types::files_open_step(
+                    &target.address,
+                    (app, &resource.kind, &verb.action.action),
+                )
+        }
+        _ => false,
+    };
+    let steps = match what {
+        tilo_actions::Did::Group(group) => {
+            !group.distinct.is_empty() && group.distinct.iter().all(step)
+        }
+        did => step(did),
+    };
+    steps
+        && context
+            .signed
+            .as_deref()
+            .and_then(|call| call.argument.as_ref())
+            .is_none_or(collab_types::files_open_puts)
 }
 
 /// Whether the verb `claimed`, as a change names it, is the action `signed` the caller asked
@@ -596,10 +635,20 @@ pub fn carried_effect(
         .is_some_and(|id| !id.is_empty());
     let in_record =
         named == record.document || named == record.app || in_app || claim_names_kind(claim, named);
-    let names_verb = claimed_verbs(claim)
+    let verbs = claimed_verbs(claim);
+    let names_verb = verbs
         .iter()
         .all(|action| same_action(&action.action, &target.address.action, published_name));
-    !(in_record && names_verb)
+    // The put of files a Files `open` given content is carried out as: every device that opens
+    // the change checks its argument ([`verify_recorded`]).
+    let puts_files = !verbs.is_empty()
+        && verbs.iter().all(|action| {
+            collab_types::files_open_step(
+                &target.address,
+                (record.app, &action.kind, &action.action),
+            )
+        });
+    !(in_record && names_verb) && !puts_files
 }
 
 /// Whether every action `claim` names is an edit of a record's fields, as a store's change is

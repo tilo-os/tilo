@@ -80,7 +80,10 @@ async fn tree_if_kept(workspaces: &Workspaces, workspace: &str) -> Option<Tree> 
             .await
             .unwrap()
             .unwrap_or_else(|| panic!("the workspace keeps chunk {chunk} of the tree"));
-        kept.read_chunk(chunk, &automerge::AutoCommit::load(&record).expect("a chunk reads"));
+        kept.read_chunk(
+            chunk,
+            &automerge::AutoCommit::load(&record).expect("a chunk reads"),
+        );
     }
     Some(kept.tree())
 }
@@ -108,10 +111,12 @@ fn file_at<'a>(tree: &'a Tree, dir: &str, name: &str) -> Option<&'a fs_protocol:
         })?;
         parent = id;
     }
-    tree.children(parent).into_iter().find(|(_, node)| {
-        node.kind == FileNodeKind::File && node.name.as_bytes() == name.as_bytes()
-    })
-    .map(|(_, node)| node)
+    tree.children(parent)
+        .into_iter()
+        .find(|(_, node)| {
+            node.kind == FileNodeKind::File && node.name.as_bytes() == name.as_bytes()
+        })
+        .map(|(_, node)| node)
 }
 
 /// The bytes the tree's file named `hash` opens as: its manifest's chunks, opened through the
@@ -180,7 +185,10 @@ async fn fixture() -> Put {
     let name = workspaces.create("Files put").await.unwrap().workspace;
     let workspace = WorkspaceId::parse(&name).unwrap();
     let shelf = Arc::new(Shelf::default());
-    let puts = OpenedFiles::new(workspaces.clone(), Arc::clone(&shelf) as Arc<dyn ContentShelf>);
+    let puts = OpenedFiles::new(
+        workspaces.clone(),
+        Arc::clone(&shelf) as Arc<dyn ContentShelf>,
+    );
     Put {
         workspaces,
         shelf,
@@ -196,19 +204,75 @@ impl Put {
     /// Put `arguments` as the dispatch does, on a thread of its own: the tree's sync then has
     /// this device's runtime to itself, as it does when a daemon serves a call.
     fn put(&self, arguments: &Value) -> Result<Value, String> {
+        self.put_as(arguments, None)
+    }
+
+    /// [`Self::put`], the tree changed in `acting`.
+    fn put_as(
+        &self,
+        arguments: &Value,
+        acting: Option<tilo_actions::ActionContext>,
+    ) -> Result<Value, String> {
         std::thread::scope(|scope| {
             scope
                 .spawn(|| {
                     self.puts.put(
                         self.workspace,
                         arguments.as_object().unwrap(),
-                        None,
+                        acting,
                         &|| true,
                     )
                 })
                 .join()
                 .expect("the put's thread ends")
         })
+    }
+
+    /// The context a `files#open` of `arguments`, signed by the workspace's owner on their
+    /// device, changes the tree in: the person as its invoker, and the request as they signed it.
+    fn signed_open(&self, arguments: &Value) -> tilo_actions::ActionContext {
+        let (key, cert) = governor();
+        let mut request = tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_actions::remote::workspace_provider(&self.name),
+                address: tilo_actions::ActionAddress::new(
+                    format!(
+                        "{}{FILES_APP}",
+                        tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
+                    ),
+                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
+                ),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(
+                arguments.as_object().cloned().unwrap(),
+            ),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        request.signed = Some(Box::new(
+            tilo_server_protocol::invocation::sign_invocation_now(
+                &self.name,
+                &request,
+                &cert,
+                &key,
+                tilo_clock::unix_now_ns(),
+            )
+            .unwrap(),
+        ));
+        tilo_actions::ActionContext {
+            source_invocation: Some(request.invocation),
+            signed: tilo_actions::remote::SignedCall::of(&request).map(Box::new),
+            ..tilo_actions::ActionContext::default()
+        }
+        .with_invoker(tilo_actions::ActionInvoker::person(hex::encode(
+            cert.user_public_key,
+        )))
     }
 
     /// What the workspace's Files keys are, as this device keeps them.
@@ -231,7 +295,9 @@ async fn a_file_put_is_a_node_naming_content_the_workspace_keeps() {
     let put = fixture().await;
     let visa = b"%PDF-1.7\nApplication for Schengen Visa\n";
     let content = put_content(&put.shelf, put.workspace, visa);
-    let answer = put.put(&json!({"content": content, "name": "visa.pdf"})).unwrap();
+    let answer = put
+        .put(&json!({"content": content, "name": "visa.pdf"}))
+        .unwrap();
     assert_eq!(answer["path"], "visa.pdf", "{answer}");
     assert_eq!(answer["content"], content.as_str(), "{answer}");
     assert_eq!(answer["size"], visa.len() as u64, "{answer}");
@@ -256,21 +322,36 @@ async fn a_file_put_is_a_node_naming_content_the_workspace_keeps() {
     let tree = tree_of(&put.workspaces, &put.name).await;
     let node = file_at(&tree, "forms/2026", "permit.pdf").expect("the file is in its folder");
     assert_eq!(
-        opened(&put.shelf, put.workspace, keys.as_ref(), node.hash.as_deref().unwrap()),
+        opened(
+            &put.shelf,
+            put.workspace,
+            keys.as_ref(),
+            node.hash.as_deref().unwrap()
+        ),
         permit.as_slice()
     );
-    assert!(file_at(&tree, "", "permit.pdf").is_none(), "it is not at the root");
+    assert!(
+        file_at(&tree, "", "permit.pdf").is_none(),
+        "it is not at the root"
+    );
 
     // The same name put again takes the new content rather than making a second node.
     let cover = b"%PDF-1.7\nCover letter\n";
     let cover_content = put_content(&put.shelf, put.workspace, cover);
-    let answer = put.put(&json!({"content": cover_content, "name": "visa.pdf"})).unwrap();
+    let answer = put
+        .put(&json!({"content": cover_content, "name": "visa.pdf"}))
+        .unwrap();
     assert_eq!(answer["replaced"], true, "{answer}");
     assert_ne!(answer["content"], content.as_str(), "{answer}");
     let tree = tree_of(&put.workspaces, &put.name).await;
     let node = file_at(&tree, "", "visa.pdf").expect("still one file of that name");
     assert_eq!(
-        opened(&put.shelf, put.workspace, keys.as_ref(), node.hash.as_deref().unwrap()),
+        opened(
+            &put.shelf,
+            put.workspace,
+            keys.as_ref(),
+            node.hash.as_deref().unwrap()
+        ),
         cover.as_slice()
     );
     let roots = tree
@@ -279,6 +360,25 @@ async fn a_file_put_is_a_node_naming_content_the_workspace_keeps() {
         .filter(|(_, node)| node.name.as_bytes() == b"visa.pdf")
         .count();
     assert_eq!(roots, 1, "the file is not kept beside itself");
+}
+
+/// The tree's change of a put the person signed keeps their request, and the workspace takes it
+/// in as theirs: it checks the signature and decides the change by the person's own grants on
+/// the tree's verbs, a new folder and a new file among them.
+#[tokio::test]
+async fn a_put_the_person_signed_is_taken_in_keeping_their_request() {
+    let put = fixture().await;
+    let bytes = b"signed for\n";
+    let content = put_content(&put.shelf, put.workspace, bytes);
+    let arguments = json!({"content": content, "name": "asked.txt", "dir": "signed"});
+    let acting = put.signed_open(&arguments);
+    let answer = put.put_as(&arguments, Some(acting)).unwrap();
+    assert_eq!(answer["path"], "signed/asked.txt", "{answer}");
+    let tree = tree_of(&put.workspaces, &put.name).await;
+    assert!(
+        file_at(&tree, "signed", "asked.txt").is_some(),
+        "the workspace took the change in"
+    );
 }
 
 /// A folder of files goes in as one change, whether the list is given inline or as content of
@@ -303,7 +403,12 @@ async fn a_folder_of_files_goes_in_inline_or_by_its_content_reference() {
         let node =
             file_at(&tree, "repo/src", name).unwrap_or_else(|| panic!("{name} is in the folder"));
         assert_eq!(
-            opened(&put.shelf, put.workspace, keys.as_ref(), node.hash.as_deref().unwrap()),
+            opened(
+                &put.shelf,
+                put.workspace,
+                keys.as_ref(),
+                node.hash.as_deref().unwrap()
+            ),
             format!("file {index}\n").into_bytes(),
             "{name} opens as what was put"
         );
@@ -321,7 +426,11 @@ async fn a_folder_of_files_goes_in_inline_or_by_its_content_reference() {
             "dir": "repo/src",
         }));
     }
-    let list = put_content(&put.shelf, put.workspace, &serde_json::to_vec(&second).unwrap());
+    let list = put_content(
+        &put.shelf,
+        put.workspace,
+        &serde_json::to_vec(&second).unwrap(),
+    );
     let answer = put.put(&json!({"files": list})).unwrap();
     assert_eq!(answer["count"], 2, "{answer}");
     let tree = tree_of(&put.workspaces, &put.name).await;
@@ -349,10 +458,19 @@ async fn content_the_workspace_lacks_and_names_the_tree_refuses_put_nothing() {
 
     let content = put_content(&put.shelf, put.workspace, b"words\n");
     for (arguments, why) in [
-        (json!({"content": content, "name": "a/b.txt"}), "no file's name"),
+        (
+            json!({"content": content, "name": "a/b.txt"}),
+            "no file's name",
+        ),
         (json!({"content": content, "name": ".."}), "no file's name"),
-        (json!({"content": content, "name": "a.txt", "dir": "../out"}), "no folder's name"),
-        (json!({"content": "not-content", "name": "a.txt"}), "names no content"),
+        (
+            json!({"content": content, "name": "a.txt", "dir": "../out"}),
+            "no folder's name",
+        ),
+        (
+            json!({"content": "not-content", "name": "a.txt"}),
+            "names no content",
+        ),
         (json!({"files": []}), "1 to"),
     ] {
         let said = refused(put.put(&arguments));
@@ -372,16 +490,31 @@ fn a_put_names_its_files_and_refuses_what_the_tree_may_not_hold() {
     let named = |arguments: Value| Putting::named(arguments.as_object().unwrap());
     let arguments = json!({"content": content, "name": "plan.md", "dir": " / Tasks // 2026 / "});
     let putting = named(arguments).expect("a file named by its content");
-    assert_eq!(putting.dir, "Tasks/2026", "the folder path as the tree keeps one");
+    assert_eq!(
+        putting.dir, "Tasks/2026",
+        "the folder path as the tree keeps one"
+    );
     assert_eq!(putting.name, "plan.md");
     assert_eq!(putting.hash, "ab".repeat(32));
 
     for (arguments, why) in [
-        (json!({"content": "notes.md", "name": "plan.md"}), "names no content"),
+        (
+            json!({"content": "notes.md", "name": "plan.md"}),
+            "names no content",
+        ),
         (json!({"content": content, "name": ""}), "no file's name"),
-        (json!({"content": content, "name": "a/b.md"}), "no file's name"),
-        (json!({"content": content, "name": "a.md", "dir": "../out"}), "no folder's name"),
-        (json!({"content": content, "name": "a.md", "dir": "a/./b"}), "no folder's name"),
+        (
+            json!({"content": content, "name": "a/b.md"}),
+            "no file's name",
+        ),
+        (
+            json!({"content": content, "name": "a.md", "dir": "../out"}),
+            "no folder's name",
+        ),
+        (
+            json!({"content": content, "name": "a.md", "dir": "a/./b"}),
+            "no folder's name",
+        ),
     ] {
         let said = named(arguments.clone())
             .err()
@@ -395,9 +528,8 @@ fn a_put_names_its_files_and_refuses_what_the_tree_may_not_hold() {
         {"content": content, "name": "a.md"},
         {"content": content, "name": "b.md", "dir": "Tasks"},
     ]);
-    let files =
-        Putting::all(json!({"files": listed}).as_object().unwrap(), &|_| None)
-            .expect("a list is read");
+    let files = Putting::all(json!({"files": listed}).as_object().unwrap(), &|_| None)
+        .expect("a list is read");
     assert_eq!(files.len(), 2);
     assert_eq!(files[1].dir, "Tasks");
     let bytes = serde_json::to_vec(&listed).unwrap();

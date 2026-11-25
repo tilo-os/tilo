@@ -110,8 +110,13 @@ fn said_invocation_id(request: &InvokeRequest) -> Option<String> {
 }
 
 /// The context the host stamps on what `caller`'s `request` changes: the invocation id the host
-/// admitted it under, the purpose and gesture the caller said, and the work it is part of. The
-/// group is the host's to say.
+/// admitted it under, the request as its caller signed it, the purpose and gesture the caller
+/// said, and the work it is part of. The group is the host's to say.
+///
+/// The tree's change keeps the signed request, as every change an action makes for its caller
+/// does: each device that takes the change in checks the signature and decides the change by
+/// the caller's own grants on the tree's verbs the put is carried out as, rather than taking
+/// this device's word that the caller asked.
 fn caller_context(caller: &Caller, request: &InvokeRequest) -> tilo_actions::ActionContext {
     let said = request.context.as_ref();
     let group = match caller.agent_session() {
@@ -127,16 +132,14 @@ fn caller_context(caller: &Caller, request: &InvokeRequest) -> tilo_actions::Act
             .and_then(|context| context.group.clone())
             .filter(|group| group.kind != tilo_actions::context::AGENT_SESSION_GROUP),
     };
-    tilo_actions::ActionContext {
+    let context = tilo_actions::ActionContext {
         group,
         purpose: said.and_then(|context| context.purpose.clone()),
         gesture: said.and_then(|context| context.gesture),
         source_invocation: Some(request.invocation),
-        // The invocation, not the signed request: a change of a folder's tree claims a file
-        // action, which the signature over the app's own action does not name. The call was
-        // signed and checked where it was admitted, and its journal keeps that request.
         ..tilo_actions::ActionContext::default()
-    }
+    };
+    super::invoker::signed_by_request(Some(context), Some(request)).unwrap_or_default()
 }
 
 /// Whether `actor` may change the files of `workspace` now: the tree's own records read and
@@ -233,10 +236,8 @@ impl AppBrokerState {
         )?;
         let id = admitted.id;
         // Who made the change, in which run, under which invocation: as every change of the
-        // workspace's records is made. Files are a person's own, so an agent's put changes them
-        // as the person it works for, as a mount of their computer writes them; the journal
-        // keeps which agent asked.
-        let invoker = tilo_actions::ActionInvoker::admitted(&change_as(caller))
+        // workspace's records is made, the caller who asked, an agent named as itself.
+        let invoker = tilo_actions::ActionInvoker::admitted(caller.acting())
             .named(caller.agent_name().map(str::to_owned));
         let acting = caller_context(caller, request).with_invoker(invoker);
         // A grant taken back while the content is read refuses the change, decided as the call
@@ -265,15 +266,6 @@ impl AppBrokerState {
         self.complete_host_action(&admitted, update)?;
         Ok(Some(id))
     }
-}
-
-/// The identity a put into a workspace's folder changes its tree as: the person the caller acts
-/// for, a person's own call staying theirs.
-fn change_as(caller: &Caller) -> tilo_actions::Acting {
-    if let Some(person) = caller.acting().acted_for_person() {
-        return tilo_actions::Acting::person(person);
-    }
-    caller.acting().clone()
 }
 
 /// The outcome of a put the tree refused.

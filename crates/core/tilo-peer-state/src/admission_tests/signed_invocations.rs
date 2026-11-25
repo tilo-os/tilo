@@ -1275,3 +1275,239 @@ fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
     assert!(refused.contains("not granted"), "{refused}");
     assert_eq!(opened_value(&receiver), "\"kept\"", "never applied");
 }
+
+/// The app whose records are the workspace's folder, and the record of its tree.
+const FILES: &str = tilo_app_id::apps::FILE_EXPLORER;
+const FILES_RECORD: &str = "files-tree";
+
+/// The fixture's workspace, its folder's tree kept beside the test record.
+fn seeded_with_files() -> Seeded {
+    let (a, ac, b, bc, now) = fixtures();
+    let mut peer = StatePeer::new(
+        WORKSPACE,
+        ac.clone(),
+        vec![ac.clone(), bc.clone()],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "value", "seed").unwrap();
+    doc.commit_edit("fixture", "value", &ac.user_public_key);
+    peer.install_seed(
+        SeedState {
+            workspace_changes: seed_workspace(WORKSPACE, &ac, &[ac.clone(), bc.clone()]).unwrap(),
+            documents: vec![SeedDocument {
+                app_id: FILES.into(),
+                document_id: FILES_RECORD.into(),
+                kind: collab_types::FILES_TREE_KIND.into(),
+                bytes: doc.save(),
+            }],
+        },
+        &a,
+        now,
+    )
+    .unwrap();
+    (peer, a, ac, b, bc, now)
+}
+
+/// The workspace's `open` of Files given `argument`, as `cert`'s device signed it.
+fn files_open(
+    argument: serde_json::Value,
+    cert: &DeviceCert,
+    key: &SigningKey,
+    now: SystemTime,
+) -> InvokeRequest {
+    let mut request = InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: tilo_actions::remote::workspace_provider(WORKSPACE),
+            address: ActionAddress::new(
+                format!(
+                    "{}{FILES}",
+                    tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
+                ),
+                tilo_actions::remote::APPLICATION_OPEN_ACTION,
+            ),
+        },
+        argument: InvokeArgument::Json(argument.as_object().cloned().unwrap()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    request.signed = Some(Box::new(
+        sign_invocation_now(WORKSPACE, &request, cert, key, now_ns(now)).unwrap(),
+    ));
+    request
+}
+
+/// The change of the workspace's tree a host makes for `request`: the tree's verbs `verbs`,
+/// done for `invoker`, keeping the request as its caller signed it.
+fn tree_change(
+    request: &InvokeRequest,
+    invoker: tilo_actions::ActionInvoker,
+    verbs: &[&'static str],
+) -> ActionContext {
+    let kind = collab_types::FILES_TREE_KIND;
+    let did = |verb: &str| {
+        Did::Verb(tilo_actions::VerbCall::new(
+            tilo_actions::ActionKey::new(FILES, kind, verb),
+            [],
+        ))
+    };
+    let what = match verbs {
+        [verb] => did(verb),
+        verbs => Did::Group(tilo_actions::GroupOf {
+            members: verbs.iter().map(|verb| did(verb)).collect(),
+            count: u32::try_from(verbs.len()).unwrap(),
+            distinct: verbs.iter().map(|verb| did(verb)).collect(),
+        }),
+    };
+    ActionContext {
+        what: Some(what),
+        invoker: Some(invoker),
+        source_invocation: Some(request.invocation),
+        signed: SignedCall::of(request).map(Box::new),
+        ..ActionContext::for_resource(FILES_RECORD, kind, "Files")
+    }
+}
+
+/// The write of the tree change `context` by `signer`'s device, as a peer sends it.
+fn tree_written(
+    copy: &StatePeer,
+    signer: &SigningKey,
+    context: &ActionContext,
+    value: &str,
+    now: SystemTime,
+) -> NeighbourMsg {
+    let mut envelope = unsigned_commit_at(
+        copy,
+        (FILES, FILES_RECORD),
+        signer,
+        &context.change_message().unwrap(),
+        value,
+        now,
+    );
+    collab_types::sign_op(&mut envelope, signer).unwrap();
+    document_message_at((FILES, FILES_RECORD), envelope)
+}
+
+fn tree_value(peer: &StatePeer) -> String {
+    AutoCommit::load(&peer.document(FILES, FILES_RECORD).unwrap())
+        .unwrap()
+        .get(ROOT, "value")
+        .unwrap()
+        .unwrap()
+        .0
+        .to_string()
+}
+
+tilo_test_env::scenario! {
+    fn a_put_into_the_workspaces_folder_carries_the_open_its_caller_signed;
+
+    phase the_tree_change_of_a_signed_open_given_content_is_admitted;
+    {
+        let (mut receiver, a, ac, b, _bc, now) = seeded_with_files();
+        // The person asked their device to put two files into a new folder; the device that
+        // keeps the tree made it as one change of the tree, and another replica takes it in.
+        let request = files_open(
+            serde_json::json!({"files": [
+                {"content": "tilo.content:aa", "name": "a.md", "dir": "Inbox"},
+                {"content": "tilo.content:bb", "name": "b.md", "dir": "Inbox"},
+            ]}),
+            &ac,
+            &a,
+            now,
+        );
+        let context = tree_change(&request, caller_invoker(&ac), &["new-folder", "new-file"]);
+        let message = tree_written(&receiver, &b, &context, "put", now);
+        take(&mut receiver, message, now).expect("the person signed the open the change keeps");
+        assert!(tree_value(&receiver).contains("put"), "{}", tree_value(&receiver));
+    }
+
+    phase a_tampered_argument_or_another_signer_is_refused;
+    {
+        let (mut receiver, a, ac, b, _bc, now) = seeded_with_files();
+        let request = files_open(
+            serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
+            &ac,
+            &a,
+            now,
+        );
+        // The host kept other content than the person signed for.
+        let mut tampered = tree_change(&request, caller_invoker(&ac), &["new-file"]);
+        tampered.signed.as_mut().unwrap().argument = Some(InvokeArgument::Json(
+            serde_json::json!({"content": "tilo.content:ff", "name": "a.md"})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        ));
+        let message = tree_written(&receiver, &b, &tampered, "tampered", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("arguments"), "{}", refused.reason);
+
+        // Another member signed the open, and the change names the owner as having asked.
+        let (key, cert, _person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        let request = files_open(
+            serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
+            &cert,
+            &key,
+            now,
+        );
+        let misnamed = tree_change(&request, caller_invoker(&ac), &["new-file"]);
+        let message = tree_written(&receiver, &b, &misnamed, "misnamed", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("does not name"), "{}", refused.reason);
+        assert!(tree_value(&receiver).contains("seed"), "never applied: {}", tree_value(&receiver));
+    }
+
+    phase an_open_naming_no_content_or_a_verb_no_put_takes_is_refused;
+    {
+        let (mut receiver, a, ac, b, _bc, now) = seeded_with_files();
+        // A plain open of the app, which starts it, changes no file.
+        let plain = files_open(serde_json::json!({}), &ac, &a, now);
+        let context = tree_change(&plain, caller_invoker(&ac), &["new-file"]);
+        let message = tree_written(&receiver, &b, &context, "plain", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("another action"), "{}", refused.reason);
+        // A put moves nothing to the trash.
+        let put = files_open(
+            serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
+            &ac,
+            &a,
+            now,
+        );
+        let context = tree_change(&put, caller_invoker(&ac), &["new-file", "trash"]);
+        let message = tree_written(&receiver, &b, &context, "trashed", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("another action"), "{}", refused.reason);
+        assert!(tree_value(&receiver).contains("seed"), "never applied: {}", tree_value(&receiver));
+    }
+
+    phase a_put_outside_the_callers_grants_is_refused;
+    {
+        let (mut receiver, a, _ac, b, _bc, now) = seeded_with_files();
+        let (key, cert, person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        receiver
+            .governance_mut()
+            .set_member_role(person, crate::join::Role::Viewer, &a, now)
+            .unwrap();
+        // A member who may only read the workspace signed the open: the change is decided by
+        // their own grants on the tree's verbs, and they may make no file.
+        let request = files_open(
+            serde_json::json!({"content": "tilo.content:aa", "name": "a.md"}),
+            &cert,
+            &key,
+            now,
+        );
+        let context = tree_change(&request, caller_invoker(&cert), &["new-file"]);
+        let message = tree_written(&receiver, &b, &context, "viewer's", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("not granted"), "{}", refused.reason);
+        assert!(tree_value(&receiver).contains("seed"), "never applied: {}", tree_value(&receiver));
+    }
+}
