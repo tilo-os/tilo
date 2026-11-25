@@ -72,8 +72,8 @@ fn fixture() -> Fixture {
         fs_protocol::tree::FILES_APP,
         &fs_protocol::tree::document_id(),
     );
-    workspace.allow_agent("porter", KindSet::READ);
-    workspace.allow(Grantee::agent("porter"), &records, KindSet::READ_UNDOABLE);
+    workspace.allow(Grantee::agent("porter", owner_id()), &TreePath::root(), KindSet::READ);
+    workspace.allow(Grantee::agent("porter", owner_id()), &records, KindSet::READ_UNDOABLE);
     for verb in [
         fs_protocol::file_action::verbs::NEW_FOLDER,
         fs_protocol::file_action::verbs::NEW_FILE,
@@ -81,7 +81,7 @@ fn fixture() -> Fixture {
     ] {
         let node =
             TreePath::workspace(&id).joined(&fs_protocol::file_action::verb_node(None, verb));
-        workspace.allow(Grantee::agent("porter"), &node, KindSet::READ_UNDOABLE);
+        workspace.allow(Grantee::agent("porter", owner_id()), &node, KindSet::READ_UNDOABLE);
     }
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
