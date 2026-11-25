@@ -229,6 +229,7 @@ fn message_of(workspace: WorkspaceId, write: &WorkspaceDocumentWrite) -> Neighbo
 }
 
 /// How long a frame a link carried stays in the record at most once nothing else publishes it.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const SENT_WITHIN: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// A change to the frames this device keeps of a workspace, waiting for the publication that
@@ -758,9 +759,9 @@ impl NativeWorkspaceOwner {
     }
 
     /// Drop `frame`, one of this device's own, once a link carried it to a peer. It leaves the
-    /// record with the record's next publication, and within [`SENT_WITHIN`] when nothing else
-    /// publishes it: a device that stops before then sends it again, which its peer takes as a
-    /// duplicate.
+    /// record with the record's next publication, or at once on a page and within a quarter second
+    /// on a computer when nothing else publishes it: a device that stops before then sends it
+    /// again, which its peer takes as a duplicate.
     ///
     /// # Errors
     /// The workspace is not held here, or the record could not be made durable.
@@ -772,33 +773,34 @@ impl NativeWorkspaceOwner {
             !std::mem::replace(&mut due.flushing, true)
         };
         if flusher {
+            #[cfg(not(target_arch = "wasm32"))]
             self.flush_sent_within()?;
+            #[cfg(target_arch = "wasm32")]
+            self.flush_sent_within();
         }
         Ok(())
     }
 
-    /// Publish what waits within [`SENT_WITHIN`], or now where nothing runs beside this device's
-    /// caller (a page).
+    /// Publish what waits within [`SENT_WITHIN`], once that passes.
+    #[cfg(not(target_arch = "wasm32"))]
     fn flush_sent_within(&self) -> Result<(), String> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let owner = self.downgrade();
-            std::thread::Builder::new()
-                .name("sent-frames".into())
-                .spawn(move || {
-                    std::thread::sleep(SENT_WITHIN);
-                    if let Some(owner) = owner.upgrade() {
-                        owner.flush_sent();
-                    }
-                })
-                .map(drop)
-                .map_err(|error| error.to_string())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.flush_sent();
-            Ok(())
-        }
+        let owner = self.downgrade();
+        std::thread::Builder::new()
+            .name("sent-frames".into())
+            .spawn(move || {
+                std::thread::sleep(SENT_WITHIN);
+                if let Some(owner) = owner.upgrade() {
+                    owner.flush_sent();
+                }
+            })
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Publish what waits, now where nothing runs beside this device's caller (a page).
+    #[cfg(target_arch = "wasm32")]
+    fn flush_sent_within(&self) {
+        self.flush_sent();
     }
 
     /// Publish every workspace's frames that wait.
