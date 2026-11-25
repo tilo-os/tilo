@@ -284,7 +284,12 @@ fn collect_targets_called(
             .map(crate::a11y::AccessBounds::to_rect)
             .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0)
             .unwrap_or_else(|| w.get_rect());
-        out.insert(id.to_string(), rect);
+        // A control whose widget was never laid out has no place on the window: what names it
+        // then is only the accessibility box synthesized around it, which reads at the origin
+        // and lands a press on the window's chrome. Nothing that has no place is a target.
+        if w.get_rect().area() > 0.0 {
+            out.insert(id.to_string(), rect);
+        }
     }
     // Affordances a widget paints into its own rect instead of composing children of their own:
     // a strip's labels, a window's tabs, a launchpad card. They are named here where they stand,
