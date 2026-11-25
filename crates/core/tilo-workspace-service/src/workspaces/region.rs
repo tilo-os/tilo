@@ -9,18 +9,29 @@
 //! and reaches their other devices as any workspace resource does. Only the person on a device
 //! of theirs reads or changes it; an agent's request is refused, unknown and forbidden being
 //! the same answer, and a device that is not theirs keeps none of it.
+//!
+//! The device that keeps their workspace answers them itself ([`register`]), so a page's own
+//! call needs no host: the one region every view this device renders for them reads.
+
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use tilo_actions::remote::ActionCallError::{self, UnknownAction};
 use tilo_actions::remote::formats::{self, BrowserZone, ChooseZone, Formats, SetFormats};
-use tilo_actions::remote::{Caller, InvokeRequest};
+use tilo_actions::remote::{
+    ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState,
+    InvokeRequest, Pending, ReceiptStatus,
+};
+use tilo_actions::{ActionOutput, InvocationId};
 use tilo_resource::{Invoke, Model, Refusal, resource};
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::DeviceCert;
 
+use super::WeakWorkspaces;
 use super::Workspaces;
 use super::person_settings::{answer, argument};
 use super::person_workspace;
+use super::providers::Reach;
 
 /// The resource of the person's own workspace their region is in.
 pub const REGION: (&str, &str) = ("so.tilo.region", "region");
@@ -219,6 +230,16 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
         let person = Self::asking_person(caller, certificate, workspace_id)?;
+        self.answer_formats(&person, request).await
+    }
+
+    /// Answer `request`, one of [`formats`]'s actions, for `person`: the one answer a page on a
+    /// device of theirs, another device of theirs and this device's own dispatch all get.
+    async fn answer_formats(
+        &self,
+        person: &[u8; 32],
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
         if request.target.address.resource != formats::RESOURCE {
             return Err(UnknownAction);
         }
@@ -251,18 +272,112 @@ impl Workspaces {
             _ => return Err(UnknownAction),
         };
         let changed = match action {
-            Some(action) => self.change_region(&person, action).await,
-            None if self.region_workspace(&person).is_none() => Err(NOT_THEIRS.to_owned()),
+            Some(action) => self.change_region(person, action).await,
+            None if self.region_workspace(person).is_none() => Err(NOT_THEIRS.to_owned()),
             None => Ok(()),
         };
         let kept = match changed {
             Ok(()) => Ok(self
-                .read_region(&person)
+                .read_region(person)
                 .await
                 .map(|region| region.formats())
                 .unwrap_or_default()),
             Err(reason) => Err(reason),
         };
         answer(&kept)
+    }
+}
+
+/// Answer the person's formats on this device from now on, for the workspace it keeps for them:
+/// a page tells a device of theirs the clock and zone they chose, and every view this device
+/// renders for them reads it, with no host to ask.
+///
+/// # Panics
+/// Called outside a reactor: a call reaches the region on the reactor it was registered on.
+pub fn register(workspaces: &Workspaces) {
+    let runtime = tokio::runtime::Handle::current();
+    workspaces.providers().provide(
+        formats::PROVIDER,
+        formats::PROVIDER,
+        Reach::ThisDevice,
+        Arc::new(RegionActions {
+            workspaces: workspaces.downgrade(),
+            runtime,
+        }),
+    );
+}
+
+/// The person's region, as this device answers it for them on it.
+struct RegionActions {
+    workspaces: WeakWorkspaces,
+    /// Where a call reaches the region: reading and changing it reads the workspace, which is
+    /// asynchronous.
+    runtime: tokio::runtime::Handle,
+}
+
+impl ActionProvider for RegionActions {
+    fn serves(&self, provider: &str) -> bool {
+        provider == formats::PROVIDER
+    }
+
+    /// The person asks for their formats by address, as their page does: nothing is listed.
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Ok(CataloguePage::from_rows(
+            "0".to_owned(),
+            Vec::new(),
+            &query,
+        )))
+    }
+
+    /// Answered once the action ran: its receipt says how it ended, and nothing is left to
+    /// follow.
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let Some(workspaces) = self.workspaces.upgrade() else {
+            return Pending::ready(Err(ActionCallError::Unavailable {
+                reason: "this device is shutting down".into(),
+            }));
+        };
+        // The formats and zone are the person's alone: no agent and no app asks them through a
+        // device's dispatch, and only a device that is theirs answers them.
+        let person = workspaces.device_cert().user_public_key;
+        let theirs = caller.acting().is_person()
+            && caller.acting().app().is_none()
+            && caller.acting().person_id() == Some(hex::encode(person).as_str());
+        if !theirs {
+            return Pending::ready(Err(UnknownAction));
+        }
+        let (done, answer) = tilo_actions::remote::pending();
+        let invocation = request.invocation;
+        let runtime = self.runtime.clone();
+        runtime.spawn(async move {
+            let status = match Box::pin(workspaces.answer_formats(&person, &request)).await {
+                Ok(value) => ReceiptStatus::Completed {
+                    output: ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                },
+                Err(error) => ReceiptStatus::Rejected { error },
+            };
+            done.complete(Ok(InvocationReceipt { invocation, status }));
+        });
+        answer
+    }
+
+    /// Answered once it ran: there is nothing to follow.
+    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 }

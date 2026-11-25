@@ -318,6 +318,11 @@ impl ServiceSessions {
         // the person's list), applied here for whichever device of a workspace asks.
         #[cfg(feature = "agents")]
         crate::resource_actions::register(&workspaces);
+        // The person's formats and zone where this device keeps their workspace: their page tells
+        // a device of theirs the clock and zone they chose, and this one answers both without a
+        // host to ask.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::workspaces::region::register(&workspaces);
         // The workspaces held here admit through their governance on this device's dispatch,
         // founded here or not.
         sessions.serve_governance(
