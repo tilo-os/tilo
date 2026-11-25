@@ -95,6 +95,7 @@ impl Checker<'_> {
             return Ex::error();
         }
         self.st.facts.mutates = true;
+        self.writes_field(key, f);
         let fid = Ex::str(&f.id);
         match (&f.ty, m) {
             (Ty::Collection(t), "insert") => {

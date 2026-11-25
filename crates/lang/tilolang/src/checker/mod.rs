@@ -995,6 +995,46 @@ impl Checker<'_> {
         }
     }
 
+    /// An action's write of `field` of a record of `key`: one that reaches the outside service
+    /// its type is kept by makes the action reach outside ([`Self::reaches_origin`]).
+    fn writes_field(&mut self, key: &TypeKey, field: &crate::resolve::FieldInfo) {
+        if self.reaches_origin(key, field) {
+            self.st.facts.outside = true;
+        }
+    }
+
+    /// Whether writing `field` of a record of `key` changes what an outside service keeps: a
+    /// field of the type's origin kind that people change, which the service is told, or a
+    /// collection of records an origin keeps, whose insert or removal the service is told too.
+    /// Such a change is an outside effect whoever makes it: an agent's asks its person, as any
+    /// call reaching outside does. A kind its origin derives (the session's layout) stays on the
+    /// device, and a scenario's records stand in for the service.
+    fn reaches_origin(&self, key: &TypeKey, field: &crate::resolve::FieldInfo) -> bool {
+        if self.st.written == Written::Scenario {
+            return false;
+        }
+        let kept = |key: &TypeKey| {
+            self.env
+                .type_info(key)
+                .and_then(|info| info.origin.as_deref())
+                .and_then(crate::origin::kind)
+                .filter(|kind| !kind.derived)
+        };
+        if kept(key)
+            .and_then(|kind| kind.field(&field.name))
+            .is_some_and(|of| of.people)
+        {
+            return true;
+        }
+        match &field.ty {
+            Ty::Collection(item) | Ty::List(item) => match item.as_ref() {
+                Ty::Record(item) => kept(item).is_some(),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     fn show(&self, ty: &Ty) -> String {
         ty.display(&self.env.app)
     }
@@ -2119,6 +2159,7 @@ impl Checker<'_> {
             return;
         }
         self.st.facts.mutates = true;
+        self.writes_field(&key, &f);
         if f.merge == MergeKind::Structural {
             self.err("E033", span, format!("`{}` is a {} field and cannot be assigned; change it with its methods (`.insert`, `.remove`, `.move`, `.add`, `.put`)", f.name, f.ty.display(&self.env.app)));
             let _ = self.expr(value, None);

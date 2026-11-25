@@ -2,6 +2,7 @@
 //! with it, and the window a repeat's rule is expanded over.
 
 use crate::common::{codes, compile_body};
+use tilolang::types::EffectClass;
 
 /// The calendar kinds of an app whose entries repeat and are answered.
 const CALENDAR: &str = "type Calendar (origin: caldav.calendar) {\n    name: Text\n    color: Text\n    writable: Bool\n}\n\
@@ -104,5 +105,50 @@ tilo_test_env::scenario! {
             action window(e: E) uses time {\n\
                 std.occurrences(e.title, e.title, e.title, e.title, e.title, e.title)\n}";
         assert_eq!(codes(wrong), ["E020", "E020", "E020"]);
+    }
+}
+
+tilo_test_env::scenario! {
+    /// What an entry's server keeps is changed there: an action that changes it reaches outside,
+    /// whoever calls it, and one that changes what stays in the workspace does not.
+    fn a_change_that_reaches_the_server_is_an_outside_effect;
+
+    phase each_write_is_classed_by_where_it_lands;
+    {
+        let src = "type Calendar (origin: caldav.calendar) {\n    name: Text\n    writable: Bool\n}\n\
+            type Attendee (origin: caldav.attendee) {\n    name: Text\n    email: Text\n    status: Text\n    role: Text\n}\n\
+            type Event (origin: caldav.event, title: title) {\n    title: Text\n    start: Text\n\
+                categories: Set<Text>\n    attendees: Collection<Attendee>\n    calendar: Option<Calendar>\n\
+                project: Text merge register\n    mine: Text\n}\n\
+            type Calendars {\n    events: Collection<Event>\n    notes: Collection<Note>\n}\n\
+            type Note {\n    text: Text\n}\n\
+            action retitle(e: Event) {\n    e.title = \"Moved\"\n}\n\
+            action file(e: Event) {\n    e.categories.add(\"Travel\")\n}\n\
+            action invite(e: Event) {\n    e.attendees.insert(Attendee(name: \"Bo\", email: \"bo@example.test\"))\n}\n\
+            action make(c: Calendars) {\n    c.events.insert(Event(title: \"New\"))\n}\n\
+            action drop(c: Calendars, e: Event) {\n    c.events.remove(e)\n}\n\
+            action rename(k: Calendar) {\n    k.name = \"Work\"\n}\n\
+            action keep_mine(e: Event) {\n    e.mine = \"only here\"\n}\n\
+            action note(c: Calendars) {\n    c.notes.insert(Note(text: \"here\"))\n}\n\
+            action both(e: Event) {\n    keep_mine(e)\n    retitle(e)\n}\n\
+            action read(e: Event) -> Text {\n    e.title\n}";
+        assert!(codes(src).is_empty(), "{:?}", codes(src));
+        let compiled = compile_body(src);
+        let class = |name: &str| {
+            compiled
+                .meta
+                .actions
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap_or_else(|| panic!("the action {name}"))
+                .class
+        };
+        for reaching in ["retitle", "file", "invite", "make", "drop", "rename", "both"] {
+            assert_eq!(class(reaching), EffectClass::Outside, "{reaching} changes what the server keeps");
+        }
+        for staying in ["keep_mine", "note"] {
+            assert_eq!(class(staying), EffectClass::Undoable, "{staying} changes what stays here");
+        }
+        assert_eq!(class("read"), EffectClass::Read);
     }
 }
