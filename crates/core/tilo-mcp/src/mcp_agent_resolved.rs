@@ -253,8 +253,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Whether the installed app `app_id` declares `action` in the surface its package
     /// publishes: the actions its resources offer, and those that open a window. `None` when
     /// the workspace lists no surface for it here, or one that does not read.
+    ///
+    /// What this device and the caller's workspace answer for the app is asked, never the
+    /// fleet's compiled copy of that package: the app installed here may be another version,
+    /// and refusing an action the fleet's copy lacks would refuse one this app has.
     async fn declares_action(&self, app_id: &str, action: &str) -> Option<bool> {
-        let surface = self.surface_bytes(app_id).await?;
+        let surface = crate::offered::installed_surface(&self.tree, app_id).await?;
         let text = String::from_utf8_lossy(&surface);
         let file = collab_types::surface::SurfaceFile::from_json(text.as_ref()).ok()?;
         Some(crate::offered::declared(&file, action).is_some())

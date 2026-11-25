@@ -52,6 +52,29 @@ pub async fn published_surface<P>(tree: &Tree<P>, app_id: &str) -> Option<Vec<u8
 where
     P: ActionProvider + Sync + Clone + Send + 'static,
 {
+    if let Some(surface) = installed_surface(tree, app_id).await {
+        return Some(surface);
+    }
+    // An app of the fleet answers what its signed package publishes even when this computer
+    // has neither started it nor kept its package: the fleet compiles each app's surface in,
+    // so every installed app's types are readable on a fresh workspace.
+    if let Some(surface) = app_fleet::surface(app_id)
+        && SurfaceFile::compiled(surface.as_bytes()).is_ok()
+    {
+        return Some(surface.as_bytes().to_vec());
+    }
+    None
+}
+
+/// [`published_surface`] as this device and the caller's workspace answer it: the surface this
+/// process runs the app with, the signed package the caller's catalogue lists for it, or the one
+/// its catalogue row carries. The fleet's compiled copy of some package is not asked: an app
+/// installed here may be another version than the fleet's, and an action its own build lacks is
+/// not one the app here is without.
+pub async fn installed_surface<P>(tree: &Tree<P>, app_id: &str) -> Option<Vec<u8>>
+where
+    P: ActionProvider + Sync + Clone + Send + 'static,
+{
     if let Some(bytes) = collab_types::app_surface::bytes_of(app_id) {
         return Some(bytes.to_vec());
     }
@@ -63,14 +86,6 @@ where
             .and_then(collab_types::surface::canonical_json)
     {
         return Some(surface.into_bytes());
-    }
-    // An app of the fleet answers what its signed package publishes even when this computer
-    // has neither started it nor kept its package: the fleet compiles each app's surface in,
-    // so every installed app's types are readable on a fresh workspace.
-    if let Some(surface) = app_fleet::surface(app_id)
-        && SurfaceFile::compiled(surface.as_bytes()).is_ok()
-    {
-        return Some(surface.as_bytes().to_vec());
     }
     // The workspace publishes its own actions: its catalogue root carries the surface, and no
     // installed application names it.
