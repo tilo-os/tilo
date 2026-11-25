@@ -526,8 +526,7 @@ fn semantic_locus_refuses_a_frame_local_projected_resource_identity() {
             .durable_identity,
         "fixture sits below an unkeyed parent"
     );
-    let encoded =
-        percent_encoding::utf8_percent_encode(target.as_str(), percent_encoding::NON_ALPHANUMERIC);
+    let encoded = crate::uri::encode_component(target.as_str());
     let mut event = locus_interaction(&format!("ui:{encoded}"));
     event.action.id = "activate".into();
     assert_eq!(driver.semantic_locus(&event), None);

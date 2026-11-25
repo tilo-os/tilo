@@ -992,10 +992,10 @@ impl SemanticTree {
                     .name
                     .clone()
                     .unwrap_or_else(|| format!("{:?}", node.role));
-                let encoded_node_id = percent_encoding::utf8_percent_encode(
-                    node.id.as_str(),
-                    percent_encoding::NON_ALPHANUMERIC,
-                );
+                // The node's id as the URI component it is: the unreserved characters
+                // (`-`, `.`, `_`, `~`) stay as they are, so an address still reads as the
+                // control it names.
+                let encoded_node_id = crate::uri::encode_component(node.id.as_str());
                 let mut resource =
                     ResourceSpec::new(format!("ui:{encoded_node_id}"), "tilo.ui.control", label);
                 for (action, verb) in verbs {

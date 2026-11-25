@@ -200,10 +200,7 @@ fn visit_action_ui_routes<'tree>(
             let Some(semantic_id) = path.last() else {
                 continue;
             };
-            let encoded_node_id = percent_encoding::utf8_percent_encode(
-                semantic_id.as_str(),
-                percent_encoding::NON_ALPHANUMERIC,
-            );
+            let encoded_node_id = crate::uri::encode_component(semantic_id.as_str());
             let semantic_address = address.resource == format!("ui:{encoded_node_id}")
                 && tree.action(semantic_id, &address.action).is_some();
             let matches_address = semantic_address
