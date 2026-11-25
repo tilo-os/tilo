@@ -411,7 +411,7 @@ tilo_test_env::scenario! {
         assert!(
             find_accessible(
                 &app,
-                &crate::setup::strings::t("installer-storage-keep-guidance")
+                &storage_text("installer-storage-keep-guidance")
             )
             .is_some()
         );
@@ -541,7 +541,7 @@ tilo_test_env::scenario! {
             );
             assert!(find_accessible(&app, &capacity).is_some());
             assert!(
-                find_accessible(&app, &crate::setup::strings::t(LINUX_ALONGSIDE_PREPARATION))
+                find_accessible(&app, &storage_text(LINUX_ALONGSIDE_PREPARATION))
                     .is_none()
             );
             assert!(
@@ -595,7 +595,7 @@ tilo_test_env::scenario! {
         app.step = Step::Disk;
         let _ = build(&mut app);
         let guidance = app.alongside_storage_guidance();
-        assert!(guidance.contains(&crate::setup::strings::t(LINUX_ALONGSIDE_PREPARATION)));
+        assert!(guidance.contains(&storage_text(LINUX_ALONGSIDE_PREPARATION)));
         assert!(!guidance.contains(&crate::setup::strings::t(LINUX_ALONGSIDE_READY)));
         assert!(find_accessible(&app, &guidance).is_some());
         assert!(find_accessible(&app, &crate::setup::strings::t(LINUX_ALONGSIDE_READY)).is_none());
@@ -685,7 +685,7 @@ tilo_test_env::scenario! {
                 find_accessible(&app, &crate::setup::strings::t(LINUX_ALONGSIDE_READY)).is_none()
             );
             assert!(
-                find_accessible(&app, &crate::setup::strings::t(LINUX_ALONGSIDE_PREPARATION))
+                find_accessible(&app, &storage_text(LINUX_ALONGSIDE_PREPARATION))
                     .is_none()
             );
             app.step = Step::Review;

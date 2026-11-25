@@ -500,6 +500,11 @@ impl InstallerApp {
                 Some(("installer_disk", t("installer-blocked-installer-disk")))
             } else if disk.read_only {
                 Some(("read_only", t("installer-blocked-read-only")))
+            } else if disk.too_small() {
+                Some((
+                    "too_small",
+                    crate::setup::destination::disk_row::too_small(),
+                ))
             } else {
                 None
             }
@@ -537,6 +542,8 @@ impl InstallerApp {
                 "installer medium"
             } else if disk.read_only {
                 "read-only"
+            } else if disk.too_small() {
+                "too small"
             } else {
                 "available"
             };
@@ -926,10 +933,9 @@ impl InstallerApp {
                             &[("device", ArgValue::Text(device.clone()))],
                         )
                     })?;
-                let usable = self
-                    .disks
-                    .get(index)
-                    .is_some_and(|disk| !disk.blocks_install() && !disk.read_only);
+                let usable = self.disks.get(index).is_some_and(|disk| {
+                    !disk.blocks_install() && !disk.read_only && !disk.too_small()
+                });
                 if !usable {
                     return Err(format!("{device} cannot be an installation target"));
                 }
@@ -983,7 +989,10 @@ impl InstallerApp {
                     .and_then(|n| n.checked_mul(1 << 30))
                     .ok_or_else(|| "Tilo capacity is outside the supported range".to_owned())?;
                 full.with_capacity_bytes(bytes).ok_or_else(|| {
-                    "Choose at least 35 GiB within the selected unallocated region".to_owned()
+                    format!(
+                        "Choose at least {} within the selected unallocated region",
+                        ui::format::memory(imager_backend::MIN_TARGET_BYTES)
+                    )
                 })?;
                 self.alongside_capacity = Some((disk.clone(), full, bytes));
                 self.clear_erase_confirmation();

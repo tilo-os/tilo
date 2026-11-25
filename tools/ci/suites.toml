@@ -1191,7 +1191,7 @@ package = "tilo-install-helpers"
 # and all oracle inputs in this package's result key.
 inputs = [
   "os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition",
-  "os/usr/libexec/tilo-installer-profile-extract",
+  "os/usr/share/tilo/install-sizes", "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/tilo-firstboot-user", "crates/os/firstboot-files/",
   "os/usr/libexec/tilo-firstboot-autologin-cleanup",
   "os/usr/libexec/tilo-session-recovery",
@@ -1469,7 +1469,7 @@ readers = [
 package = "imager"
 inputs = [
   "crates/os/block-devices/tests/fixtures/imager.json",
-  "os/usr/libexec/tilo-guided-partition",
+  "os/usr/libexec/tilo-guided-partition", "os/usr/share/tilo/install-sizes",
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/", "os/scripts/",
@@ -1710,6 +1710,12 @@ package = "terminal"
 # A rerun's failing-test fixture is the terminal engine's, read from its source.
 inputs = ["crates/engines/tilo-terminal/src/parse/fixtures/nextest.txt"]
 readers = ["apps/terminal/src/run_tests.rs"]
+
+[[cargo]]
+package = "staging-handoff-model"
+# The install sizes are the file the installer's scripts source.
+inputs = ["os/usr/share/tilo/install-sizes"]
+readers = ["apps/staging-handoff-model/src/sizes.rs"]
 
 [[cargo]]
 package = "settings-sections"

@@ -1,0 +1,12 @@
+# The partitions a Tilo install lays out, in bytes. The installer's scripts source this file
+# (/usr/share/tilo/install-sizes, beside /usr/libexec) and imager-backend reads it when it is
+# built, so the sizes the installer offers and the sizes it checks before writing a disk are one.
+# The least room Tilo takes on a disk is their sum: 35 GiB.
+
+# Tilo keeps several signed UKIs for rollback and repair, which a 100-512 MiB EFI partition
+# cannot hold.
+TILO_ESP_BYTES=2147483648
+# The kernel and initramfs of several boot entries.
+TILO_BOOT_BYTES=1073741824
+# The smallest encrypted root, on an erased disk or beside another system.
+TILO_MIN_ROOT_BYTES=34359738368

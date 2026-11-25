@@ -99,13 +99,13 @@ pub mod test_support;
 /// Every start and size is aligned to this many bytes.
 pub const ALIGN_BYTES: u64 = 1 << 20;
 /// The smallest root installed beside another system.
-pub const MIN_ALONGSIDE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+pub const MIN_ALONGSIDE_BYTES: u64 = staging_handoff_model::sizes::MIN_ROOT_BYTES;
 /// Tilo keeps several signed UKIs for rollback and repair, which a 100--512 MiB ESP cannot hold.
-pub const MIN_ALONGSIDE_ESP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// One 1 GiB boot partition, large enough for the kernel and initramfs of several entries.
-pub const BOOT_BYTES: u64 = 1 << 30;
-/// The installer's guided-alongside minimum: 2 GiB ESP + 1 GiB boot + 32 GiB root.
-pub const MIN_TARGET_BYTES: u64 = MIN_ALONGSIDE_ESP_BYTES + BOOT_BYTES + MIN_ALONGSIDE_BYTES;
+pub const MIN_ALONGSIDE_ESP_BYTES: u64 = staging_handoff_model::sizes::ESP_BYTES;
+/// One boot partition, large enough for the kernel and initramfs of several entries.
+pub const BOOT_BYTES: u64 = staging_handoff_model::sizes::BOOT_BYTES;
+/// The least room Tilo takes on a disk, alongside or erased: ESP, boot and the smallest root.
+pub const MIN_TARGET_BYTES: u64 = staging_handoff_model::sizes::MIN_TILO_BYTES;
 /// GPT type of the staging ESP.
 pub const ESP_TYPE: &str = staging_handoff_model::gpt::EFI_SYSTEM;
 /// Firmware boot option description.

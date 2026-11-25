@@ -7,6 +7,10 @@ set -euo pipefail
 die() { printf 'error: guided partitioning: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 lower() { tr '[:upper:]' '[:lower:]'; }
+# The partition sizes an install lays out (TILO_ESP_BYTES, TILO_BOOT_BYTES,
+# TILO_MIN_ROOT_BYTES), from the file the imager reads them from too.
+# shellcheck source=../share/tilo/install-sizes
+. "${TILO_INSTALL_SIZES:-$(dirname "$(readlink -f "$0")")/../share/tilo/install-sizes}"
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 [ "${1:-}" = create ] || die "usage: $0 create [reviewed plan arguments]"
@@ -87,7 +91,7 @@ done
 [ "$EXPECT_SECTOR" -eq 512 ] || [ "$EXPECT_SECTOR" -eq 4096 ] \
   || die "unsupported logical sector size $EXPECT_SECTOR"
 if [ -n "$BOOT_UUID" ]; then
-  [ "$BOOT_SIZE" -ge 1073741824 ] || die "guided boot must be at least 1 GiB"
+  [ "$BOOT_SIZE" -ge "$TILO_BOOT_BYTES" ] || die "guided boot must be at least $((TILO_BOOT_BYTES / 1073741824)) GiB"
   [ "$BOOT_START" -eq $((EFI_START + EFI_SIZE)) ] || die "boot does not immediately follow EFI"
   [ "$ROOT_START" -eq $((BOOT_START + BOOT_SIZE)) ] || die "root does not immediately follow boot"
   [ $((BOOT_START % EXPECT_SECTOR)) -eq 0 ] && [ $((BOOT_SIZE % EXPECT_SECTOR)) -eq 0 ] \
@@ -95,8 +99,8 @@ if [ -n "$BOOT_UUID" ]; then
 else
   [ "$ROOT_START" -eq $((EFI_START + EFI_SIZE)) ] || die "root does not immediately follow EFI"
 fi
-[ "$EFI_SIZE" -eq 2147483648 ] || die "guided EFI partition must be exactly 2 GiB"
-[ "$ROOT_SIZE" -ge 34359738368 ] || die "guided root must be at least 32 GiB"
+[ "$EFI_SIZE" -eq "$TILO_ESP_BYTES" ] || die "guided EFI partition must be exactly $((TILO_ESP_BYTES / 1073741824)) GiB"
+[ "$ROOT_SIZE" -ge "$TILO_MIN_ROOT_BYTES" ] || die "guided root must be at least $((TILO_MIN_ROOT_BYTES / 1073741824)) GiB"
 [ "$EFI_START" -eq "$FREE_START" ] || die "EFI does not start at the reviewed free extent"
 [ $((ROOT_START + ROOT_SIZE)) -eq $((FREE_START + FREE_SIZE)) ] \
   || die "new partitions do not exactly fill the reviewed free extent"

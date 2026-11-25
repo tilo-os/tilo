@@ -447,6 +447,11 @@ fn tilo_install_enforces_63_char_hostname_before_disk_checks() {
                 "",
             ])
             .env("TILO_INSTALL_TRANSIENT", "1")
+            .env(
+                "TILO_INSTALL_SIZES",
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../os/usr/share/tilo/install-sizes"),
+            )
             .env("PATH", &path_env)
             .stdin(Stdio::null())
             .output_locked()

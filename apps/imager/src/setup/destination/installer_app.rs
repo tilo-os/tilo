@@ -76,6 +76,17 @@ const NEXT_KEY: &str = "imager-installer-next";
 const WINDOWS_ALONGSIDE_PREPARATION: &str = "installer-storage-windows-preparation";
 const LINUX_ALONGSIDE_READY: &str = "installer-storage-linux-ready";
 const LINUX_ALONGSIDE_PREPARATION: &str = "installer-storage-linux-preparation";
+
+/// The text of `key`, which may name the least room Tilo takes on a disk as `$minimum`.
+fn storage_text(key: &str) -> String {
+    crate::setup::strings::t_args(
+        key,
+        &[(
+            "minimum",
+            ui::i18n::ArgValue::Text(ui::format::memory(imager_backend::MIN_TARGET_BYTES)),
+        )],
+    )
+}
 const ALONGSIDE_BOOT_GUIDANCE: &str = "installer-storage-boot-guidance";
 const ALONGSIDE_FILES_GUIDANCE: &str = "installer-storage-files-guidance";
 
@@ -1449,6 +1460,10 @@ impl InstallerApp {
                 self.set_status("This disk is read-only and cannot be used for installation");
                 return;
             }
+            if self.selected_disk_ref().is_some_and(Disk::too_small) {
+                self.set_status(&crate::setup::destination::disk_row::too_small());
+                return;
+            }
             if self
                 .selected_disk_ref()
                 .is_some_and(|disk| !disk.identity_ready())
@@ -2209,7 +2224,7 @@ impl InstallerApp {
                 "install_method",
             )));
         }
-        let guidance = crate::setup::strings::t(if self.install_method == InstallMethod::Erase {
+        let guidance = storage_text(if self.install_method == InstallMethod::Erase {
             "installer-storage-erase-warning"
         } else {
             "installer-storage-keep-guidance"
@@ -2263,7 +2278,10 @@ impl InstallerApp {
         ))));
         children.push(Box::new(
             ui::widget::NumberInput::from_state(&self.capacity_gib)
-                .with_range(35.0, ui::num::f64_of_u64(full.free_size_bytes / (1 << 30)))
+                .with_range(
+                    ui::num::f64_of_u64(imager_backend::MIN_TARGET_BYTES >> 30),
+                    ui::num::f64_of_u64(full.free_size_bytes / (1 << 30)),
+                )
                 .with_step(1.0)
                 .with_suffix("GiB")
                 .with_id("installer.alongside-capacity")
@@ -2348,11 +2366,16 @@ impl InstallerApp {
                 "installer-storage-linux-no-space",
                 &[(
                     "preparation",
-                    crate::setup::strings::t(LINUX_ALONGSIDE_PREPARATION).into(),
+                    storage_text(LINUX_ALONGSIDE_PREPARATION).into(),
                 )],
             );
         }
-        "No safe alongside space was found. Back up your files and use the existing OS's supported partitioning tools to leave at least 35 GiB contiguous unallocated, or prepare an empty Linux root and 1 GiB boot plus 2 GiB EFI partition, then refresh disks. Tilo will not resize existing partitions or switch to Erase automatically.".to_string()
+        format!(
+            "No safe alongside space was found. Back up your files and use the existing OS's supported partitioning tools to leave at least {} contiguous unallocated, or prepare an empty Linux root and {} boot plus {} EFI partition, then refresh disks. Tilo will not resize existing partitions or switch to Erase automatically.",
+            ui::format::memory(imager_backend::MIN_TARGET_BYTES),
+            ui::format::memory(imager_backend::BOOT_BYTES),
+            ui::format::memory(imager_backend::MIN_ALONGSIDE_ESP_BYTES),
+        )
     }
 
     fn compose_guided_extent_choices(
@@ -3408,6 +3431,7 @@ impl InstallerApp {
                 DiskMethodIdentity::of(disk).as_ref() == Some(&identity)
                     && !disk.blocks_install()
                     && !disk.read_only
+                    && !disk.too_small()
             })
         });
         self.reset_disk_method();

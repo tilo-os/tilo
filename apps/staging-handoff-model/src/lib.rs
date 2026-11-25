@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod gpt;
+pub mod sizes;
 
 pub const HANDOFF_FILE: &str = "handoff.json";
 pub const SCHEMA: u32 = 1;

@@ -454,6 +454,12 @@ impl Disk {
         self.is_system && self.internal_plan.is_none()
     }
 
+    /// Too small for Tilo, erased or beside what the disk holds: Tilo's partitions need
+    /// [`crate::MIN_TARGET_BYTES`]. A disk of unknown size is refused by [`Self::identity_ready`].
+    pub fn too_small(&self) -> bool {
+        self.size_bytes > 0 && self.size_bytes < crate::MIN_TARGET_BYTES
+    }
+
     pub fn hosts_staged_installer(&self) -> bool {
         self.internal_plan.is_some()
     }

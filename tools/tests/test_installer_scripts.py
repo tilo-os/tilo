@@ -22,6 +22,7 @@ SCRIPTS = tuple(
     LIBEXEC / name
     for name in (
         "tilo-install",
+        "tilo-guided-partition",
         "tilo-install-boot-menu",
         "tilo-install-efi-artifacts",
         "tilo-installer-profile-extract",
@@ -31,6 +32,7 @@ SCRIPTS = tuple(
         "tilo-verified-boot-install-preflight",
     )
 )
+SIZES = ROOT / "os/usr/share/tilo/install-sizes"
 GIB = 1 << 30
 
 DEFINITION = re.compile(r"^\s*(?:function\s+)?([A-Za-z_][\w:-]*)\s*\(\)", re.MULTILINE)
@@ -115,9 +117,8 @@ class WholeDiskCapacity(unittest.TestCase):
     SOURCE = (LIBEXEC / "tilo-install").read_text()
 
     def run_capacity_check(self, disk_bytes: int) -> subprocess.CompletedProcess[str]:
-        minimum = re.search(r"^MIN_WHOLE_DISK_BYTES=\d+$", self.SOURCE, re.MULTILINE)
         body = re.search(r"^validate_disk_capacity\(\) \{\n.*?^\}$", self.SOURCE, re.MULTILINE | re.DOTALL)
-        assert minimum and body
+        assert body
         with tempfile.TemporaryDirectory() as scratch:
             bin_dir = Path(scratch)
             blockdev = bin_dir / "blockdev"
@@ -131,7 +132,7 @@ class WholeDiskCapacity(unittest.TestCase):
                     "set -euo pipefail",
                     'die() { echo "$*" >&2; exit 1; }',
                     "DISK=/dev/vdb",
-                    minimum.group(0),
+                    f". {SIZES}",
                     body.group(0),
                     "validate_disk_capacity",
                     "echo accepted",

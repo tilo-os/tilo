@@ -90,6 +90,7 @@ impl InstallerApp {
                     "filesystems": disk.partition_filesystems(),
                     "installer_medium": disk.is_system,
                     "read_only": disk.read_only,
+                    "too_small": disk.too_small(),
                     "removable": disk.removable,
                     "selected": self.selected_disk == Some(index),
                     "prepared_alongside": disk.can_install_alongside(),

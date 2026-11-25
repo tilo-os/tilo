@@ -83,7 +83,7 @@ pub enum DestinationEffect {
     #[effect(row)]
     #[effect(label = "installer-storage-use-capacity", on = Storage)]
     SetSize {
-        #[param("Total Tilo capacity in whole GiB (at least 35)")]
+        #[param("Total Tilo capacity in whole GiB, at least the least room Tilo takes")]
         gib: i64,
         #[param("The reviewed disk and free extent the capacity divides")]
         extent: String,
