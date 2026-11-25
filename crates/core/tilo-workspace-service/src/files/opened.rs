@@ -378,7 +378,7 @@ impl OpenedFiles {
             if failed.is_some() {
                 return;
             }
-            let (hash, stored) = match sealing {
+            let (hash, address, stored) = match sealing {
                 Some(keys) => {
                     let (_, cipher) = match keys.seal_content(
                         artifact,
@@ -399,13 +399,10 @@ impl OpenedFiles {
                         failed = Some("inconsistent sealed file chunk length".to_owned());
                         return;
                     }
-                    (hex::encode(blake3::hash(&cipher).as_bytes()), cipher)
+                    let address = *blake3::hash(&cipher).as_bytes();
+                    (hex::encode(address), address, cipher)
                 }
-                None => (hex::encode(part.hash), clear.to_vec()),
-            };
-            let Ok(address) = <[u8; 32]>::try_from(hex::decode(&hash).unwrap_or_default()) else {
-                failed = Some("a chunk was named by no hash".to_owned());
-                return;
+                None => (hex::encode(part.hash), part.hash, clear.to_vec()),
             };
             if !self.shelf.has(&files, &hash) {
                 match self.shelf.keep(&files, &hash, &stored) {
