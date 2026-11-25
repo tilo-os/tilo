@@ -2,8 +2,8 @@
 //! another app's view shows that view where the shell shipped its own, while the menu itself stays
 //! the reading it was, and binding it again while the menu is up swaps the view under it.
 //! The probe is an ordinary app the session starts for the part (`.tests/bin/surface_probe.rs`): it
-//! reads `desktop:window-menu` through the connection the session's broker admits it for, and
-//! reports what it saw.
+//! reads `desktop:window-menu` through the connection the session attests and the device's daemon
+//! serves, and reports what it saw.
 //! A view written in tilolang is not a program the session starts: the session runs it itself, over
 //! the same reading, and its presses reach the menu's own verbs through the session's API. The
 //! view here is compiled against the surface the session publishes for the part, as a person
@@ -106,6 +106,7 @@ view menu(m: desktop.WindowMenu) {
 "#;
 use crate::common::probe::{probe_binary, reading, until_reported};
 use crate::common::tree::layout_tree;
+use tilo_compositor::OutputConfig;
 
 /// The session the probe talks to: headless, its app wire on `socket` , showing one window, keeping
 /// the person's settings as the session does.
@@ -116,6 +117,50 @@ fn session_with(socket: &Path, tree: Layout) -> Session {
         services: vec![Box::new(SettingsService::new())],
         ..Options::default()
     });
+    session.handle().replace_tree(tree);
+    session.step(REFRESH).expect("a turn of the session");
+    session
+}
+
+/// [`session_with`] on a device daemon of its own: a session's apps reach the published resources
+/// through the device's daemon, so a view the session starts for a part reads the part only on the
+/// daemon's wire. The window the menu is for stands on the workspace the person has in front, as a
+/// window does: the shell lays out the workspace records its daemon holds, never a layout of the
+/// test's own.
+fn session_on_a_daemon(socket: &Path) -> Session {
+    let mut session = crate::common::on_its_daemon_with(
+        &[OutputConfig::new(
+            "HEADLESS-1",
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
+        )],
+        |_device| Options {
+            collab: false,
+            app_socket: AppSocket::At(socket.to_path_buf()),
+            services: vec![Box::new(SettingsService::new())],
+            ..Options::default()
+        },
+    );
+    let active = crate::common::wait_for(&mut session, "a workspace in front", |session| {
+        session.handle().read(|tree| {
+            tree.active_workspace()
+                .map(tilo_desktop_model::Workspace::id)
+        })
+    });
+    let mut tree = session.handle().read(Clone::clone);
+    // The window the menu is for, on the workspace in front: the strip and group the other tests'
+    // layout gives it.
+    let strips = layout_tree().workspaces[0].strips.clone();
+    let strip = strips[0].id;
+    let group = strips[0].window_groups[0].id;
+    let workspace = tree
+        .workspaces
+        .iter_mut()
+        .find(|held| held.id() == active)
+        .expect("the workspace in front is the person's");
+    workspace.strips = strips;
+    tree.active_strip.insert(active, strip);
+    tree.active_group.insert(strip, group);
     session.handle().replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
     session
@@ -271,7 +316,7 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
     // The probe is the view that draws the part here: it stays up while the menu is, as a view
     // does, so the session keeps it as the part's.
     environment.set("SURFACE_PROBE_STAY", "1");
-    let mut session = session_with(&socket, layout_tree());
+    let mut session = session_on_a_daemon(&socket);
     session
         .invoke(
             WINDOW_MENU,
@@ -318,6 +363,89 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
         session.read(WINDOW_MENU).expect("the reading"),
         before,
         "rebinding the part never touched the menu the shell publishes"
+    );
+}
+
+#[test]
+fn an_app_the_session_did_not_start_reads_nothing_of_the_part() {
+    // What a part's view reads is the session's, reached through the launch the session records
+    // for the view it starts: a process it never started is refused, though it names itself the
+    // app the part is bound to. Binding a part is no grant to the reading on its own.
+    let _home = TestHome::new().expect("a home of the test's own");
+    let root = crate::common::private_home();
+    let socket = root.path().join("collab.sock");
+    let probe = probe_binary();
+    let mut environment = ScopedEnv::new();
+    installed(&mut environment, "so.tilo.probe-one", &probe);
+    environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
+    // The view the part is bound to stays up as a view does, so the session's own start of it is
+    // what stands beside the process that was never started.
+    environment.set("SURFACE_PROBE_STAY", "1");
+    let mut session = session_on_a_daemon(&socket);
+    session
+        .invoke(
+            WINDOW_MENU,
+            "open",
+            &json!({ "tab": "20" })
+                .as_object()
+                .expect("an object")
+                .clone(),
+        )
+        .expect("the menu opens");
+    let offered = rows(&session);
+    assert!(
+        offered.as_array().is_some_and(|rows| !rows.is_empty()),
+        "the menu is up with rows: {offered}"
+    );
+    // The person binds the part to the app, and the session starts its view: what the reading
+    // reaches is the launch of that view, never the binding alone.
+    bind(&mut session, "so.tilo.probe-one", "menu");
+    until(
+        &mut session,
+        "starts the view bound to the part",
+        |session| session.surfaces().running("window-menu"),
+    );
+
+    // An app on the session's own wire that the session never started, naming itself the app bound
+    // to the part and the workspace in front: the wire attests every launch, so its read is
+    // refused and it is told why.
+    let workspace = session.handle().read(|tree| tree.active.to_string());
+    let (seen, received) = std::sync::mpsc::channel();
+    let asking = socket.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime for the app");
+        runtime.block_on(async move {
+            let mut stream =
+                std::os::unix::net::UnixStream::connect(&asking).expect("the app wire's socket");
+            launcher::services::write_collab_handoff(&mut stream, "so.tilo.probe-one", &workspace)
+                .expect("the launcher names the app on the connection");
+            stream
+                .set_nonblocking(true)
+                .expect("the connection is ready for the runtime");
+            let stream = tokio::net::UnixStream::from_std(stream).expect("a runtime stream");
+            let (reader, writer) = stream.into_split();
+            let (client, carrying) = runtime_collab::CollabClient::over(reader, writer);
+            tokio::spawn(carrying);
+            let refused = client
+                .services()
+                .snapshot(WINDOW_MENU)
+                .await
+                .expect_err("the wire refuses an app the session did not start");
+            seen.send(refused.to_string())
+                .expect("the test waits for the refusal");
+        });
+    });
+    let told = crate::common::wait_for(&mut session, "the refused read", |session| {
+        session.settle_services();
+        session.step(REFRESH).expect("a turn of the session");
+        received.try_recv().ok()
+    });
+    assert!(
+        told.contains("recorded no launch"),
+        "the session refuses the reading to an app it did not start, and says why: {told}"
     );
 }
 
