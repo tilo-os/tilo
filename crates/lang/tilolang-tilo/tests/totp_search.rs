@@ -229,10 +229,6 @@ fn search(entries: Vec<IndexEntry>, needle: &str) -> Vec<tilo_desktop_search::Hi
 /// Two accounts, found by the second one's issuer: the hit names that account, opening it shows
 /// that account's page, and the index holds neither account's key nor a code.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one walk from the system's search to the page the hit opens"
-)]
 fn a_hit_on_an_account_opens_that_account_and_holds_no_key() {
     let (replica, vault) = seat();
     let root = replica.root(APP);
@@ -261,7 +257,12 @@ fn a_hit_on_an_account_opens_that_account_and_holds_no_key() {
     );
     assert!(!held.contains(CODE), "no code reaches the index: {held}");
 
-    // The system's search, by the second account's issuer.
+    let anchor = chosen_account(entries, &root, &github);
+    shows_the_account_it_names(&replica, &anchor, &github, &acme);
+}
+
+/// The system's search, by the second account's issuer: the anchor of the account its hit names.
+fn chosen_account(entries: Vec<IndexEntry>, root: &ResourceRef, github: &ResourceRef) -> String {
     let hits = search(entries, "GitHub");
     let hit = hits
         .iter()
@@ -292,12 +293,21 @@ fn a_hit_on_an_account_opens_that_account_and_holds_no_key() {
         "the hit is the GitHub account, not the one added first"
     );
 
-    // Opening what the hit names: the window's own decision opens the account's default view,
-    // and the page draws that account, not the app's list and not the other account.
+    anchor
+}
+
+/// Opening what the hit names: the window's own decision opens the account's default view,
+/// and the page draws that account, not the app's list and not the other account.
+fn shows_the_account_it_names(
+    replica: &Replica,
+    anchor: &str,
+    github: &ResourceRef,
+    acme: &ResourceRef,
+) {
     let plain = anchor
         .strip_prefix("tl:")
         .and_then(|rest| rest.split_once(':'))
-        .map_or(anchor.as_str(), |(_, id)| id);
+        .map_or(anchor, |(_, id)| id);
     let plan = replica
         .host
         .open_plan(APP, plain, None)
