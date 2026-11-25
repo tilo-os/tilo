@@ -40,6 +40,7 @@ workspace-default-name = My workspace
 # (a trigger, an update of its records) because a member took back the
 # permission installing it gave: it keeps nothing until that is given back.
 app-records-taken-back = { $app } can't keep its records in this workspace any more, so it stopped. A member took back its permission; installing { $app } again, or giving it back under the workspace's Permissions, lets it carry on.
+app-records-not-installed = { $app } isn't installed in this workspace, so it can't keep records here. Install { $app } in the workspace to use it.
 
 # Why a person's own model gave no answer to work done for them, said where
 # they read it, with what they can do about it.

@@ -486,6 +486,10 @@ pub struct ResourceRequestContext {
     founding_refusal: Option<String>,
     /// The kind of the record the route's channel opened, as the app joined it.
     kind: Option<String>,
+    /// Whether the route serves the app's own process, its connection to the device: what it
+    /// writes outside an invocation it serves is the app's own. The device's own callers (the
+    /// shell, a runtime of the device's) write for the device's person.
+    app_process: bool,
 }
 
 impl ResourceRequestContext {
@@ -503,7 +507,21 @@ impl ResourceRequestContext {
             record: None,
             founding_refusal: None,
             kind: None,
+            app_process: false,
         }
+    }
+
+    /// The context of a route that serves the app's own process, its connection to the device.
+    #[must_use]
+    pub const fn of_app_process(mut self) -> Self {
+        self.app_process = true;
+        self
+    }
+
+    /// Whether the route serves the app's own process ([`Self::of_app_process`]).
+    #[must_use]
+    pub const fn serves_app_process(&self) -> bool {
+        self.app_process
     }
 
     /// The context of a route whose channel opened a record of `kind`.

@@ -2430,12 +2430,20 @@ fn stamp_resource_write(
         .acting()
         .person_id()
         .ok_or("this resource route has no caller-scoped signer for the write")?;
-    // What the app writes outside an invocation it serves is the person's at the window,
-    // or the caller's the device opened the view for.
-    let otherwise = context.viewer().map_or_else(
-        || tilo_actions::Acting::person(person),
-        |viewer| viewer.acting().clone(),
-    );
+    // What an app's process writes outside an invocation it serves is its own: a timer, a
+    // background task or a trigger, with nobody at it, is decided by the app's own grants. Only
+    // an invocation delivered to it makes a write the invoker's; that someone looks at its window
+    // lends it nothing. A view the device opened for a caller still writes no more than that
+    // caller may ([`may_write_as_viewer`]). The device's own callers (its shell, a runtime of its
+    // own) write for its person, or for the caller the device opened the view for.
+    let otherwise = if context.serves_app_process() {
+        tilo_actions::Acting::by_app(context.app_id()).in_app(context.app_id())
+    } else {
+        context.viewer().map_or_else(
+            || tilo_actions::Acting::person(person),
+            |viewer| viewer.acting().clone(),
+        )
+    };
     let acting = otherwise.by.clone();
     // The device the write is made on is where a resource it makes live is live.
     let written_on = (
@@ -2455,12 +2463,13 @@ fn stamp_resource_write(
     Ok((Some(acting), unserved))
 }
 
-/// The command names the verb and invocation, and the workspace service names who made it: whoever invoked
-/// the invocation a write serves, when the workspace service delivered that one to the app, and
-/// `otherwise` (the person the route certifies, or the caller its view was opened for) for any
-/// other write, whose resource type and verb are added to `unserved`; the person the route's
-/// caller is, `person`; and the device it was written on, `device` (its key in hex and what it
-/// calls itself), which is where a resource the write makes live is live.
+/// The command names the verb and invocation, and the workspace service names who made it:
+/// whoever invoked the invocation a write serves, when the workspace service delivered that one
+/// to the app, and `otherwise` (the app itself on its own process's route; the device's person,
+/// or the caller its view was opened for, on the device's own) for any other write, whose
+/// resource type and verb are added to `unserved`; the person the route's caller is, `person`;
+/// and the device it was written on, `device` (its key in hex and what it calls itself), which is
+/// where a resource the write makes live is live.
 fn stamp_resource_invoker(
     command: &mut collab_types::store::wire::Command,
     device: &(String, String),

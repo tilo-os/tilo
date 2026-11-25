@@ -12,6 +12,8 @@ use super::super::Workspaces;
 
 /// The message a refused write of an app's own records is said in.
 const TAKEN_BACK: &str = "app-records-taken-back";
+/// The message a refused write of an app no member installed in the workspace is said in.
+const NOT_INSTALLED: &str = "app-records-not-installed";
 
 /// Whether `stamp` names `app` itself as the one who made the write: the app acting by itself,
 /// with no person at it.
@@ -95,9 +97,22 @@ impl Workspaces {
         if keeps {
             return error;
         }
+        // Never installed, nothing was taken back: the app is installed, not given its
+        // permission back.
+        let Ok(state) = self.workspace(workspace).await else {
+            return error;
+        };
+        let installed = {
+            let governed = state.lock().await;
+            governed.peer().governance().app_version(app).is_some()
+        };
         let mut args = tilo_history::FluentArgs::new();
         args.set("app", app_name(app));
-        crate::i18n::message(None, TAKEN_BACK, &args)
+        crate::i18n::message(
+            None,
+            if installed { TAKEN_BACK } else { NOT_INSTALLED },
+            &args,
+        )
     }
 }
 
@@ -115,5 +130,10 @@ mod tests {
         let german = crate::i18n::message(Some("de-DE"), TAKEN_BACK, &args);
         assert_ne!(german, said, "the message is translated");
         assert!(german.contains("Clocks"), "{german}");
+        let absent = crate::i18n::message(None, NOT_INSTALLED, &args);
+        assert!(absent.contains("Clocks") && absent.contains("install"), "{absent}");
+        assert!(!absent.contains("took back"), "{absent}");
+        let german = crate::i18n::message(Some("de-DE"), NOT_INSTALLED, &args);
+        assert_ne!(german, absent, "the message is translated");
     }
 }

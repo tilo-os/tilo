@@ -373,6 +373,7 @@ impl JoinedChannel {
                 route.cluster_id.clone(),
                 caller,
             )
+            .of_app_process()
             .serving(delivered_to)
             .opened_for(opened_for);
             if let Some(record) = record {

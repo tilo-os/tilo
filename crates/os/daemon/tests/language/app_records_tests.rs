@@ -141,7 +141,7 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
             order: None,
             fields: std::collections::BTreeMap::new(),
         },
-        stamp: Default::default(),
+        stamp: tilo_resource_store::Stamp::default(),
     };
     match workspaces
         .record_command(&workspace, APP, &person, nameless)
@@ -227,4 +227,83 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
     let (ran, said) = ring_next(&workspaces, &workspace, &packages, &person).await;
     assert_eq!(ran, 1, "Clocks writes its own record again: {said:?}");
     assert!(said.is_empty(), "{said:?}");
+}
+
+// USER REQUIREMENT: what an app writes by itself in the background (a timer, a sync, anything
+// nobody asked it for just then) is the app's doing, never mine because I happen to have its
+// window open: it keeps only what I let the app keep, and stops when I take that back.
+#[tokio::test]
+async fn a_native_apps_own_write_is_the_apps_and_stops_when_its_grant_is_taken_back() {
+    use collab_types::store::{Cell, Resource, Value, wire::Command};
+    use tilo_resource_store::Stamp;
+    use tilo_workspace_service::apps::services::ResourceRequestContext;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let desk = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
+    let workspaces = desk.workspaces().clone();
+    mount(&workspaces);
+    let workspace = workspaces
+        .create("Home")
+        .await
+        .expect("a workspace is made")
+        .workspace;
+    assert!(workspaces.join_keys(&workspace).await);
+    let packages = Packages::compile(&[CLOCKS]).expect("Clocks compiles");
+    declare_app(
+        &desk,
+        APP,
+        &packages.surface(APP).expect("Clocks declares its surface"),
+    );
+    install_app(&workspaces, &workspace, APP)
+        .await
+        .expect("the person installs Clocks");
+
+    // Clocks' own process's route on this device, its person's window open: the caller the
+    // device certifies is the person, through Clocks. No invocation is delivered to it.
+    let route = ResourceRequestContext::authenticated(
+        APP,
+        workspace.clone(),
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(workspace.clone())
+            .through_app(APP),
+    )
+    .of_app_process();
+    let city = |id: &str, name: &str| Command::Put {
+        kind: "tl.so.tilo.clocks.WorldClock".into(),
+        id: id.into(),
+        resource: Resource {
+            readers: "*".into(),
+            parent: None,
+            order: None,
+            fields: [
+                ("city".to_owned(), Cell::One(Value::Text(name.into()))),
+                ("zone".to_owned(), Cell::One(Value::Text("Asia/Tokyo".into()))),
+            ]
+            .into(),
+        },
+        stamp: Stamp {
+            verb: "$create".into(),
+            invocation: format!("background-{id}"),
+            ..Stamp::default()
+        },
+    };
+    workspaces
+        .resource_command(&route, city("tokyo", "Tokyo"))
+        .await
+        .expect("Clocks keeps its own record by itself");
+
+    // Taken back, its next background write is refused, though the owner it would otherwise
+    // pass for may write anything here.
+    revoke_grant(&workspaces, &workspace, roles::app_records_grant_id(APP))
+        .await
+        .expect("the owner revokes Clocks' grant");
+    let refused = workspaces
+        .resource_command(&route, city("osaka", "Osaka"))
+        .await
+        .expect_err("the workspace refuses what Clocks writes by itself");
+    assert!(
+        refused.contains("Clocks") && refused.contains("can't keep its records"),
+        "{refused}"
+    );
 }
