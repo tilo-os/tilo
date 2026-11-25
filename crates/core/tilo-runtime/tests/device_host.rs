@@ -979,7 +979,6 @@ struct Forwarded {
     client: ForwardedClient,
     host: Arc<WorkspaceService>,
     answers: Arc<Answers>,
-    host_cert: DeviceCert,
     host_endpoint: Endpoint,
     laptop_endpoint: Endpoint,
     router: Router,
@@ -1043,7 +1042,6 @@ impl Forwarded {
             client: ForwardedClient::over(local),
             host,
             answers,
-            host_cert,
             host_endpoint,
             laptop_endpoint,
             router,
@@ -1083,13 +1081,10 @@ tilo_test_env::scenario! {
     {
         runtime().block_on(async {
             let mut forwarded = Forwarded::start().await;
-            let listed = forwarded.client.call("tilo_devices", &json!({}));
-            let text = text(&listed);
-            assert!(text.contains("Build box"), "{listed}");
-            assert!(
-                text.contains(&hex::encode(forwarded.host_cert.device_public_key)),
-                "{listed}"
-            );
+            // What the other device runs, listed there through the forward.
+            let listed = forwarded.client.call("tilo_ls", &json!({}));
+            assert_eq!(listed["result"]["isError"], false, "{listed}");
+            assert!(text(&listed).contains("notes"), "{listed}");
             // Its agent acts here under the workspace's grants naming it: no device setting
             // lets it in, and no switch is turned on for it.
             let done = forwarded

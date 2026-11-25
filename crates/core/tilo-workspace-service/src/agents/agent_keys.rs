@@ -487,6 +487,12 @@ impl collab_types::signer::DeviceSigner for KeySigner {
         self.0.verifying_key().to_bytes()
     }
 
+    /// The connection to another device dials as the agent's key: the device that answers
+    /// carries a frame only from the connection that names the key which signed it.
+    fn endpoint_secret(&self) -> Option<[u8; 32]> {
+        Some(self.0.to_bytes())
+    }
+
     fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
         if let Some(why) = self.1.ended() {
             return Box::pin(std::future::ready(Err(collab_types::signer::SignError(
