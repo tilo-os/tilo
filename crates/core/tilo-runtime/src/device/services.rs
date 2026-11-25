@@ -5914,13 +5914,43 @@ impl ActionProvider for RuntimeActionProvider {
                         || ((Tickets::adds_a_device(&request) || Tickets::only_waits(&request))
                             && caller.acting().is_agent())));
             if answered {
-                return device_action(
-                    (&self.invocations, self.asked.as_ref()),
-                    tickets,
-                    caller,
+                // What the dispatch runs is blocking work: a root-signed answer reads and writes
+                // the person's workspace. Every session of this endpoint shares one
+                // current-thread runtime, so it is answered beside that runtime, as the
+                // catalogue the broker assembles is, and the answer it settles with is handed
+                // on.
+                let (invocations, asked, tickets, caller, request, workspace) = (
+                    Arc::clone(&self.invocations),
+                    self.asked.clone(),
+                    Arc::clone(tickets),
+                    caller.clone(),
                     request,
-                    &self.workspace,
+                    self.workspace.clone(),
                 );
+                let device_call = move || {
+                    device_action(
+                        (&invocations, asked.as_ref()),
+                        &tickets,
+                        &caller,
+                        request,
+                        &workspace,
+                    )
+                };
+                let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                    return device_call();
+                };
+                let (done, answer) = tilo_actions::remote::pending();
+                drop(runtime.spawn(async move {
+                    match tokio::task::spawn_blocking(device_call).await {
+                        Ok(made) => made.then(move |settled| {
+                            done.complete(settled.unwrap_or(Err(ActionCallError::Unanswered)));
+                        }),
+                        Err(error) => done.complete(Err(ActionCallError::Unavailable {
+                            reason: format!("the device's answer did not run: {error}"),
+                        })),
+                    }
+                }));
+                return answer;
             }
             // This device publishes the action whatever this run may do with one: the answer is
             // the device's own refusal, never the broker's that its resource offers no such
