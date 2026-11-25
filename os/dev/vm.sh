@@ -647,35 +647,47 @@ cmd_stop() {
   msg "stopped"
 }
 
-# Offline journal extraction via qemu-nbd. The VM must be stopped. General
-# method (no in-image instrumentation), but needs passwordless sudo + the nbd
-# kernel module. Works only if the guest has a *persistent* journal
-# (/var/log/journal); otherwise use serial logging + StandardError=console.
+# The stopped guest's persistent journal (/var/log/journal), read offline: the
+# disk is copied raw, attached read-only on a loop device (no nbd module), an
+# encrypted root is unlocked with $TILO_PASS, and the root is mounted read-only,
+# so nothing the guest booted with changes. Needs root or passwordless sudo.
 cmd_journal() {
   vm_running && die "stop the VM first (journal extraction needs the disk offline)"
-  local grep_pat="${1:-}" mnt="$TILO_RUN/mnt"
-  msg "attaching $TILO_DISK via qemu-nbd"
-  sudo modprobe nbd max_part=8
-  inenv "sudo qemu-nbd --read-only --connect=/dev/nbd0 '$TILO_DISK'"
-  sudo partprobe /dev/nbd0 2>/dev/null || true; sleep 1
-  mkdir -p "$mnt"
-  local part rootpart=""
-  for part in /dev/nbd0p4 /dev/nbd0p3 /dev/nbd0p2; do
-    if sudo blkid "$part" 2>/dev/null | grep -q 'TYPE="btrfs"'; then rootpart="$part"; break; fi
+  local grep_pat="${1:-}" raw="$TILO_RUN/journal-disk.raw" mnt="$TILO_RUN/journal-root"
+  local mapper="tilo-vm-journal-$$" loop part root="" opened="" jdir=""
+  as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi; }
+  inenv "qemu-img convert -O raw '$TILO_DISK' '$raw'" || die "could not copy $TILO_DISK"
+  loop="$(as_root losetup --find --show --partscan --read-only "$raw")" \
+    || { rm -f -- "$raw"; die "could not attach $TILO_DISK on a loop device"; }
+  for part in "$loop"p*; do
+    if as_root cryptsetup isLuks "$part" 2>/dev/null; then
+      [ -n "${TILO_PASS:-}" ] || { warn "$part is encrypted and TILO_PASS is unset"; continue; }
+      printf '%s' "$TILO_PASS" | as_root cryptsetup open --readonly --key-file=- "$part" "$mapper" \
+        && { opened="/dev/mapper/$mapper"; root="$opened"; break; }
+      warn "$part did not open with TILO_PASS"
+    elif as_root blkid "$part" 2>/dev/null | grep -q 'TYPE="btrfs"'; then
+      root="$part"; break
+    fi
   done
-  [ -n "$rootpart" ] || { inenv "sudo qemu-nbd -d /dev/nbd0"; die "no btrfs root partition found on disk"; }
-  sudo mount -o ro "$rootpart" "$mnt"
-  local jdir; jdir="$(sudo find "$mnt" -maxdepth 6 -type d -path '*/log/journal' 2>/dev/null | head -1)"
-  if [ -n "$jdir" ]; then
-    msg "journal: $jdir"
-    if [ -n "$grep_pat" ]; then sudo journalctl -D "$jdir" --no-pager 2>/dev/null | grep -iE "$grep_pat";
-    else sudo journalctl -D "$jdir" --no-pager 2>/dev/null; fi
+  mkdir -p "$mnt"
+  if [ -n "$root" ] && { as_root mount -o ro "$root" "$mnt" \
+      || as_root mount -o ro,rescue=nologreplay "$root" "$mnt"; }; then
+    jdir="$(as_root find "$mnt" -maxdepth 8 -type d -path '*/log/journal' 2>/dev/null | head -n 1)"
+    if [ -z "$jdir" ]; then
+      warn "no persistent journal on the disk"
+    elif [ -n "$grep_pat" ]; then
+      msg "journal: ${jdir#"$mnt"}"; as_root journalctl -D "$jdir" --no-pager -o short-monotonic | grep -iE "$grep_pat"
+    else
+      msg "journal: ${jdir#"$mnt"}"; as_root journalctl -D "$jdir" --no-pager -o short-monotonic
+    fi
+    as_root umount "$mnt" || true
   else
-    warn "no persistent journal on disk (journal lives in tmpfs at runtime)."
-    warn "Use serial logging instead: add StandardError=journal+console to the unit, or boot and use 'vm.sh serial'."
+    warn "no root filesystem on $TILO_DISK could be mounted"
   fi
-  sudo umount "$mnt" 2>/dev/null || true
-  inenv "sudo qemu-nbd -d /dev/nbd0" 2>/dev/null || true
+  [ -z "$opened" ] || as_root cryptsetup close "$mapper" || true
+  as_root losetup -d "$loop" || true
+  rm -f -- "$raw"
+  [ -n "$jdir" ]
 }
 
 # One-shot demo: boot 2D, screenshot the greeter, log in, screenshot the result.

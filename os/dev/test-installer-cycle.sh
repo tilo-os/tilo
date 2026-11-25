@@ -582,7 +582,11 @@ fi
   || die "profiled live installer did not start at Disk"
 field "$out/01-disk.json" /status | grep -Eqi 'setup choices are ready' \
   || die "live installer did not acknowledge the embedded setup profile"
-"$vm" shot 01-disk >/dev/null && cp -f "$run/01-disk.png" "$out/01-disk.png" || true
+# The installer publishes its state as soon as it holds it; the screen a
+# person sees is kept once it has drawn the step, and a step that stays
+# undrawn is what a person would be left looking at.
+wait_screen 01-disk 'Disk' 30 2 \
+  || die "the installer held the Disk step but never drew it"
 
 # Select the method, refresh, then the only selectable disk (/dev/vdb). The
 # live /dev/vda is refused by the shipped disk identity rules.
@@ -601,7 +605,8 @@ if [ "$software_tpm" -eq 1 ]; then
   [ "$(field "$out/02-account.json" /account/secret_policy)" = tpm-pin ] \
     || die "software TPM was attached, but the live and target boot chain did not pass verified-boot preflight"
 fi
-"$vm" shot 02-account >/dev/null && cp -f "$run/02-account.png" "$out/02-account.png" || true
+wait_screen 02-account 'Account' 30 2 \
+  || die "the installer held the Account step but never drew it"
 
 # The startup secret travels from the environment to the console argument;
 # it is never on a command line and never in a reply.
@@ -762,6 +767,10 @@ if [ "$oobe_started" -ne 1 ]; then
     cp -f "$run/07-first-boot-timeout.png" "$out/07-first-boot-timeout.png"
     tesseract "$out/07-first-boot-timeout.png" stdout 2>/dev/null > "$out/07-first-boot-timeout.txt" || true
   fi
+  # The screen alone does not say why: keep the installed system's journal.
+  "$vm" stop >/dev/null 2>&1 || true
+  TILO_DISK="$TILO_TARGET_DISK" "$vm" journal \
+    > "$out/target-journal.txt" 2> "$out/target-journal-extraction.txt" || true
   die "first installed boot did not reach direct OOBE"
 fi
 wait_screen 08-oobe-intro 'Create[[:space:]]+your[[:space:]]+local' 10 1 \

@@ -215,13 +215,10 @@ re-implementation of it, and both need `sshpass` on the host.
    StandardError=journal+console
    ```
    This is exactly how the compositor's startup panic was first captured.
-3. **Offline journal** (`vm.sh journal [grep]`) — stop the VM, then mount the
-   qcow2 via `qemu-nbd` and run `journalctl -D`. General (no image changes) but
-   only yields data if the guest has a *persistent* journal (Tilo does:
-   `/var/log/journal`). Caveat: `qemu-nbd` run inside a **rootless** distrobox
-   cannot open the host `/dev/nbd0` (userns permission). If you hit
-   `Failed to open /dev/nbd0: Permission denied`, run `qemu-nbd` from a real-root
-   context, or fall back to method 2 (route the unit's stderr to the console).
+3. **Offline journal** (`vm.sh journal [grep]`) — stop the VM; it copies the
+   disk raw, attaches it read-only on a loop device, unlocks an encrypted root
+   with `TILO_PASS`, and runs `journalctl -D` on the guest's persistent journal
+   (`/var/log/journal`). Needs root or passwordless sudo, no image changes.
 
 ## Operational notes
 
