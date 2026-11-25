@@ -94,6 +94,17 @@ impl App {
             self.needs_sync = true;
             return true;
         }
+        // A document's history is Tilo's model's: without it only a field's own undo moves.
+        #[cfg(feature = "model")]
+        let moved = self.perform_document_undo(request);
+        #[cfg(not(feature = "model"))]
+        let moved = false;
+        moved
+    }
+
+    /// Undo or redo in the focused document, for the local author.
+    #[cfg(feature = "model")]
+    fn perform_document_undo(&mut self, request: crate::undo::UndoRequest) -> bool {
         // Otherwise round-tripping document undo/redo loses caret position.
         let current_meta = crate::undo::get_state(self.root_widget.as_ref());
         let current_focus_idx = self
@@ -135,6 +146,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "model")]
     /// Undo or redo in `binding`'s document. A history holding a step that
     /// queued an outside consequence moves through the document's published
     /// history action at the broker, so its inverse is a new admitted
@@ -178,6 +190,15 @@ impl App {
                 crate::undo::LocalUndoStatus::Pending => Default::default(),
             };
         }
+        #[cfg(feature = "model")]
+        let status = self.focused_document_undo_status();
+        #[cfg(not(feature = "model"))]
+        let status = crate::undo::UndoStatus::default();
+        status
+    }
+
+    #[cfg(feature = "model")]
+    fn focused_document_undo_status(&mut self) -> crate::undo::UndoStatus {
         let focused = self.focused_node;
         if let Some(binding) = focused
             .and_then(|node| self.bindings.binding_for(node))
@@ -272,15 +293,22 @@ impl App {
 
     /// The newest changes people made, as this app's History lists them.
     fn recent_changes(&self) -> Vec<RecentChange> {
-        self.history_rows()
+        #[cfg(feature = "model")]
+        let recent = self
+            .history_rows()
             .iter()
             .rev()
             .take(model::RECENT_CHANGES)
             .map(RecentChange::from_entry)
-            .collect()
+            .collect();
+        // History is Tilo's model's: without it there are no changes to list.
+        #[cfg(not(feature = "model"))]
+        let recent = Vec::new();
+        recent
     }
 
     /// The rows whichever History serves this app lists, in causal order.
+    #[cfg(feature = "model")]
     fn history_rows(&self) -> Vec<crate::widget::HistoryEntry> {
         self.history
             .as_ref()

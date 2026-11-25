@@ -232,12 +232,14 @@ impl App {
         self.history_focus = None;
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn registered_history_mut(
         &mut self,
     ) -> Option<&mut crate::history_mode::host::HistoryChrome> {
         self.history.as_mut()
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn service_history_own_controls(&mut self) -> bool {
         let Some(history) = self.history.as_mut() else {
             return false;
@@ -248,6 +250,7 @@ impl App {
         answered > 0
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn acting_for_mut(
         &mut self,
     ) -> &mut std::collections::HashMap<
@@ -257,6 +260,7 @@ impl App {
         &mut self.actions.acting_for
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn dispatch_current_history_control(
         &mut self,
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
@@ -281,6 +285,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn ask_through_device(
         &mut self,
         target: &crate::bound_dispatch::local_target::LocalResourceTarget,

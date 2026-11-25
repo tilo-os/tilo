@@ -81,6 +81,7 @@ impl Driver {
         )
     }
 
+    #[cfg(feature = "model")]
     /// [`Self::start_bound_job_within`] or [`Self::start_bound_job_for`]: `instance` scopes the
     /// resources the call is admitted against to the component that publishes them, when one does.
     #[allow(
