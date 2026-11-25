@@ -48,7 +48,9 @@ fn hex(bytes: &[u8]) -> String {
 /// Items have stable ids, so two people adding at once keep both items.
 #[test]
 fn concurrent_adds_keep_both_items() {
-    let mut ada = Replica::<Checklist>::new().in_app("so.tilo.model", "Model").as_author("ada");
+    let mut ada = Replica::<Checklist>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author("ada");
     let mut grace = ada.fork().as_author("grace");
     add(&mut ada, "Milk");
     add(&mut grace, "Bread");
@@ -60,7 +62,9 @@ fn concurrent_adds_keep_both_items() {
 /// Titles are collaborative text: typing in the same title merges.
 #[test]
 fn concurrent_typing_in_one_title_merges() {
-    let mut ada = Replica::<Checklist>::new().in_app("so.tilo.model", "Model").as_author("ada");
+    let mut ada = Replica::<Checklist>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author("ada");
     let milk = add(&mut ada, "Buy milk");
     let mut grace = ada.fork().as_author("grace");
     let title = Checklist::paths().items.item(&milk).title;
@@ -78,7 +82,9 @@ fn concurrent_typing_in_one_title_merges() {
 /// both sides settles on the same value everywhere.
 #[test]
 fn concurrent_edits_to_one_item_converge() {
-    let mut ada = Replica::<Checklist>::new().in_app("so.tilo.model", "Model").as_author("ada");
+    let mut ada = Replica::<Checklist>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author("ada");
     let milk = add(&mut ada, "Milk");
     let mut grace = ada.fork().as_author("grace");
     let at = Checklist::paths().items.item(&milk);
@@ -104,7 +110,9 @@ fn concurrent_edits_to_one_item_converge() {
 #[test]
 fn history_is_attributed() {
     use ui::tilo_actions::Did;
-    let mut ada = Replica::<Checklist>::new().in_app("so.tilo.model", "Model").as_author("ada");
+    let mut ada = Replica::<Checklist>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author("ada");
     let mut grace = ada.fork().as_author("grace");
     ada.apply(edit(&Checklist::paths().name.replace("Groceries")))
         .expect("rename");
@@ -144,7 +152,9 @@ fn undo_takes_back_only_my_own_actions() {
     let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.invoke(edit(&Checklist::paths().name.replace("Groceries")))
         .expect("rename");
-    let mut grace = Replica::<Checklist>::from_doc(app.peer_document()).in_app("so.tilo.model", "Model").as_author("grace");
+    let mut grace = Replica::<Checklist>::from_doc(app.peer_document())
+        .in_app("so.tilo.model", "Model")
+        .as_author("grace");
     add(&mut grace, "Bread");
     app.merge_peer(grace.doc_mut()).expect("merge");
     app.harness()
