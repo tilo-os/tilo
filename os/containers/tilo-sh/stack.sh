@@ -1109,7 +1109,9 @@ owner_daemon() {
   [[ ${1-} == --before-person || -s $state/owner/key \
     || -f $state/owner/home/.local/state/tilo/device/login.json ]] \
     || return 0
-  [[ -z $(people_holders) ]] || return 0
+  # Only a holder under the person's own folder is theirs: the Lounge server's device holds a
+  # lock of its own under the stack's state too, and is no reason to leave the person without.
+  [[ -z $(people_holders "$state/owner") ]] || return 0
   runtime=$(dirname "$(find_tilo)")/tilo-runtime
   [[ -x $runtime ]] || die "no tilo-runtime beside $(find_tilo)"
   mkdir -p "$state/logs"
@@ -1119,7 +1121,7 @@ owner_daemon() {
   # pipe), which held the caller reading it for as long as the daemon ran.
   owner_run setsid -f "$runtime" >> "$log" 2>&1 < /dev/null
   for _ in $(seq 1 60); do
-    [[ -z $(people_holders) ]] || return 0
+    [[ -z $(people_holders "$state/owner") ]] || return 0
     sleep 0.5
   done
   die "the person's device did not start (stack.sh logs person, or $log)"
@@ -2633,13 +2635,14 @@ stop_people_holders() {
   done < /proc/self/mounts
 }
 
-# The processes holding a device's holder.lock under the stack's state, one per line.
+# The processes holding a device's holder.lock under DIR (the stack's state when none is
+# named), one per line.
 people_holders() {
-  local lock inode
+  local lock inode dir=${1:-$state}
   while IFS= read -r lock; do
     inode=$(stat -c %i "$lock" 2>/dev/null) || continue
     awk -v inode="$inode" '{ split($6, at, ":"); if (at[3] == inode) print $5 }' /proc/locks
-  done < <(find "$state" -xdev -name holder.lock 2>/dev/null)
+  done < <(find "$dir" -xdev -name holder.lock 2>/dev/null)
 }
 
 # host_keeps_no_vault: whether the server of the stack that is up keeps no
