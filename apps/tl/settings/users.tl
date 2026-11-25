@@ -1,7 +1,7 @@
 /// The local login accounts this computer keeps: each one's name, whether it administers the
 /// device, and whether it signs in by itself. Creating, changing and removing an account calls
 /// the users resource, so every window and every agent changes the same accounts.
-view users_pane() {
+view users_pane(s: Settings) {
     state full_name: Text = ""
     state username: Text = ""
     state password: Text = ""
@@ -80,6 +80,34 @@ view users_pane() {
             }
         }
     }
+    ui.Section("You") {
+        let me = device.people.me
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Avatar(name: me.name, picture: me.photo)
+            ui.Text(me.name, role: .title)
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button(
+                if me.photo != "" { "Change your picture…" } else { "Choose a picture…" },
+                icon: .image,
+            ) {
+                on press: file.choose(
+                    set_own_picture(s),
+                    accept: ["image/png", "image/jpeg", "image/webp"],
+                )
+            }
+            if me.photo != "" {
+                ui.Button("Remove the picture", icon: .trash, role: .destructive, size: .small) {
+                    on press: device.set_photo(device.people, picture: "")
+                }
+            }
+        }
+        ui.Text(
+            "Your picture is kept with your identity, so every device and every app that shows you draws it.",
+            role: .caption,
+            secondary: true,
+        )
+    }
     if let problem = users.problem {
         ui.StatusLine(problem, status: .error)
     }
@@ -101,4 +129,15 @@ fn account_words(account: device.LocalAccount) -> Text {
     } else if let error = account.automatic_login_error {
         "{account.username} - {role}; {error}"
     } else { "{account.username} - {role}, {start}" }
+}
+
+/// Give this person the picture `file` holds. The session keeps it in their identity record,
+/// where every device and every app that shows them reads it.
+action set_own_picture(s: Settings, file: File) (
+    icon: .image,
+    label: "Choose a picture…",
+    did: "changed the picture",
+    opens: ["image/png", "image/jpeg", "image/webp"],
+) {
+    device.set_photo(device.people, picture: file.url)
 }

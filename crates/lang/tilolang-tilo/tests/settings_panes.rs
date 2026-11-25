@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use crate::fixtures::labelled;
 use tilo_action_policy::MemberAccess;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::host::Host;
@@ -20,7 +21,7 @@ use tilolang_tilo::runtime::{Actor, ResourceRef, Value, ViewInstance};
 const APP: &str = "so.tilo.settings";
 
 /// The app as it ships: its source, its ids and the platform's packages it reads through.
-fn settings() -> (Host, tilolang::Compiled) {
+pub(crate) fn settings() -> (Host, tilolang::Compiled) {
     settings_with(None)
 }
 
@@ -59,7 +60,7 @@ fn pane(host: &Host) -> String {
 }
 
 /// Run the app-level action `name` with `args`, as a search row does from outside the window.
-fn invoke(host: &Host, name: &str, args: Vec<Value>) -> Value {
+pub(crate) fn invoke(host: &Host, name: &str, args: Vec<Value>) -> Value {
     let id = host
         .package(APP)
         .expect("the app is loaded")
@@ -129,19 +130,9 @@ fn texts(view: &ViewInstance) -> Vec<String> {
         .collect()
 }
 
-/// The key of the control of `kind` whose label `label` reads, as the window lays it out.
-fn labelled(tree: &tilolang_runtime::UiNode, kind: &str, label: &str) -> String {
-    tree.of_kind(kind)
-        .into_iter()
-        .find(|node| node.props.get("label") == Some(&Value::text(label)))
-        .unwrap_or_else(|| panic!("a {kind} labelled {label}"))
-        .key
-        .clone()
-}
-
 /// The pane `name` opened as its own view: the window's content area is laid out for its size,
 /// which a host without a window has none of, so what the pane draws is read from the pane.
-fn open_view(host: &Host, name: &str) -> ViewInstance {
+pub(crate) fn open_view(host: &Host, name: &str) -> ViewInstance {
     let id = host
         .package(APP)
         .expect("the app is loaded")
@@ -165,8 +156,34 @@ fn open_view(host: &Host, name: &str) -> ViewInstance {
 }
 
 /// The content pane opened as its own view.
-fn open_content_pane(host: &Host) -> ViewInstance {
+pub(crate) fn open_content_pane(host: &Host) -> ViewInstance {
     open_view(host, "content_pane")
+}
+
+/// The settings window opened as its own view, on the pane its state has in front: the whole
+/// window, as the person sees it, so a pane found by its words reads as it does there.
+pub(crate) fn open_window(host: &Host) -> ViewInstance {
+    let id = host
+        .package(APP)
+        .expect("the app is loaded")
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "settings_window")
+        .unwrap_or_else(|| panic!("the window is declared"))
+        .id
+        .clone();
+    let root = host.root_of(APP).expect("the app's root");
+    let mut view = host
+        .runtime()
+        .open_view(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            &id,
+            vec![Value::resource(&root)],
+        )
+        .expect("the window opens");
+    view.poll_patches().expect("the window draws");
+    view
 }
 
 /// What a person sets the limits to, past the default: a size in bytes, unset for a member.
@@ -183,7 +200,7 @@ fn limits(host: &Host) {
 }
 
 /// One invocation as it was sent, with its arguments by name.
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
+pub(crate) struct Sent(pub(crate) Rc<RefCell<Vec<Invocation>>>);
 
 impl Invoker for Sent {
     fn invoke(&self, invocation: &Invocation) -> Invoked {

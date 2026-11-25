@@ -88,6 +88,10 @@ impl StoredHistory {
 
 pub const HISTORY: Key<StoredHistory> = Key::new(SECTION, "history", StoredHistory::default);
 
+/// Whether this device keeps what the person copies, to paste again later. Turning it off stops
+/// new copies being kept; the copies already kept stay until they are forgotten.
+pub const ENABLED: Key<bool> = Key::new(SECTION, "enabled", || true);
+
 #[cfg(test)]
 mod tests {
     use super::*;

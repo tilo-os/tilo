@@ -2343,7 +2343,7 @@ impl settings_model::SettingsSchema for NotificationPrefs {
 impl NotificationPrefs {
     /// Mute one app's notifications for a while, counted from when the
     /// action was made, or unmute it.
-    #[action()]
+    #[action(keywords = "mute an app, silence an app, quiet an app, app notifications")]
     pub fn mute_app(
         &mut self,
         cx: &mut ui::tilo_resource::ActionCx,
@@ -2354,13 +2354,84 @@ impl NotificationPrefs {
         let seconds = mute_seconds(&duration).ok_or_else(|| {
             ui::tilo_resource::Refusal::new(format!("`{duration}` is not offered"))
         })?;
-        if !self.per_app.contains_key(&app) && !valid_app_id(&app) {
-            return Err(ui::tilo_resource::Refusal::new(format!(
-                "`{app}` is not an app id"
-            )));
-        }
         let until = (seconds > 0).then(|| (cx.now_ms() / 1000).saturating_add(seconds));
-        self.per_app.entry(app).or_default().muted_until = until;
+        self.rule_for(&app)?.muted_until = until;
+        Ok(())
+    }
+
+    /// Which kinds of notification one app arrives as: banners, their message
+    /// text, sounds and a count on its icon. A kind left unset follows the
+    /// person's rules above; setting any makes the app's own rule, so the app
+    /// is listed among the apps with one.
+    #[action(
+        id = "set-app-kinds",
+        keywords = "app notifications, per app notifications, notifications from an app"
+    )]
+    pub fn set_app_kinds(
+        &mut self,
+        #[param("The app's id")] app: String,
+        #[param("Whether its banners arrive; unset follows the rules above")] banners: Option<bool>,
+        #[param("Whether a banner carries its message text")] previews: Option<bool>,
+        #[param("Whether it plays a sound")] sounds: Option<bool>,
+        #[param("Whether its icon counts what is unread")] badges: Option<bool>,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let rule = self.rule_for(&app)?;
+        rule.banners = banners;
+        rule.previews = previews;
+        rule.sounds = sounds;
+        rule.badges = badges;
+        Ok(())
+    }
+
+    /// Whether one app's notifications show on the lock screen and reach this
+    /// person's other devices, each following the person's rules above when
+    /// unset.
+    #[action(
+        id = "set-app-reach",
+        keywords = "lock screen notifications, notifications on other devices, mirror notifications"
+    )]
+    pub fn set_app_reach(
+        &mut self,
+        #[param("The app's id")] app: String,
+        #[param("Whether it shows on the lock screen; unset follows the rules above")]
+        lock_screen: Option<bool>,
+        #[param("Whether it reaches the person's other devices")] cross_device: Option<bool>,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let rule = self.rule_for(&app)?;
+        rule.lock_screen = lock_screen;
+        rule.cross_device = cross_device;
+        Ok(())
+    }
+
+    /// Whether one app may pierce the quiet hours, by itself or for a message
+    /// from a priority contact. Neither can be asked by the app.
+    #[action(
+        id = "set-app-priority",
+        keywords = "priority notifications, important notifications, bypass quiet hours"
+    )]
+    pub fn set_app_priority(
+        &mut self,
+        #[param("The app's id")] app: String,
+        #[param("Whether it reaches the person during quiet hours")] priority: bool,
+        #[param("Whether a priority contact's message does")] priority_contacts: bool,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let rule = self.rule_for(&app)?;
+        rule.priority = priority;
+        rule.priority_contacts = priority_contacts;
+        Ok(())
+    }
+
+    /// Forget one app's own rules, mute included: it follows the person's rules
+    /// above again.
+    #[action(
+        id = "clear-app",
+        keywords = "app notification rules, follow the rules above, forget app rules"
+    )]
+    pub fn clear_app(
+        &mut self,
+        #[param("The app's id")] app: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.per_app.remove(&app);
         Ok(())
     }
 
@@ -2394,6 +2465,26 @@ impl NotificationPrefs {
         self.focus.end_minute = minute(end_minute)?;
         self.focus.weekdays = days;
         Ok(())
+    }
+}
+
+impl NotificationPrefs {
+    /// One app's rule, made when it has none. A new rule needs an id an app
+    /// can be known by; one stored before the id grammar tightened stays
+    /// changeable.
+    fn rule_for(
+        &mut self,
+        app: &str,
+    ) -> Result<
+        &mut settings_store::notification_policy::AppNotificationRule,
+        ui::tilo_resource::Refusal,
+    > {
+        if !self.per_app.contains_key(app) && !valid_app_id(app) {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{app}` is not an app id"
+            )));
+        }
+        Ok(self.per_app.entry(app.to_owned()).or_default())
     }
 }
 
@@ -2843,6 +2934,70 @@ mod notification_app_id_tests {
             ));
             assert_eq!(result.is_ok(), expected, "{id:?} gave {result:?}");
         }
+    }
+
+    /// One app's own rule says which kinds of notification it arrives as and
+    /// what it may do; a kind left unset follows the person's rules, and the
+    /// verbs change only the fields they name.
+    #[test]
+    fn an_apps_own_rule_says_which_kinds_arrive_and_the_rest_follow_the_person() {
+        let mut replica = Replica::<NotificationPrefs>::new().in_app("so.tilo.model", "Model");
+        replica
+            .apply(
+                NotificationPrefs::SET_APP_KINDS.with(notification_prefs::SetAppKinds {
+                    app: "so.tilo.mail".into(),
+                    banners: Some(false),
+                    previews: None,
+                    sounds: Some(true),
+                    badges: None,
+                }),
+            )
+            .unwrap();
+        let mail = replica.state().unwrap().per_app["so.tilo.mail"].clone();
+        assert_eq!(
+            (mail.banners, mail.previews, mail.sounds, mail.badges),
+            (Some(false), None, Some(true), None)
+        );
+        replica
+            .apply(
+                NotificationPrefs::SET_APP_REACH.with(notification_prefs::SetAppReach {
+                    app: "so.tilo.mail".into(),
+                    lock_screen: Some(true),
+                    cross_device: None,
+                }),
+            )
+            .unwrap();
+        replica
+            .apply(
+                NotificationPrefs::SET_APP_PRIORITY.with(notification_prefs::SetAppPriority {
+                    app: "so.tilo.mail".into(),
+                    priority: true,
+                    priority_contacts: false,
+                }),
+            )
+            .unwrap();
+        let state = replica.state().unwrap();
+        let mail = &state.per_app["so.tilo.mail"];
+        assert_eq!((mail.banners, mail.sounds), (Some(false), Some(true)));
+        assert_eq!((mail.lock_screen, mail.cross_device), (Some(true), None));
+        assert!(mail.priority && !mail.priority_contacts);
+        // The compositor reads the rule through the shared policy, as it decides a banner.
+        let mut document = serde_json::Map::new();
+        document.insert(
+            "notifications".into(),
+            serde_json::to_value(&state).unwrap(),
+        );
+        let policy =
+            settings_store::notification_policy::NotificationPolicy::from_document(&document);
+        let effective = policy.effective_for(Some("so.tilo.mail"), 0, 0, 0);
+        assert!(!effective.banners, "the app's own rule narrows banners");
+        assert!(effective.sounds, "and says its sounds arrive");
+        assert!(
+            effective.previews,
+            "what it leaves unset follows the person"
+        );
+        assert!(effective.lock_screen);
+        assert!(effective.cross_device);
     }
 
     #[test]

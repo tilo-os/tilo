@@ -443,6 +443,8 @@ profile-action-pair-device = Gerät hinzufügen
 profile-action-settings = Einstellungen
 profile-action-devices-access = Geräte und Zugriff
 profile-name-not-saved = Dein Name wurde nicht gespeichert
+profile-picture-not-found = Das Bild liegt nicht mehr dort, wo du es gewählt hast
+profile-picture-not-saved = Dein Bild wurde nicht gespeichert
 
 ## A capture, while the capture studio's bar is down: the card the floating
 ## layer and the bar's pill show, and what its controls do.

@@ -40,6 +40,19 @@ pub enum ClipboardAction {
     #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Clear,
+    /// Keep what the person copies, to paste again later, or stop keeping it; the copies
+    /// already kept stay until they are cleared
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        label = "so-tilo-session-clipboard-keep-copies"
+    )]
+    KeepCopies {
+        /// Whether to keep what is copied
+        #[param("Whether to keep what is copied")]
+        on: bool,
+    },
     /// Put text on the clipboard, as if it had been copied
     #[effect(kind = "outside")]
     #[effect(own_device)]
@@ -76,6 +89,13 @@ pub enum ClipboardAction {
 )]
 pub struct ClipboardView {
     pub copies: Vec<ClipboardCopy>,
+    /// Whether this device keeps what the person copies, to paste again later.
+    #[serde(default = "keeping")]
+    pub keeping: bool,
+}
+
+fn keeping() -> bool {
+    true
 }
 
 /// The clipboard as a view of another language reads it, and the verbs it offers: pasting a copy

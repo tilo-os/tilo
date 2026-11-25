@@ -286,6 +286,13 @@ impl Shared {
         tilo_session_core::desktop::here::go_to(&self.handle, &people, who);
     }
 
+    /// What the workspace keeps under `hash`: the device's one shelf a chosen file's bytes live
+    /// on, in the scope every caller of the content put API writes to.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn record_content(&self, workspace: &str, hash: &str) -> Option<Vec<u8>> {
+        self.content.read_put(workspace, hash)
+    }
+
     /// The workspace in front, as its id: where a chosen notification's app opens.
     pub(crate) fn active_workspace_id(&self) -> String {
         self.handle.read(|tree| {

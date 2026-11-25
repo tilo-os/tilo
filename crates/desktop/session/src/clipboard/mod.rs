@@ -28,7 +28,7 @@ use std::path::Path;
 use crate::platform::fabric::FabricLink;
 use crate::platform::fabric::{ClipboardEntry, ClipboardPayload, DeviceId, FabricStamp};
 use serde_json::{Map, Value};
-use settings_store::clipboard_history::{HISTORY, StoredCopy, StoredHistory};
+use settings_store::clipboard_history::{ENABLED, HISTORY, StoredCopy, StoredHistory};
 use settings_store::paste_shortcut::{self, PasteShortcut};
 use tilo_actions::{ActionOutput, ApiError, ResourceSpec};
 use tilo_compositor::clipboard_history::{
@@ -127,7 +127,9 @@ impl Clipboard {
     /// The history this device kept, newest first.
     pub(crate) fn new(wake: tilo_service::Wake) -> Self {
         let mut history = History::default();
-        history.restore(HISTORY.get().kept().into_iter().filter_map(copy_of));
+        if ENABLED.get() {
+            history.restore(HISTORY.get().kept().into_iter().filter_map(copy_of));
+        }
         Self {
             history: RefCell::new(history),
             reading: RefCell::new(None),
@@ -283,7 +285,9 @@ impl Clipboard {
         let files = ui::dnd::is_file_mime(&mime)
             .then(|| ui::dnd::copied_files(&mime, &String::from_utf8_lossy(&bytes)))
             .filter(|files| !files.paths.is_empty());
-        let kept = self.history.borrow_mut().record(&mimes, &mime, bytes, now);
+        // What is not kept is still on the clipboard, as the app in front offered it: only the
+        // history the person can paste from again is off.
+        let kept = ENABLED.get() && self.history.borrow_mut().record(&mimes, &mime, bytes, now);
         *self.files.borrow_mut() = files;
         if kept {
             self.save();
@@ -334,6 +338,31 @@ impl Clipboard {
             self.save();
         }
         changed
+    }
+
+    /// Whether the device keeps what the person copies, to paste again later.
+    #[must_use]
+    pub(crate) fn keeping(&self) -> bool {
+        ENABLED.get()
+    }
+
+    /// Keep what the person copies from now on, or stop; the copies already kept stay until the
+    /// person forgets them, so nothing they may still want to paste goes without them asking.
+    pub(crate) fn keep_copies(&self, on: bool) {
+        if ENABLED.get() == on {
+            return;
+        }
+        if let Err(error) = ENABLED.set(on) {
+            tracing::warn!(%error, "the clipboard's keeping setting was not saved");
+            return;
+        }
+        if on {
+            // What was kept before it was turned off is here to paste again.
+            self.history
+                .borrow_mut()
+                .restore(HISTORY.get().kept().into_iter().filter_map(copy_of));
+        }
+        self.generation.set(self.generation.get().wrapping_add(1));
     }
 
     /// Clear the history, keeping what the person pinned. How many copies went.
@@ -739,6 +768,7 @@ impl Service for Served {
         (resource == CLIPBOARD_RESOURCE).then(|| {
             reading(&ClipboardView {
                 copies: self.clipboard.copies(),
+                keeping: self.clipboard.keeping(),
             })
         })
     }
@@ -760,6 +790,7 @@ impl Service for Served {
             ClipboardAction::Clear => {
                 self.clipboard.clear();
             }
+            ClipboardAction::KeepCopies { on } => self.clipboard.keep_copies(on),
             ClipboardAction::Copy { text } => self.clipboard.ask(Ask::Copy {
                 text,
                 kept_for: None,

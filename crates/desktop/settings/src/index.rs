@@ -292,6 +292,7 @@ pub fn names_in_every_locale(key: &str) -> Vec<String> {
 pub const PAGES: &[Page] = &[
     Page { slug: "network" },
     Page { slug: "bluetooth" },
+    Page { slug: "usage" },
     Page {
         slug: "devices_sync",
     },

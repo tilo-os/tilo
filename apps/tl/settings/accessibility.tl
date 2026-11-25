@@ -143,10 +143,38 @@ view accessibility_pane() {
             )
         }
     }
+    ui.Section("Learning the desktop") {
+        let hints = settings.control_hints
+        setting("Show hints", "Teach each control once, the first time you meet it") {
+            ui.Toggle(bind: hints.learned.enabled)
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Teach me again", icon: .rotate_ccw, size: .small) {
+                on press: settings.show_control_hints_again(settings.control_hints)
+            }
+        }
+    }
+    ui.Section("Copied things") {
+        let clip = device.clipboard
+        setting(
+            "Keep what I copy",
+            "Keep what you copy here to paste again later, on this device",
+        ) {
+            ui.Button(if clip.keeping { "On" } else { "Off" }, toggled: clip.keeping) {
+                on press: device.keep_copies(device.clipboard, on: not clip.keeping)
+            }
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Forget what I copied", icon: .trash, size: .small) {
+                on press: device.clear(device.clipboard)
+            }
+        }
+        ui.Text("Turning this off leaves what is already kept.", role: .caption, secondary: true)
+    }
     ui.Section("At the sign-in screen") {
         setting(
             "Use these settings there",
-            "The person who signs in finds them before the desktop starts",
+            "The screen reader, its voice and pace, the text size, contrast, language and keyboard layout show before anyone signs in",
         ) {
             ui.Toggle(bind: on_device.apply_to_sign_in)
         }

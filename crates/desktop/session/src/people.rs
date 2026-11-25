@@ -51,6 +51,9 @@ pub enum PeopleAsk {
     Message { key: String },
     /// The name the person gave themselves on their own card.
     Rename(String),
+    /// The picture the person chose for themselves, by its address in the content store; empty
+    /// goes back to their initials.
+    Picture(String),
     /// What they say they are doing, in their own words.
     Status(String),
     /// How available they say they are.

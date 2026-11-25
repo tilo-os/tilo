@@ -88,6 +88,7 @@ fn page_icon(slug: &str) -> Option<ui::icons::Icon> {
         "notifications" => Icon::Bell,
         "default-apps" => Icon::LayoutGrid,
         "storage" => Icon::HardDrive,
+        "usage" => Icon::BarChart,
         "billing" => Icon::Landmark,
         "external_accounts" => Icon::Mail,
         "agent_models" => Icon::Sparkles,
@@ -474,6 +475,38 @@ mod tests {
             assert!(
                 !offered(&Settings::of_published("workspace", &published)),
                 "the change is the row"
+            );
+        }
+    }
+
+    /// Settings is found by the words people use for what they want, in the top three: the
+    /// page or the setting the word means, never only one of its neighbours.
+    #[test]
+    fn the_words_people_use_find_the_setting_or_page_they_mean() {
+        let settings = Settings::new("workspace");
+        for (query, expected) in [
+            ("loudness", "Volume"),
+            ("resolution", "Resolution"),
+            ("refresh rate", "Refresh rate"),
+            ("portrait", "Rotation"),
+            ("narrator", "Screen reader"),
+            ("wallpaper", "Wallpaper"),
+            ("hotkey", "Keyboard shortcuts"),
+            ("tethering", "Wi-Fi hotspot"),
+            ("microphone", "Input device"),
+            ("compose", "Compose key"),
+            ("data usage", "Data usage"),
+            ("bandwidth", "Data usage"),
+        ] {
+            let found: Vec<String> = settings
+                .query(query)
+                .into_iter()
+                .take(3)
+                .map(|hit| hit.title)
+                .collect();
+            assert!(
+                found.iter().any(|title| title == expected),
+                "`{query}` should find {expected}, found {found:?}"
             );
         }
     }

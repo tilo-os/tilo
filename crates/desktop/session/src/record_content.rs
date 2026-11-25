@@ -120,6 +120,12 @@ impl RecordContent {
         }
     }
 
+    /// What an app put for `workspace` under `hash`, by the address its record names: the scope
+    /// the content put API writes into, where a chosen file's bytes live.
+    pub(crate) fn read_put(&self, workspace: &str, hash: &str) -> Option<Vec<u8>> {
+        self.read(workspace, PUT_SCOPE, hash)
+    }
+
     /// Whether this device keeps `hash` of `app` 's content in `workspace` now.
     pub(crate) fn has(&self, workspace: &str, app: &str, hash: &str) -> bool {
         self.on(workspace, app, |scoped| scoped.has(hash))

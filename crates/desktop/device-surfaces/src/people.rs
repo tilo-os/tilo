@@ -134,6 +134,9 @@ pub struct Person {
     pub name: String,
     /// The colour the workspace gives them, `rrggbb`.
     pub colour: String,
+    /// Their picture, as a `data:` URL a view draws; empty for someone who chose none.
+    #[serde(default)]
+    pub photo: String,
     /// They are software: an agent or one of the workspace's bots.
     pub agent: bool,
     /// They are one of the workspace's bots: software with an installation of its own, where an
@@ -261,6 +264,15 @@ pub enum PeopleEffect {
         /// What they are doing
         #[param("What they are doing, in their own words")]
         text: String,
+    },
+    /// Give this person the picture a file they chose holds, kept in their identity record
+    /// where every device and every app that shows them reads it; empty goes back to their
+    /// initials
+    #[effect(kind = "undoable", label = "people-picture")]
+    SetPhoto {
+        /// The picture's address in the content store (`tilo-blob://…`)
+        #[param("The picture's address, or empty for none")]
+        picture: String,
     },
     /// Say how available this person is: `available`, `focusing`, `away` or `idle`
     #[effect(kind = "undoable", label = "people-availability")]

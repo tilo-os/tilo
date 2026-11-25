@@ -1751,6 +1751,8 @@ impl Session {
             person: options.person.clone(),
             earlier: own.earlier,
             records: options.records.clone(),
+            #[cfg(target_os = "linux")]
+            content: std::sync::Arc::clone(&record_content),
             search,
             launch: options.launch,
             #[cfg(target_os = "linux")]

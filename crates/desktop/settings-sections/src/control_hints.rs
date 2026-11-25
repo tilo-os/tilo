@@ -83,7 +83,10 @@ impl ControlHintsPrefs {
     }
 
     /// Show every control hint again, as to someone new: nothing counts as learned or shown.
-    #[action(id = "show-control-hints-again")]
+    #[action(
+        id = "show-control-hints-again",
+        keywords = "show hints again, tips, teach me again"
+    )]
     pub fn show_control_hints_again(&mut self) -> Result<(), ui::tilo_resource::Refusal> {
         self.learned.known.clear();
         self.learned.shown.clear();

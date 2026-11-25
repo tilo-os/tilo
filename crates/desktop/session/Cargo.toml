@@ -313,7 +313,8 @@ tilo-frame-metrics = { path = "../frame-metrics" }
 tilo-color-pipeline = { path = "../color-pipeline" }
 # Another device's shared window: the decoder that turns the units of its stream into pictures.
 tilo-callstream = { path = "../../engines/tilo-callstream", features = ["surface-decoder"] }
-image = { workspace = true, features = ["png"] }
+# The picture a person chooses for themselves: PNG and the two formats cameras and pages write.
+image = { workspace = true, features = ["png", "jpeg", "webp"] }
 # An application's themed icon is an SVG as often as a PNG.
 resvg = { version = "0.47", default-features = false }
 # The layers the session draws itself (its widget trees, the tilolang shell's parts, a surface

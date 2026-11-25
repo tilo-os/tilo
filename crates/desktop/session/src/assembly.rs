@@ -63,6 +63,11 @@ pub(crate) struct Shared {
     /// The device's records, where the session keeps what outlives it: what ends the session
     /// waits for it to be written.
     pub(crate) records: Option<tilo_session_client::device_records::DeviceRecords>,
+    /// The content its workspaces' records reference: the device's daemon keeps it on the one
+    /// shelf its records' content lives on, and this session reads and keeps it there by the
+    /// address any caller of the action protocol names.
+    #[cfg(target_os = "linux")]
+    pub(crate) content: std::sync::Arc<crate::record_content::RecordContent>,
     #[cfg(target_os = "linux")]
     pub(crate) search: Rc<crate::search::SessionSearch>,
     /// The apps the person opens, when this session starts them.

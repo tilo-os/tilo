@@ -730,3 +730,72 @@ pub fn settings_sections(host: &Host) {
         }
     }
 }
+
+/// The reading of the platform resource published at `published` (`settings/notifications`,
+/// `session:people`), as the session hands it to a view.
+pub fn set_reading(host: &Host, published: &str, reading: &serde_json::Value) {
+    let (published, ty) = tilolang_tilo::platform_apps::platform_roots()
+        .into_iter()
+        .find(|(path, _)| path == published)
+        .unwrap_or_else(|| panic!("{published} is a root of the platform"));
+    let target = ResourceRef::parse_id(&published, ty).expect("a resource id");
+    host.runtime()
+        .set_reading(&target, &reading.to_string())
+        .expect("the reading is set");
+}
+
+/// What the view drew, kind by kind, for a failing assertion to read.
+pub fn drawn(tree: &UiNode) -> String {
+    let mut lines = Vec::new();
+    fn walk(node: &UiNode, lines: &mut Vec<String>) {
+        let words: Vec<String> = node
+            .props
+            .iter()
+            .filter_map(|(name, value)| match value {
+                Value::Text(text) => Some(format!("{name}={text:?}")),
+                Value::Bool(flag) => Some(format!("{name}={flag}")),
+                _ => None,
+            })
+            .collect();
+        lines.push(format!("{}{{{}}}", node.kind, words.join(" ")));
+        for child in &node.children {
+            walk(child, lines);
+        }
+    }
+    walk(tree, &mut lines);
+    lines.join("\n")
+}
+
+/// The key of the control of `kind` whose label reads `label`, as a view lays it out.
+pub fn labelled(tree: &UiNode, kind: &str, label: &str) -> String {
+    tree.of_kind(kind)
+        .into_iter()
+        .find(|node| node.props.get("label") == Some(&Value::text(label)))
+        .unwrap_or_else(|| panic!("a {kind} labelled {label}; the view drew {}", drawn(tree)))
+        .key
+        .clone()
+}
+
+/// The key of the first control of `kind` under a row titled `title`: a setting's control, by
+/// the words beside it. Rows may share a title — the person's own rule and one app's are both
+/// "Show banners" — so the first row that holds a control of `kind` answers.
+pub fn control_under(tree: &UiNode, title: &str, kind: &str) -> String {
+    fn find<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
+        if node.kind == kind {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, kind))
+    }
+    tree.of_kind("ui.ListRow")
+        .into_iter()
+        .filter(|row| row.props.get("title") == Some(&Value::text(title)))
+        .find_map(|row| find(row, kind))
+        .unwrap_or_else(|| {
+            panic!(
+                "a {kind} under a row titled {title}; the view drew {}",
+                drawn(tree)
+            )
+        })
+        .key
+        .clone()
+}

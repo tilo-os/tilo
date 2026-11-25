@@ -119,7 +119,11 @@ pub enum DisplaysAction {
     /// Choose a display's resolution and refresh rate
     /// The change is tried for a moment and kept, or the previous mode comes back.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "monitor")]
+    #[effect(
+        own_device,
+        icon = "monitor",
+        keywords = "resolution, refresh rate, hz, screen size, display mode"
+    )]
     SetDisplayMode {
         #[param("The display's connector")]
         display: String,
@@ -134,7 +138,12 @@ pub enum DisplaysAction {
     /// Set a display's scale
     /// How many physical pixels it draws a logical pixel with.
     #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "monitor")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "monitor",
+        keywords = "scaling, zoom, text size, dpi"
+    )]
     SetDisplayScale {
         #[param("The display's connector")]
         display: String,
@@ -143,7 +152,12 @@ pub enum DisplaysAction {
     },
     /// Turn a display's picture
     #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "rotate-cw")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "rotate-cw",
+        keywords = "portrait, landscape, rotate screen, orientation, pivot"
+    )]
     RotateDisplay {
         #[param("The display's connector")]
         display: String,

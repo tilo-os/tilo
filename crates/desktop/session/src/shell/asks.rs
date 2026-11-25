@@ -51,6 +51,7 @@ impl Shared {
                 }
                 people::PeopleAsk::PairDevice => self.open_add_device(),
                 people::PeopleAsk::Rename(name) => self.name_self(&name),
+                people::PeopleAsk::Picture(picture) => self.picture_self(&picture),
                 people::PeopleAsk::Status(status) => self.set_own_status(&status),
                 people::PeopleAsk::Availability(chosen) => {
                     let Some(sync) = &self.sync else {
@@ -342,6 +343,47 @@ impl Shared {
                     String::new(),
                 ));
             }
+        }
+    }
+
+    /// Give this person the picture `address` names, kept where their identity keeps it, or take
+    /// theirs away when it is empty: what every device and app that shows them reads.
+    fn picture_self(&self, address: &str) {
+        use crate::platform::notice::Notice;
+
+        let workspace = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        });
+        let address = address.trim();
+        let bytes = if address.is_empty() {
+            None
+        } else {
+            let hash = address
+                .strip_prefix("tilo-blob://")
+                .or_else(|| address.strip_prefix("tilo.content:"))
+                .unwrap_or(address);
+            workspace
+                .as_deref()
+                .and_then(|workspace| self.record_content(workspace, hash))
+        };
+        if !address.is_empty() && bytes.is_none() {
+            self.telling().show(&Notice::new(
+                String::new(),
+                2,
+                t("profile-picture-not-found"),
+                String::new(),
+            ));
+            return;
+        }
+        if let Err(error) = identity::set_photo(bytes.as_deref()) {
+            tracing::warn!(%error, "could not keep the person's picture");
+            self.telling().show(&Notice::new(
+                String::new(),
+                2,
+                t("profile-picture-not-saved"),
+                String::new(),
+            ));
         }
     }
 

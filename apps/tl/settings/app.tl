@@ -771,11 +771,129 @@ fn shell_widget_key(kind: ShellWidget) -> Text {
     } else if kind == .calendar { "calendar" } else { "system_monitor" }
 }
 
+/// One app's own notifications: which kinds arrive, where they show and whether it may reach
+/// the person while the quiet hours hold. A kind it leaves unset follows the rules above, so a
+/// press sets that one kind and keeps the rest; the last button gives them all back.
+template view app_rules(
+    app_id: Text,
+    rule: settings.AppNotificationRule,
+    banners: Bool,
+    previews: Bool,
+    sounds: Bool,
+    badges: Bool,
+    lock_screen: Bool,
+    cross_device: Bool,
+) {
+    let its_banners = rule.banners ?? banners
+    setting("Show banners", "Say what happened as it happens") {
+        ui.Button(if its_banners { "On" } else { "Off" }, toggled: its_banners) {
+            on press: settings.set_app_kinds(
+                settings.notifications,
+                app: app_id,
+                banners: .some(if its_banners { false } else { true }),
+                previews: rule.previews,
+                sounds: rule.sounds,
+                badges: rule.badges,
+            )
+        }
+    }
+    let its_previews = rule.previews ?? previews
+    setting("Show what it says", "Let a banner carry the message it is about") {
+        ui.Button(if its_previews { "On" } else { "Off" }, toggled: its_previews) {
+            on press: settings.set_app_kinds(
+                settings.notifications,
+                app: app_id,
+                banners: rule.banners,
+                previews: .some(if its_previews { false } else { true }),
+                sounds: rule.sounds,
+                badges: rule.badges,
+            )
+        }
+    }
+    let its_sounds = rule.sounds ?? sounds
+    setting("Play sounds", "A sound with what happens") {
+        ui.Button(if its_sounds { "On" } else { "Off" }, toggled: its_sounds) {
+            on press: settings.set_app_kinds(
+                settings.notifications,
+                app: app_id,
+                banners: rule.banners,
+                previews: rule.previews,
+                sounds: .some(if its_sounds { false } else { true }),
+                badges: rule.badges,
+            )
+        }
+    }
+    let its_badges = rule.badges ?? badges
+    setting("Show counts", "A count on its icon for what it holds unread") {
+        ui.Button(if its_badges { "On" } else { "Off" }, toggled: its_badges) {
+            on press: settings.set_app_kinds(
+                settings.notifications,
+                app: app_id,
+                banners: rule.banners,
+                previews: rule.previews,
+                sounds: rule.sounds,
+                badges: .some(if its_badges { false } else { true }),
+            )
+        }
+    }
+    let its_lock_screen = rule.lock_screen ?? lock_screen
+    setting("Show on the lock screen", "Let a banner arrive while the screen is locked") {
+        ui.Button(if its_lock_screen { "On" } else { "Off" }, toggled: its_lock_screen) {
+            on press: settings.set_app_reach(
+                settings.notifications,
+                app: app_id,
+                lock_screen: .some(if its_lock_screen { false } else { true }),
+                cross_device: rule.cross_device,
+            )
+        }
+    }
+    let its_cross_device = rule.cross_device ?? cross_device
+    setting("Your other devices", "Let it reach this person's other devices") {
+        ui.Button(if its_cross_device { "On" } else { "Off" }, toggled: its_cross_device) {
+            on press: settings.set_app_reach(
+                settings.notifications,
+                app: app_id,
+                lock_screen: rule.lock_screen,
+                cross_device: .some(if its_cross_device { false } else { true }),
+            )
+        }
+    }
+    setting("During quiet hours", "Let it reach you while the quiet hours hold") {
+        ui.Button(if rule.priority { "On" } else { "Off" }, toggled: rule.priority) {
+            on press: settings.set_app_priority(
+                settings.notifications,
+                app: app_id,
+                priority: not rule.priority,
+                priority_contacts: rule.priority_contacts,
+            )
+        }
+    }
+    setting("A priority contact's message", "Let a message from a priority contact through") {
+        ui.Button(
+            if rule.priority_contacts { "On" } else { "Off" },
+            toggled: rule.priority_contacts,
+        ) {
+            on press: settings.set_app_priority(
+                settings.notifications,
+                app: app_id,
+                priority: rule.priority,
+                priority_contacts: not rule.priority_contacts,
+            )
+        }
+    }
+    row(gap: .related, align: .center, wrap: true) {
+        ui.Button("Follow the rules above again", size: .small) {
+            on press: settings.clear_app(settings.notifications, app: app_id)
+        }
+    }
+}
+
 /// What this device says and shows when something happens: the banners, the sounds, and the
 /// hour the person wants quiet.
 view notifications_pane() {
     state chosen_app: Text = ""
     state duration: Text = "For 8 hours"
+    state editing: Text = ""
     let n = settings.notifications
     ui.Section("Do not disturb") {
         setting("Do not disturb", "Hold every banner until it is turned off") {
@@ -828,22 +946,30 @@ view notifications_pane() {
                                     duration: "Not muted",
                                 )
                             }
+                            ui.Button("Its rules", size: .small, toggled: editing == app_id) {
+                                on press: set(editing, app_id)
+                            }
                         }
                     }
                 }
-                if rule.banners == .some(false) {
-                    ui.Text("Banners off", role: .caption, secondary: true)
-                }
-                if rule.sounds == .some(false) {
-                    ui.Text("Sounds off", role: .caption, secondary: true)
-                }
-                if rule.previews == .some(false) {
-                    ui.Text("Previews off", role: .caption, secondary: true)
-                }
-                if rule.lock_screen == .some(false) {
-                    ui.Text("Nothing on the lock screen", role: .caption, secondary: true)
-                }
             }
+        }
+        // One app's rules at a time: a person with many apps still sees a short pane, and the
+        // row they pressed says which app the rules below are.
+        if let rule = n.per_app.get(editing) {
+            ui.Text(editing, role: .title)
+            // Other devices follow the compositor's own rule when an app sets none, and no
+            // setting changes that rule yet: an app's rule only takes it away.
+            app_rules(
+                editing,
+                rule,
+                banners: n.show_banners,
+                previews: n.show_previews,
+                sounds: n.play_sounds,
+                badges: n.show_badges,
+                lock_screen: n.show_on_lock_screen,
+                cross_device: true,
+            )
         }
         row(gap: .related, align: .center, wrap: true) {
             ui.TextInput(bind: chosen_app, placeholder: "An app's id, such as so.tilo.notes", fill)
@@ -858,6 +984,18 @@ view notifications_pane() {
                     app: chosen_app,
                     duration: duration,
                 )
+            }
+            if chosen_app != "" and n.per_app.get(chosen_app) == .none {
+                ui.Button("Add this app", size: .small) {
+                    on press: settings.set_app_kinds(
+                        settings.notifications,
+                        app: chosen_app,
+                        banners: .none,
+                        previews: .none,
+                        sounds: .none,
+                        badges: .none,
+                    )
+                }
             }
         }
     }
@@ -2320,7 +2458,11 @@ fn wallpaper_target_index(target: Text) -> Int {
 
 /// What an app's own notification rule says of itself, in a word or two.
 fn rule_words(rule: settings.AppNotificationRule) -> Text {
-    if rule.muted_until != .none { "Muted for now" } else { "Its own rules" }
+    if rule.muted_until != .none {
+        "Muted for now, with its own rules"
+    } else if rule.priority or rule.priority_contacts {
+        "Its own rules, reaching through the quiet hours"
+    } else { "Its own rules" }
 }
 
 /// The window's pane a search page names: the settings index's own slugs, which are not all the

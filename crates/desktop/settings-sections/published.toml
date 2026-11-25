@@ -1094,6 +1094,42 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "set-app-kinds"
+kind = "undoable"
+params = [
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
+  { name = "banners", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+  { name = "previews", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+  { name = "sounds", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+  { name = "badges", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "set-app-reach"
+kind = "undoable"
+params = [
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
+  { name = "lock_screen", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+  { name = "cross_device", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "set-app-priority"
+kind = "undoable"
+params = [
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
+  { name = "priority", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "priority_contacts", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "clear-app"
+kind = "undoable"
+params = [
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "set-quiet-hours"
 kind = "undoable"
 params = [

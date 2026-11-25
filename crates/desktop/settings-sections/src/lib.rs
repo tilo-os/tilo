@@ -261,6 +261,8 @@ sections!(
 );
 
 #[cfg(test)]
+mod action_keywords_tests;
+#[cfg(test)]
 mod declared_tests;
 #[cfg(test)]
 mod input_tests;

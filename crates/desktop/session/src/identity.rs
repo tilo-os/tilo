@@ -40,6 +40,16 @@ struct Present {
 /// [`Present`], kept current by a worker.
 struct WatchedLocalIdentity(Watched<Present>);
 
+/// A number that rises each time the person's identity record is read again, on the worker or by a
+/// writer in this process. What the record holds that a reading caches — their name and their
+/// picture — keys on it, so a write is seen at the next pass rather than at the next identity.
+static RECORD_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`RECORD_GENERATION`], for a reading that caches what the identity record holds.
+pub(crate) fn record_generation() -> u64 {
+    RECORD_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
 impl LocalIdentitySource for WatchedLocalIdentity {
     fn load(&self) -> Option<LocalIdentity> {
         self.0.get().identity.clone()
@@ -184,6 +194,10 @@ pub fn install() {
     }
     match Watched::start("local-identity", identity_directories(), read_present) {
         Ok(watched) => {
+            // Each read that lands moves the generation a cache of the record keys on.
+            watched.on_change(|| {
+                RECORD_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            });
             ui::local_identity::install_source(Some(Arc::new(WatchedLocalIdentity(watched))));
         }
         Err(error) => tracing::warn!(%error, "cannot watch the person's identity"),
@@ -209,6 +223,96 @@ pub(crate) fn rename_to(name: &str) -> Result<(), String> {
     // replaced until the watch over the directory says so.
     ui::local_identity::refresh();
     Ok(())
+}
+
+/// The person's own picture as a `data:` URL a view draws, or empty when they chose none: their
+/// identity record's photo, encoded once for each change of the identity.
+pub(crate) fn own_photo_url() -> String {
+    use image::ImageEncoder as _;
+    static KEPT: std::sync::Mutex<(u64, String)> = std::sync::Mutex::new((u64::MAX, String::new()));
+    let generation = record_generation();
+    {
+        let kept = KEPT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if kept.0 == generation {
+            return kept.1.clone();
+        }
+    }
+    let url = ui::local_identity::own_public_photo()
+        .and_then(|photo| {
+            let mut bytes = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut bytes)
+                .write_image(
+                    photo.rgba(),
+                    u32::from(photo.width()),
+                    u32::from(photo.height()),
+                    image::ExtendedColorType::Rgba8,
+                )
+                .ok()?;
+            collab_types::photo_url(&bytes)
+        })
+        .unwrap_or_default();
+    let mut kept = KEPT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *kept = (generation, url.clone());
+    url
+}
+
+/// Make the picture `bytes` encode this person's own, or take theirs away when none: their
+/// active identity record keeps it, and every face that shows them reads it from there. Says
+/// what stopped it when it could not.
+pub(crate) fn set_photo(bytes: Option<&[u8]>) -> Result<(), String> {
+    let dir =
+        tilo_identity::store::account_identity_dir_from_env().map_err(|error| error.to_string())?;
+    let active = tilo_identity::store::resolve_active_identity(&dir)
+        .ok_or_else(|| "this device keeps no identity to give a picture".to_owned())?;
+    let id = active
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| "the identity record has no id".to_owned())?
+        .to_owned();
+    let photo = bytes.map(bounded_picture).transpose()?;
+    tilo_identity::store::update_identity_photo(&dir, &id, photo)
+        .map_err(|error| error.to_string())?;
+    // This process wrote the identity: it reads it now, rather than going on with the picture it
+    // replaced until the watch over the directory says so.
+    ui::local_identity::refresh();
+    Ok(())
+}
+
+/// The picture `bytes` hold, at the size an identity record keeps: decoded upright and shrunk to
+/// at most [`tilo_identity_client::MAX_PHOTO_DIMENSION`] pixels a side.
+fn bounded_picture(bytes: &[u8]) -> Result<tilo_identity_client::ProfilePhoto, String> {
+    let image = image::load_from_memory(bytes)
+        .map_err(|error| format!("the picture could not be read: {error}"))?
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    let limit = u32::from(tilo_identity_client::MAX_PHOTO_DIMENSION);
+    let image = if width > limit || height > limit {
+        let longest = width.max(height);
+        let scaled = |side: u32| {
+            u64::from(side)
+                .saturating_mul(u64::from(limit))
+                .checked_div(u64::from(longest))
+                .and_then(|scaled| u32::try_from(scaled).ok())
+                .unwrap_or(limit)
+                .max(1)
+        };
+        image::imageops::resize(
+            &image,
+            scaled(width),
+            scaled(height),
+            image::imageops::FilterType::Lanczos3,
+        )
+    } else {
+        image
+    };
+    let (width, height) = image.dimensions();
+    let width = u16::try_from(width).map_err(|_| "the picture is too wide".to_owned())?;
+    let height = u16::try_from(height).map_err(|_| "the picture is too tall".to_owned())?;
+    tilo_identity_client::ProfilePhoto::new(width, height, image.into_raw()).map_err(str::to_owned)
 }
 
 /// Put a host offer to the person: one about who they are ([`HostAction::is_personal`], their name

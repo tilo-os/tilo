@@ -141,6 +141,10 @@ struct Own {
     colour_slot: Option<u32>,
     given: String,
     chat: bool,
+    /// A new identity, and the identity record read again: a name or a picture written
+    /// here or on another device.
+    identity_generation: u64,
+    record_generation: u64,
 }
 
 /// Everything that changes the reading, cheaply: who is here, what the shell shows, this person
@@ -259,6 +263,8 @@ impl PeopleDevice {
             colour_slot: Some(self.worn_colour(&identity) as u32),
             given,
             chat: (self.chat)(),
+            identity_generation: ui::local_identity::generation(),
+            record_generation: crate::identity::record_generation(),
         }
     }
 
@@ -477,6 +483,7 @@ impl PeopleDevice {
                 key: SELF.to_owned(),
                 name,
                 colour: colour_of((red, green, blue)),
+                photo: crate::identity::own_photo_url(),
                 me: true,
                 availability: "available".to_owned(),
                 given,
@@ -491,6 +498,7 @@ impl PeopleDevice {
             key: SELF.to_owned(),
             name,
             colour: colour_of((red, green, blue)),
+            photo: crate::identity::own_photo_url(),
             me: true,
             availability: own.availability.id().to_owned(),
             doing: own
@@ -718,6 +726,11 @@ impl PeopleDevice {
                     who: person.trim().to_owned(),
                 });
                 self.taken_elsewhere();
+            }
+            PeopleEffect::SetPhoto { picture } => {
+                self.asks
+                    .borrow_mut()
+                    .push(crate::people::PeopleAsk::Picture(picture.clone()));
             }
             PeopleEffect::SetName { name } => {
                 // Enter keeps what is in the field: the pause that was coming is answered here
@@ -978,6 +991,12 @@ fn person_of(
         key: here.device.clone(),
         name: member.name.clone(),
         colour: colour_of((red, green, blue)),
+        // Their picture as the member list carries it, which every face of them draws.
+        photo: member
+            .avatar
+            .as_ref()
+            .and_then(|avatar| collab_types::photo_url(&avatar.0))
+            .unwrap_or_default(),
         agent,
         bot,
         me: false,
