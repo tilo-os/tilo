@@ -1139,11 +1139,19 @@ fn reopened_value(host: &ProbeHarness, checkout: &DocumentCheckout) -> String {
 
 #[test]
 fn visual_wait_submits_and_samples_a_save_before_its_first_readiness_check() {
-    let mut fixture = VisualFixture::new(ProbeHarness::new());
+    // The frame that takes the edit up offers it to the writer, as a hosted window's frame does,
+    // and shows it being saved while the workspace has not answered.
+    let mut fixture = VisualFixture::new(ProbeHarness::holding_writes());
+    // The record stands in the workspace before the person edits it.
+    fixture.host.accept_writes();
     fixture.edit();
     fixture.frame.relayout();
     assert_eq!(fixture.status(), ResourceSaveStatus::Saving);
     assert!(fixture.frame.root_widget().has_pending_visual_work());
+    assert_eq!(fixture.host.held_writes().len(), 1, "the frame offered it");
+    // The workspace answers; the wait samples the answer before it first asks whether the
+    // window is at rest.
+    fixture.host.accept_writes();
     fixture
         .frame
         .wait_for_visuals(crate::time::Duration::ZERO)
