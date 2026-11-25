@@ -1828,6 +1828,14 @@ on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
+name = "window-connector"
+# A window with no session keeping the video site's types in step with YouTube through the
+# connector the window reaches: the origin path a window outside a tilolang host takes. The
+# package checks key on what cargo reads, which leaves apps/tl out of their tree; this names the
+# package the window runs, and the test that moves with the connector.
+run = "test -d apps/tl/tube\ncargo test --locked -p tilolang-process --test window hosted::origins::a_window_without_a_session_browses_and_plays_through_the_connector -- --exact --nocapture"
+
+[[check]]
 name = "apps-macos"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
