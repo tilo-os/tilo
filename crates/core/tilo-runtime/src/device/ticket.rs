@@ -1139,10 +1139,15 @@ impl Tickets {
             None
         };
         let wait = args.get("wait").and_then(Value::as_bool) == Some(true);
+        // One act that hands back several tickets (a founding's first, say) asks for each beside
+        // the others: none takes another's place.
+        let beside = args.get("beside").and_then(Value::as_bool) == Some(true);
         // A ticket names where the new computer dials this one: made before this device's
         // endpoint reached one of its relays, it would name only the network this device stands
-        // in. It waits for the relay first, as an invitation does.
-        let unreached = action == ISSUE && !wait && !reached(&self.0.endpoint);
+        // in. It waits for the relay first, as an invitation does, unless the ticket is issued as
+        // one of a founding's first: its founder waits at the call, and it names the address the
+        // device has now rather than waiting on a relay that is not there.
+        let unreached = action == ISSUE && !wait && !beside && !reached(&self.0.endpoint);
         let waiting = matches!(
             action.as_str(),
             ISSUE | LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE
@@ -1175,9 +1180,6 @@ impl Tickets {
                         if unreached {
                             tilo_endpoint_reachability::await_relay(&served.0.endpoint).await;
                         }
-                        // One act that hands back several tickets (a founding's first, say) asks
-                        // for each beside the others: none takes another's place.
-                        let beside = args.get("beside").and_then(Value::as_bool) == Some(true);
                         served.issue(&args, beside).await
                     }
                 };

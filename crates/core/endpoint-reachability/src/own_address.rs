@@ -16,28 +16,12 @@ pub const RELAY_WAIT: Duration = Duration::from_secs(iroh::NET_REPORT_TIMEOUT);
 pub async fn relay_addr(endpoint: &Endpoint, within: Duration) -> EndpointAddr {
     let relayed = async {
         let mut watch = endpoint.watch_addr();
-        let mut relays = endpoint.home_relay_status();
         loop {
             let addr = watch.get();
             if addr.relay_urls().next().is_some() {
                 return addr;
             }
-            // No relay of this endpoint's answers: every one it was given has failed, and the
-            // address it has is the one to name. Waiting the whole time would hold a ticket
-            // (or a server) back for a relay that is not there.
-            let statuses = relays.get();
-            if !statuses.is_empty()
-                && statuses
-                    .iter()
-                    .all(|relay| !relay.is_connected() && relay.last_error().is_some())
-            {
-                return addr;
-            }
-            let changed = n0_future::future::or(async { watch.updated().await.is_ok() }, async {
-                relays.updated().await.is_ok()
-            })
-            .await;
-            if !changed {
+            if watch.updated().await.is_err() {
                 return addr;
             }
         }
@@ -152,32 +136,6 @@ mod tests {
         let addr = relay_addr(&endpoint, Duration::ZERO).await;
         assert_eq!(addr.id, endpoint.id());
         assert_eq!(addr.relay_urls().count(), 0);
-        endpoint.close().await;
-    }
-
-    /// A relay that answers nothing is not waited for: every one the endpoint was given has
-    /// failed, and the address it has is named at once rather than after the whole wait.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_relay_that_answers_nothing_is_not_waited_for() {
-        let url = "https://127.0.0.1:1"
-            .parse::<RelayUrl>()
-            .expect("a relay's address");
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .relay_mode(RelayMode::Custom(iroh::RelayMap::from(url)))
-            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-            .unwrap()
-            .bind()
-            .await
-            .unwrap();
-        let began = std::time::Instant::now();
-        let addr = relay_addr(&endpoint, Duration::from_secs(30)).await;
-        assert_eq!(addr.id, endpoint.id());
-        assert_eq!(addr.relay_urls().count(), 0);
-        assert!(
-            began.elapsed() < Duration::from_secs(10),
-            "the failed relay was waited for: {:?}",
-            began.elapsed()
-        );
         endpoint.close().await;
     }
 
