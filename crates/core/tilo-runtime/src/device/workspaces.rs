@@ -304,13 +304,15 @@ impl ServiceWorkspaces {
 
     /// Found `workspace`, called `name`, here unless the service holds it already, and enter it
     /// as this device: the workspace of a computer with no login, whose member list names the
-    /// person as its owner.
+    /// person as its owner. Answers whether it was this call that founded it: a workspace the
+    /// service holds is entered, not made again.
     ///
     /// # Errors
     /// The service refused to found it, or to let this device in.
-    pub(crate) async fn found(&self, workspace: WorkspaceId, name: &str) -> Result<(), String> {
+    pub(crate) async fn found(&self, workspace: WorkspaceId, name: &str) -> Result<bool, String> {
         let id = workspace.to_string();
         let cert = &self.identity.device_cert;
+        let made = self.service.workspaces().summary(&id).await.is_err();
         self.service.hold_own_workspace(&id, name, cert).await?;
         self.service
             .workspaces()
@@ -318,7 +320,7 @@ impl ServiceWorkspaces {
             .await
             .map(drop)
             .map_err(|error| error.to_string())?;
-        Ok(())
+        Ok(made)
     }
 
     /// Take in, once, what a desktop of this device kept itself before this service kept its

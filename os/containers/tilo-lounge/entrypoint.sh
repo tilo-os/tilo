@@ -21,6 +21,18 @@
 #   TILO_KEPT                       the workspaces this host serves of its own,
 #                                   comma-separated as ID=Name (or ID alone): the
 #                                   server makes each on the first start and keeps it
+#   TILO_WORKSPACES_ADMISSION       who a kept workspace's entry lets in: `open`
+#                                   admits anyone who asks, at the default role;
+#                                   `invite` only people it invited (default open)
+#   TILO_WORKSPACES_DESCRIPTION     what a kept workspace is, as the public
+#                                   directory shows it (default: its name)
+#   TILO_WORKSPACES_DEFAULT_ROLE    the role everyone who joins through the entry
+#                                   holds to begin with: viewer, commenter or
+#                                   editor (default editor)
+#
+# A kept workspace is founded by the founder's own device, under its root: this
+# volume is that root holder when it holds the owner's identity, and a volume a
+# ticket joined keeps the workspaces its owners place on it without founding any.
 #
 # A deployment that fixes the endpoint's address, a published packet relay or a
 # host name mounts its own server configuration instead: nothing here rewrites
@@ -36,7 +48,8 @@ fail() {
   exit 2
 }
 
-known='TILO_WORKSPACES_STATE TILO_WORKSPACES_WEB_ENTRY TILO_WORKSPACES_LIVE'
+known='TILO_WORKSPACES_STATE TILO_WORKSPACES_WEB_ENTRY TILO_WORKSPACES_LIVE
+TILO_WORKSPACES_ADMISSION TILO_WORKSPACES_DESCRIPTION TILO_WORKSPACES_DEFAULT_ROLE'
 known=$(printf '%s' "$known" | tr '\n' ' ')
 for variable in $(env | sed -n 's/^\(TILO_WORKSPACES_[A-Za-z0-9_]*\)=.*/\1/p'); do
   case " $known " in
@@ -78,6 +91,21 @@ if [ ! -s "$state/identity/device/cert.bin" ]; then
 fi
 export CREDENTIALS_DIRECTORY=$credentials
 
+# `invite` (the setting the public deployment ships) lists the workspace and
+# closes its entry: only people invited or pre-admitted join. `open` lets anyone
+# in as the default role. Anything else stops the start, on every start: a
+# deployment that still sets what this image no longer honors must not run.
+admission=${TILO_WORKSPACES_ADMISSION:-open}
+case $admission in
+  open|invite) ;;
+  *) fail "TILO_WORKSPACES_ADMISSION is open (anyone who asks joins) or invite (only people it invited), not $admission" ;;
+esac
+role=${TILO_WORKSPACES_DEFAULT_ROLE:-editor}
+case $role in
+  viewer|commenter|editor) ;;
+  *) fail "TILO_WORKSPACES_DEFAULT_ROLE is viewer, commenter or editor, not $role" ;;
+esac
+
 # The server configuration is what this host keeps, and where it is reached: the
 # deployment's addresses become its settings once, and a later start reads what
 # is already there.
@@ -101,7 +129,11 @@ if [ ! -s "$config" ]; then
       id=${one%%=*}
       name=${one#*=}
       [ "$name" != "$one" ] || name=$id
-      printf '\n[[kept]]\nid = "%s"\nname = "%s"\n' "$id" "$name"
+      # A listed workspace says what it is: the deployment's description, or the
+      # name people know it by.
+      description=${TILO_WORKSPACES_DESCRIPTION:-$name}
+      printf '\n[[kept]]\nid = "%s"\nname = "%s"\nentry = "%s"\ndefault_role = "%s"\ndescription = "%s"\n' \
+        "$id" "$name" "$admission" "$role" "$description"
     done
   } > "$config"
 fi

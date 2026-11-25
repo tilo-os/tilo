@@ -136,7 +136,8 @@ pub struct ServerConfig {
     pub relay: Option<String>,
 }
 
-/// A workspace a server founds and keeps of its own.
+/// A workspace a server founds and keeps of its own: the founder's inputs, which
+/// the workspace's owner acts on once, when it is founded.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeptWorkspace {
@@ -145,6 +146,23 @@ pub struct KeptWorkspace {
     /// The name people see it by.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// Who its entry lets in: `open` admits anyone who asks, at
+    /// [`Self::default_role`]; `invite` admits only people the workspace
+    /// invited. Absent, the entry admits only its members, and the workspace is
+    /// not listed anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    /// The role everyone who joins through the entry holds to begin with:
+    /// `viewer`, `commenter` or `editor`. `editor` when the entry gives none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_role: Option<String>,
+    /// What the workspace is, in a sentence or two, as the directory shows it.
+    /// `name` when the deployment names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// How many addresses a `invite` entry keeps for whoever may invite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_list_max: Option<usize>,
 }
 
 fn default_work() -> WorkSetting {

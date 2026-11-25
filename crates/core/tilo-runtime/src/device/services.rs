@@ -1726,18 +1726,36 @@ impl Daemon {
             identity.place.dir(),
             &identity.cert.user_public_key,
         )?;
-        // A server founds and keeps the workspaces its configuration lists of its
-        // own: a deployment that serves one names it there, and the server's device
-        // makes it on the first start and keeps it from then on.
+        // A server founds and keeps the workspaces its configuration lists of its own, where
+        // this computer holds its person's root: founding one is the founder's own device's act,
+        // which a server its person's ticket joined is not. Such a server keeps the workspaces
+        // placed on it (`servers add`, from a device of its owners), and founds none.
         if let Some(keeping) = keeping.as_ref() {
             let listed = keeping.kept()?;
-            if !listed.is_empty() {
+            if joined && !listed.is_empty() {
+                tracing::info!(
+                    kept = listed.len(),
+                    "this server keeps the workspaces its owners place on it; it founds none"
+                );
+            } else if !joined && !listed.is_empty() {
                 stage("founding the workspaces this server keeps");
-                for (id, name) in listed {
-                    tilo_rt::app()
-                        .handle()
-                        .block_on(workspaces.found(id, &name))
+                let handle = tilo_rt::app().handle().clone();
+                for kept in listed {
+                    let id = kept.id.to_string();
+                    let made = handle
+                        .block_on(workspaces.found(kept.id, &kept.name))
                         .map_err(io::Error::other)?;
+                    // The entry the deployment names is the founder's first change: settled as
+                    // the workspace is made, never again over what its owners chose since.
+                    if made && let Some(entry) = &kept.entry {
+                        handle
+                            .block_on(workspaces.service().workspaces().found_entry(
+                                &id,
+                                &identity.cert,
+                                entry.clone(),
+                            ))
+                            .map_err(|error| io::Error::other(error.to_string()))?;
+                    }
                 }
             }
         }

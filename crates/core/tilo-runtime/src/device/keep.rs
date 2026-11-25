@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
+use tilo_action_policy::{EntryPolicy, ListingPolicy, Role};
 use tilo_server::daemon::{OnDevice, PacketRelay, Protocols, Server, ServerIdentity};
-use tilo_server_protocol::config::{ServerConfig, WebTls};
+use tilo_server_protocol::config::{KeptWorkspace, ServerConfig, WebTls};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
 
@@ -39,6 +40,61 @@ pub(crate) fn config() -> Option<PathBuf> {
 pub(crate) struct Keeping {
     cfg: ServerConfig,
     runtime: tokio::runtime::Runtime,
+}
+
+/// A workspace the configuration keeps, as its founder founds it: the id every
+/// device reaches it by, the name people see it by, and the entry the founder
+/// settles once, when it is founded.
+#[derive(Debug)]
+pub(crate) struct KeptFounding {
+    pub(crate) id: tilo_server_protocol::WorkspaceId,
+    pub(crate) name: String,
+    pub(crate) entry: Option<EntryPolicy>,
+}
+
+/// The entry `kept` is founded with, as the deployment names it: whom its entry lets
+/// in, at which role, what a directory says of it, and how many requests it keeps.
+/// `None` founds a workspace only its members reach: not listed, and joined by
+/// invitation.
+fn founding_entry(kept: &KeptWorkspace, name: &str) -> Result<Option<EntryPolicy>, String> {
+    let Some(entry) = kept.entry.as_deref().map(str::trim) else {
+        if kept.wait_list_max.is_some_and(|kept| kept > 0) {
+            return Err("only an `invite` entry keeps a wait list".into());
+        }
+        return Ok(None);
+    };
+    let invitation_only = match entry {
+        "open" => false,
+        "invite" => true,
+        other => return Err(format!("its entry is `open` or `invite`, not {other:?}")),
+    };
+    let default_role = match kept.default_role.as_deref().map(str::trim) {
+        None | Some("") => Role::Editor,
+        Some(role) => Role::parse(role)
+            .filter(|role| matches!(role, Role::Viewer | Role::Commenter | Role::Editor))
+            .ok_or_else(|| {
+                format!("its default role is `viewer`, `commenter` or `editor`, not {role:?}")
+            })?,
+    };
+    let description = kept
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .unwrap_or(name)
+        .to_owned();
+    let policy = EntryPolicy {
+        listing: Some(ListingPolicy {
+            description,
+            default_role,
+        }),
+        invitation_only,
+        wait_list_max: kept.wait_list_max.unwrap_or(0),
+    };
+    policy
+        .checked()
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 impl Keeping {
@@ -96,11 +152,12 @@ impl Keeping {
     }
 
     /// The workspaces this server founds and keeps of its own, as its configuration
-    /// lists them: each with the name people see it by.
+    /// lists them: each with the name people see it by and the entry its founder
+    /// settles when it is founded.
     ///
     /// # Errors
-    /// A listed id is not one.
-    pub(crate) fn kept(&self) -> io::Result<Vec<(tilo_server_protocol::WorkspaceId, String)>> {
+    /// A listed id or entry setting is not one.
+    pub(crate) fn kept(&self) -> io::Result<Vec<KeptFounding>> {
         self.cfg
             .kept
             .iter()
@@ -119,7 +176,13 @@ impl Keeping {
                 } else {
                     kept.name.clone()
                 };
-                Ok((id, name))
+                let entry = founding_entry(kept, &name).map_err(|why| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("this server's configuration keeps {id}: {why}"),
+                    )
+                })?;
+                Ok(KeptFounding { id, name, entry })
             })
             .collect()
     }
@@ -459,6 +522,101 @@ impl Drop for Kept {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The entry a deployment names is the one its founder settles: who the
+    /// workspace's entry lets in, at which role, and what a directory says of it —
+    /// and a value that is no entry stops the start instead of founding the wrong one.
+    #[test]
+    fn a_kept_workspaces_entry_is_what_the_deployment_names() {
+        let keeping = |kept: KeptWorkspace| Keeping {
+            cfg: ServerConfig {
+                kept: vec![kept],
+                ..ServerConfig::default()
+            },
+            runtime: tilo_rt::daemon("tilo-keep-test").build().unwrap(),
+        };
+        let open = keeping(KeptWorkspace {
+            id: "4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11".into(),
+            name: "Lounge".into(),
+            entry: Some("open".into()),
+            default_role: Some("commenter".into()),
+            description: Some("Coffee and tea".into()),
+            wait_list_max: None,
+        })
+        .kept()
+        .expect("the kept workspace reads");
+        let entry = open[0].entry.clone().expect("its entry is founded");
+        assert_eq!(
+            entry.listing,
+            Some(ListingPolicy {
+                description: "Coffee and tea".into(),
+                default_role: Role::Commenter,
+            })
+        );
+        assert!(
+            !entry.invitation_only,
+            "an open entry admits anyone who asks"
+        );
+
+        let invite = keeping(KeptWorkspace {
+            id: "4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11".into(),
+            name: "Lounge".into(),
+            entry: Some("invite".into()),
+            default_role: None,
+            description: None,
+            wait_list_max: Some(500),
+        })
+        .kept()
+        .expect("the kept workspace reads");
+        let entry = invite[0].entry.as_ref().expect("its entry is founded");
+        assert!(entry.invitation_only, "only people it invited join");
+        assert_eq!(entry.wait_list_max, 500);
+        assert_eq!(
+            entry.listing.as_ref().map(|listing| listing.default_role),
+            Some(Role::Editor),
+            "a deployment that names no role hands out an editor's part"
+        );
+        assert_eq!(
+            entry
+                .listing
+                .as_ref()
+                .map(|listing| listing.description.as_str()),
+            Some("Lounge"),
+            "a deployment that names no description is listed by its name"
+        );
+
+        let unnamed = keeping(KeptWorkspace {
+            id: "4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11".into(),
+            name: "Lounge".into(),
+            entry: None,
+            default_role: None,
+            description: None,
+            wait_list_max: None,
+        })
+        .kept()
+        .expect("the kept workspace reads");
+        assert!(
+            unnamed[0].entry.is_none(),
+            "a deployment that names no entry founds a workspace only its members reach"
+        );
+
+        for (entry, told) in [(Some("closed"), "entry"), (Some("open"), "role")] {
+            let why = keeping(KeptWorkspace {
+                id: "4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11".into(),
+                name: "Lounge".into(),
+                entry: entry.map(str::to_owned),
+                default_role: (told == "role").then(|| "owner".to_owned()),
+                description: None,
+                wait_list_max: None,
+            })
+            .kept()
+            .expect_err("a value that is no entry stops the start");
+            assert!(
+                why.to_string().contains(told),
+                "the refusal says which setting: {why}"
+            );
+        }
+    }
 
     /// A machine that is a server runs the packet relay its pages are reached through
     /// without its configuration naming one, and its endpoint names it: a page has no UDP

@@ -1027,33 +1027,52 @@ lounge_id() {
 
 # The Lounge's workspace: the stack's own person's, founded on their device with
 # the entry $state/admission names, then placed on the server, which keeps it and
-# serves it. A stack that has one keeps it as its owners left it: a later start
-# settles nothing again. Prints its id.
+# serves it. A stack that has one keeps it as its owners left it: the entry is
+# settled once, when the workspace is founded, and a start after that settles
+# nothing again. Prints its id.
 lounge_up() {
   local id_file=$state/server/lounge/workspace-id id admission answer
-  if [[ -s $id_file ]]; then cat "$id_file"; return 0; fi
   admission=$(cat "$state/admission" 2>/dev/null || echo invite)
   case $admission in
     open) ;;
     invite) ;;
     *) die "TILO_SH_ADMISSION is open (anyone who asks joins as a guest) or invite (only people it invited), not $admission" ;;
   esac
-  answer=$(owner_tilo do account/workspaces#create name=Lounge --json) \
-    || die 'the stack'"'"'s person founded no Lounge (stack.sh logs person says why)'
-  id=$(printf '%s' "$answer" \
-    | python3 -c 'import json,sys; made=json.load(sys.stdin)["result"]; print(made["workspace"] if isinstance(made["workspace"], str) else made["workspace"]["workspace"])' 2>/dev/null) \
-    || die "the Lounge's id did not read from the answer: $answer"
+  if [[ -s $id_file && -s $id_file.placed ]]; then cat "$id_file"; return 0; fi
+  if [[ -s $id_file ]]; then
+    id=$(cat "$id_file")
+  else
+    answer=$(owner_tilo do account/workspaces#create name=Lounge --json) \
+      || die 'the stack'"'"'s person founded no Lounge (stack.sh logs person says why)'
+    id=$(printf '%s' "$answer" | python3 -c 'import json,sys
+made = json.load(sys.stdin)["result"]["workspace"]
+print(made if isinstance(made, str) else made.get("id") or made.get("workspace"))' 2>/dev/null) \
+      || die "the Lounge's id did not read from the answer: $answer"
+    mkdir -p "$(dirname "$id_file")"
+    printf '%s\n' "$id" > "$id_file"
+  fi
   # The entry is the workspace's own setting, settled by its owner: listed, and
   # anyone who asks joins at an editor's part, or only people it invited.
   owner_tilo do workspace#publish default_role=editor description=Lounge \
     admission="$admission" -w "$id" >/dev/null \
     || die "the stack's person did not settle the Lounge's entry"
   # The server keeps it from here: the person's device holds the workspace and
-  # its governance, and the server serves it.
-  owner_tilo do workspace/servers#add host="$(host_info)" -w "$id" >/dev/null \
+  # its governance, and the server serves it. Where it is reached at is what it
+  # writes once its web UI serves: read it, or wait for it.
+  local line='' host=''
+  for _ in $(seq 1 240); do
+    line=$(server_web_host)
+    [[ -s $line ]] && break
+    sleep 0.25
+  done
+  [[ -s $line ]] || die "the server said nothing of itself (no web-host.json under $state/server/state)"
+  # The line is JSON, and `tilo do` reads a value that is JSON as that value: it is
+  # handed as the text it is, quoted, so the action's `host` is the line itself.
+  host=$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' < "$line") \
+    || die "the server's line did not read from $line"
+  owner_tilo do workspace/servers#add host="$host" -w "$id" >/dev/null \
     || die "the stack's server did not take the Lounge"
-  mkdir -p "$(dirname "$id_file")"
-  printf '%s\n' "$id" > "$id_file"
+  : > "$id_file.placed" || die "the stack could not keep the Lounge's placement"
   printf '%s\n' "$id"
 }
 

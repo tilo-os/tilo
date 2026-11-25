@@ -33,7 +33,17 @@ Optional, with these defaults:
 | --- | --- | --- |
 | `TILO_WORKSPACES_STATE` | `/run/tilo-workspaces` | the volume the daemon's identity, profile, state and secrets live on |
 | `TILO_WORKSPACES_LIVE` | none | the packet relay the daemon runs, written into a configuration it makes; `none` runs none |
-| `TILO_KEPT` | none | the workspaces this host serves of its own, `ID=Name` comma-separated (or `ID` alone): the server makes each on its first start and keeps it from then on |
+| `TILO_KEPT` | none | the workspaces this host serves of its own, `ID=Name` comma-separated (or `ID` alone): its founder's device makes each on the first start and keeps it from then on |
+| `TILO_WORKSPACES_ADMISSION` | `open` | who a kept workspace's entry lets in: `open` admits anyone who asks, at the default role; `invite` only people the workspace invited |
+| `TILO_WORKSPACES_DESCRIPTION` | the workspace's name | what a kept workspace is, as the public directory shows it |
+| `TILO_WORKSPACES_DEFAULT_ROLE` | `editor` | the role everyone who joins through the entry holds to begin with |
+
+A kept workspace's entry is settled once, when it is founded, and what its owners
+change later stands: a later start reads the workspace's entry rather than
+settling the deployment's again. Founding a workspace is its founder's own
+device's act, so a volume holds the owner's root for it (its identity store its
+own): a volume a ticket joined keeps the workspaces its owners place on it
+(`servers add`) and founds none.
 
 `TILO_SERVER_CONFIG` names the server configuration the daemon reads (default
 `$TILO_WORKSPACES_STATE/server.toml`), which the deployment writes when it fixes

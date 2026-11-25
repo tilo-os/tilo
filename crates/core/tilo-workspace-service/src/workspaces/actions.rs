@@ -47,8 +47,8 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
-use tilo_action_policy::Answer;
 use tilo_action_policy::roles::{self, governance};
+use tilo_action_policy::{Answer, EntryPolicy, ListingPolicy};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
@@ -1085,6 +1085,18 @@ fn publish_params() -> Vec<ActionParam> {
             "description",
             ParamType::Text,
             "What the workspace is, in a sentence or two (at most 280 characters).",
+        ),
+        ActionParam::optional(
+            "admission",
+            ParamType::Text,
+            "Who the entry lets in: `open` admits anyone who asks, at the default role; `invite` \
+             admits only people the workspace invited.",
+        )
+        .with_choices(["open", "invite"]),
+        ActionParam::optional(
+            "wait_list_max",
+            ParamType::Integer,
+            "How many addresses the entry keeps for whoever may invite. An `open` entry keeps none.",
         ),
     ]
 }
@@ -2816,8 +2828,9 @@ impl Workspaces {
         Ok(json!({ "resource": resource, "reads": reads, "changed": changed }))
     }
 
-    /// Making the workspace a public workspace, taking it back, and what it is
-    /// public with: `{"public": bool, "description"?, "default_role"?}`.
+    /// Making the workspace a public workspace, taking it back, and what its entry
+    /// is: `{"public": bool, "description"?, "default_role"?, "admission",
+    /// "wait_list_max"}`.
     async fn governance_listing(
         &self,
         action: &str,
@@ -2829,13 +2842,22 @@ impl Workspaces {
             args,
             ..
         } = call;
-        let listed = |listing: Option<tilo_server_protocol::directory::Listing>| match listing {
-            Some(listing) => json!({
-                "public": true,
-                "description": listing.description,
-                "default_role": listing.default_role.key(),
-            }),
-            None => json!({ "public": false }),
+        let entry_answer = |entry: &EntryPolicy| {
+            let mut answer = match &entry.listing {
+                Some(listing) => json!({
+                    "public": true,
+                    "description": listing.description,
+                    "default_role": listing.default_role.key(),
+                }),
+                None => json!({ "public": false }),
+            };
+            answer["admission"] = json!(if entry.invitation_only {
+                "invite"
+            } else {
+                "open"
+            });
+            answer["wait_list_max"] = json!(entry.wait_list_max);
+            answer
         };
         match action {
             PUBLISH => {
@@ -2847,21 +2869,45 @@ impl Workspaces {
                             "a public workspace hands out viewer, commenter or editor, not `{text}`"
                         ))
                     })?;
-                let listing = tilo_server_protocol::directory::Listing {
-                    description: args.text("description")?.unwrap_or_default().to_owned(),
-                    default_role,
+                let admission = args.text("admission")?.unwrap_or("open").trim().to_owned();
+                let invitation_only = match admission.as_str() {
+                    "open" => false,
+                    "invite" => true,
+                    other => {
+                        return Err(ActionCallError::invalid_request(format!(
+                            "an entry is `open` or `invite`, not `{other}`"
+                        )));
+                    }
                 };
-                self.publish(workspace, device, listing)
+                let wait_list_max = args
+                    .integer("wait_list_max")?
+                    .map(u32::try_from)
+                    .transpose()
+                    .map_err(|_| {
+                        ActionCallError::invalid_request("`wait_list_max` is too large".to_owned())
+                    })?
+                    .map_or(0, |kept| kept as usize);
+                let entry = EntryPolicy {
+                    listing: Some(ListingPolicy {
+                        description: args.text("description")?.unwrap_or_default().to_owned(),
+                        default_role,
+                    }),
+                    invitation_only,
+                    wait_list_max,
+                };
+                self.found_entry(workspace, device, entry)
                     .await
-                    .map(|listing| listed(Some(listing)))
+                    .map(|entry| entry_answer(&entry))
                     .map_err(|error| ActionCallError::refused(error.to_string()))
             }
             UNPUBLISH => self
                 .unpublish(workspace, device)
                 .await
-                .map(|()| listed(None))
+                .map(|()| json!({ "public": false }))
                 .map_err(|error| ActionCallError::refused(error.to_string())),
-            _ => Ok(listed(self.listing(workspace).await)),
+            _ => Ok(entry_answer(
+                &self.entry_policy(workspace).await.unwrap_or_default(),
+            )),
         }
     }
 

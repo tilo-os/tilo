@@ -73,6 +73,21 @@ rm -f "$config_file"
 lounge TILO_WORKSPACES_LIVE=none || fail "a host reached through a relay did not start: $(cat "$work/err")"
 grep -Fq 'packet_relay = ' "$config_file" && fail "a host reached through a relay runs its own"
 
+# A kept workspace carries the entry its founder settles: whom it lets in, at
+# which role, and what the directory says of it.
+rm -f "$config_file"
+lounge TILO_KEPT=4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11=Lounge \
+  TILO_WORKSPACES_ADMISSION=invite TILO_WORKSPACES_DESCRIPTION='Coffee and tea' \
+  TILO_WORKSPACES_DEFAULT_ROLE=viewer \
+  || fail "a deployment with a kept workspace did not start: $(cat "$work/err")"
+has 'id = "4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11"'
+has 'name = "Lounge"'
+has 'entry = "invite"'
+has 'default_role = "viewer"'
+has 'description = "Coffee and tea"'
+fails_with lounge TILO_WORKSPACES_ADMISSION=closed
+fails_with lounge TILO_WORKSPACES_DEFAULT_ROLE=owner
+
 # A volume that already holds its identity spends no ticket, and needs none.
 mkdir -p "$work/spent/identity/device"
 printf 'cert' > "$work/spent/identity/device/cert.bin"

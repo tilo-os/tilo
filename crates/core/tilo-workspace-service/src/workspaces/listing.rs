@@ -332,6 +332,27 @@ impl Workspaces {
         Ok(policy)
     }
 
+    /// Found `workspace`'s entry as `entry`, as `device`: where a directory lists
+    /// it and what it says, whom the entry lets in, and how many requests it keeps
+    /// — one change, which the workspace's governance records. What a deployment
+    /// names when its founder makes the workspace; an owner changes it later
+    /// through the same setting ([`Self::publish`], [`Self::unpublish`],
+    /// [`Self::list_invitation_only`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns why `device` may not change the workspace's settings, or why the
+    /// entry cannot stand.
+    pub async fn found_entry(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        entry: EntryPolicy,
+    ) -> Result<EntryPolicy, CollaborationError> {
+        self.settle_entry(workspace, device, |current| *current = entry)
+            .await
+    }
+
     /// Make `workspace` public with `listing`, as `device` asks: the workspace's
     /// governance must let its person change the workspace's settings.
     pub async fn publish(
@@ -946,6 +967,7 @@ pub(super) mod tests {
 #[cfg(test)]
 pub(crate) mod entry_tests {
     use ed25519_dalek::SigningKey;
+    use tilo_action_policy::{EntryPolicy, ListingPolicy};
     use tilo_actions::remote::{
         ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
         RemoteActionTarget,
@@ -2119,6 +2141,235 @@ pub(crate) mod entry_tests {
                 .await
                 .is_some_and(|listing| listing.description == "Coffee and tea"),
             "the listing is the workspace's too"
+        );
+        server.shutdown().await;
+    }
+
+    /// The entry a deployment names founds the workspace's: `open` lists it and
+    /// lets anyone who asks in, at the role the founder chose.
+    #[tokio::test]
+    async fn a_kept_workspace_founded_open_admits_a_guest_at_the_default_role() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        let settled = workspaces
+            .found_entry(
+                &workspace,
+                &owner,
+                EntryPolicy {
+                    listing: Some(ListingPolicy {
+                        description: "Coffee and tea".into(),
+                        default_role: Role::Commenter,
+                    }),
+                    invitation_only: false,
+                    wait_list_max: 0,
+                },
+            )
+            .await
+            .expect("the founder settles the entry");
+        assert!(
+            settled
+                .listing
+                .as_ref()
+                .is_some_and(|listing| !listing.description.is_empty()),
+            "{settled:?}"
+        );
+
+        let (guest_key, guest) = guest_device();
+        let reply = walk_in_as(
+            workspaces,
+            &workspace,
+            &EntryJoin {
+                user_public_key: hex::encode(guest.user_public_key),
+                display_name: "Ada".into(),
+            },
+            (&guest_key, &guest),
+        )
+        .await;
+        assert!(
+            matches!(&reply, Ok(JoinReply::Admitted { .. })),
+            "a guest who asks walks into an open entry: {reply:?}"
+        );
+        assert_eq!(
+            workspaces
+                .member_role(&workspace, guest.user_public_key)
+                .await,
+            Some(Role::Commenter),
+            "the guest holds the role the entry hands out"
+        );
+        server.shutdown().await;
+    }
+
+    /// Founded `invite`, the same workspace lists itself and refuses a stranger
+    /// while a person its owner invited walks in.
+    #[tokio::test]
+    async fn a_kept_workspace_founded_invite_refuses_a_guest_and_admits_an_invited_person() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .found_entry(
+                &workspace,
+                &owner,
+                EntryPolicy {
+                    listing: Some(ListingPolicy {
+                        description: "Coffee and tea".into(),
+                        default_role: Role::Editor,
+                    }),
+                    invitation_only: true,
+                    wait_list_max: 0,
+                },
+            )
+            .await
+            .expect("the founder settles the entry");
+
+        let listed = workspaces
+            .directory(&std::collections::BTreeSet::new())
+            .await;
+        assert_eq!(listed.len(), 1, "the workspace is listed: {listed:?}");
+        assert!(listed[0].invitation_only);
+
+        let (_, guest) = guest_device();
+        let refused = workspaces
+            .admit_listed(
+                &workspace,
+                &EntryJoin {
+                    user_public_key: hex::encode(guest.user_public_key),
+                    display_name: "Cy".into(),
+                },
+            )
+            .await;
+        assert_eq!(
+            refused.map(|_| ()),
+            Err(EntryRefusal::InvitationOnly),
+            "a stranger is refused an entry that takes people by invitation"
+        );
+
+        let (invited_key, invited) = guest_device();
+        workspaces
+            .pre_admit(
+                &owner,
+                crate::workspaces::PreAdmitRequest {
+                    request_id: [4; 32],
+                    grant: signed_pre_admission(&workspace, b"invited-by-the-owner"),
+                    recipient_user_public_key: Some(invited.user_public_key),
+                    inviter_name: Some("Ky".into()),
+                },
+            )
+            .await
+            .unwrap();
+        let reply = walk_in_as(
+            workspaces,
+            &workspace,
+            &EntryJoin {
+                user_public_key: hex::encode(invited.user_public_key),
+                display_name: "Ada".into(),
+            },
+            (&invited_key, &invited),
+        )
+        .await;
+        assert!(
+            matches!(&reply, Ok(JoinReply::Admitted { .. })),
+            "a person its owner invited walks in: {reply:?}"
+        );
+        server.shutdown().await;
+    }
+
+    /// The entry a workspace is founded with is its first setting, not its last:
+    /// a change its owner makes later is what every host reads, and a host that
+    /// starts again reads the workspace's entry rather than founding it anew.
+    #[tokio::test]
+    async fn a_kept_workspace_keeps_its_owners_later_entry_change_across_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .found_entry(
+                &workspace,
+                &owner,
+                EntryPolicy {
+                    listing: Some(ListingPolicy {
+                        description: "As it was founded".into(),
+                        default_role: Role::Editor,
+                    }),
+                    invitation_only: false,
+                    wait_list_max: 0,
+                },
+            )
+            .await
+            .expect("the founder settles the entry");
+        // Its owner changes the entry afterwards.
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: "As its owner left it".into(),
+                    default_role: Role::Viewer,
+                },
+            )
+            .await
+            .unwrap();
+        workspaces
+            .list_invitation_only(&workspace, &owner, true)
+            .await
+            .unwrap();
+        server.shutdown().await;
+
+        let server = test_host(dir.path(), &key, &owner).await;
+        let entry = server
+            .workspaces()
+            .entry_policy(&workspace)
+            .await
+            .expect("the host reads the workspace's entry");
+        let listing = entry.listing.expect("the workspace is listed");
+        assert_eq!(listing.description, "As its owner left it");
+        assert_eq!(listing.default_role, Role::Viewer);
+        assert!(entry.invitation_only, "the owner's change is what stands");
+        server.shutdown().await;
+    }
+
+    /// A kept workspace's entry is settled by a device the workspace has in it: a
+    /// server's own device key, which the workspace does not have as a member,
+    /// settles nothing of its governance.
+    #[tokio::test]
+    async fn a_servers_device_key_settles_no_entry_of_a_workspace_it_only_keeps() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        let (_, server_device) = guest_device();
+        let refused = workspaces
+            .found_entry(
+                &workspace,
+                &server_device,
+                EntryPolicy {
+                    listing: Some(ListingPolicy {
+                        description: "Ours now".into(),
+                        default_role: Role::Editor,
+                    }),
+                    invitation_only: false,
+                    wait_list_max: 0,
+                },
+            )
+            .await;
+        assert!(
+            refused.is_err(),
+            "a server keeping the workspace does not settle its entry: {refused:?}"
+        );
+        assert!(
+            workspaces
+                .entry_policy(&workspace)
+                .await
+                .is_some_and(|entry| entry.listing.is_none()),
+            "the entry is as its owner left it"
         );
         server.shutdown().await;
     }
