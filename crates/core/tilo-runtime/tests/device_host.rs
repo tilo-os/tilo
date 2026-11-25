@@ -32,7 +32,8 @@ use tilo_runtime::personal_devices::PersonalDevices;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
-use tilo_workspace_service::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
+use tilo_workspace_service::own_device;
+use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
 
 /// The app the device runs, which a key lists and acts on.
 const NOTES: &str = "so.tilo.notes";
@@ -246,7 +247,61 @@ struct Box_ {
     runs: Arc<DeviceRuns>,
     key_sessions: Arc<KeySessions>,
     _router: Router,
+    _keys: tilo_workspace_service::own_device::KeyService,
     _state: tempfile::TempDir,
+}
+
+/// The workspace service of the device `key` and `cert` name, opened in `dir` as every device
+/// opens its own: with its key service beside it, so the device takes part in its workspaces'
+/// channels, keeps its person's own workspace and founds a workspace there. Its apps are answered
+/// by `apps`, and it is reached on this
+/// machine's own network, so opening waits for no address.
+async fn as_its_device(
+    dir: &std::path::Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    endpoint: &Endpoint,
+    apps: Arc<dyn tilo_workspace_service::app_serving::AppActionServer>,
+) -> (
+    Arc<WorkspaceService>,
+    tilo_workspace_service::own_device::KeyService,
+) {
+    let signer: Arc<dyn collab_types::signer::DeviceSigner> = Arc::new(key.clone());
+    let own_device::Opened { service, keys } = own_device::open_in(
+        &dir.join("device"),
+        own_device::Device {
+            cert,
+            signer: &signer,
+            itself: None,
+        },
+        own_device::vault_key(key),
+        endpoint.clone(),
+        Arc::new(tilo_workspace_keys::NoSealChecks),
+        |config| ServiceConfig {
+            apps: Some(apps),
+            reaching: tilo_workspace_service::Reaching::OnItsOwn,
+            ..config
+        },
+    )
+    .await
+    .unwrap();
+    // The device keeps its person's own workspace, as every device of theirs does from its
+    // setup: the list of their workspaces each one the device founds is named in.
+    let person = tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key);
+    service
+        .hold_own_workspace(
+            &person,
+            tilo_workspace_service::workspaces::person_workspace::NAME,
+            cert,
+        )
+        .await
+        .unwrap();
+    service
+        .workspaces()
+        .enter(&person, (cert, key))
+        .await
+        .unwrap();
+    (Arc::new(service), keys)
 }
 
 async fn device_host(root: &SigningKey) -> Box_ {
@@ -254,31 +309,11 @@ async fn device_host(root: &SigningKey) -> Box_ {
     let endpoint = endpoint(&key).await;
     let state = tempfile::tempdir().unwrap();
     let key_sessions = KeySessions::new();
-    let host = Arc::new(
-        WorkspaceService::open(
-            ServiceConfig {
-                apps: Some(Arc::clone(&key_sessions)
-                    as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
-                // Reached on this machine's own network: nothing will name this
-                // endpoint's address, so opening does not wait for one.
-                reaching: tilo_workspace_service::Reaching::OnItsOwn,
-                ..ServiceConfig::new(
-                    state.path().join("workspace-host"),
-                    tilo_server_protocol::WorkSetting::none(),
-                )
-            },
-            ServiceIdentity {
-                user_public_key: cert.user_public_key,
-                device_signing_key: key.clone(),
-                device_cert: cert.clone(),
-                revocations: tilo_user_identity::RevocationList::new(),
-            },
-            endpoint.clone(),
-            None,
-        )
-        .await
-        .unwrap(),
-    );
+    let apps =
+        Arc::clone(&key_sessions) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>;
+    // Reached on this machine's own network: nothing will name this endpoint's address, so
+    // opening does not wait for one.
+    let (host, keys) = as_its_device(state.path(), &key, &cert, &endpoint, apps).await;
     let made = host.workspaces().create("Shell").await.unwrap();
     let runs = Arc::new(DeviceRuns {
         workspace: made.workspace.clone(),
@@ -308,6 +343,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
         runs,
         key_sessions,
         _router: router,
+        _keys: keys,
         _state: state,
     }
 }
@@ -435,7 +471,9 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
     // refusal of this key.
     assert_eq!(refused.code, "refused", "{refused:?}");
     assert!(
-        refused.message.contains("grant does not reach this workspace"),
+        refused
+            .message
+            .contains("grant does not reach this workspace"),
         "{refused:?}"
     );
     assert!(
@@ -946,6 +984,7 @@ struct Forwarded {
     laptop_endpoint: Endpoint,
     router: Router,
     served: Option<std::thread::JoinHandle<()>>,
+    _keys: tilo_workspace_service::own_device::KeyService,
     _state: tempfile::TempDir,
 }
 
@@ -957,29 +996,10 @@ impl Forwarded {
         let host_endpoint = endpoint(&host_key).await;
         let answers = Arc::new(Answers::default());
         let state = tempfile::tempdir().unwrap();
-        let host = Arc::new(
-            WorkspaceService::open(
-                ServiceConfig {
-                    apps: Some(Arc::clone(&answers)
-                        as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
-                    reaching: tilo_workspace_service::Reaching::OnItsOwn,
-                    ..ServiceConfig::new(
-                        state.path().join("workspace-host"),
-                        tilo_server_protocol::WorkSetting::none(),
-                    )
-                },
-                ServiceIdentity {
-                    user_public_key: person,
-                    device_signing_key: host_key.clone(),
-                    device_cert: host_cert.clone(),
-                    revocations: tilo_user_identity::RevocationList::new(),
-                },
-                host_endpoint.clone(),
-                None,
-            )
-            .await
-            .unwrap(),
-        );
+        let apps =
+            Arc::clone(&answers) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>;
+        let (host, key_service) =
+            as_its_device(state.path(), &host_key, &host_cert, &host_endpoint, apps).await;
         let made = host.workspaces().create("Shell").await.unwrap();
         let workspace = made.workspace.clone();
         *answers.broker.lock().unwrap() = Broker {
@@ -1028,6 +1048,7 @@ impl Forwarded {
             laptop_endpoint,
             router,
             served: Some(served),
+            _keys: key_service,
             _state: state,
         }
     }
