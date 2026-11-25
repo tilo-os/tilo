@@ -2474,12 +2474,9 @@ impl App {
             }
         }
 
-        if self.focused_node.is_none()
-            && let Some(name) = self.focus_anchor.clone()
-            && let Some(node) = self.unique_answering(&name)
-        {
-            self.set_focused_node(Some(node));
-        }
+        // The keyboard is seated once the tree this pass builds stands: a build that puts it on a
+        // control of its own (a page moving to the field it asks for) has it there, and the name
+        // the person's focus answered to only restores what the tree did not seat.
 
         // The widgets built above are fresh instances the OLD `sync` never
         // ran against, so without this they draw blank until the next event.

@@ -1043,6 +1043,33 @@ fn lay_out_window(
     app.window.preferred_size = crate::widget::preferred_window_size(app.root_widget.as_ref());
     if must_compute || recomposed || remounted {
         app.update_focusable_order();
+        // The tree this pass built may already hold the keyboard: a form that re-creates the field
+        // the person is in puts it back there, and a page that moves the keyboard to the field it
+        // asks for moves it. That is the app's own act and it stands over the answer carried
+        // across the build, which the rebuild seated before this tree stood.
+        // SAFETY: the solve above built this exact tree, exclusively owned.
+        let built = unsafe {
+            crate::widget::layout::CompositionFocus::current(
+                &app.layout.node_map,
+                &app.bindings,
+                Some(&app.focusable_order),
+            )
+        };
+        // A tree that seated no keyboard of its own still gets the person's place back, by the
+        // name the focused control answered to before it was built.
+        let fallback = if built.is_none() && app.focused_node.is_none() {
+            app.focus_anchor
+                .clone()
+                .and_then(|name| app.unique_answering(&name))
+        } else {
+            None
+        };
+        if let Some(node) = built.or(fallback)
+            && app.focused_node != Some(node)
+        {
+            app.focused_node = Some(node);
+            app.focus_anchor = app.answer_name(node);
+        }
     }
     // The keyboard follows the tree this pass built: a control that no longer takes it gives it
     // up, while a widget that takes no focus of its own — the grip a reader puts the keyboard on,
