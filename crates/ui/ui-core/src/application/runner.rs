@@ -55,6 +55,14 @@ impl NativeProcess {
         )
     }
 
+    /// Whether this process holds the connection to Tilo on the device that [`Self::open`]
+    /// reads and writes its windows' records over: one the launcher handed it, or the session's
+    /// for a surface.
+    #[must_use]
+    pub fn connected() -> bool {
+        connected_documents().is_ok()
+    }
+
     fn open_with(
         definition: &ApplicationDefinition,
         environment: NativeProcessEnvironment,

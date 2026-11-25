@@ -66,6 +66,26 @@ fn worker() -> Result<&'static worker::Worker, String> {
         .map_err(Clone::clone)
 }
 
+/// Start this device's daemon in the app's own process, as the app's launch does before its window
+/// opens: the phone is Tilo on this device, so its window shows a device that already runs, and
+/// a file provider Android called first finds the same one.
+///
+/// # Errors
+/// The daemon did not start: what the window shows in its place.
+pub fn start() -> Result<(), String> {
+    worker().map(drop)
+}
+
+/// The launch's [`start`]: a daemon that did not start is what the window shows, so the window
+/// opens either way. Only Android's entry calls it: elsewhere nothing launches the phone's
+/// window but a test or a developer's host, which calls [`start`].
+#[cfg(target_os = "android")]
+fn start_device() {
+    if let Err(why) = start() {
+        tracing::error!(why, "the phone's device did not start");
+    }
+}
+
 /// Declare the runtime builds this app carries in itself, as the signed manifest the APK it runs
 /// from carries names them: the exact Tilo runtime build it links and the tilolang runtime it
 /// runs tilolang apps on. A workspace app that names one of them then installs on this phone
@@ -177,6 +197,9 @@ impl ResourceApp for Phone {
     const TITLE: &'static str = "Tilo";
     const ICON: Option<&'static str> = Some("tilo");
     const WORKSPACE_RESOURCE: bool = true;
+    /// The phone runs the device's daemon in its own process ([`start`]): there is no runtime
+    /// beside it to attach to, and its window's records are this device's own.
+    const ATTACHES_RUNTIME: bool = false;
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
         match opened(cx) {
@@ -189,4 +212,4 @@ impl ResourceApp for Phone {
     }
 }
 
-ui::dev_reload_entry!(Phone);
+ui::dev_reload_entry!(Phone, init = start_device);

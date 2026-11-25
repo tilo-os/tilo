@@ -155,11 +155,18 @@ macro_rules! engine_main {
 /// entry a web build registers with the browser's toolkit core, as component
 /// apps define theirs. On Android it defines `android_main`, which the
 /// `NativeActivity` of `tilolang build --platform android` enters: the library
-/// built as a `cdylib` is the whole app there, run as [`framework::run`] runs it.
+/// built as a `cdylib` is the whole app there, run as [`framework::run`] runs it, after
+/// `init` when one is named (`ui::dev_reload_entry!(App, init = ..)`), as [`engine_main!`] does.
 #[macro_export]
 macro_rules! dev_reload_entry {
     ($app:ty) => {
-        $crate::android_main!($crate::framework::run::<$app>);
+        $crate::dev_reload_entry!($app, init = || {});
+    };
+    ($app:ty, init = $init:expr) => {
+        $crate::android_main!(|| {
+            ($init)();
+            $crate::framework::run::<$app>()
+        });
 
         #[cfg(feature = "thin")]
         extern crate runtime_dylib;

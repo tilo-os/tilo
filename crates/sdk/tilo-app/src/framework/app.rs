@@ -614,6 +614,10 @@ fn icon(app: &AppHooks) -> IconDescriptor {
 /// What the launch path, the window and History read of an app: its
 /// constants, and shims over the parts that need its types. One table per
 /// app; everything that reads it is compiled once for every app.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one of the app's own constants, read as it declares it"
+)]
 pub(crate) struct AppHooks {
     id: &'static str,
     /// [`ResourceApp::title`], per app id so the answer is resolved once.
@@ -630,6 +634,9 @@ pub(crate) struct AppHooks {
     folder_history: Option<FolderHistory>,
     #[cfg(tilo_native_runner)]
     private_windows: bool,
+    /// [`ResourceApp::ATTACHES_RUNTIME`].
+    #[cfg(tilo_native_runner)]
+    attaches_runtime: bool,
     #[cfg(tilo_native_runner)]
     options: &'static [&'static str],
     #[cfg(tilo_native_runner)]
@@ -689,6 +696,8 @@ impl<A: ResourceApp> Hooks<A> {
         folder_history: A::FOLDER_HISTORY,
         #[cfg(tilo_native_runner)]
         private_windows: A::PRIVATE_WINDOWS,
+        #[cfg(tilo_native_runner)]
+        attaches_runtime: A::ATTACHES_RUNTIME,
         #[cfg(tilo_native_runner)]
         options: A::OPTIONS,
         #[cfg(tilo_native_runner)]
@@ -1783,11 +1792,13 @@ fn prepare_hooked(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
+    let kept_here = kept_on_this_device(app, definition);
     // A window brought back, which its launch names nothing for, opens on the file or folder it
     // showed as the launch that first opened it there did.
     let restored = if args.positionals().is_empty()
         && !isolated(args, app.private_windows && args.has(PRIVATE_FLAG))
         && args.value("--data-dir").is_none()
+        && kept_here.is_none()
     {
         NativeProcess::window_shows(definition)?
             .map(|path| vec![path.to_string_lossy().into_owned()])
@@ -1803,7 +1814,7 @@ fn prepare_hooked(
     // A recording replays in a private window: nothing it shows reaches
     // the person's records, devices or members.
     let private = (app.private_windows && args.has(PRIVATE_FLAG)) || names_recording(arguments);
-    let mut prepared = prepare_named(definition, args, named, private)?;
+    let mut prepared = prepare_named(definition, args, named, private, kept_here.as_deref())?;
     // A window someone looks at shows before its record. What drives or photographs one acts
     // on the record from its first step: it waits for it.
     let drives = args.headless.is_some()
@@ -1985,7 +1996,23 @@ fn prepare_definition(
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let (record, _) = resource_argument(args.positionals());
-    prepare_named(definition, args, record, false)
+    prepare_named(definition, args, record, false, None)
+}
+
+/// Where an app that takes part in no workspace runtime keeps its window's records when nothing
+/// handed it a connection to Tilo on the device: a profile of this device's own, as a
+/// `--data-dir` launch keeps them. Such an app runs only here, or is Tilo on this device itself
+/// (a phone's app, which starts the device's daemon in its own process and so has no runtime to
+/// attach to). `None` for every other launch, which reads its records over its connection.
+#[cfg(tilo_native_runner)]
+fn kept_on_this_device(
+    app: &AppHooks,
+    definition: &ApplicationDefinition,
+) -> Option<std::path::PathBuf> {
+    if app.attaches_runtime || NativeProcess::connected() {
+        return None;
+    }
+    tilo_paths::data_dir().map(|data| data.join(definition.app_id()))
 }
 
 /// The record a launch names with a first argument
@@ -2045,6 +2072,7 @@ fn prepare_named(
     args: &LaunchArgs,
     named: Option<DocumentId>,
     private: bool,
+    kept_here: Option<&std::path::Path>,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
     let captured = captured(args);
@@ -2090,10 +2118,14 @@ fn prepare_named(
         super::headless::hold_workspace_keys(&prepared.context, &workspace)?;
         return Ok(prepared);
     }
-    if let Some(directory) = args.value("--data-dir") {
+    if let Some(directory) = args
+        .value("--data-dir")
+        .map(std::path::Path::new)
+        .or(kept_here)
+    {
         let author = ui_core::collaboration::local_user_id();
         let mut host = super::headless::data_dir_host(
-            std::path::Path::new(directory),
+            directory,
             definition.app_id(),
             &author,
             role_permissions(
@@ -2111,10 +2143,10 @@ fn prepare_named(
         )?;
         prepared
             .context
-            .provide_content(super::headless::data_dir_content(directory.as_ref()));
+            .provide_content(super::headless::data_dir_content(directory));
         let prepared = super::headless::in_profile(
             prepared,
-            &super::headless::data_dir_root(directory.as_ref()),
+            &super::headless::data_dir_root(directory),
             definition.app_id(),
         );
         super::headless::hold_workspace_keys(
