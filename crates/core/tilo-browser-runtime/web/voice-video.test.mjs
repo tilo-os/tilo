@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {LAYER_CODES, SOURCE_CODES, createPictureEncoder, createPictureInbox, layerOfCode, pictureObject, sourceOfCode} from './voice-video.mjs';
-import {decodeVideoObject} from './video-profile.mjs';
+import {LAYER_CODES, SOURCE_CODES, createPictureDecoder, createPictureEncoder, createPictureInbox, layerOfCode, pictureObject, sourceOfCode} from './voice-video.mjs';
+import {decodeVideoObject, encodeVideoObject} from './video-profile.mjs';
 
 const drain = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 
@@ -136,4 +136,86 @@ test('the inbox holds pictures by cursor, starts a fallen-behind stream at its n
   const bounded = inbox.take(0, 1000);
   assert.deepEqual(bounded.pictures.map(entry => entry.stream), ['b', 'c']);
   assert.equal(typeof bounded.pictures[0].object, 'string', 'objects travel as base64');
+});
+
+/** A browser's WebCodecs decoder stand-in: what it was configured with, the chunks it was
+ * handed, and the frames the test makes it output. */
+function fakeDecoding() {
+  const decoders = [];
+  const frames = [];
+  class EncodedVideoChunk {
+    constructor({type, timestamp, data}) { this.type = type; this.timestamp = timestamp; this.data = data; }
+  }
+  class VideoDecoder {
+    constructor({output}) { this.output = output; this.state = 'unconfigured'; this.chunks = []; decoders.push(this); }
+    configure(config) { this.config = config; this.state = 'configured'; }
+    decode(chunk) {
+      if (this.state !== 'configured') throw new Error('a decoder that is not configured');
+      this.chunks.push(chunk);
+    }
+    close() { this.state = 'closed'; }
+    frame(width = 640, height = 360) {
+      const frame = {displayWidth: width, displayHeight: height, closed: false, close() { this.closed = true; }};
+      frames.push(frame);
+      this.output(frame);
+    }
+  }
+  return {environment: {VideoDecoder, EncodedVideoChunk}, decoders, frames};
+}
+
+/** One tilo-video/1 object of a camera, as the live session delivers it. */
+const cameraObject = ({keyframe, timestampUs = 0, width = 640, height = 360}) => encodeVideoObject({
+  keyframe, layer: 'mid', sequence: timestampUs, timestampUs, width, height, payload: Uint8Array.of(0, 0, 0, 1, keyframe ? 0x65 : 0x41),
+});
+
+test('a call’s pictures are decoded here, a stream starting at the keyframe its device sends', () => {
+  const {environment, decoders, frames} = fakeDecoding();
+  const drawn = [];
+  const decoder = createPictureDecoder({environment, onFrame: (person, source, frame) => drawn.push([person, source, frame.displayWidth])});
+  const person = 'a'.repeat(64);
+  const picture = (keyframe, timestampUs = 0, stream = 'device/1') => ({
+    person, source: 'camera', stream, object: cameraObject({keyframe, timestampUs}),
+  });
+  decoder.admit(picture(false));
+  assert.equal(decoders.length, 0, 'nothing decodes before a keyframe');
+  decoder.admit(picture(true));
+  assert.equal(decoders.length, 1, 'the keyframe starts the stream’s decoder');
+  assert.equal(decoders[0].config.codec, 'avc1.64002A', 'the profile the native call encodes');
+  assert.equal(decoders[0].chunks[0].type, 'key');
+  decoders[0].frame();
+  assert.deepEqual(drawn, [[person, 'camera', 640]], 'every frame goes where the tile stands');
+  assert.equal(frames[0].closed, true, 'the frame is closed once it is drawn');
+
+  decoder.admit(picture(false, 33_333));
+  assert.equal(decoders[0].chunks.at(-1).type, 'delta');
+  assert.equal(decoders[0].chunks.at(-1).timestamp, 33_333, 'the call’s own capture time is kept');
+});
+
+test('a person’s newer stream starts its decoder over at a keyframe', () => {
+  const {environment, decoders} = fakeDecoding();
+  const decoder = createPictureDecoder({environment});
+  const person = 'b'.repeat(64);
+  decoder.admit({person, source: 'screen', stream: 'first', object: cameraObject({keyframe: true})});
+  const first = decoders[0];
+  decoder.admit({person, source: 'screen', stream: 'second', object: cameraObject({keyframe: false, timestampUs: 1})});
+  assert.equal(first.state, 'closed', 'the stream that left has no decoder');
+  decoder.admit({person, source: 'screen', stream: 'second', object: cameraObject({keyframe: true, timestampUs: 2})});
+  assert.equal(decoders.length, 2);
+  assert.equal(decoders[1].chunks.length, 1, 'nothing of the new stream decodes before its keyframe');
+  assert.equal(decoders[1].chunks[0].type, 'key');
+
+  decoder.close();
+  assert.equal(decoders[1].state, 'closed', 'the call ended: nothing decodes');
+});
+
+test('a picture whose header does not hold together is dropped, and an unknown codec is reported', () => {
+  const {environment, decoders} = fakeDecoding();
+  const reports = [];
+  const decoder = createPictureDecoder({environment, report: report => reports.push(report.type)});
+  decoder.admit({person: 'c'.repeat(64), source: 'camera', stream: 's', object: Uint8Array.of(1, 2, 3)});
+  assert.equal(decoders.length, 0, 'a malformed object makes no decoder');
+  const vp8 = encodeVideoObject({keyframe: true, codec: 'vp8', layer: 'low', sequence: 0, timestampUs: 0, width: 320, height: 180, payload: Uint8Array.of(1)});
+  decoder.admit({person: 'c'.repeat(64), source: 'camera', stream: 's', object: vp8});
+  assert.deepEqual(reports, ['video-decode-unsupported'], 'a codec this profile carries no decoder for says so');
+  assert.equal(decoders.length, 0);
 });

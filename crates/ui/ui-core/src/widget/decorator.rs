@@ -532,6 +532,7 @@ decorator_trait! {
         fn traps_focus() -> bool;
         fn scopes_keyboard_focus() -> bool;
         fn accessibility() -> Option<crate::a11y::AccessNode>;
+        fn live_picture() -> Option<String>;
         fn pressable_child() -> Option<usize>;
         fn synthetic_accessibility_rect(path: &[usize]) -> Option<vello::kurbo::Rect>;
         fn accessibility_child_parent(child_index: usize) -> Option<usize>;

@@ -121,9 +121,9 @@ struct CallRoute {
     person: String,
     /// The steps the view asked for and the browser has not been given yet.
     steps: Vec<(u64, Request)>,
-    /// When the view last asked for the call's pictures: while it does, the page follows the
-    /// frames closely instead of every couple of seconds.
-    pictures_at: Option<ui::time::Instant>,
+    /// When the view last said which call pictures it shows: the tiles it draws just changed, so
+    /// the page follows its window closely for a while instead of every couple of seconds.
+    tiles_at: Option<ui::time::Instant>,
 }
 
 enum Held {
@@ -379,7 +379,7 @@ impl Inner {
                 app: app.to_owned(),
                 person,
                 steps: Vec::new(),
-                pictures_at: None,
+                tiles_at: None,
             },
         );
     }
@@ -415,13 +415,15 @@ impl Inner {
             .max()?;
         let request_id = calls.next;
         calls.next = calls.next.saturating_add(1);
-        let pictures = matches!(
+        // The tiles a view shows are the things that appear and go as a call moves: the page
+        // follows closely while they settle, so a camera that comes on shows at once.
+        let tiles = matches!(
             request.command,
-            runtime_collab::native_media::Command::Pictures { .. }
+            runtime_collab::native_media::Command::Show { .. }
         );
         if let Some(route) = calls.routes.get_mut(&page) {
-            if pictures {
-                route.pictures_at = Some(ui::time::now());
+            if tiles {
+                route.tiles_at = Some(ui::time::now());
             }
             route.steps.push((request_id, request));
         }
@@ -450,20 +452,21 @@ impl Inner {
         }
     }
 
-    /// How often the stream of `page` asks what changed on it: the frame rate a page drawing a
-    /// call's pictures follows at while its view collects them, and the slower pace otherwise.
+    /// How often the stream of `page` asks what changed on it: closely while the tiles its view
+    /// shows a call in settle, and the slower pace otherwise.
     fn follow_every(&self, page: u64) -> std::time::Duration {
-        /// A view that asked for pictures this long ago stopped drawing them (its call ended, or
-        /// nobody shows a camera any more): the page follows its changes again at its own pace.
-        const WHILE_SHOWING: std::time::Duration = runtime_collab::native_media::PICTURES_LOST;
+        /// How long a view's tiles take to settle after it said which pictures it shows: the
+        /// window patches the change asks for follow in this time, so a camera that comes on
+        /// shows at once, and the page goes back to its own pace after.
+        const TILES_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
         let asked_at = self
             .calls
             .lock_recover()
             .routes
             .get(&page)
-            .and_then(|route| route.pictures_at);
-        let showing = asked_at
-            .is_some_and(|at| ui::time::now().saturating_duration_since(at) < WHILE_SHOWING);
+            .and_then(|route| route.tiles_at);
+        let showing =
+            asked_at.is_some_and(|at| ui::time::now().saturating_duration_since(at) < TILES_SETTLE);
         if showing {
             LIVE_FOLLOW_EVERY
         } else {

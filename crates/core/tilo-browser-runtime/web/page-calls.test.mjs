@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 
-import {createPageCalls, PICTURES_HOLD_MS, WATCH_HOLD_MS} from './page-calls.mjs';
+import {createPageCalls, WATCH_HOLD_MS} from './page-calls.mjs';
 
 const ADA = 'a'.repeat(63) + '1';
 const BO = 'b'.repeat(63) + '2';
@@ -10,12 +10,9 @@ const BO = 'b'.repeat(63) + '2';
 function voiceOf({members = []} = {}) {
   const listeners = new Set();
   const callListeners = new Set();
+  const pictureListeners = new Set();
   const asked = [];
-  /** The pictures the live session delivered, past every cursor, oldest first: what the inbox
-   * keeps and `takePictures` hands over. */
-  const inbox = [];
-  let pictureCursor = 0;
-  const state = {phase: 'idle', call: null, muted: false, camera: false, screen: false, deafened: false, inputId: null};
+  const state = {phase: 'idle', call: null, muted: false, camera: false, screen: false, deafened: false, inputId: null, members: members.map(member => ({user: member.user ?? member, self: member.self === true}))};
   const peerVoice = {
     call: {
       get state() { return state; },
@@ -30,19 +27,7 @@ function voiceOf({members = []} = {}) {
       selectInput(id) { asked.push(['input', id]); state.inputId = id; emit(); },
       setVolume(member, gain) { asked.push(['volume', member, gain]); },
       showPictures(items) { asked.push(['show', items]); },
-      takePictures(after, budget) {
-        const pictures = [];
-        let cursor = after;
-        let bytes = 0;
-        for (const entry of inbox) {
-          if (entry.cursor <= after) continue;
-          bytes += entry.picture.object.length;
-          if (pictures.length && bytes > budget) break;
-          cursor = entry.cursor;
-          pictures.push(entry.picture);
-        }
-        return {pictures, cursor};
-      },
+      onPicture(listener) { pictureListeners.add(listener); return () => pictureListeners.delete(listener); },
       subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     },
     calls: [],
@@ -55,11 +40,9 @@ function voiceOf({members = []} = {}) {
     state,
     /** What the workspace's presence says now, as the next listing. */
     lists(calls) { peerVoice.calls = calls; for (const listener of [...callListeners]) listener(calls); },
-    /** One picture reached the live session for this page, as the browser's call draws it. */
-    picture(person, source, object) {
-      pictureCursor += 1;
-      inbox.push({cursor: pictureCursor, picture: {person, stream: `${person}/${source}`, source, object}});
-      for (const listener of [...listeners]) listener(state);
+    /** One picture this page's call decoded: who it is of, and the frame. */
+    picture(person, source, frame) {
+      for (const listener of [...pictureListeners]) listener(person, source, frame);
     },
     members,
   };
@@ -188,44 +171,43 @@ test('a step the page has no way to carry is refused, in the browser’s words',
   assert.match(sent[0].answer.refused, /levitate/);
 });
 
-test('a pictures collection is held until the call has one, then answers it with the cursor', () => {
-  const {peerVoice, picture} = voiceOf();
+test("the call’s pictures are decoded where the tiles stand, and the view is told so", () => {
+  const {peerVoice, picture} = voiceOf({members: [{user: ADA, self: true}, BO]});
   const sent = [];
-  const calls = createPageCalls({peerVoice, send: answer => sent.push(answer)});
-  calls.apply(step(1, 'join', {channel_id: 'standup'}));
-  sent.length = 0;
-
-  calls.apply(step(5, 'pictures', {after: 0}));
-  assert.equal(sent.length, 0, 'nothing to draw yet, so the collection holds');
-
-  picture(BO, 'camera', 'AAAA');
-  assert.equal(sent.length, 1, 'a picture answers the collection at once');
-  assert.equal(sent[0].request_id, 5);
-  const answer = sent[0].answer.answered;
-  assert.deepEqual(answer.pictures.map(p => [p.person, p.source, p.object]), [[BO, 'camera', 'AAAA']]);
-  assert.equal(answer.pictures_cursor, 1, 'the next collection starts past it');
-
-  calls.apply(step(6, 'pictures', {after: answer.pictures_cursor}));
-  assert.equal(sent.length, 1, 'what was collected is not handed over twice');
-});
-
-test('a pictures collection nothing fills is answered when its hold ends', () => {
-  const {peerVoice} = voiceOf();
-  const timers = [];
-  const sent = [];
+  const drawn = [];
   const calls = createPageCalls({
     peerVoice,
     send: answer => sent.push(answer),
-    setTimeout: (callback, ms) => { timers.push({callback, ms}); return timers.length; },
-    clearTimeout: () => {},
+    paint: (person, source, frame) => drawn.push([person, source, frame]),
   });
-  calls.apply(step(3, 'pictures', {after: 0}));
-  assert.equal(timers.length, 1);
-  assert.equal(timers[0].ms, PICTURES_HOLD_MS);
-  assert.equal(sent.length, 0);
+  calls.apply(step(1, 'join', {channel_id: 'standup'}));
+  assert.equal(sent[0].answer.answered.pictures_local, true, 'the view asks for no collection');
+  assert.equal(sent[0].answer.answered.pictures, undefined, 'and none is carried');
 
-  timers[0].callback();
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].request_id, 3);
-  assert.deepEqual(sent[0].answer.answered.pictures, []);
+  const frame = {displayWidth: 640, displayHeight: 360};
+  picture(BO, 'camera', frame);
+  assert.deepEqual(drawn, [[BO, 'camera', frame]], 'the frame is drawn where its tile stands');
+});
+
+test('the tiles hear the call move as it happens, and only when it moves', () => {
+  const {peerVoice, lists} = voiceOf({members: [{user: ADA, self: true}]});
+  lists([{channel: 'standup', people: [ADA], cameras: [], screens: [], muted: [ADA], deafened: [], bridges: [], bridged: []}]);
+  const heard = [];
+  const calls = createPageCalls({peerVoice, send: () => {}, onStatus: (status, me) => heard.push([status.speaking, status.muted, me])});
+  assert.equal(heard.length, 1, 'the status is told as the page opens');
+  assert.deepEqual(heard[0], [[], false, ADA], 'this page is its person');
+
+  calls.status();
+  assert.equal(heard.length, 1, 'the same status is not told twice');
+
+  lists([{channel: 'standup', people: [ADA, BO], cameras: [], screens: [], muted: [], deafened: [], bridges: [], bridged: []}]);
+  assert.equal(heard.length, 2, 'a person who joins moves the tiles');
+});
+
+test('a pictures step is no longer carried: the page draws them where they stand', () => {
+  const {peerVoice} = voiceOf();
+  const sent = [];
+  const calls = createPageCalls({peerVoice, send: answer => sent.push(answer)});
+  calls.apply(step(5, 'pictures', {after: 0}));
+  assert.match(sent[0].answer.refused, /pictures/);
 });

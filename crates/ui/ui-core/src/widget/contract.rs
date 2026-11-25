@@ -506,6 +506,13 @@ pub trait Widget {
         None
     }
 
+    /// The live picture this widget shows, by its address in the window's live pictures
+    /// ([`crate::live_pictures`]), when a host that decodes it draws it in the widget's place
+    /// rather than a still of its paint: a call's tile. `None` for everything else.
+    fn live_picture(&self) -> Option<String> {
+        None
+    }
+
     /// Which child of [`Self::accessibility`] is the button a press reaches, for a widget that
     /// draws its own control inside a larger box ([`crate::widget::EmptyState`]'s action): what the
     /// control does is said on that child, where a person, a screen reader and an agent press it,

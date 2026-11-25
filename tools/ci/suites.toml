@@ -625,6 +625,10 @@ suite = "crates/engines/tilo-media/web/tilo-media-edit.test.mjs"
 check = "web-page-tests"
 
 [[covered]]
+suite = "crates/core/tilo-browser-runtime/web/voice-video-page.test.mjs"
+check = "web-page-tests"
+
+[[covered]]
 suite = "crates/core/tilo-browser-runtime/web/peer-files-page.test.mjs"
 check = "web-peer-store"
 

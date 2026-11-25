@@ -236,19 +236,35 @@ const callStats = async tab => {
 };
 
 /** One page as it stands: its call's counters, and every picture it draws, by
- * the person its tile names. A picture is read by a digest of its address, so a
- * tile that redraws shows as a different one without the bytes leaving the
- * page. */
+ * the person its tile names. A call's picture is the canvas its tile decodes the
+ * call's own stream into; another widget's is the still the page paints it as. A
+ * picture is read by a digest of what it shows, so a tile that redraws shows as
+ * a different one without the bytes leaving the page. */
 const look = async tab => JSON.parse(await tab.evaluate(`(() => {
-  const digest = src => {
+  const digest = text => {
     let hash = 2166136261;
-    for (let i = 0; i < src.length; i++) { hash ^= src.charCodeAt(i); hash = Math.imul(hash, 16777619); }
-    return (hash >>> 0).toString(16) + ':' + src.length;
+    for (let i = 0; i < text.length; i++) { hash ^= text.charCodeAt(i); hash = Math.imul(hash, 16777619); }
+    return (hash >>> 0).toString(16) + ':' + text.length;
+  };
+  const pixels = canvas => {
+    try {
+      const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      let hash = 2166136261;
+      for (let i = 0; i < data.length; i += 97) { hash ^= data[i]; hash = Math.imul(hash, 16777619); }
+      return (hash >>> 0).toString(16) + ':' + data.length;
+    } catch {
+      return '';
+    }
   };
   const tiles = {};
   for (const img of document.querySelectorAll('#tilo-page img.tilo-paint')) {
     const named = img.closest('[aria-label]')?.getAttribute('aria-label') ?? '';
     (tiles[named] ??= []).push(digest(img.getAttribute('src') ?? ''));
+  }
+  for (const tile of document.querySelectorAll('#tilo-page [data-live]')) {
+    const canvas = tile.querySelector('canvas.tilo-call-picture');
+    if (!canvas || !canvas.width || !tile.hasAttribute('data-picture')) continue;
+    (tiles[tile.getAttribute('aria-label') ?? ''] ??= []).push(pixels(canvas));
   }
   return JSON.stringify({stats: globalThis.tiloCallStats?.() ?? null, tiles});
 })()`));
@@ -333,12 +349,13 @@ try {
     bo: await callStats(bo),
   });
 
-  // Each page draws the other person's tile, as a picture. The tile is named by
+  // Each page draws the other person's tile: a canvas the page decodes the
+  // call's own stream into, marked once a frame is in it. The tile is named by
   // the workspace's member list, which the name above is in.
-  const tileOf = name => `[...document.querySelectorAll('#tilo-page img.tilo-paint')]
-    .some(img => (img.closest('[aria-label]')?.getAttribute('aria-label') ?? '').includes(${JSON.stringify(name)}))`;
-  const tileLabels = async tab => tab.evaluate(`[...document.querySelectorAll('#tilo-page img.tilo-paint')]
-    .map(img => img.closest('[aria-label]')?.getAttribute('aria-label') ?? '(unnamed)')`);
+  const tileOf = name => `[...document.querySelectorAll('#tilo-page [data-live]')]
+    .some(tile => tile.hasAttribute('data-picture') && (tile.getAttribute('aria-label') ?? '').includes(${JSON.stringify(name)}))`;
+  const tileLabels = async tab => tab.evaluate(`[...document.querySelectorAll('#tilo-page [data-live]')]
+    .map(tile => tile.getAttribute('aria-label') ?? '(unnamed)')`);
   try {
     await waitFor(ada, tileOf(BO), `${ADA}'s page drawing ${BO} on camera`, stepLimit(12));
     await waitFor(bo, tileOf(ADA), `${BO}'s page drawing ${ADA} on camera`, stepLimit(12));

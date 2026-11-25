@@ -497,6 +497,39 @@ function start() {
   let callPeer = null;
   let callDeviceKey = null;
   let callDriver = null;
+  // What the call last said, and whose page this is: what the tiles it stands in wear.
+  let callStatus = null;
+  let callMe = null;
+
+  /** The tiles the server marks with the live picture they show: a call's, which the browser
+   * decodes for itself. */
+  const callTiles = () => [...page.querySelectorAll('[data-live]')];
+
+  /** `frame` drawn in every tile that stands at `person`'s `source`, as the call decoded it. */
+  const drawCallPicture = (draw, person, source, frame) => {
+    const at = `tilo-live://call/${person}/${source}`;
+    for (const tile of callTiles()) {
+      if (tile.dataset.live !== at) continue;
+      const canvas = tile.querySelector('canvas.tilo-call-picture');
+      if (!canvas || !draw(canvas, frame)) continue;
+      // The picture stands there now: the face under it steps away.
+      tile.dataset.picture = '';
+    }
+  };
+
+  /** What the call's tiles wear now: the ring of whoever is talking, and whose microphone is
+   * off. It follows the call's own status, which reaches the page the moment it moves. */
+  const paintCallTiles = () => {
+    const speaking = new Set(callStatus?.speaking ?? []);
+    const muted = new Set();
+    for (const roster of callStatus?.rosters ?? []) for (const person of roster.muted ?? []) muted.add(person);
+    if (callMe && callStatus?.muted) muted.add(callMe);
+    for (const tile of callTiles()) {
+      const person = (tile.dataset.live ?? '').slice('tilo-live://call/'.length).split('/')[0];
+      tile.toggleAttribute('data-speaking', speaking.has(person));
+      tile.toggleAttribute('data-muted', muted.has(person));
+    }
+  };
   // One bootstrap at a time, and the steps in the order the view asked for them: a join before
   // the watch that reads it.
   let callsStarted = null;
@@ -538,7 +571,19 @@ function start() {
         requireExistingCertificate: true,
       });
       const {createPageCalls} = await siteModule('page-calls.mjs');
-      callDriver = createPageCalls({peerVoice: callPeer.voice, send: answerCall});
+      const {drawPicture} = await siteModule('voice-video.mjs');
+      callDriver = createPageCalls({
+        peerVoice: callPeer.voice,
+        send: answerCall,
+        // The call's pictures are decoded here: each frame is drawn where the tiles the view
+        // shows stand, which the server marked with the live address they show.
+        paint: (person, source, frame) => drawCallPicture(drawPicture, person, source, frame),
+        onStatus: (status, me) => {
+          callStatus = status;
+          callMe = me;
+          paintCallTiles();
+        },
+      });
       return callDriver;
     })().catch(error => {
       // Tried once: a page that cannot carry a call says so to each step, rather than opening a
@@ -566,6 +611,8 @@ function start() {
   const closeCalls = () => {
     callDriver?.dispose();
     callDriver = null;
+    callStatus = null;
+    callMe = null;
     callPeer?.dispose?.();
     callPeer = null;
     callDeviceKey?.close?.();
@@ -734,6 +781,9 @@ function start() {
     reconcile();
     focusAsked();
     follow();
+    // An element the patch brought in is new: it wears what the call says now, and its canvas
+    // gets the next frame.
+    paintCallTiles();
   };
 
   // Where the view puts the focus (a new note's title), the page does too.
@@ -837,6 +887,7 @@ function start() {
     typingBack(held);
     sized = null;
     resized();
+    paintCallTiles();
     // Shown again under a field being typed in: its text is sent from here,
     // so what the person wrote lands on the document they are looking at.
     const kept = held && page.querySelector(held.key);

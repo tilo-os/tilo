@@ -24,7 +24,9 @@ accessibility_represents_child`) carries the list's node for it: its place in
 the list, its level and its disclosure. A leaf whose words cannot say what it
 shows (a chart, a map, a canvas, an icon-only button too narrow for its name) is
 marked for a picture; `Driver::paint_pictures` (`crates/ui/ui-core/src/app/driver/pictures.rs`) paints each such widget
-alone and sends it as a PNG, repainted only when what it paints changed.
+alone and sends it as a PNG, repainted only when what it paints changed. A
+widget that publishes a live picture (`Widget::live_picture`, a call's tile)
+is marked for its canvas instead, and no still of it is painted.
 
 ## The renderer
 
@@ -45,6 +47,11 @@ decides by role what each node shows:
   over it, where it is drawn, as a button.
 - **Well**: a window node naming a place is filled by the page's host with what
   stands for that window.
+- **Call**: a call's tile carries the picture it shows. The browser decodes the
+  call's own stream with WebCodecs (`web/voice-video.mjs`) and draws it into the
+  tile's canvas at the rate the native call sends it; the tile's face, name and
+  speaking ring are elements over it. No still of the tile is painted, so a
+  call has one picture path on the page and in a window.
 
 A container whose children flow in its style is a CSS flex or grid box with
 that style, so the browser lays it out. A container that places its children

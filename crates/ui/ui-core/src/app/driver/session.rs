@@ -629,9 +629,13 @@ impl<'a> Walk<'a> {
         });
         composed.focusable = widget.is_focusable();
         composed.appears_from = widget.appears_from().map(|point| [point.x, point.y]);
-        if pictured
-            || children.is_empty()
-                && crate::composition::page::shows_paint(semantics.as_ref(), composed.rect)
+        // A live picture is decoded by the host that shows it: no still of the widget's paint is
+        // made for it, so a page carries the stream itself.
+        composed.live = widget.live_picture();
+        if composed.live.is_none()
+            && (pictured
+                || children.is_empty()
+                    && crate::composition::page::shows_paint(semantics.as_ref(), composed.rect))
         {
             composed.picture = Some(Picture::default());
         }

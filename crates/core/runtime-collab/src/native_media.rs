@@ -409,6 +409,11 @@ pub struct Snapshot {
     /// Where the next [`Command::Pictures`] continues.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub pictures_cursor: u64,
+    /// This call service draws the pictures itself, where the view shows them (a browser page
+    /// decodes them): no [`Command::Pictures`] is asked of it, and none is collected. The
+    /// tiles still say what they show ([`Command::Show`]), which is what the service receives.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pictures_local: bool,
     /// How loud this device plays each member of the call, in percent of as they arrive
     /// ([`Command::SetVolume`]), sorted by person: what the view's volume controls show, and
     /// nobody else's call hears.
@@ -663,6 +668,7 @@ impl Snapshot {
             volumes: Vec::new(),
             cameras: Vec::new(),
             camera_id: None,
+            pictures_local: false,
         }
     }
 

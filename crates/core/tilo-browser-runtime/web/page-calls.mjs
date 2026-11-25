@@ -12,20 +12,14 @@
  * for `WATCH_HOLD_MS`. That is how the view learns who joined, left, talks or mutes the moment
  * it happens, with one question outstanding instead of a poll.
  *
- * A `pictures` collection is held the same way (`PICTURES_HOLD_MS`): the pictures the call
- * delivered since the view last collected them, answered as soon as one arrives, so a call's
- * tiles move on the frame after a picture did rather than on a poll.
+ * The call's pictures do not go back to the view: they are decoded here, where the page draws
+ * its tiles, and the status says so (`pictures_local`). `paint(person, source, frame)` gets each
+ * decoded frame and `onStatus(status, me)` the status whenever it moves, which is what keeps a
+ * tile's speaking ring and microphone right.
  */
 
 /** The longest a `watch` is held before it is answered unchanged (`WATCH_HOLD`). */
 export const WATCH_HOLD_MS = 20_000;
-
-/** The longest a `pictures` collection is held before it is answered without any
- * (`PICTURES_HOLD`). */
-export const PICTURES_HOLD_MS = 5_000;
-
-/** The most bytes one `pictures` answer carries (`PICTURES_BUDGET`), at least one picture. */
-export const PICTURES_BUDGET = 1024 * 1024;
 
 /** `phase` as the status names the call's state. */
 export function stateOfPhase(phase) {
@@ -74,13 +68,16 @@ export function callIn(call) {
 /**
  * A page's calls. `peerVoice` is `peer.voice` (`web/voice-peer.mjs`): its `call` is this page's
  * call and its `calls` is what the workspace's presence lists. `send` takes one answer to give
- * the view — `{answered: status}`, the step's answer, or `{refused: why}`.
+ * the view — `{answered: status}`, the step's answer, or `{refused: why}`. `paint` draws each
+ * picture the call's decoder makes where the page's tiles stand, and `onStatus` hears the status
+ * whenever it moves, with this page's person.
  */
 export function createPageCalls({
   peerVoice,
   send,
+  paint = () => {},
+  onStatus = () => {},
   holdMs = WATCH_HOLD_MS,
-  picturesHoldMs = PICTURES_HOLD_MS,
   setTimeout: after = (callback, ms) => globalThis.setTimeout(callback, ms),
   clearTimeout: cancel = handle => globalThis.clearTimeout(handle),
 } = {}) {
@@ -93,9 +90,8 @@ export function createPageCalls({
   /** The `watch` the view waits on, if any: the revision it last saw, and the timer that ends
    * its hold. */
   let held = null;
-  /** The `pictures` collection the view waits on, if any: its request, the cursor it collects
-   * from, and the timer that ends its hold. */
-  let heldPictures = null;
+  /** The status `onStatus` last heard. */
+  let told = 0;
   let disposed = false;
 
   /** The microphones and cameras the browser offers, as the status says them. They are listed
@@ -161,8 +157,16 @@ export function createPageCalls({
       volumes,
       cameras: devices.cameras,
       camera_id: state.cameraId ?? devices.cameras[0]?.id ?? null,
+      // The pictures are decoded here, where the page draws its tiles: the view's call service
+      // asks for none and collects none.
+      pictures_local: true,
       revision,
     };
+    if (revision !== told) {
+      told = revision;
+      const me = (state.members ?? []).find(member => member.self)?.user ?? null;
+      try { onStatus(answer, me); } catch {}
+    }
     return answer;
   }
 
@@ -195,68 +199,18 @@ export function createPageCalls({
     answered(requestId);
   }
 
-  /** What the call has to draw since `cursor`: its pictures, in base64, and where the next
-   * collection starts. A browser that carries no pictures answers none. */
-  function picturesSince(cursor) {
-    const taken = typeof call.takePictures === 'function'
-      ? call.takePictures(cursor, PICTURES_BUDGET)
-      : null;
-    const pictures = Array.isArray(taken?.pictures) ? taken.pictures : [];
-    const next = Number.isSafeInteger(taken?.cursor) ? taken.cursor : cursor;
-    return {pictures, cursor: next};
-  }
-
-  /** Answer `requestId` with the pictures the call has since `cursor`. */
-  function answerPictures(requestId, cursor) {
-    const {pictures, cursor: next} = picturesSince(cursor);
-    send({
-      request_id: requestId,
-      answer: {answered: {...status(), pictures, pictures_cursor: next}},
-    });
-  }
-
-  /** Hold `requestId` until a picture arrives past `cursor`, or the hold runs out: one
-   * collection outstanding, as a native call service holds one. */
-  function collectPictures(requestId, cursor) {
-    if (typeof call.takePictures !== 'function') {
-      answerPictures(requestId, cursor);
-      return;
-    }
-    const arrived = picturesSince(cursor);
-    if (arrived.pictures.length) {
-      if (heldPictures) clearTimeout(heldPictures.timer);
-      heldPictures = null;
-      answerPictures(requestId, cursor);
-      return;
-    }
-    if (heldPictures) clearTimeout(heldPictures.timer);
-    heldPictures = {
-      requestId,
-      cursor,
-      timer: after(() => {
-        if (heldPictures?.requestId !== requestId) return;
-        heldPictures = null;
-        answerPictures(requestId, cursor);
-      }, picturesHoldMs),
-    };
-  }
-
-  /** Answer the held collection once the call has a picture to draw. */
-  function arrived() {
-    if (!heldPictures) return;
-    const {requestId, cursor, timer} = heldPictures;
-    if (!picturesSince(cursor).pictures.length) return;
-    clearTimeout(timer);
-    heldPictures = null;
-    answerPictures(requestId, cursor);
-  }
-
   const unsubscribe = typeof call.subscribe === 'function'
-    ? call.subscribe(() => { listDevices(); status(); moved(); arrived(); })
+    ? call.subscribe(() => { listDevices(); status(); moved(); })
     : null;
   const unsubscribeCalls = typeof peerVoice.onCalls === 'function'
     ? peerVoice.onCalls(() => { status(); moved(); })
     : null;
+  /** Every picture the call decodes, drawn where the page's tiles stand. */
+  const unsubscribePictures = typeof call.onPicture === 'function'
+    ? call.onPicture((person, source, frame) => { if (!disposed) paint(person, source, frame); })
+    : null;
+  // The page wears what the call says now, before any step arrives.
+  status();
   listDevices();
 
   return {
@@ -304,9 +258,6 @@ export function createPageCalls({
         case 'show':
           call.showPictures(command.pictures);
           break;
-        case 'pictures':
-          collectPictures(requestId, Number(command.after) || 0);
-          return;
         case 'watch':
           watch(requestId, Number(command.revision) || 0);
           return;
@@ -325,10 +276,9 @@ export function createPageCalls({
       disposed = true;
       if (held) clearTimeout(held.timer);
       held = null;
-      if (heldPictures) clearTimeout(heldPictures.timer);
-      heldPictures = null;
       unsubscribe?.();
       unsubscribeCalls?.();
+      unsubscribePictures?.();
     },
   };
 }
