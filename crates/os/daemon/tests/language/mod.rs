@@ -4,6 +4,7 @@
 //! dispatch and the device link, each test on a daemon of its own.
 
 mod app_records_tests;
+mod approved_checks;
 mod calendar_bridge_tests;
 mod declared_kinds_tests;
 mod hosted_own_agent_tests;

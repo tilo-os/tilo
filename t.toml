@@ -1578,6 +1578,26 @@ isolation = "vm"
 heavy = true
 
 [[check]]
+name = "approved-checks-build"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# The launcher runs tilolang apps under its sandbox, and the test's device starts them with\n# the runtime the bundles carry, as a computer does.\ncargo build --locked -p ush --bin tilo-ush\ncargo build --locked -p launcher --bin tilo-launcher\ncargo build --locked --profile fast -p tilolang-process --bin tilolang-process --features tilolang-process/app-launch\n# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\nselect_executable() {\n  python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$1\"\n}\ncp \"$(cargo test --locked -p tilo-daemon --test it --no-run --message-format json | select_executable it)\" \"$CARGO_TARGET_DIR/vm/tilo-daemon-approved-checks\"\ncp \"$CARGO_TARGET_DIR/debug/tilo-ush\" \"$CARGO_TARGET_DIR/debug/tilo-launcher\" \"$CARGO_TARGET_DIR/vm/\"\ncp \"$CARGO_TARGET_DIR/fast/tilolang-process\" \"$CARGO_TARGET_DIR/vm/tilolang-process\"\n"
+env = { CARGO_PROFILE_FAST_STRIP = "symbols" }
+requires = ["arch=x86_64"]
+outputs = ["/target/vm/tilo-daemon-approved-checks", "/target/vm/tilo-ush", "/target/vm/tilo-launcher", "/target/vm/tilolang-process"]
+on = ["dispatch"]
+heavy = true
+
+[[check]]
+name = "approved-checks"
+run = "set -eu\n# The fixture starts a user manager for the account and the supervisor places each check in a\n# service of it, so it must be the guest's root. If t ever stops giving the guest root, fail\n# here instead of letting the fixture skip.\nif [ \"$(id -u)\" != \"0\" ]; then\n  echo \"approved-checks: expected euid 0 in the micro-VM, got $(id -u)\" >&2\n  exit 1\nfi\nmkdir -p \"$TMPDIR\"\nprintf 'guest euid %s; controllers [%s]\\n' \"$(id -u)\" \"$(cat /sys/fs/cgroup/cgroup.controllers 2>&1)\"\noutput=$(TILO_APPROVED_CHECKS_FIXTURE=1 \\\n  TILO_APPROVED_CHECKS_USH=/target/vm/tilo-ush \\\n  TILO_SIBLING_BIN_tilolang_process=/target/vm/tilolang-process \\\n  TILO_SIBLING_BIN_tilo_launcher=/target/vm/tilo-launcher \\\n  /target/vm/tilo-daemon-approved-checks --exact \\\n    language::approved_checks::a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next \\\n    --nocapture --test-threads=1 2>&1) || { status=$?; printf '%s\\n' \"$output\"; exit \"$status\"; }\nprintf '%s\\n' \"$output\"\n# A filter that matches nothing still exits 0: the fixture must have run and passed.\ncase \"$output\" in\n  *\"1 passed\"*) ;;\n  *) echo \"approved-checks: the fixture did not run\" >&2; exit 1 ;;\nesac\n"
+needs = ["approved-checks-build"]
+env = { TILO_REQUIRE_ROOT = "1", TMPDIR = "/var/tmp/tilo-test" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+on = ["dispatch"]
+heavy = true
+
+[[check]]
 name = "ush-guests-build"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\ntest_binary() {\n  python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1] and m[\"profile\"][\"test\"]))' \"$1\"\n}\ncp \"$(cargo test --locked -p ush --lib --no-run --message-format json | test_binary ush)\" \"$CARGO_TARGET_DIR/vm/ush-lib\"\ncp \"$(cargo test --locked -p ush --test it --no-run --message-format json | test_binary it)\" \"$CARGO_TARGET_DIR/vm/ush-it\"\n# The fixtures start the real runtime binary, not this test executable.\ncp \"$CARGO_TARGET_DIR/debug/tilo-ush\" \"$CARGO_TARGET_DIR/vm/tilo-ush\"\n"
