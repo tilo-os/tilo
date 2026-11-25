@@ -320,7 +320,7 @@ async fn a_call_continuing_the_persons_press_is_theirs_and_an_app_cannot_make_on
 
             // The person presses in the app's window: the app's call of its own action is
             // theirs, and so is the call its code makes of another app while it runs.
-            rig.state.note_press(WINDOW, 7);
+            rig.state.note_press(WINDOW, 7, None);
             let press = id(0xc4c1);
             {
                 use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
