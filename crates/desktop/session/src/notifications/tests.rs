@@ -492,6 +492,38 @@ tilo_test_env::scenario! {
         assert_eq!(rig.history(), ["New mail"]);
         assert!(rig.desktop.log().history()[0].app_image.is_some());
         assert!(!rig.live(id), "the app is told it was dismissed");
+        assert_eq!(
+            rig.closed(),
+            [(id, CloseReason::Dismissed)],
+            "the person closed it, so the app hears dismissed, not that it ran out"
+        );
+    }
+
+    phase a_banner_nobody_touched_only_ran_out;
+    // The same notification left alone: no action and no dismissal, so its app hears that its time
+    // ran out, which is how it tells the person's choice from the banner aging on its own.
+    {
+        let rig = rig();
+        let id = rig.daemon.alloc_id();
+        rig.daemon.push(sent(id));
+        rig.step();
+        let banner = rig.banner();
+        // Lay it on screen at one instant and look again once its time is up: the pass sees the
+        // banner leave the stack with nobody having touched it.
+        let shown_at = ui::time::now();
+        rig.desktop.present(shown_at, &[banner.id], false);
+        let ran_out = shown_at
+            .checked_add(banner.dismiss_after + Duration::from_millis(1))
+            .expect("an instant after the banner's time");
+        rig.desktop.expire(ran_out);
+        rig.step();
+        assert!(rig.feed().banners.is_empty());
+        assert!(!rig.live(id));
+        assert_eq!(
+            rig.closed(),
+            [(id, CloseReason::Expired)],
+            "nobody touched it, so the app hears that it ran out"
+        );
     }
 
     phase a_banners_action_and_reply_reach_the_app;

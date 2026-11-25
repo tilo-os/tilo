@@ -26,8 +26,13 @@ pub enum NotificationOutcome {
         notification: Box<Notification>,
         action: Option<String>,
     },
-    /// The person removed a retained notification from the centre.
-    Dismissed { id: u64 },
+    /// The person closed a banner or removed a retained notification from the centre.
+    Dismissed {
+        id: u64,
+        /// The daemon's notification the row stood for, when the log still knows it: the sender
+        /// hears its notification is gone rather than having run out.
+        sender: Option<u32>,
+    },
 }
 
 #[derive(Default)]
@@ -112,7 +117,13 @@ impl NotificationHost for NoticeState {
         self.quiet.borrow().clone()
     }
     fn dismiss(&self, id: u64) {
-        self.retire_active(id);
+        // The person closed the banner: its sender hears it was dismissed, not that it ran out.
+        if let Some(notification) = self.retire_active(id) {
+            self.outcome(NotificationOutcome::Dismissed {
+                id,
+                sender: notification.sender_id,
+            });
+        }
     }
     fn activate(&self, id: u64) {
         if let Some(notification) = self.retire_active(id) {
@@ -138,15 +149,15 @@ impl NotificationHost for NoticeState {
     fn dismiss_history(&self, id: u64) {
         // A notice still up as a banner goes off the stack with it; one retired into the centre
         // goes from the centre. Either way it is dismissed.
-        let (from_banner, from_history) = {
+        let taken = {
             let mut log = self.log.borrow_mut();
-            (
-                log.take_active(id).is_some(),
-                log.take_history(id).is_some(),
-            )
+            log.take_active(id).or_else(|| log.take_history(id))
         };
-        if from_banner || from_history {
-            self.outcome(NotificationOutcome::Dismissed { id });
+        if let Some(notification) = taken {
+            self.outcome(NotificationOutcome::Dismissed {
+                id,
+                sender: notification.sender_id,
+            });
             self.touch();
         }
     }
@@ -1060,8 +1071,11 @@ mod centre_tests {
                 "a centre closed no longer holds arrivals: the next one is a banner"
             );
             assert!(
-                notifications.take_outcomes().is_empty(),
-                "closing a banner answers nobody"
+                matches!(
+                    notifications.take_outcomes().as_slice(),
+                    [NotificationOutcome::Dismissed { sender: None, .. }]
+                ),
+                "closing a banner with no sender answers nobody, and still says it was dismissed"
             );
         }
     }

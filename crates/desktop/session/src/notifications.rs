@@ -519,13 +519,18 @@ impl SessionNotifications {
                     answering.borrow_mut().push((sender, action.clone()));
                 }
             }
-            NotificationOutcome::Dismissed { id } => {
+            NotificationOutcome::Dismissed { id, sender } => {
                 if let Some((tag, _)) = showing_noted.borrow_mut().remove(id) {
                     telling_closed.borrow_mut().push((tag, Closed::Dismissed));
                 }
                 // Dismissing another device's notification here dismisses it there too: the app's
                 // notification closes, and every other copy goes with it.
                 answered.dismissed(*id);
+                // The sender hears the notification go, with no action to take: dismissed, not run
+                // out. Answering it here keeps it ahead of the pass that settles the banner.
+                if let Some(sender) = sender {
+                    answering.borrow_mut().push((*sender, None));
+                }
             }
         });
         Self {
