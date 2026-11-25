@@ -1177,7 +1177,7 @@ impl PeerGovernanceMut<'_> {
         let cert = own.clone();
         if cert.capabilities.agent.is_some() || cert.capabilities.stand_in {
             return Err(
-                "a key acting for someone comes in by its delegation, not through the entry".into(),
+                "an agent's key comes into a workspace by an invitation, within its certificate's scope, not through the entry".into(),
             );
         }
         if self.peer.core.revocations.refuses(&cert) {

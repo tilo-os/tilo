@@ -215,8 +215,8 @@ impl Workspaces {
         let wait_list = self.waiting_offer(workspace).await;
         // A key acting for someone the workspace has in it is no device of
         // theirs: the entry would hand it its person's part, and its
-        // redemption would hold it unbounded. It comes in by the delegation
-        // that bounds it.
+        // redemption would hold it unbounded. It comes in by an invitation,
+        // which records it within its certificate's scope.
         if !person_device(cert)
             && self
                 .member_role(workspace, cert.user_public_key)
@@ -226,7 +226,7 @@ impl Workspaces {
             return Err(EnterRefusal::Entry {
                 retry_after_secs: None,
                 refused: crate::workspaces::EntryRefusal::Refused(
-                    "an agent comes into a workspace its person is in by its delegation, not through the entry"
+                    "an agent's key comes into a workspace by an invitation, within its certificate's scope, not through the entry"
                         .to_owned(),
                 )
                 .answer_with(wait_list.as_ref()),
@@ -425,7 +425,7 @@ impl Workspaces {
         let refused = |reason: String| JoinReply::Refused(reason);
         if !crate::workspace_access::person_device(cert) {
             return refused(
-                "a key acting for someone comes into a workspace by its delegation, not through the entry"
+                "an agent's key comes into a workspace by an invitation, within its certificate's scope, not through the entry"
                     .to_owned(),
             );
         }
@@ -709,23 +709,52 @@ impl Workspaces {
     }
 
     /// Bring the key `cert` certifies for an agent of its person into `workspace`, named `name`,
-    /// as every key of theirs enters one: through the workspace's entry, with the admission the
-    /// key signs itself (`signer`). A key already listed there is let in as it is.
+    /// as every key of theirs comes into one: by an invitation this host issues its person, as
+    /// it answers a key asking for the workspace it holds, which the key redeems with the
+    /// admission it signs itself (`signer`). The workspace records it as that agent, within its
+    /// certificate's scope. A key already listed there is let in as it is.
     ///
     /// # Errors
-    /// The workspace does not let the key in, or the key does not sign.
+    /// The key's scope does not reach the workspace, this host does not invite its person
+    /// there, the workspace does not let the key in, or the key does not sign.
     pub async fn enter_agent_key(
         &self,
         (signer, cert): (&dyn collab_types::signer::DeviceSigner, &DeviceCert),
         workspace: &str,
         name: &str,
     ) -> Result<(), String> {
+        if !cert
+            .capabilities
+            .agent
+            .as_ref()
+            .is_some_and(|scope| scope.reaches(workspace))
+        {
+            return Err("the agent's key is not granted this workspace".to_owned());
+        }
+        let invitation = self
+            .issue(
+                workspace,
+                &self.inner.host.cert,
+                crate::workspaces::IssueInvitationRequest {
+                    request_id: rand::random(),
+                    role: tilo_peer_state::join::Role::Editor,
+                    recipient_user_public_key: Some(cert.user_public_key),
+                    invitee_name: None,
+                    inviter_name: None,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
         let entry = Entry {
             entering: Entering {
                 workspace: workspace.to_owned(),
                 name: name.to_owned(),
                 request_id: rand::random(),
-                through: Through::Entry,
+                through: Through::Invitation {
+                    invitation: invitation.signed_invitation,
+                    token: None,
+                },
                 admission: Vec::new(),
             },
             access: None,

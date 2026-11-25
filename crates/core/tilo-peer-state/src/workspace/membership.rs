@@ -692,7 +692,7 @@ fn entered(
         || identity.device_cert.capabilities.stand_in
     {
         return Err(MembershipRefusal::Refused(
-            "a key acting for someone comes into a workspace by its delegation, not through the entry"
+            "an agent's key comes into a workspace by an invitation, within its certificate's scope, not through the entry"
                 .into(),
         ));
     }
