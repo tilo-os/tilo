@@ -906,7 +906,8 @@ fn listed_apps(profile: &Path, count: usize) -> Result<Vec<Value>> {
         }
         ensure!(
             Instant::now() < deadline,
-            "expected {count} apps, got {apps:?}"
+            "expected {count} apps, got {apps:?}\n{}",
+            std::fs::read_to_string(profile.join("daemon.log")).unwrap_or_default()
         );
         std::thread::sleep(Duration::from_millis(25));
     }
