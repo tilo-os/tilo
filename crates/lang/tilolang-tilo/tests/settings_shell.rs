@@ -104,6 +104,15 @@ fn labelled(tree: &UiNode, kind: &str, label: &str) -> String {
     named(tree, kind, "label", label).key.clone()
 }
 
+/// Whether a switch shows its setting on: a tl flag reaches the control as the number it is.
+fn shows(node: &UiNode) -> bool {
+    match node.props.get("shown") {
+        Some(Value::Bool(on)) => *on,
+        Some(Value::Int(on)) => *on != 0,
+        other => panic!("a switch's shown reads {other:?}"),
+    }
+}
+
 /// One invocation as it was sent, with its arguments by name.
 #[derive(Clone)]
 struct Sent(Rc<RefCell<Vec<Invocation>>>);
@@ -216,14 +225,14 @@ fn the_widgets_section_keeps_and_shapes_the_shell_widgets() {
     }
     // The switch shows what the settings keep: Music is on, People here is not.
     let music_toggle = named(view.tree(), "ui.Toggle", "label", "Keep Music on the shell");
-    assert_eq!(music_toggle.props.get("shown"), Some(&Value::Bool(true)));
+    assert!(shows(music_toggle), "Music is on");
     let people_toggle = named(
         view.tree(),
         "ui.Toggle",
         "label",
         "Keep People here on the shell",
     );
-    assert_eq!(people_toggle.props.get("shown"), Some(&Value::Bool(false)));
+    assert!(!shows(people_toggle), "People here is off");
     let keep_music = music_toggle.key.clone();
 
     let sent = Sent::new();
@@ -239,7 +248,9 @@ fn the_widgets_section_keeps_and_shapes_the_shell_widgets() {
         "the settings keep the choice, as the shell reads it"
     );
     assert_eq!(sent.argument("widget"), Value::text("music"));
-    assert_eq!(sent.argument("enabled"), Value::Bool(false));
+    // A switch's value is boxed until the event puts it in place: the action is called with the
+    // `Some` the runtime fills.
+    assert_eq!(sent.argument("enabled"), Value::some(Value::Bool(false)));
 
     // When it shows is the settings' choice too: always, after a pause, or only when asked.
     let always = labelled(view.tree(), "ui.Segment", "Always");
