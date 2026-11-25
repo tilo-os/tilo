@@ -512,8 +512,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// One page of the host's feed of the workspace's changes after `after`:
-    /// `None` for a host that keeps none, which a watch of no path then
-    /// reports nothing of.
+    /// `None` for a host that keeps none, or answers this caller none, which a
+    /// watch of no path then reports nothing of.
     async fn feed_page(
         &self,
         after: Option<&str>,
@@ -530,6 +530,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             {
                 Ok(None)
             }
+            // A caller the feed does not answer (an agent, whose rules a change to a whole
+            // record does not say it may read) still hears its invocations and who is here.
+            Some(Err(tilo_actions::remote::ActionCallError::NotPermitted)) => Ok(None),
             Some(Err(error)) => Err(format!("the workspace's changes are not read: {error}")),
             None => Err("the host dropped the workspace's changes".to_owned()),
         }
