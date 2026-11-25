@@ -53,4 +53,7 @@ workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dev-dependencies]
 tempfile.workspace = true
+# The Android context's bookkeeping is tested on the host, where no Java VM runs.
+jni = "0.21.1"
+ndk-context = "0.1.1"
 tilo-test-env = { path = "../../../tools/test-env" }

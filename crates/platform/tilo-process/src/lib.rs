@@ -4,7 +4,7 @@
 //! inside the page, which has none, so the functions here answer `None` rather than
 //! panicking as `std::process::id` does.
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(test, unix)))]
 pub mod android;
 pub mod child;
 #[cfg(unix)]

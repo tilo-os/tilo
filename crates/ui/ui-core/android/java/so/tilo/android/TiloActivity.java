@@ -1,5 +1,6 @@
 package so.tilo.android;
 
+import android.app.AlertDialog;
 import android.app.NativeActivity;
 import android.content.ComponentName;
 import android.content.Context;
@@ -43,6 +44,9 @@ public class TiloActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         System.loadLibrary(libraryName());
+        // A file provider the system created first published the application's context for Rust;
+        // the native activity publishes its own as it starts, and takes no other's place.
+        nativeYieldContext();
         super.onCreate(savedInstanceState);
         getWindow().getDecorView().setOnApplyWindowInsetsListener(this::applyInsets);
         installExtensions();
@@ -104,6 +108,22 @@ public class TiloActivity extends NativeActivity {
         }
     }
 
+    /**
+     * The app did not open: the person is shown why, and the activity ends once they close it.
+     * Rust calls this from {@code android_main}'s thread when its launch fails before a window
+     * opened, and keeps answering the activity's lifecycle until it ends.
+     */
+    public void launchFailed(String message) {
+        runOnUiThread(
+                () ->
+                        new AlertDialog.Builder(this)
+                                .setMessage(message)
+                                .setCancelable(false)
+                                .setPositiveButton(android.R.string.ok, (dialog, which) -> finish())
+                                .setOnDismissListener(dialog -> finish())
+                                .show());
+    }
+
     private String libraryName() {
         return libraryName(this);
     }
@@ -161,4 +181,6 @@ public class TiloActivity extends NativeActivity {
     private static native void nativeSafeAreaChanged(int left, int top, int right, int bottom);
 
     private static native void nativeActivated(String uri);
+
+    private static native void nativeYieldContext();
 }

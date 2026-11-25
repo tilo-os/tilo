@@ -183,8 +183,9 @@ fn files_dir(env: &mut JNIEnv<'_>, context: &JObject<'_>) -> Result<PathBuf, Str
 }
 
 /// Starts the phone's device for the provider, and answers whether it runs. The system may start
-/// this process for the provider alone, so the app's directories go into the environment here,
-/// exactly as the activity's own start puts them.
+/// this process for the provider alone, before any activity, so the app's directories go into the
+/// environment here, exactly as the activity's own start puts them, and the application's context
+/// is published for every later call into Android (the Keystore holding the device's key first).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeStart(
     mut env: JNIEnv<'_>,
@@ -198,6 +199,10 @@ pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeStart(
         if std::env::var_os("HOME").is_none() {
             ui::launch::android::install_environment_in(&dir);
         }
+        // The daemon loads the device's key from the Keystore as it starts, which needs a context
+        // of the app's: the application's, since no activity may run in this process.
+        tilo_process::android::provide_application_context(&mut env, &context)
+            .map_err(|error| format!("the app's context: {error}"))?;
         files().map(drop)
     })();
     match started {

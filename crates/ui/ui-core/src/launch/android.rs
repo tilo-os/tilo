@@ -64,7 +64,46 @@ pub fn run_main<T: std::process::Termination>(app: AndroidApp, main: fn() -> T) 
         crate::diag!("tilo: android_main started twice in one process");
         return;
     }
+    // SAFETY: android-activity published the activity in `ndk_context` before it called
+    // `android_main`, and takes it back only once this returns, after `activity_ended`.
+    unsafe { tilo_process::android::activity_started() };
     let _ = main().report();
+    tilo_process::android::activity_ended();
+}
+
+/// A launch that failed before its window opened, shown to the person: the activity shows
+/// `message` and ends once they close it. Until then this thread answers the activity's
+/// lifecycle, as the window's event loop would have, so the system never finds the app hung.
+pub(crate) fn launch_failed(message: &str) {
+    crate::diag!("tilo: the app did not open: {message}");
+    let shown = tilo_process::android::with_activity(|env, activity| {
+        let message = env.new_string(message)?;
+        env.call_method(
+            activity,
+            "launchFailed",
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(&message)],
+        )
+        .map(drop)
+    });
+    if let Err(error) = shown {
+        crate::diag!("tilo: the launch's failure could not be shown: {error}");
+        return;
+    }
+    let Some(app) = app() else {
+        return;
+    };
+    let mut destroyed = false;
+    while !destroyed {
+        app.poll_events(None, |event| {
+            if let winit::platform::android::activity::PollEvent::Main(
+                winit::platform::android::activity::MainEvent::Destroy,
+            ) = event
+            {
+                destroyed = true;
+            }
+        });
+    }
 }
 
 #[link(name = "log")]
@@ -185,6 +224,17 @@ pub fn safe_area_insets() -> [i32; 4] {
     SAFE_AREA
         .each_ref()
         .map(|inset| inset.load(Ordering::Relaxed))
+}
+
+/// `TiloActivity.nativeYieldContext`, called on the UI thread in the activity's `onCreate`, before
+/// the native activity starts: android-activity publishes the activity as the process's context
+/// and refuses to publish over the one a file provider published.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_so_tilo_android_TiloActivity_nativeYieldContext(
+    _env: *mut c_void,
+    _class: *mut c_void,
+) {
+    tilo_process::android::yield_to_activity();
 }
 
 /// `TiloActivity.nativeSafeAreaChanged`, called on the UI thread whenever the window's insets change.

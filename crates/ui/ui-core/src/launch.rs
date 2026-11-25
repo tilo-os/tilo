@@ -743,6 +743,12 @@ impl fmt::Debug for LaunchRecovery {
 pub fn run_or_exit(spec: &LaunchSpec) {
     if let Err(error) = run(spec) {
         eprintln!("error: {error}");
+        // An Android app has no terminal and no launcher reading its status: the person is shown
+        // why it did not open, and the activity ends as the system ends one, never by an exit
+        // from under the threads the system runs in the process.
+        #[cfg(target_os = "android")]
+        android::launch_failed(&error.to_string());
+        #[cfg(not(target_os = "android"))]
         std::process::exit(error.exit_code());
     }
 }
