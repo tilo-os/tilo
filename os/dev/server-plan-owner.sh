@@ -74,11 +74,12 @@ start_daemon() {
   fi
   setsid "$(guest_bin tilo-runtime)" >> "$root/logs/daemon.log" 2>&1 < /dev/null &
   printf '%s\n' "$!" > "$root/daemon.pid"
-  local socket
+  # The daemon names its endpoint in its profile as a link, whatever directory a socket's path
+  # fits in: the profile is where the host that starts it over one finds it, so this asks no
+  # guess at the sockets' own layout.
+  local socket=$root/daemon/native.sock
   for _ in $(seq 1 360); do
-    for socket in "$XDG_RUNTIME_DIR"/tilo/profile-*/native.sock; do
-      [ -S "$socket" ] && return 0
-    done
+    [ -S "$socket" ] && return 0
     kill -0 "$(<"$root/daemon.pid")" 2>/dev/null || break
     sleep 0.5
   done

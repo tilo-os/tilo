@@ -84,9 +84,7 @@ pub fn sockets(login: &Path) -> Result<(PathBuf, bool), String> {
     let system = tilo_paths::machine::system_daemon();
     // A daemon serving a profile named apart listens in that profile's sockets, as it is started
     // over it: a command run beside it with the same profile asks it there.
-    let named = std::env::var_os(tilo_paths::machine::DAEMON_PROFILE_VAR)
-        .filter(|profile| !profile.is_empty());
-    let sockets = if let Some(profile) = named {
+    let sockets = if let Some(profile) = named_profile() {
         profile_sockets(login, Path::new(&profile))?
     } else if system {
         PathBuf::from(SYSTEM_SOCKETS)
@@ -95,6 +93,16 @@ pub fn sockets(login: &Path) -> Result<(PathBuf, bool), String> {
     };
     socket_fits(&sockets.join(NATIVE))?;
     Ok((sockets, system))
+}
+
+/// The profile this environment names its daemon apart with, when it names one
+/// (`TILO_RUNTIME_PROFILE`): a host's, a stack's, a test's. Such a daemon is started by whoever
+/// named the profile, and no command starts a service for it; a client waits for that daemon.
+#[must_use]
+pub fn named_profile() -> Option<PathBuf> {
+    std::env::var_os(tilo_paths::machine::DAEMON_PROFILE_VAR)
+        .filter(|profile| !profile.is_empty())
+        .map(PathBuf::from)
 }
 
 /// The native endpoint's socket in the daemon's `sockets`.

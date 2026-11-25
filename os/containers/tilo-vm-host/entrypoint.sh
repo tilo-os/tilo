@@ -138,16 +138,13 @@ mountpoint -q "$home" || mount --bind "$member/home" "$home" \
 ) &
 
 # A host that founds its own identity asks its member's daemon to, once the daemon answers: a
-# person is made by the daemon alone.
+# person is made by the daemon alone. The command waits for the daemon and finds it by the one
+# function the daemon binds by (a profile named apart keeps its sockets where a socket's path
+# fits, not in the profile), so nothing here names where it listens. It runs in the member's
+# environment and as its account, as the daemon does, so both resolve one directory.
 if [ "${found_here:-0}" = 1 ]; then
   say "this host founds its own identity, as a machine with no owner before it does"
-  for _ in $(seq 1 120); do
-    [ -S "$profile/native.sock" ] && break
-    sleep 1
-  done
   HOME=$home TILO_IDENTITY_ROOT=$identity TILO_RUNTIME_PROFILE=$profile \
-    XDG_CONFIG_HOME=$profile/config XDG_DATA_HOME=$profile/data \
-    XDG_CACHE_HOME=$profile/cache XDG_STATE_HOME=$profile/state \
     setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- \
     tilo login --new-identity >/dev/null \
     || { say "this host could not found its own identity"; exit 1; }

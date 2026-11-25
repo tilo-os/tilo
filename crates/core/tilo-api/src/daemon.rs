@@ -52,6 +52,10 @@ pub fn this_computer() -> Result<DaemonPlace, String> {
     let (sockets, system) = tilo_device_identity::login::daemon::sockets(login.dir())?;
     Ok(DaemonPlace {
         system,
+        // A profile named apart is started by the host that named it (a VM host's start, a
+        // stack's, a test's), never by this account's service manager, which runs this
+        // computer's own daemon over no profile.
+        starts: tilo_device_identity::login::daemon::named_profile().is_none(),
         ..DaemonPlace::at(&sockets, login.dir())
     })
 }
@@ -86,6 +90,11 @@ pub struct DaemonPlace {
     /// Whether it is the system unit's: its sockets are open to every account, which it admits
     /// by who they are ([`admission`]).
     system: bool,
+    /// Whether this account's service manager starts it ([`service::start`]): this computer's own
+    /// daemon is its own only. A daemon serving a profile named apart is started by the host that
+    /// named the profile, so a client of it waits for that daemon and starts no service, which
+    /// would serve no profile at all.
+    starts: bool,
 }
 
 impl DaemonPlace {
@@ -97,6 +106,7 @@ impl DaemonPlace {
             native: tilo_device_identity::login::daemon::native_in(sockets),
             lock: dir.join("holder.lock"),
             system: false,
+            starts: true,
         }
     }
 
@@ -173,7 +183,8 @@ impl DaemonPlace {
 
     /// A connection to the daemon's native endpoint ([`Self::native`]), starting the service
     /// ([`service::start`]) when none answers and waiting up to `within` for it: what a command
-    /// calling actions as the device makes before its first call.
+    /// calling actions as the device makes before its first call. A daemon serving a profile
+    /// named apart is started by the host that named it, and is only waited for.
     ///
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
@@ -212,7 +223,8 @@ impl DaemonPlace {
     /// Wait until the daemon answers at its native endpoint, starting the service when none
     /// runs: a computer no person's certificate names answers there alone. It founds no person:
     /// this is how a computer about to be logged in with a ticket reaches its daemon, and the
-    /// ticket's person is the one it becomes.
+    /// ticket's person is the one it becomes. A daemon serving a profile named apart is waited
+    /// for alone.
     ///
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
@@ -235,7 +247,8 @@ impl DaemonPlace {
     /// daemon keeps the device: one that runs (still starting, or taking a login up) is waited
     /// for. A person's own computer that no person's certificate names yet founds its person
     /// here, once its daemon answers, as its first command always has; Tilo OS's device waits
-    /// for a sign-in.
+    /// for a sign-in. A daemon serving a profile named apart is the host's to start, so it is
+    /// waited for alone, up to `within`.
     fn wait_for(
         &self,
         within: Duration,
@@ -258,7 +271,7 @@ impl DaemonPlace {
                 }
                 return Ok(None);
             }
-            if !started && !self.alive() {
+            if self.starts && !started && !self.alive() {
                 started = true;
                 service::start()?;
             }
@@ -509,4 +522,45 @@ pub fn unreachable_answer(request: &serde_json::Value, problem: &str) -> Option<
         }
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// A client of a daemon serving a profile named apart waits for the daemon the host that
+    /// named the profile started, and starts no service of its own: this account's service
+    /// manager runs this computer's own daemon, over no profile, so a start here would answer a
+    /// place the client never asked about. The wait ends at its bound, saying no daemon answered.
+    #[test]
+    fn a_named_profiles_client_waits_for_its_daemon_and_starts_none() {
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let profile = home.state().join("hosted");
+        std::fs::create_dir_all(&profile).unwrap();
+        // A service manager this account has none of: a place that started one would say that,
+        // instead of waiting for the daemon the profile's host starts.
+        let no_programs = home.root().join("no-programs");
+        std::fs::create_dir_all(&no_programs).unwrap();
+        home.env()
+            .set(tilo_paths::machine::DAEMON_PROFILE_VAR, &profile)
+            .set("PATH", &no_programs)
+            .remove("TILO_IDENTITY_ROOT");
+        let place = this_computer().unwrap();
+        assert!(!place.starts, "a profile named apart starts no service");
+        let asked = Instant::now();
+        let why = place
+            .wait_for_native(Duration::from_millis(300))
+            .expect_err("no daemon serves the profile");
+        assert!(
+            why.contains("isn't answering on this computer"),
+            "the wait says no daemon answered: {why}"
+        );
+        assert!(
+            asked.elapsed() < Duration::from_secs(5),
+            "the wait ends at its own bound: {:?}",
+            asked.elapsed()
+        );
+    }
 }
