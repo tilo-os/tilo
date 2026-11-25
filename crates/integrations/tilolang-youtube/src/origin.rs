@@ -81,22 +81,34 @@ enum Answered {
 }
 
 struct Waiting {
+    /// What tells this question's answer from another's: a service over a socket asks on a
+    /// thread of its own, and two questions handed over one after the other finish in whichever
+    /// order the service gets to them, so an answer is never taken for the oldest question.
+    id: u64,
     pending: Pending,
     answered: Option<Result<Answered, ServiceError>>,
 }
+
+/// What the service answered on its own threads, each by the id of the question it answers, as
+/// the frame that polled the origin takes them in.
+type Answer = (u64, Result<Answered, ServiceError>);
+type Answers = Arc<Mutex<VecDeque<Answer>>>;
 
 /// The origin. See the module docs.
 pub struct YouTubeOrigin {
     service: Arc<dyn Service>,
     /// Set when the service has an answer, from the thread it answers on.
     woken: Arc<AtomicBool>,
-    /// What the service answered, written where a poll takes it in: a service over a socket
-    /// (a connector, [`crate::remote::RemoteService`]) asks on a thread of its own, so the
-    /// frame that hands it an effect never waits for the network.
-    answered: Arc<Mutex<VecDeque<Result<Answered, ServiceError>>>>,
+    /// What the service answered, written where a poll takes it in, each by the question it
+    /// answers: a service over a socket (a connector, [`crate::remote::RemoteService`]) asks on
+    /// a thread of its own, so the frame that hands it an effect never waits for the network,
+    /// and the answers finish in an order of their own.
+    answered: Answers,
     types: Option<Types>,
     /// Each request the service has not answered yet, oldest first.
     waiting: VecDeque<Waiting>,
+    /// The id the next question is asked under.
+    next_id: u64,
     /// Why YouTube could not be reached the last time it was asked, until it answers.
     unreached: Option<String>,
     /// The instance's frame loop, woken whenever an answer is ready.
@@ -113,6 +125,7 @@ impl YouTubeOrigin {
             answered: Arc::default(),
             types: None,
             waiting: VecDeque::new(),
+            next_id: 0,
             unreached: None,
             on_answer: None,
         }
@@ -215,6 +228,8 @@ impl YouTubeOrigin {
 
     /// Hand `pending` to the service, and wake the instance once it has answered.
     fn ask(&mut self, pending: Pending) {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
         // Over a socket (a connector, the session's own service) the question is asked on a
         // thread of its own: the frame that queued the effect never waits for the network.
         if let Some(on_answer) = self.on_answer.clone() {
@@ -230,12 +245,13 @@ impl YouTubeOrigin {
                     answered
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push_back(answer);
+                        .push_back((id, answer));
                     woken.store(true, Ordering::Release);
                     on_answer();
                 });
             if asked.is_ok() {
                 self.waiting.push_back(Waiting {
+                    id,
                     pending,
                     answered: None,
                 });
@@ -244,6 +260,7 @@ impl YouTubeOrigin {
         }
         let answer = answer(&*self.service, &pending);
         self.waiting.push_back(Waiting {
+            id,
             pending,
             answered: Some(answer),
         });
@@ -510,21 +527,18 @@ impl YouTubeOrigin {
     /// Write what the service answered since the last poll, and say whether anything changed.
     fn take_answers(&mut self, host: &Host, t: &Types) -> bool {
         let mut wrote = false;
-        // What the service answered on its own thread, oldest first.
-        let took: Vec<Result<Answered, ServiceError>> = self
+        // What the service answered on its own thread, each by the question it answers.
+        let took: Vec<Answer> = self
             .answered
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain(..)
             .collect();
-        for answer in took {
-            // The oldest question still waiting on the service takes this answer, in the order
-            // it was asked; one already answered is not asked again.
-            if let Some(waiting) = self
-                .waiting
-                .iter_mut()
-                .find(|waiting| waiting.answered.is_none())
-            {
+        for (id, answer) in took {
+            // The question this answers, wherever it stands: two questions handed over one
+            // after the other finish in whichever order the service gets to them, so an answer
+            // is never taken for the oldest question still waiting.
+            if let Some(waiting) = self.waiting.iter_mut().find(|waiting| waiting.id == id) {
                 waiting.answered = Some(answer);
             }
         }
