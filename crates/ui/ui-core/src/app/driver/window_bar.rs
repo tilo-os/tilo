@@ -273,13 +273,24 @@ impl Driver {
     }
 
     /// Press the window's History control in its bar's menu, as the person does: it runs on the
-    /// app's History API.
+    /// app's History API. Where the header row the window shows holds the bar in its place (as
+    /// a tilolang window's header does while its History is open), the press reaches the app as
+    /// the shell's bar hands it over in a session.
     ///
     /// # Errors
     /// When the app has no History to open, or the bar is not presented.
     pub fn press_window_history(&mut self) -> Result<(), String> {
-        self.window_history_control()
+        let control = self
+            .window_history_control()
             .ok_or("History is unavailable")?;
+        if !self.presents_window_bar() && self.bar.is_some() {
+            crate::motion::note_source(crate::tokens::MotionSource::Action);
+            let running = self.running();
+            let pressed = self.app.invoke_window_history_control(control);
+            drop(running);
+            self.run_frame();
+            return pressed;
+        }
         let target = format!(
             "{}{}",
             crate::widget::window_toolbar_row::ACTION_TARGET_PREFIX,
