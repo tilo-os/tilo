@@ -14,6 +14,9 @@ d-lcjavy23 = Eintrag
 
 d-cvlieest = Name
 
+d-dssaufce = Pfad
+    .doc = Sein Pfad im Stand: woran sich ein Ordner von einem anderen gleichen Namens unterscheidet und wonach ein Fenster seine Inhalte einklappt.
+
 d-c2m5wzf4 = Tiefe
     .doc = Wie tief der Eintrag im Stand liegt.
 
@@ -27,6 +30,16 @@ d-lcjavy23-filter-depth = Tiefe
 d-lcjavy23-filter-size = Größe
 
 d-lcjavy23-filter-folder = Ordner
+
+d-cffyj3mc = Eingeklappt
+    .doc = Ein Ordner aus dem Dateiverzeichnis eines Stands, den die Person eingeklappt hat.
+    .noun = { $count ->
+        [one] eingeklappter Ordner
+       *[other] eingeklappte Ordner
+    }
+
+d-yp5mxjwc = Pfad
+    .doc = Der Pfad des Ordners im Stand.
 
 d-euqtsjtw = Stand
     .doc = Ein gespeicherter Stand des Ordners, den dieses Gerät schützt.
@@ -58,6 +71,9 @@ d-cyesgrji = Fehler
     .doc = Warum es fehlschlug, falls es das tat.
 
 d-5nvgiivd = Dateien
+
+d-sikyuvd6 = Eingeklappt
+    .doc = Die Ordner seines Dateiverzeichnisses, die die Person eingeklappt hat.
 
 d-wzd6czrl = Aufbewahrung
     .noun = { $count ->
@@ -118,6 +134,13 @@ d-x6ca2mpx = Quellherkunft
 d-gfsjtev7 = Quellrhythmus
 
 d-3wbouwis = Quelle gestört
+
+d-ymfvuwvo = Nächste Ausführung
+    .doc = Wann die nächste Sicherung läuft, gezählt ab 1970; null, wenn nichts sie plant.
+
+d-rnz74k4z = Zeile der nächsten Ausführung
+    .w-by-hand = Von Hand
+    .w-not-known = Nicht bekannt
 
 d-v3i3cihq = Zielname
     .doc = Der Name des Zielordners und was er enthält.
@@ -184,6 +207,8 @@ d-igeecx5d-filter-source_origin = Quellherkunft
 d-igeecx5d-filter-source_cadence = Quellrhythmus
 
 d-igeecx5d-filter-source_failing = Quelle gestört
+
+d-igeecx5d-filter-next_run = Nächste Ausführung
 
 d-igeecx5d-filter-used_bytes = Belegte Bytes
 
@@ -521,6 +546,7 @@ d-sqdhwi4z = Arbeitszeile
 
 d-anqvfopn = Verlauf
     .w-last-backup = Letzte Sicherung
+    .w-next-run = Nächste Ausführung
     .w-snapshots = Stände
     .w-protected = Geschützt
     .w-need-a-look = Braucht einen Blick
@@ -598,3 +624,12 @@ d-76vcytvk = Aufbewahrungsseite
 d-lxppnx67 = Aufbewahrungszeile
     .w-one-fewer = Einen { $label } weniger
     .w-one-more = Einen { $label } mehr
+
+d-7rulekdp = Ordner einklappen
+    .doc = Klappt einen Ordner aus dem Dateiverzeichnis des Stands ein oder wieder aus.
+
+d-7rulekdp-s = Stand
+
+d-7rulekdp-path = Pfad
+
+d-7rulekdp-folded = Eingeklappt

@@ -937,6 +937,7 @@ pub fn catalog_from_local(
                 .entries
                 .iter()
                 .map(|entry| SnapFile {
+                    path: entry.path.to_string_lossy().into_owned(),
                     depth: entry.path.components().count().saturating_sub(1),
                     name: entry
                         .path
