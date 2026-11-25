@@ -46,8 +46,10 @@ fn built() -> &'static (Vec<tilolang::Compiled>, Vec<tilolang::PackageMeta>) {
 }
 
 /// The shell over a host that runs it, the packages its scenarios stage loaded beside it, staged
-/// as its scenario `scenario`; what its views call is told to the [`Called`].
-pub(crate) fn staged(scenario: &str) -> (Host, Called) {
+/// as its scenario `scenario`, with each asked record in `asked` (`studio/invocations/alarm-2`)
+/// publishing its `resolve`, as the session publishes the verbs of the workspace's records; what
+/// its views call is told to the [`Called`].
+pub(crate) fn staged(scenario: &str, asked: &[&str]) -> (Host, Called) {
     let (built, published) = built();
     let host = Host::new(ada(), || None).unwrap();
     for meta in published {
@@ -61,6 +63,21 @@ pub(crate) fn staged(scenario: &str) -> (Host, Called) {
     }
     let called = Called::default();
     host.runtime().set_foreign_invoker(called.clone());
+    let mut published = tilolang_runtime::published::Published::default();
+    for record in asked {
+        published.insert(
+            *record,
+            "resolve",
+            tilolang_runtime::published::PublishedAction {
+                app: "tilo.invocations".to_owned(),
+                // The host's `resolve`, in the order it declares its arguments.
+                params: ["resolution", "choice", "chosen", "typed", "files", "edits"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            },
+        );
+    }
+    host.runtime().set_published_actions(published);
     host.root_of(SHELL).unwrap();
     let action = host
         .package(SHELL)

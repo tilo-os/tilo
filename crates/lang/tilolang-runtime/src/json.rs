@@ -171,6 +171,9 @@ fn encode(registry: &Registry, value: &Value) -> Result<Json, String> {
             Ok(Json::Object(out))
         }
         Value::Json(json) => Ok((**json).clone()),
+        // Who acted, as the runtime writes it everywhere (`{"actor": ..}`), which reading a field
+        // of the `Actor` type takes back.
+        Value::Actor(_) => crate::value::to_json(value),
         // The values the language holds only while it runs, which no document is made of.
         Value::Ref(_) => {
             Err("a resource is not a value JSON writes: write the fields of it you want".to_owned())

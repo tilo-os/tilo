@@ -11,7 +11,7 @@ use crate::shell_staged::{Called, SHELL, ada, staged};
 /// The shell staged as its scenario "a press that needs a yes": Notes' Share, pressed at
 /// (640, 212) in the Notes window, waits for Ada.
 fn shell() -> (Host, Called) {
-    staged("a press that needs a yes")
+    staged("a press that needs a yes", &["studio/invocations/share-1"])
 }
 
 /// The desktop as the shell draws the person's layout.
