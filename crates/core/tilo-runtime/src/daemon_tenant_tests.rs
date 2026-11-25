@@ -116,6 +116,7 @@ fn the_tenants_connection_is_the_persons_unnamed_agent() {
                 answer: Answer::Allow,
                 attended: true,
                 outside: false,
+                answered_in_advance: false,
                 resource: None,
             },
             caller.acting().asker(true),
