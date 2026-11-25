@@ -392,7 +392,9 @@ app keeps a secret of its own with `vault#keep`: the item is tagged with the
 placed app that kept it and a purpose, that app keeps and is released it without
 an ask, and any other app needs an ask or a grant. A tilolang app's placed
 process keeps and releases only what it kept, and its Rust host uses the value
-for it, in a connection or a signature; no tilolang operation returns it. A
+for it, in a connection or a signature; no tilolang operation returns it. A key that is one
+device's identity to an outside service is no vault item: the daemon derives it from
+the device's own key for the placed app and a purpose, and keeps no copy. A
 process several apps share never receives a secret. The process's egress, fixed
 at its launch, is the network its package was granted, which may name every host
 under a domain when the person is shown that domain as such, and a new grant
