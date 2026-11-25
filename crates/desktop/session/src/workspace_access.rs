@@ -502,7 +502,7 @@ fn entry_of(
 fn holder_kind(grantee: &tilo_action_policy::Grantee) -> &'static str {
     use tilo_action_policy::Grantee;
     match grantee {
-        Grantee::Member(tilo_action_policy::MemberId::Agent(_)) => "agent",
+        Grantee::Member(tilo_action_policy::MemberId::Agent { .. }) => "agent",
         Grantee::Member(_) => "person",
         Grantee::App(_) => "app",
         Grantee::Role(_) | Grantee::CustomRole(_) | Grantee::AnyKey => "role",
