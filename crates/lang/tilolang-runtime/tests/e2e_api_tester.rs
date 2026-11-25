@@ -425,7 +425,7 @@ mod cases {
                 .last()
                 .cloned()
                 .expect("a request was sent");
-            let handler = kept.done.clone().expect("the send named its end");
+            let handler = kept.done.expect("the send named its end");
             let call = self.rt.job_call(&handler, &record).unwrap();
             self.rt
                 .invoke_action(&me(), call)

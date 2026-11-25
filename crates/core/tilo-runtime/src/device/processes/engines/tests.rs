@@ -260,15 +260,22 @@ fn a_shared_job_runs_in_the_engine_host_and_is_recorded_as_its_apps() {
         last["done"], asked.handlers["done"],
         "what the app asked to run once it ends is in its record"
     );
-    // The host no longer runs anything, so it idles out like every process here.
+    // The host no longer runs anything, so it idles out like every process here: it is marked
+    // idle just after the job's last record is kept, so the test waits for the mark.
     let host = device.engine_host().expect("the host ran it");
-    assert!(
-        device
-            .processes
-            .running()
-            .values()
-            .any(|process| { process.generation == host && process.idle_since.is_some() })
-    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !device
+        .processes
+        .running()
+        .values()
+        .any(|process| process.generation == host && process.idle_since.is_some())
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the engine host idles once its job ended"
+        );
+        std::thread::yield_now();
+    }
 }
 
 #[test]

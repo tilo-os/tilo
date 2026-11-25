@@ -499,7 +499,6 @@ mod cases {
         rt: Runtime,
         app: App,
         yt: ResourceRef,
-        dispatch: Dispatch,
         bridge: Bridge,
     }
 
@@ -523,14 +522,12 @@ mod cases {
             rt.load_foreign(session.clone()).expect("the session loads");
             let app = App::compile(SOURCE, &[playback.meta().clone(), session]);
             app.load(&rt);
-            let dispatch = Dispatch::new();
-            rt.set_foreign_invoker(dispatch.clone());
+            rt.set_foreign_invoker(Dispatch::new());
             let yt = rt.create_root("YouTube").unwrap();
             Self {
                 rt,
                 app,
                 yt,
-                dispatch,
                 bridge,
             }
         }
