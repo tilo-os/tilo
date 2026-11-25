@@ -26,3 +26,24 @@ pub use layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState
 pub use predict::Predictor;
 pub use swipe::{Candidate, GeometricSwipeModel, SwipeModel, is_swipe};
 pub use touch_model::{KeyOffset, NextKeyDistribution, TouchKey, TouchModel};
+
+/// The app whose engine this is: the on-screen keyboard, which asks these ops and no other's.
+pub const APP: &str = "so.tilo.osk";
+
+/// This crate as the keyboard's engine: every ask of [`service::call`], answered for the app that
+/// draws the keys.
+struct Keyboard;
+
+impl tilolang_tilo::engine::Provider for Keyboard {
+    fn call(&self, op: &str, input: &str) -> Result<String, String> {
+        service::call(op, input)
+    }
+}
+
+/// Register this crate as the keyboard's engine: what a host calls once at its start, before the
+/// keyboard asks. The keyboard itself is the session's own view, so the session's process calls
+/// this; a process that runs the app alone calls it too, as every host registers the engines it
+/// links.
+pub fn register() {
+    tilolang_tilo::engine::register(APP, std::sync::Arc::new(Keyboard));
+}

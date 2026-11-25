@@ -307,6 +307,8 @@ struct Correct {
     word: String,
     language: String,
     layout: String,
+    /// The layout's rows as the app draws them (`"q:1.0,w:1.0,…"`).
+    rows: Vec<String>,
     /// Words the person kept as they typed them: never corrected again.
     kept: Vec<String>,
 }
@@ -317,6 +319,7 @@ impl Default for Correct {
             word: String::new(),
             language: String::new(),
             layout: "qwerty".to_owned(),
+            rows: Vec::new(),
             kept: Vec::new(),
         }
     }
@@ -324,7 +327,7 @@ impl Default for Correct {
 
 fn correct(ask: &Correct) -> String {
     let language = language(&ask.language);
-    let layout = KeyboardLayout::by_name(&ask.layout).unwrap_or_else(KeyboardLayout::qwerty);
+    let layout = asked_layout(&ask.rows, &ask.layout);
     let mut corrector = held(corrector(language));
     corrector.set_adjacency(KeyAdjacency::from_layout(&layout));
     corrector.adopt_kept(&ask.kept);
@@ -339,18 +342,31 @@ struct Accents {
     key: String,
     language: String,
     shift: String,
+    /// The keys the long press may offer, by their base letter: every one of the layout's, so
+    /// one ask answers the whole keyboard it is drawn on.
+    keys: Vec<String>,
 }
 
-/// What a long press offers on `key`: the letter first, then its accented forms cased for the
-/// shift, the ones the typing language uses first.
+/// What a long press offers on each of `keys`: the letter first, then its accented forms cased
+/// for the shift, the ones the typing language uses first.
 fn accents(ask: &Accents) -> String {
     let language = language(&ask.language);
     let usage = dictionary(language).accent_usage();
-    let key = crate::layout::Key::ch(&ask.key);
-    let forms = key.alternates(shift(&ask.shift), |c| {
-        usage.get(&c).copied().unwrap_or_default()
-    });
-    json!({ "forms": forms }).to_string()
+    let asked: Vec<&String> = if ask.keys.is_empty() {
+        vec![&ask.key]
+    } else {
+        ask.keys.iter().collect()
+    };
+    let answered: std::collections::BTreeMap<&str, Vec<String>> = asked
+        .into_iter()
+        .map(|key| {
+            let forms = crate::layout::Key::ch(key).alternates(shift(&ask.shift), |c| {
+                usage.get(&c).copied().unwrap_or_default()
+            });
+            (key.as_str(), forms)
+        })
+        .collect();
+    json!({ "forms": answered }).to_string()
 }
 
 // ---------------------------------------------------------------- emoji
@@ -386,14 +402,21 @@ fn emoji(ask: &Emoji) -> String {
 #[derive(Deserialize)]
 #[serde(default)]
 struct Swipe {
-    /// The finger's path as flat `x, y` pairs in logical pixels of the surface.
+    /// The finger's path as flat `x, y` pairs in the surface's own units, in the same ones as
+    /// `area`.
     path: Vec<f64>,
-    /// The key band the layout fills, `[x0, y0, x1, y1]`.
+    /// The key band the layout fills, `[x0, y0, x1, y1]` in the path's units.
     area: [f64; 4],
+    /// The layout's rows as the app draws them (`"q:1.0,w:1.0,…"`).
+    rows: Vec<String>,
+    /// A built-in layout's name, read where `rows` is empty.
     layout: String,
     language: String,
     shift: String,
     limit: usize,
+    /// Whether the caller already judged the path a swipe: it draws the keys, so it knows the key
+    /// it crossed and the scale it measures by, which the path's own units may not name.
+    judged: bool,
 }
 
 impl Default for Swipe {
@@ -401,16 +424,26 @@ impl Default for Swipe {
         Self {
             path: Vec::new(),
             area: [0.0, 0.0, 0.0, 0.0],
+            rows: Vec::new(),
             layout: "qwerty".to_owned(),
             language: String::new(),
             shift: String::new(),
             limit: 5,
+            judged: false,
         }
     }
 }
 
+/// The layout an ask is about: the app's own rows when it hands them in, else the built-in one
+/// its name picks.
+fn asked_layout(rows: &[String], name: &str) -> KeyboardLayout {
+    crate::layout::from_rows(rows)
+        .or_else(|| KeyboardLayout::by_name(name))
+        .unwrap_or_else(KeyboardLayout::qwerty)
+}
+
 fn swipe(ask: &Swipe) -> String {
-    let layout = KeyboardLayout::by_name(&ask.layout).unwrap_or_else(KeyboardLayout::qwerty);
+    let layout = asked_layout(&ask.rows, &ask.layout);
     let area = Rect::new(ask.area[0], ask.area[1], ask.area[2], ask.area[3]);
     if area.width() <= 0.0 || area.height() <= 0.0 {
         return json!({ "swipe": false, "candidates": [] }).to_string();
@@ -421,7 +454,8 @@ fn swipe(ask: &Swipe) -> String {
         .chunks_exact(2)
         .filter_map(|pair| Some(Point::new(*pair.first()?, *pair.get(1)?)))
         .collect();
-    if path.len() < 2 || !crate::swipe::is_swipe(&path, key_scale(&geom, &layout)) {
+    if path.len() < 2 || (!ask.judged && !crate::swipe::is_swipe(&path, key_scale(&geom, &layout)))
+    {
         return json!({ "swipe": false, "candidates": [] }).to_string();
     }
     let language = language(&ask.language);
@@ -458,11 +492,13 @@ fn key_scale(geom: &[(crate::layout::KeyId, Rect)], layout: &KeyboardLayout) -> 
 #[derive(Deserialize)]
 #[serde(default)]
 struct Touch {
-    /// Where the finger landed, in logical pixels of the surface.
+    /// Where the finger landed, in the surface's own units, in the same ones as `area`.
     point: (f64, f64),
-    /// The key band the layout fills, `[x0, y0, x1, y1]`.
+    /// The key band the layout fills, `[x0, y0, x1, y1]` in the point's units.
     area: (f64, f64, f64, f64),
     layout: String,
+    /// The layout's rows as the app draws them (`"q:1.0,w:1.0,…"`).
+    rows: Vec<String>,
     /// The word before this one, and what of this one is typed: they say which letter comes next.
     previous: String,
     word: String,
@@ -478,6 +514,7 @@ impl Default for Touch {
             point: (0.0, 0.0),
             area: (0.0, 0.0, 0.0, 0.0),
             layout: "qwerty".to_owned(),
+            rows: Vec::new(),
             previous: String::new(),
             word: String::new(),
             language: String::new(),
@@ -489,7 +526,7 @@ impl Default for Touch {
 
 /// The key a finger meant, and what its landing taught this person's tap positions.
 fn touch(ask: &Touch) -> String {
-    let layout = KeyboardLayout::by_name(&ask.layout).unwrap_or_else(KeyboardLayout::qwerty);
+    let layout = asked_layout(&ask.rows, &ask.layout);
     let area = Rect::new(ask.area.0, ask.area.1, ask.area.2, ask.area.3);
     let geom = key_rects(&layout, area, ShiftState::Off);
     let keys: Vec<TouchKey> = geom

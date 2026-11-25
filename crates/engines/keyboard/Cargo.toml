@@ -12,6 +12,7 @@ name = "swipe_eval"
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 tracing.workspace = true
 vello.workspace = true
 swipe = { path = "../swipe" }

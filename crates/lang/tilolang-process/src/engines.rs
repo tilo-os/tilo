@@ -36,6 +36,9 @@ pub fn register_all() {
         tilo_disk_usage::register();
         publisher_engine::register();
         engine::register(API_TESTER_APP, Arc::new(ApiTester));
+        // The on-screen keyboard's work, which it asks by name wherever its view runs: a host
+        // that runs the app alone answers it as the session does.
+        tilo_keyboard_engine::register();
         #[cfg(feature = "app-launch")]
         {
             crate::db_engine::register();

@@ -470,6 +470,41 @@ impl KeyboardLayout {
     }
 }
 
+/// A layout as the app that draws it carries it: each row a comma-separated list of
+/// `label:width`, the keys left to right. The app owns the layouts as data (its keys are its
+/// words and its purposes), and an ask about a finger's path or a tap's neighbour hands them in
+/// this way, so this crate answers about the keys the person saw. `None` for no row, or a row
+/// that names no key.
+#[must_use]
+pub fn from_rows(rows: &[String]) -> Option<KeyboardLayout> {
+    let mut out: Vec<Vec<Key>> = Vec::new();
+    for row in rows {
+        let mut keys = Vec::new();
+        for key in row.split(',') {
+            let key = key.trim();
+            let (label, width) = key.split_once(':').unwrap_or((key, "1"));
+            let (label, width) = (label.trim(), width.trim().parse::<f32>().unwrap_or(1.0));
+            if label.is_empty() || width <= 0.0 {
+                continue;
+            }
+            keys.push(Key {
+                label: label.to_owned(),
+                action: KeyAction::Char(label.to_owned()),
+                width,
+                icon: None,
+            });
+        }
+        if keys.is_empty() {
+            return None;
+        }
+        out.push(keys);
+    }
+    (!out.is_empty()).then(|| KeyboardLayout {
+        name: "carried".to_owned(),
+        rows: out,
+    })
+}
+
 /// Lay `layout` out inside `area`, a rect for every key. Rows split the height
 /// evenly, and a key's width is `(area.width / Σ weights) × weight`, so a layout
 /// fills the width and wide keys scale with it; the caller picks the height.

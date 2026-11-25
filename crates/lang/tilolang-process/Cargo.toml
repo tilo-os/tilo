@@ -119,6 +119,9 @@ tilo-tiles = { version = "0.1.0", path = "../../engines/tilo-tiles", optional = 
 tilo-maps-engine = { version = "0.1.0", path = "../../engines/maps-engine", optional = true }
 # Terminal's device work: the shell a session runs, its grid and the runs it marks.
 tilo-terminal = { version = "0.1.0", path = "../../engines/tilo-terminal", optional = true }
+# The keyboard's own work: the layouts it draws and what a finger meant, answered for the app
+# that draws the keyboard.
+tilo-keyboard-engine = { version = "0.1.0", path = "../../engines/keyboard" }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false, features = ["blocking"] }
 # The mail origin, reaching the connector process the system runs for the app.
 tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }

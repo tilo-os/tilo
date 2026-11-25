@@ -17888,6 +17888,7 @@ dependencies = [
  "tilo-spellcheck",
  "tilo-test-env",
  "tilo-vello",
+ "tilolang-tilo",
  "tracing",
  "workspace-hack",
 ]
@@ -20352,6 +20353,7 @@ dependencies = [
  "tilo-identity",
  "tilo-identity-client",
  "tilo-key-group",
+ "tilo-keyboard-engine",
  "tilo-keyboard-map",
  "tilo-live",
  "tilo-liveness",
@@ -22373,6 +22375,7 @@ dependencies = [
  "tilo-formats",
  "tilo-history",
  "tilo-image-codec",
+ "tilo-keyboard-engine",
  "tilo-maps-engine",
  "tilo-media",
  "tilo-net",
