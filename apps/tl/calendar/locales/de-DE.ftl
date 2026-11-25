@@ -398,12 +398,14 @@ d-wxnfyq2o-p = Wer
 d-obvjd33k = Zum Anfang
     .doc = Erinnert die Gäste, wenn der Termin beginnt.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-obvjd33k-color = Color
 
 d-jxqvsawj = Its calendar's colour
     .doc = Takes an event's own colour off: it is drawn in its calendar's.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-2vx7zp6l = Colour
     .doc = Sets the colour a calendar is drawn in.
@@ -413,6 +415,7 @@ d-2vx7zp6l-color = Color
 d-nlrpnve5 = Categories
     .doc = Sets the categories an event is filed under in its person's words.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-its-person-invites-others-to-that = Zu diesem Termin lädt seine Person andere ein, also ordnet sie ihn selbst ein: Das Einordnen schreibt ihn auf dem Server neu, und das ginge an die Eingeladenen
 
 d-nlrpnve5-categories = Alle
 
@@ -421,6 +424,7 @@ d-se6shkk2 = Time zone
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-a-zone-is-floating-utc-or = A zone is floating, UTC, or a name such as Europe/Berlin
     .w-that-is-not-a-time-zone = That is not a time zone this build knows
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-se6shkk2-zone = Bis
 
@@ -428,29 +432,34 @@ d-yollo4f5 = Add a category
     .doc = Files an event under one more category.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-a-category-is-a-few-words = A category is a few words
+    .w-its-person-invites-others-to-that = Zu diesem Termin lädt seine Person andere ein, also ordnet sie ihn selbst ein: Das Einordnen schreibt ihn auf dem Server neu, und das ginge an die Eingeladenen
 
 d-yollo4f5-category = Category
 
 d-uwnaecvd = Remove a category
     .doc = Takes a category off an event.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-its-person-invites-others-to-that = Zu diesem Termin lädt seine Person andere ein, also ordnet sie ihn selbst ein: Das Einordnen schreibt ihn auf dem Server neu, und das ginge an die Eingeladenen
 
 d-uwnaecvd-category = Category
 
 d-5eqjpk6o = Organiser
     .doc = Makes someone the organiser of an event.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-5eqjpk6o-who = Tag
 
 d-qdqgaukz = Diesen Tag zurückgeben
     .doc = Gibt einen ausgelassenen Termin einer Wiederholung zurück.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-uif2dwsr = Before
     .doc = Reminds them a given number of minutes before it starts.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-a-reminder-is-before-the-start = A reminder is before the start
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-uif2dwsr-minutes = Minutes
 
@@ -458,10 +467,12 @@ d-vjp2n4ek = No reminder
     .doc = Tells nobody, once more.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-it-has-no-reminder = It has no reminder
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-fowc4rav = Repeat
     .doc = Repeats an event, its rule in iCalendar's words, how often, and where it ends.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-fowc4rav-how = Titel
 
@@ -477,6 +488,7 @@ d-q23cd64i = Every week on
     .doc = Repeats an event on chosen days of the week from the day it stands on.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-choose-the-days-it-repeats-on = Choose the days it repeats on
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-q23cd64i-days = Days
 
@@ -484,6 +496,7 @@ d-vk663ftr = An diesem Tag wiederholen
     .doc = Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's `BYDAY`, and the repeat keeps the day it ends on, if it ends on one.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist schreibgeschützt, deshalb wird nichts darin geändert
     .w-an-event-repeats-on-at-least = Ein Termin wiederholt sich an mindestens einem Tag
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-vk663ftr-day = Day
 
@@ -491,17 +504,20 @@ d-e64m52e3 = Does not repeat
     .doc = Stops an event repeating from the day it stands on.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-it-does-not-repeat = It does not repeat
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-yeztwom7 = Skip this date
     .doc = Skips one date of a repeating event.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-it-does-not-repeat = It does not repeat
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-yeztwom7-day = Day
 
 d-ows6cr6i = Restore this date
     .doc = Gives a skipped date of a repeating event back.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-ows6cr6i-day = Day
 
@@ -591,6 +607,7 @@ d-zaeu6beo = Only this event
     .doc = Moves one date of a repeating event: an event of its own stands in its place and the series keeps every other date.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-it-does-not-repeat = It does not repeat
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-zaeu6beo-at = At
 
@@ -602,12 +619,14 @@ d-bd3x7ejn = Cancel this date
     .doc = Cancels one date of a repeating event.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-it-does-not-repeat = It does not repeat
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-bd3x7ejn-at = At
 
 d-25bxqiqq = Restore this date
     .doc = Gives a cancelled or moved date of a series back.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-25bxqiqq-at = At
 
@@ -615,6 +634,7 @@ d-xagcihzh = This and following events
     .doc = Moves a repeating event from one date on: the series ends the day before, and a new one begins where it was moved to, with every date after it.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-it-does-not-repeat = It does not repeat
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-xagcihzh-at = At
 
@@ -653,12 +673,14 @@ d-37r6seh2-name = Bis
 
 d-ael6ndgj = Wiederholen bis
     .doc = Der letzte Tag, bis zu dem er sich wiederholt, als der Tag, den ein Zeitpunkt nennt.
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-ael6ndgj-e = Um
 
 d-awfwvmso = Diesen Termin verwerfen
     .doc = Throws away an event nothing was written in yet: what a person's New event leaves when they decide against it.
     .w-the-event-has-something-in-it = Der Termin enthält bereits etwas
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-awfwvmso-e = E
 
@@ -666,18 +688,21 @@ d-qg4djklq = Move to day
     .doc = Moves an event to a day, keeping the time of day it starts and how long it lasts, and its reminder at the same distance from its start.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-it-is-on-that-day-already = It is on that day already
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-qg4djklq-day = Anzahl
 
 d-ifyhqlkq = Change day
     .doc = Moves an event to the day a moment names, keeping the time of day it starts.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-ifyhqlkq-at = K
 
 d-e7aimj6j = Change start
     .doc = Sets the time of day an event starts, its end keeping how long it lasts.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-e7aimj6j-at = Name
 
@@ -685,12 +710,14 @@ d-4fezz4oa = Change end
     .doc = Sets when an event ends.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-an-event-ends-after-it-starts = An event ends after it starts
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-4fezz4oa-at = At
 
 d-zrdjom25 = Endtag verschieben
     .doc = Beendet einen Termin an dem Tag, den ein Zeitpunkt nennt, und behält dabei die Uhrzeit seines Endes: ein Tag nach seinem Beginn lässt ihn jeden Tag dazwischen dauern, und ein ganztägiger Termin endet um Mitternacht nach seinem letzten Tag, dem Tag, an dem er erscheint.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-zrdjom25-at = Zeitpunkt
 
@@ -698,6 +725,7 @@ d-674w4zdj = Endet am Tag
     .doc = Beendet einen Termin an einem Tag und behält dabei die Uhrzeit seines Endes, wie es „Endtag verschieben“ mit dem Tag tut, den ein Zeitpunkt nennt.
     .w-an-event-does-not-end-before = Ein Termin endet nicht vor seinem Beginn
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-674w4zdj-end_day = Letzter Tag
 
@@ -706,6 +734,7 @@ d-cbhbqh5c = Endet am Tag~present
 d-lbfkyak2 = Repeat
     .doc = Repeats an event every day, week, month or year from the day it stands on, on the days chosen of a week, and no longer on the days it named before.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-lbfkyak2-how = Status
 
@@ -713,12 +742,14 @@ d-z7u3n5xs = How often
     .doc = How often it repeats, in the unit it repeats in: every two weeks is 2.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-it-repeats-at-least-once = It repeats at least once
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-z7u3n5xs-every = G
 
 d-ckl3jlil = Repeat until
     .doc = The last day it repeats by, or none for a series that does not end.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-ckl3jlil-until = G
 
@@ -730,6 +761,7 @@ d-mm3tzg2x-at = At
 d-y5e66bkb = Times
     .doc = How many times it repeats in all, or none for a series that does not end.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-y5e66bkb-count = Count
 
@@ -737,6 +769,7 @@ d-6tammo57 = Calendar
     .doc = Files an event under a calendar the person picks.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-it-is-in-that-calendar-already = It is in that calendar already
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-6tammo57-k = K
 
@@ -744,6 +777,7 @@ d-td6wjjza = Invite
     .doc = Invites someone to an event, by the name and address the person gives.
     .w-that-is-not-an-email-address = That is not an email address
     .w-they-are-coming-already = They are coming already
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-td6wjjza-name = Name
 
@@ -752,6 +786,7 @@ d-td6wjjza-email = Eingetippt
 d-luj3kjit = Male
     .doc = Wiederholt einen Termin so oft, wie die Person eingetippt hat.
     .w-an-answer-is-accepted-declined-or = Eine Antwort ist angenommen, abgelehnt oder vielleicht
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-luj3kjit-g = Eingetippt
 
@@ -767,6 +802,7 @@ d-kscklssi-said = Said
 
 d-gtgyzaen = Remove guest
     .doc = Takes someone off an event's guests: nothing is sent to them.
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
 
 d-gtgyzaen-g = G
 
@@ -826,6 +862,8 @@ d-va2m7dny = Eine Einladung übernehmen
     .doc = Takes an invitation into the calendar: the event it asks for is kept by the account's server where one can be written to it, so the organiser hears the answer, and by this workspace otherwise.
     .w-that-is-not-a-calendar-invitation = Das ist keine Kalendereinladung
     .w-added-to = Added to { $name }
+    .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
+    .w-only-its-sender-changes-or-calls = Nur ihr Absender ändert oder sagt eine Einladung ab, und diese nennt einen anderen
 
 d-va2m7dny-text = Text
 
@@ -1184,3 +1222,7 @@ d-qy4w4m3w = Event page
     .w-from-contacts = Aus den Kontakten
     .w-invite-by-email-address = Invite by email address
 
+
+d-rpmzv4ld = Entfernen~present
+
+d-vajspafs = Ausladen~present

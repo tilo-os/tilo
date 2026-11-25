@@ -316,12 +316,14 @@ action file_event(e: Event, p: Option<Project>) (label: "Project", icon: .folder
 
 /// Sets the colour an event is drawn in.
 action set_event_color(e: Event, color: Color) (icon: .palette, label: "Colour") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     e.color = color_name(color)
 }
 
 /// Takes an event's own colour off: it is drawn in its calendar's.
 action clear_event_color(e: Event) (icon: .x, label: "Its calendar's colour") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     e.color = ""
 }
@@ -333,6 +335,7 @@ action set_calendar_color(k: Calendar, color: Color) (icon: .palette, label: "Co
 
 /// Sets the categories an event is filed under in its person's words.
 action set_categories(e: Event, categories: List<Text>) (label: "Categories", icon: .tag) {
+    require files_for(e, invoker) "Its person invites others to that entry, so its person files it: filing rewrites it on the server, which would write to them"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     for old in e.categories.map(c -> c) {
         e.categories.remove(old)
@@ -345,6 +348,7 @@ action set_categories(e: Event, categories: List<Text>) (label: "Categories", ic
 /// Sets the zone an event's wall times are read in: `Europe/Berlin`, `UTC`, or `floating` for
 /// the same time of day everywhere.
 action set_zone(e: Event, zone: Text) uses time (icon: .globe, label: "Time zone") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require zone.trim() != "" "A zone is floating, UTC, or a name such as Europe/Berlin"
     require Time.from_wall(zone.trim(), "1970-01-01T00:00:00") != .none "That is not a time zone this build knows"
@@ -353,6 +357,7 @@ action set_zone(e: Event, zone: Text) uses time (icon: .globe, label: "Time zone
 
 /// Files an event under one more category.
 action add_category(e: Event, category: Text) (icon: .tag, label: "Add a category") {
+    require files_for(e, invoker) "Its person invites others to that entry, so its person files it: filing rewrites it on the server, which would write to them"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require category.trim() != "" "A category is a few words"
     e.categories.add(category.trim())
@@ -360,24 +365,28 @@ action add_category(e: Event, category: Text) (icon: .tag, label: "Add a categor
 
 /// Takes a category off an event.
 action remove_category(e: Event, category: Text) (icon: .x, label: "Remove a category") {
+    require files_for(e, invoker) "Its person invites others to that entry, so its person files it: filing rewrites it on the server, which would write to them"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     e.categories.remove(category)
 }
 
 /// Makes someone the organiser of an event.
 action organize(e: Event, who: Text) (label: "Organiser", icon: .user) {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     e.organizer = who
 }
 
 /// Reminds the people coming when the event starts.
 action remind_at_start(e: Event) (label: "At the start", icon: .bell, group: "Remind") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     e.remind = starts(e)
 }
 
 /// Reminds them a given number of minutes before it starts.
 action remind_before(e: Event, minutes: Int) (label: "Before", icon: .bell, group: "Remind") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require minutes >= 0 "A reminder is before the start"
     e.remind = starts(e) - Duration(minutes * 60)
@@ -385,6 +394,7 @@ action remind_before(e: Event, minutes: Int) (label: "Before", icon: .bell, grou
 
 /// Tells nobody, once more.
 action remind_off(e: Event) (label: "No reminder", icon: .bell_off, group: "Remind") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require e.remind != Time("1970-01-01T00:00:00Z") "It has no reminder"
     e.remind = Time("1970-01-01T00:00:00Z")
@@ -399,6 +409,7 @@ action repeat_rule(
     until: Option<Date> = .none,
     count: Option<Int> = .none,
 ) (icon: .repeat, label: "Repeat") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     e.repeat = how
     e.recurrence_every = every
@@ -415,6 +426,7 @@ action repeat_rule(
 
 /// Repeats an event on chosen days of the week from the day it stands on.
 action repeat_weekdays(e: Event, days: List<Text>) (icon: .repeat, label: "Every week on") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require not days.is_empty() "Choose the days it repeats on"
     repeat_rule(e, .weekdays, weekdays: days)
@@ -423,6 +435,7 @@ action repeat_weekdays(e: Event, days: List<Text>) (icon: .repeat, label: "Every
 /// Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's `BYDAY`,
 /// and the repeat keeps the day it ends on, if it ends on one.
 action toggle_weekday(e: Event, day: Text) (icon: .repeat, label: "Repeat on this day") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require not e.recurrence_weekdays.contains(day) or e.recurrence_weekdays.len() > 1 "An event repeats on at least one day"
     let kept = e.recurrence_weekdays.filter(d -> d != day)
@@ -433,6 +446,7 @@ action toggle_weekday(e: Event, day: Text) (icon: .repeat, label: "Repeat on thi
 
 /// Stops an event repeating from the day it stands on.
 action repeat_off(e: Event) (icon: .x, label: "Does not repeat") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require e.recurrence != "" "It does not repeat"
     e.recurrence = ""
@@ -447,6 +461,7 @@ action repeat_off(e: Event) (icon: .x, label: "Does not repeat") {
 
 /// Skips one date of a repeating event.
 action skip_date(e: Event, day: Date) (icon: .calendar, label: "Skip this date") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require e.recurrence != "" "It does not repeat"
     e.exdates.add(day.iso())
@@ -454,6 +469,7 @@ action skip_date(e: Event, day: Date) (icon: .calendar, label: "Skip this date")
 
 /// Gives a skipped date of a repeating event back.
 action restore_date(e: Event, day: Date) (icon: .calendar, label: "Restore this date") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     e.exdates.remove(day.iso())
 }
@@ -589,6 +605,7 @@ action move_occurrence(e: Event, at: Time, start: Time, end: Time) uses time (
     icon: .calendar,
     label: "Only this event",
 ) {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require e.recurrence != "" "It does not repeat"
     let zone = zone_of(e)
@@ -628,6 +645,7 @@ action move_occurrence(e: Event, at: Time, start: Time, end: Time) uses time (
 
 /// Cancels one date of a repeating event.
 action cancel_occurrence(e: Event, at: Time) uses time (icon: .x, label: "Cancel this date") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require e.recurrence != "" "It does not repeat"
     let zone = zone_of(e)
@@ -658,6 +676,7 @@ destructive action restore_occurrence(e: Event, at: Time) (
     icon: .undo_2,
     label: "Restore this date",
 ) {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     if let o = apart(e, at) { calendar.events.remove(o) }
 }
@@ -668,6 +687,7 @@ action move_following(e: Event, at: Time, start: Time, end: Time) uses time (
     icon: .arrow_right,
     label: "This and following events",
 ) {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require e.recurrence != "" "It does not repeat"
     let zone = zone_of(e)
@@ -756,6 +776,7 @@ destructive action remove(c: Calendars, e: Event) (
     label: "Delete event",
     key: "Delete",
 ) {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     c.events.remove(e)
 }
 
@@ -765,6 +786,7 @@ destructive action discard_draft(c: Calendars, e: Event) (
     icon: .trash,
     label: "Discard this event",
 ) {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require pristine(e) "The event has something in it"
     c.events.remove(e)
 }
@@ -787,6 +809,7 @@ fn pristine(e: Event) -> Bool {
 /// Moves an event to a day, keeping the time of day it starts and how long it lasts, and its
 /// reminder at the same distance from its start.
 action move_to_day(e: Event, day: Date) uses time (settles: e.day) {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require e.day != day "It is on that day already"
     let zone = zone_of(e)
@@ -802,6 +825,7 @@ action move_to_day(e: Event, day: Date) uses time (settles: e.day) {
 
 /// Moves an event to the day a moment names, keeping the time of day it starts.
 action change_day(e: Event, at: Time) uses time {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     move_to_day(e, at.day())
 }
@@ -809,6 +833,7 @@ action change_day(e: Event, at: Time) uses time {
 /// Sets the time of day an event starts, its end keeping how long it lasts. A day the moment
 /// names is the day it moves to.
 action change_start(e: Event, at: Time) uses time {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     let zone = zone_of(e)
     let length = ends(e) - starts(e)
@@ -824,6 +849,7 @@ action change_start(e: Event, at: Time) uses time {
 
 /// Sets when an event ends.
 action change_end(e: Event, at: Time) uses time {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require at > starts(e) "An event ends after it starts"
     e.end = at.wall(zone_of(e)) ?? e.end
@@ -834,6 +860,7 @@ action change_end(e: Event, at: Time) uses time {
 /// one it starts on makes it run through every day between, and a whole-day event ends at the
 /// midnight after its last day, which is the day it shows on.
 action move_end_day(e: Event, at: Time) uses time {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     end_on_day(e, at.day())
 }
@@ -841,6 +868,7 @@ action move_end_day(e: Event, at: Time) uses time {
 /// Ends an event on a day, keeping the time of day it ends at, as `move_end_day` does with the
 /// day a moment names.
 action end_on_day(e: Event, end_day: Date) uses time (settles: e.end_day) {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require end_day >= (Date.parse(e.start, near: now) ?? today) "An event does not end before it starts"
     let ends_on = if e.all_day { end_day + 1d } else { end_day }
@@ -851,12 +879,14 @@ action end_on_day(e: Event, end_day: Date) uses time (settles: e.end_day) {
 /// Repeats an event every day, week, month or year from the day it stands on, on the days
 /// chosen of a week, and no longer on the days it named before.
 action repeat(e: Event, how: Repeat) (icon: .repeat, label: "Repeat", settles: e.repeat) {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     repeat_rule(e, how)
 }
 
 /// How often it repeats, in the unit it repeats in: every two weeks is 2.
 action repeat_every(e: Event, every: Int) (icon: .repeat, label: "How often") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require every >= 1 "It repeats at least once"
     repeat_rule(e, e.repeat, every: every)
@@ -868,6 +898,7 @@ action repeat_until(e: Event, until: Option<Date>) (
     label: "Repeat until",
     settles: e.recurrence_until,
 ) {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     repeat_rule(e, e.repeat, until: until)
 }
@@ -879,12 +910,14 @@ action repeat_until_at(e: Event, at: Time) uses time (icon: .calendar, label: "R
 
 /// How many times it repeats in all, or none for a series that does not end.
 action repeat_count(e: Event, count: Option<Int>) (icon: .hash, label: "Times") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     repeat_rule(e, e.repeat, count: count)
 }
 
 /// Files an event under a calendar the person picks.
 action file_in(e: Event, k: Calendar) (label: "Calendar", icon: .calendar) {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require e.calendar != .some(k) "It is in that calendar already"
     e.calendar = k
@@ -892,6 +925,7 @@ action file_in(e: Event, k: Calendar) (label: "Calendar", icon: .calendar) {
 
 /// Invites someone to an event, by the name and address the person gives.
 action invite(e: Event, name: Text, email: Text) -> Attendee (icon: .user_plus, label: "Invite") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require email.trim().contains("@") "That is not an email address"
     require not e.attendees.any(g -> g.email == email.trim()) "They are coming already"
     e.attendees.insert(Attendee(name: name.trim(), email: email.trim()))
@@ -899,6 +933,7 @@ action invite(e: Event, name: Text, email: Text) -> Attendee (icon: .user_plus, 
 
 /// Records someone's answer to an invitation: `accepted`, `declined` or `tentative`.
 action answer(e: Event, g: Attendee, status: Text) (icon: .check, label: "Answer") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require status == "accepted" or status == "declined" or status == "tentative" "An answer is accepted, declined or maybe"
     g.status = status
 }
@@ -920,6 +955,7 @@ action answer_and_tell(e: Event, g: Attendee, said: Text) (
 
 /// Takes someone off an event's guests: nothing is sent to them.
 action uninvite(e: Event, g: Attendee) (icon: .x, label: "Remove guest") {
+    require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     e.attendees.remove(g)
 }
 
@@ -1046,6 +1082,84 @@ fn own_guest(e: Event, g: Attendee) -> Bool {
         }
     }
     false
+}
+
+/// Whether `by` may change or take out an entry. A change reaches the entry's server, so an agent
+/// asks its person first; and what the person entered themselves, or an invitation that reached
+/// the calendar another way than through the agent, is theirs to change: an agent changes only
+/// an entry it put in itself, as the entry's history says.
+fn changes_for(e: Event, by: Actor) -> Bool {
+    by.kind() != .agent or created(e)?.who == by
+}
+
+/// Whether `by` may file an entry under categories: filing rewrites the entry whole on its
+/// server, and a server that schedules by itself writes to the people an entry its person
+/// organises invites. So an agent files no entry its person invites others to.
+fn files_for(e: Event, by: Actor) -> Bool {
+    by.kind() != .agent or not invites_others(e)
+}
+
+/// Whether the entry's person invites others to it: it names people, and its organiser is this
+/// workspace or the address its account signs in as.
+fn invites_others(e: Event) -> Bool {
+    if e.attendees.is_empty() {
+        return false
+    }
+    let own = account_address(e)
+    e.organizer == "" or own != "" and e.organizer.lower() == own.lower()
+}
+
+/// The address the account of an entry's calendar signs in as; empty for an entry no account
+/// holds.
+fn account_address(e: Event) -> Text {
+    if let k = e.calendar {
+        if let a = calendar.accounts.find(a -> a.key == k.account) {
+            return a.address
+        }
+    }
+    ""
+}
+
+/// The value of the invitation line `name` in an invitation's text: `UID`, `METHOD`, the address
+/// `ORGANIZER` names. Empty where the text holds none.
+fn invitation_line(text: Text, name: Text) -> Text {
+    let lines = text.split("\n").map(x -> x.trim())
+    let value = field(lines, name)
+    if name == "ORGANIZER" { ics_mailto(value) } else { value }
+}
+
+/// The entry an invitation's text is a version of: the one under its `UID`, if the calendar holds
+/// one.
+fn invitation_held(c: Calendars, text: Text) -> Option<Event> {
+    let uid = invitation_line(text, "UID")
+    if uid == "" { .none } else { c.events.find(e -> e.key == uid) }
+}
+
+/// Whether `by` may take in the invitation `text`: a new one, or a version of an entry it may
+/// change ([`changes_for`]).
+fn invitation_changes_for(c: Calendars, text: Text, by: Actor) -> Bool {
+    if let e = invitation_held(c, text) { changes_for(e, by) } else { true }
+}
+
+/// Whether the invitation `text` comes from the sender of the entry it is a version of, where an
+/// agent hands it over: a person's own word changes what is theirs whoever it names.
+fn invitation_from_sender(c: Calendars, text: Text, by: Actor) -> Bool {
+    if by.kind() != .agent {
+        return true
+    }
+    if let e = invitation_held(c, text) {
+        invitation_line(text, "ORGANIZER").lower() == e.organizer.lower()
+    } else { true }
+}
+
+/// The addresses an invitation's text invites, each once, in its order.
+fn invitation_guests(text: Text) -> List<Text> {
+    text
+        .split("\n")
+        .map(x -> x.trim())
+        .filter(x -> x.starts_with("ATTENDEE"))
+        .map(x -> ics_mailto(x))
+        .filter(x -> x != "")
 }
 
 /// The palette place a colour's name stands for, as a calendar server writes the name.
@@ -1480,12 +1594,36 @@ action export_calendar(c: Calendars, e: Option<Event> = .none) -> File (
 /// Takes an invitation into the calendar: the event it asks for is kept by the account's server
 /// where one can be written to it, so the organiser hears the answer, and by this workspace
 /// otherwise. What the server took comes back with the account's next sync.
-action take_invitation(c: Calendars, text: Text) -> Text (
+action take_invitation(c: Calendars, text: Text) -> Text uses time (
     icon: .calendar,
     label: "Take an invitation in",
+    shows: [(text, .long)],
 ) {
     require text.find("BEGIN:VEVENT") != .none "That is not a calendar invitation"
+    // An agent brings up to date and takes out only an invitation it put in itself, and only
+    // for the sender it came from: the text it hands over is its own writing, and naming the
+    // entry's organiser proves nothing.
+    require invitation_changes_for(c, text, invoker) "That entry is its person's: an agent changes only what it put in itself"
+    require invitation_from_sender(c, text, invoker) "Only its sender changes or calls off an invitation, and this one names another"
+    let uid = invitation_line(text, "UID")
+    let held = invitation_held(c, text)
     if let k = c.calendars.find(k -> k.account != "" and k.writable) {
+        // What is put in for the first time is the invoker's entry from now on, as its history
+        // says: it stands here under its UID until its server's copy of it comes in over it.
+        if held == .none and uid != "" and invitation_line(text, "METHOD") != "CANCEL" {
+            let start = wall_text(invitation_line(text, "DTSTART"))
+            c.events.insert(
+                Event(
+                    key: uid,
+                    title: invitation_line(text, "SUMMARY"),
+                    start: start,
+                    end: start,
+                    organizer: invitation_line(text, "ORGANIZER"),
+                    day: Date.parse(start, near: now) ?? today,
+                    end_day: Date.parse(start, near: now) ?? today,
+                ),
+            )
+        }
         outside("caldav.import", (k.account, k.key, text))
         std.say("Added to {k.name}")
     } else {

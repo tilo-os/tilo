@@ -125,3 +125,9 @@ action recolor_calendar(c: Calendar, color: Text) {
 destructive action remove_event(c: Calendars, e: Event) {
     c.events.remove(e)
 }
+
+/// An invitation taken in, as the Calendar puts it in before the server's copy comes: under its
+/// UID, in no calendar.
+action put_in(c: Calendars, uid: Text, title: Text) -> Event {
+    c.events.insert(Event(key: uid, title: title))
+}

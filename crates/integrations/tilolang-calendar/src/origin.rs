@@ -1459,6 +1459,7 @@ fn write_sync(
     let mut updates: Vec<(String, Entry)> = Vec::new();
     let mut inserts: Vec<Entry> = Vec::new();
     let mut removed: Vec<String> = Vec::new();
+    let mut placeholders: Option<HashMap<String, String>> = None;
     for entry in &sync.entries {
         if waiting(state, pending, &sync.account, &entry.uid) {
             continue;
@@ -1470,6 +1471,8 @@ fn write_sync(
         {
             updates.push((record, entry.clone()));
         } else if let Some(record) = state.record_of(&sync.account, &entry.uid) {
+            updates.push((record, entry.clone()));
+        } else if let Some(record) = taken_in_here(host, state, &mut placeholders, &entry.uid) {
             updates.push((record, entry.clone()));
         } else {
             inserts.push(entry.clone());
@@ -1829,6 +1832,42 @@ fn write_sync(
         state.forget(&record);
     }
     Ok(true)
+}
+
+/// The record an invitation taken in here stands as until its server's copy comes, for the
+/// entry `uid`: a record under that `UID` in no calendar, which no server holds yet. The
+/// Calendar puts it in as whoever took the invitation in, so the entry stays theirs as its
+/// history says, and the server's copy is written over it rather than beside it.
+///
+/// The records are read once a sync first asks, and each is taken once.
+fn taken_in_here(
+    host: &Host,
+    state: &State,
+    placeholders: &mut Option<HashMap<String, String>>,
+    uid: &str,
+) -> Option<String> {
+    if uid.is_empty() {
+        return None;
+    }
+    let held = placeholders.get_or_insert_with(|| {
+        let t = &state.types;
+        let mut held = HashMap::new();
+        for at in try_items(host, &state.root, &t.events_field).unwrap_or_default() {
+            let record = at.id_string();
+            if state.events.contains_key(&record) {
+                continue;
+            }
+            if !matches!(try_read_ref(host, &at, &t.event, "calendar"), Ok(None)) {
+                continue;
+            }
+            let key = try_read_text(host, &at, &t.event, "key").unwrap_or_default();
+            if !key.is_empty() {
+                held.insert(key, record);
+            }
+        }
+        held
+    });
+    held.remove(uid)
 }
 
 /// Whether a write waits for the entry `uid` of `account`.

@@ -280,3 +280,61 @@ fn an_invitation_to_her_goes_in_and_out_and_no_server_writes_of_it() {
         "an invitation put in, brought up to date and taken out",
     );
 }
+
+/// The Calendar puts an invitation in under its UID, in no calendar, as whoever took it in, so
+/// the entry is theirs as its history says. Nothing of that is sent to a server: the
+/// invitation's import is what is stored, and the server's copy, once it comes, is written over
+/// the record that stands for it rather than beside it.
+#[test]
+fn an_invitation_taken_in_here_is_the_record_its_servers_copy_comes_over() {
+    let server = Server::start(ADA, PASSWORD);
+    let mut rig = ada(&server);
+    let _ = server.requests();
+    rig.run(
+        "Calendars",
+        "put_in",
+        None,
+        &[
+            ("uid", serde_json::json!("offsite-9@example.org")),
+            ("title", serde_json::json!("Offsite")),
+        ],
+    );
+    rig.settle();
+    let standing = rig.events();
+    assert_eq!(standing.len(), 1, "it stands in the workspace at once");
+    assert!(
+        server
+            .requests()
+            .iter()
+            .all(|request| request.method != "PUT"),
+        "what stands for the invitation is never sent by itself"
+    );
+
+    take_in(
+        &mut rig,
+        &carried(
+            "REQUEST",
+            &inviting(
+                "offsite-9@example.org",
+                "Offsite",
+                "20261119T140000",
+                "bo@example.test",
+                &[ADA],
+            ),
+        ),
+    )
+    .expect("the server takes the invitation");
+    let held = rig.events();
+    assert_eq!(
+        held, standing,
+        "the server's copy came over the record, not beside it"
+    );
+    let calendar = rig
+        .reference("Event", &held[0], "calendar")
+        .expect("it is in the calendar the server keeps it in");
+    assert_eq!(rig.text("Calendar", &calendar, "name"), "Work");
+    assert_eq!(rig.text("Event", &held[0], "organizer"), "bo@example.test");
+    assert_eq!(rig.attendees(&held[0]).len(), 2, "with the people it names");
+    assert_eq!(server.held("work").len(), 1, "one entry on the server");
+    nobody_was_mailed(&server, "an invitation taken in here");
+}
