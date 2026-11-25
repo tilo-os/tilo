@@ -513,10 +513,22 @@ fn delivered(workspace: &str, action: &str, asked: &str) -> Delivered {
         contract: ActionContract {
             kind: ActionKind::Undoable,
             execution: ExecutionMode::Background { cancellable: true },
+            effects: vec![ActionEffect::new(
+                runtime_collab::approved_checks::PROVIDER,
+                runtime_collab::approved_checks::RESOURCE,
+                runtime_collab::approved_checks::RUN,
+            )],
             ..ActionContract::default()
         },
         identity: identity(),
     }
+}
+
+/// An action of the same kind and contract that declares no effect of the device's.
+fn undeclared(workspace: &str, action: &str, asked: &str) -> Delivered {
+    let mut action = delivered(workspace, action, asked);
+    action.contract.effects.clear();
+    action
 }
 
 /// The app's call to run `check_id` as that invocation's work.
@@ -597,6 +609,50 @@ fn the_devices_check_runs_as_the_delivered_invocations_work_and_answers_its_rece
 }
 
 #[test]
+fn an_action_runs_a_check_only_when_it_declares_the_hosts_effect() {
+    let workspace = uuid::Uuid::new_v4().to_string();
+    let artifacts = tempfile::tempdir().expect("a private artifacts directory");
+    let checks = NativeChecks::over(
+        given(Some(Arc::new(registered(&workspace, artifacts.path())))),
+        Arc::new(Placed {
+            taken: Mutex::default(),
+            refusal: None,
+        }),
+        jobs(),
+    );
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    // A second action of the app's, of the same kind, declares the device's check effect: the
+    // host runs the check as its work, whatever the action is called.
+    let ran = Admits::start(
+        &checks,
+        &Caller::local_system(),
+        &run_call("unit"),
+        &admitted(Some(delivered(&workspace, "another-check", "unit")), &heard),
+    )
+    .expect("a declared effect runs")
+    .wait_timeout(tilo_test_env::hang_bound())
+    .unwrap_or_else(|_| panic!("the check ends"))
+    .expect("the check answers")
+    .expect("the check ran");
+    let receipt: Receipt = serde_json::from_value(ran.value.expect("a receipt")).unwrap();
+    assert_eq!(receipt.check_id, "unit");
+
+    // The same kind without the declaration runs nothing, and the refusal names the action.
+    let Err(refused) = Admits::start(
+        &checks,
+        &Caller::local_system(),
+        &run_call("unit"),
+        &admitted(Some(undeclared(&workspace, "push", "unit")), &heard),
+    ) else {
+        panic!("an action that declares no effect is refused");
+    };
+    assert!(
+        refused.contains("`push`") && refused.contains("declares no"),
+        "the refusal names the action and what it lacks: {refused}"
+    );
+}
+
+#[test]
 fn a_check_call_that_is_not_the_delivered_checks_work_is_refused() {
     let workspace = uuid::Uuid::new_v4().to_string();
     let artifacts = tempfile::tempdir().expect("a private artifacts directory");
@@ -616,7 +672,7 @@ fn a_check_call_that_is_not_the_delivered_checks_work_is_refused() {
         (
             "another action's work",
             run_call("unit"),
-            Some(delivered(&workspace, "push", "unit")),
+            Some(undeclared(&workspace, "push", "unit")),
         ),
         (
             "a check other than the one asked",

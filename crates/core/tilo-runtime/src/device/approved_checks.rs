@@ -32,7 +32,7 @@ use tilo_actions::remote::{
     ResourceCopy, ResourceReads, Serving, reads_answer,
 };
 use tilo_actions::{
-    ActionFailure, ActionOutput, ExecutionLocus, ExecutionMode, OperationKind,
+    ActionEffect, ActionFailure, ActionOutput, ExecutionLocus, ExecutionMode, OperationKind,
     ResourceSemanticIdentity,
 };
 use tilo_lock::MutexRecover as _;
@@ -585,6 +585,15 @@ impl Admits for NativeChecks {
             ));
         }
         let serving = admitted.serving.clone().ok_or(NOT_THE_CHECK)?;
+        // The action qualifies because its contract declares this device's check effect, never
+        // because of its name or kind: what a caller reads of the action says it runs one here.
+        let declared = ActionEffect::new(checks::PROVIDER, checks::RESOURCE, checks::RUN);
+        if !serving.contract().effects.contains(&declared) {
+            return Err(format!(
+                "`{}` runs no approved check: its contract declares no {declared} effect",
+                serving.address().action
+            ));
+        }
         let check_id = asked_check(&*serving, request)?.to_owned();
         serving.recheck()?;
         let identity = serving.resource_identity()?.clone();
