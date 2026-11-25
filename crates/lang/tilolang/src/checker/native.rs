@@ -1603,3 +1603,90 @@ fn mentions_block<'a>(b: &ast::Block, names: &[&'a str]) -> Option<&'a str> {
         }
     })
 }
+
+/// The first call in `e` of one of `names`, an action an app declares: the whole call, so two
+/// controls pressing it can be compared by the arguments they give it. A lambda body counts, read
+/// without the names the lambda binds.
+pub(super) fn action_call<'a>(e: &'a ast::Expr, names: &[&str]) -> Option<&'a ast::Expr> {
+    match &e.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if let ExprKind::Ident(n) = &callee.kind
+                && names.contains(&n.as_str())
+            {
+                return Some(e);
+            }
+            action_call(callee, names)
+                .or_else(|| args.iter().find_map(|a| action_call(&a.value, names)))
+        }
+        ExprKind::Field { base, .. } => action_call(base, names),
+        ExprKind::OptChain { base, args, .. } => action_call(base, names).or_else(|| {
+            args.iter()
+                .flatten()
+                .find_map(|a| action_call(&a.value, names))
+        }),
+        ExprKind::IfLet { binds, then, els } => binds
+            .iter()
+            .find_map(|b| action_call(&b.value, names))
+            .or_else(|| action_call_block(then, names))
+            .or_else(|| els.as_deref().and_then(|x| action_call(x, names))),
+        ExprKind::Unary { operand, .. } | ExprKind::Try(operand) | ExprKind::Suggest(operand) => {
+            action_call(operand, names)
+        }
+        ExprKind::Binary { lhs, rhs, .. } => {
+            action_call(lhs, names).or_else(|| action_call(rhs, names))
+        }
+        ExprKind::Variant { args, .. } => args
+            .as_ref()
+            .and_then(|args| args.iter().find_map(|a| action_call(&a.value, names))),
+        ExprKind::Tuple(items) | ExprKind::List(items) => {
+            items.iter().find_map(|x| action_call(x, names))
+        }
+        ExprKind::If { cond, then, els } => action_call(cond, names)
+            .or_else(|| action_call_block(then, names))
+            .or_else(|| els.as_deref().and_then(|x| action_call(x, names))),
+        ExprKind::Block(b) => action_call_block(b, names),
+        ExprKind::Match { scrutinee, arms } => action_call(scrutinee, names)
+            .or_else(|| arms.iter().find_map(|a| action_call(&a.body, names))),
+        ExprKind::Str(parts) => parts.iter().find_map(|p| match p {
+            ast::StrPart::Interp(x) => action_call(x, names),
+            ast::StrPart::Lit(_) => None,
+        }),
+        ExprKind::Range { lo, hi } => [lo, hi]
+            .into_iter()
+            .flatten()
+            .find_map(|end| action_call(end, names)),
+        ExprKind::Lambda { params, body } => {
+            let own: Vec<&str> = names
+                .iter()
+                .copied()
+                .filter(|n| !params.iter().any(|p| p.name.as_str() == *n))
+                .collect();
+            action_call(body, &own)
+        }
+        ExprKind::Ident(_)
+        | ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Length(..)
+        | ExprKind::Duration(..)
+        | ExprKind::Calendar(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Ref(_)
+        | ExprKind::Root(_) => None,
+    }
+}
+
+fn action_call_block<'a>(b: &'a ast::Block, names: &[&str]) -> Option<&'a ast::Expr> {
+    b.stmts.iter().find_map(|s| match &s.kind {
+        StmtKind::Expr(x) | StmtKind::Let { value: x, .. } => action_call(x, names),
+        StmtKind::Return(x) => x.as_ref().and_then(|x| action_call(x, names)),
+        StmtKind::Assign { value, .. } => action_call(value, names),
+        StmtKind::For { var, iter, body } => {
+            let own: Vec<&str> = names
+                .iter()
+                .copied()
+                .filter(|n| var.name.as_str() != *n)
+                .collect();
+            action_call(iter, names).or_else(|| action_call_block(body, &own))
+        }
+    })
+}

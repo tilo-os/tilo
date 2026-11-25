@@ -303,12 +303,15 @@ pub(crate) struct Expanding {
     pub id: Option<String>,
 }
 
-/// One control's `key:`: the view it stands in, the key, where it is written, the action its press
-/// runs when it runs one, and the branch arms it stands in.
+/// One control's `key:`: the view it stands in, the key, where it is written, the action call its
+/// press runs as it writes it (`copy_element(e)`) when it runs one, and the branch arms it stands
+/// in.
 type ControlKey = (String, String, Span, Option<String>, Vec<(u32, usize)>);
 
-/// One key already seen in a view, with the branch arms it stands in.
-type SeenKey = (String, String, Vec<(u32, usize)>);
+/// One key already seen in a view, with the branch arms it stands in and the action call the
+/// control pressing it runs, when it runs one: two controls pressing one action the same way
+/// share a key.
+type SeenKey = (String, String, Vec<(u32, usize)>, Option<String>);
 
 pub(crate) struct Checker<'a> {
     env: &'a Env,
@@ -907,17 +910,21 @@ impl Checker<'_> {
     }
 
     /// What a control whose `key:` was just read presses: the first action of the app its handler
-    /// names, if any. A control that runs an action shows a command's shortcut, so a key an action
-    /// already answers is its own; a control whose press only sets view state has no such claim,
-    /// and shadowing an action's key is ambiguous.
+    /// calls, with the arguments it gives it, as it writes the call (`copy_element(e)`). A control
+    /// that runs an action shows a command's shortcut, so a key an action already answers is its
+    /// own, and two controls pressing one action the same way share a key: they mean one thing. A
+    /// control whose press only sets view state has no such claim, and shadowing an action's key is
+    /// ambiguous.
     fn key_presses(&mut self, key: &str, span: Span, press: Option<&ast::Expr>) {
         let action = press.and_then(|press| {
-            self.env
+            let names: Vec<&str> = self
+                .env
                 .callables
                 .iter()
                 .filter(|c| c.own && c.kind == CKind::Action)
-                .find(|c| native::mentions(press, &[c.name.as_str()]).is_some())
-                .map(|c| c.name.clone())
+                .map(|c| c.name.as_str())
+                .collect();
+            native::action_call(press, &names).map(crate::print::expr_source)
         });
         if let Some(record) = self
             .control_keys
@@ -928,10 +935,12 @@ impl Checker<'_> {
         }
     }
 
-    /// One key one meaning: two controls of a view cannot answer the same press, and a control whose
-    /// press only sets view state cannot answer one an action of the window already does. A control
-    /// that runs an action shows that command's shortcut, as a menu row does. Reporting it here,
-    /// where every view has been lowered, keeps the check in one place however a view was expanded.
+    /// One key one meaning: two controls of a view cannot answer different presses, and a control
+    /// whose press only sets view state cannot answer one an action of the window already does. Two
+    /// controls pressing one action the same way (`copy_element(e)` on a menu row and on a toolbar
+    /// button) mean one thing, so one key serves them both. A control that runs an action shows that
+    /// command's shortcut, as a menu row does. Reporting it here, where every view has been lowered,
+    /// keeps the check in one place however a view was expanded.
     fn check_shortcuts(&mut self) {
         let action_keys: Vec<(String, String)> = self
             .env
@@ -954,19 +963,23 @@ impl Checker<'_> {
                 );
                 continue;
             }
-            if seen.iter().any(|(held_view, held, held_arms)| {
+            let held = seen.iter().find(|(held_view, held, held_arms, _)| {
                 *held_view == view && *held == key && arms_together(held_arms, &arms)
-            }) {
+            });
+            if let Some((_, _, _, held_press)) = held {
+                if held_press.is_some() && held_press == &presses {
+                    continue;
+                }
                 self.err(
                     "E090",
                     span,
                     format!(
-                        "`{key}` is already a control's key in this view: two controls cannot answer the same press"
+                        "`{key}` is already a control's key in this view: two controls cannot answer different presses on one key"
                     ),
                 );
                 continue;
             }
-            seen.push((view, key, arms));
+            seen.push((view, key, arms, presses));
         }
     }
 

@@ -204,12 +204,49 @@ fn two_views_may_each_answer_the_same_key() {
 
 #[test]
 fn a_navigation_places_key_names_the_place_and_is_no_shortcut() {
-    // `key` of a navigation place is what names it, a word like `all`: no shortcut is read
-    // from it, so it is never refused as one.
-    let view = "view v() {\n    state place: Text = \"all\"\n    ui.NavList(selected: place) {\n        ui.NavItem(\"all\", \"All contacts\") {\n            on select: set(place, \"all\")\n        }\n        ui.NavItem(\"F1\", \"Starred\") {\n            on select: set(place, \"F1\")\n        }\n    }\n}\n";
+    // `key` of a navigation place is what names it, a word like `all` or a path like `/dm/self`:
+    // no shortcut is read from it, so it is never refused as one, by position or by name.
+    let view = "view v() {\n    state place: Text = \"all\"\n    ui.NavList(selected: place) {\n        ui.NavItem(\"all\", \"All contacts\") {\n            on select: set(place, \"all\")\n        }\n        ui.NavItem(\"F1\", \"Starred\") {\n            on select: set(place, \"F1\")\n        }\n        ui.NavItem(key: \"/dm/self\", label: \"Notes to self\") {\n            on select: set(place, \"/dm/self\")\n        }\n        ui.NavItem(key: \"/dm/{place}\", label: \"With {place}\") {\n            on select: set(place, \"/dm/{place}\")\n        }\n    }\n}\n";
     let got = codes(view);
     assert!(
         got.is_empty(),
         "a place's key is its name, not a key: {got:?}"
+    );
+}
+
+#[test]
+fn two_controls_pressing_one_action_the_same_way_share_its_key() {
+    // A context menu's row and the toolbar's button for one command mean one thing, so one key
+    // serves them both, even written in two spellings.
+    let body = format!(
+        "{NOTES}action share(nb: Notebook) {{}}\nview v(nb: Notebook) {{\n    ui.Button(\"Share\", key: \"Ctrl+1\") {{\n        on press: share(nb)\n    }}\n    ui.Button(\"Share from the menu\", key: \"control+1\") {{\n        on press: share(nb)\n    }}\n}}\n"
+    );
+    let got = codes(&body);
+    assert!(got.is_empty(), "one action, one press, one key: {got:?}");
+}
+
+#[test]
+fn two_controls_answering_one_key_for_different_actions_are_refused() {
+    let body = format!(
+        "{NOTES}action share(nb: Notebook) {{}}\naction archive(nb: Notebook) {{}}\nview v(nb: Notebook) {{\n    ui.Button(\"Share\", key: \"Ctrl+1\") {{\n        on press: share(nb)\n    }}\n    ui.Button(\"Archive\", key: \"Ctrl+1\") {{\n        on press: archive(nb)\n    }}\n}}\n"
+    );
+    let got = codes(&body);
+    assert!(
+        got.iter().any(|c| c == "E090"),
+        "two presses, one key: {got:?}"
+    );
+}
+
+#[test]
+fn one_key_is_refused_for_one_action_on_different_values() {
+    // The key answers what the controls press: the same command on another value is another
+    // press.
+    let body = format!(
+        "{NOTES}action rename(nb: Notebook, title: Text) {{}}\nview v(nb: Notebook) {{\n    ui.Button(\"Rename to A\", key: \"Ctrl+1\") {{\n        on press: rename(nb, \"a\")\n    }}\n    ui.Button(\"Rename to B\", key: \"Ctrl+1\") {{\n        on press: rename(nb, \"b\")\n    }}\n}}\n"
+    );
+    let got = codes(&body);
+    assert!(
+        got.iter().any(|c| c == "E090"),
+        "one command on two values is two presses: {got:?}"
     );
 }
