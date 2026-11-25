@@ -198,6 +198,11 @@ address themselves, and
 \`restart server\` and \`restart api\`; an empty value goes back to the stack's
 own relay.
 
+The Lounge's workspace is the stack's own person's: their device founds it,
+settles its entry and places it on the server, which keeps and serves it.
+TILO_SH_ADMISSION=invite (production's, and the default) lists it and admits
+only people it invited; =open admits anyone who asks, as an editor.
+
 A running stack belongs to the checkout that started it: up, down and restart
 from another checkout refuse (TILO_SH_TAKE_OVER=1 takes it over). Give each
 checkout its own TILO_SH_STATE and TILO_SH_PORT_BASE instead.
@@ -680,17 +685,10 @@ server_env() {
     live_published=$through
     iroh_bind=0.0.0.0:$iroh_port
   fi
-  mkdir -p "$state/server/lounge"
-  # The Lounge's workspace, named once here so every start serves the same one:
-  # the server makes it on its first start and keeps it from then on.
-  local id_file=$state/server/lounge/workspace-id
-  if [[ ! -s $id_file ]]; then
-    python3 -c 'import uuid; print(uuid.uuid4())' > "$id_file" \
-      || die 'could not name the Lounge'
-  fi
   # The server configuration, under the state this stack keeps for it: the
   # daemon reads where it binds and is reached from here, so a restart serves
-  # the same addresses.
+  # the same addresses. The Lounge's workspace is not named here: the stack's
+  # own person founds it and places it on the server (lounge_up).
   mkdir -p "$state/server"
   {
     printf 'iroh_listen = "%s"\n' "$iroh_bind"
@@ -700,7 +698,6 @@ server_env() {
     printf 'packet_relay_url = "%s"\n' "${live_published%/}"
     printf 'web_entry = "%s"\n' "$site_origin/"
     printf 'web_listen = "127.0.0.1:%s"\n' "$server_web_port"
-    printf '\n[[kept]]\nid = "%s"\nname = "Lounge"\n' "$(cat "$id_file")"
   } > "$state/server/server.toml"
   local env=("TILO_SERVER_CONFIG=$state/server/server.toml")
   # Not here: the summary model key (no model is asked locally).
@@ -1028,6 +1025,38 @@ lounge_id() {
   cat "$id_file"
 }
 
+# The Lounge's workspace: the stack's own person's, founded on their device with
+# the entry $state/admission names, then placed on the server, which keeps it and
+# serves it. A stack that has one keeps it as its owners left it: a later start
+# settles nothing again. Prints its id.
+lounge_up() {
+  local id_file=$state/server/lounge/workspace-id id admission answer
+  if [[ -s $id_file ]]; then cat "$id_file"; return 0; fi
+  admission=$(cat "$state/admission" 2>/dev/null || echo invite)
+  case $admission in
+    open) ;;
+    invite) ;;
+    *) die "TILO_SH_ADMISSION is open (anyone who asks joins as a guest) or invite (only people it invited), not $admission" ;;
+  esac
+  answer=$(owner_tilo do account/workspaces#create name=Lounge --json) \
+    || die 'the stack'"'"'s person founded no Lounge (stack.sh logs person says why)'
+  id=$(printf '%s' "$answer" \
+    | python3 -c 'import json,sys; made=json.load(sys.stdin)["result"]; print(made["workspace"] if isinstance(made["workspace"], str) else made["workspace"]["workspace"])' 2>/dev/null) \
+    || die "the Lounge's id did not read from the answer: $answer"
+  # The entry is the workspace's own setting, settled by its owner: listed, and
+  # anyone who asks joins at an editor's part, or only people it invited.
+  owner_tilo do workspace#publish default_role=editor description=Lounge \
+    admission="$admission" -w "$id" >/dev/null \
+    || die "the stack's person did not settle the Lounge's entry"
+  # The server keeps it from here: the person's device holds the workspace and
+  # its governance, and the server serves it.
+  owner_tilo do workspace/servers#add host="$(host_info)" -w "$id" >/dev/null \
+    || die "the stack's server did not take the Lounge"
+  mkdir -p "$(dirname "$id_file")"
+  printf '%s\n' "$id" > "$id_file"
+  printf '%s\n' "$id"
+}
+
 # owner [KEY] [--name NAME]: without KEY, an administrator link: opening it
 # in any browser, one with no Tilo identity yet included, makes that person an
 # administrator of the Lounge and lets them in. The Lounge has one owner, the
@@ -1109,9 +1138,7 @@ owner_daemon() {
   [[ ${1-} == --before-person || -s $state/owner/key \
     || -f $state/owner/home/.local/state/tilo/device/login.json ]] \
     || return 0
-  # Only a holder under the person's own folder is theirs: the Lounge server's device holds a
-  # lock of its own under the stack's state too, and is no reason to leave the person without.
-  [[ -z $(people_holders "$state/owner") ]] || return 0
+  [[ -z $(person_holders) ]] || return 0
   runtime=$(dirname "$(find_tilo)")/tilo-runtime
   [[ -x $runtime ]] || die "no tilo-runtime beside $(find_tilo)"
   mkdir -p "$state/logs"
@@ -1121,7 +1148,7 @@ owner_daemon() {
   # pipe), which held the caller reading it for as long as the daemon ran.
   owner_run setsid -f "$runtime" >> "$log" 2>&1 < /dev/null
   for _ in $(seq 1 60); do
-    [[ -z $(people_holders "$state/owner") ]] || return 0
+    [[ -z $(person_holders) ]] || return 0
     sleep 0.5
   done
   die "the person's device did not start (stack.sh logs person, or $log)"
@@ -2239,7 +2266,7 @@ up_native() {
   start_native_server
   wait_server
   local workspace
-  workspace=$(cat "$state/server/lounge/workspace-id") || die 'the server kept no workspace id'
+  workspace=$(lounge_up) || die 'the Lounge was not made'
   say "server ready: the Lounge is $workspace ($((SECONDS - phase))s, $((SECONDS - began))s in)"
   phase=$SECONDS
   start_native_api
@@ -2520,7 +2547,7 @@ up_images() {
   wait_server_up
   wait_for 'tls (the server through Caddy)' "$server_origin/mode" 60
   local workspace
-  workspace=$(cat "$state/server/lounge/workspace-id") || die 'the server kept no workspace id'
+  workspace=$(lounge_up) || die 'the Lounge was not made'
   say "server ready: the Lounge is $workspace ($((SECONDS - began))s)"
 
   # The API server: uid 65532, its state on its own volume.
@@ -2635,14 +2662,22 @@ stop_people_holders() {
   done < /proc/self/mounts
 }
 
-# The processes holding a device's holder.lock under DIR (the stack's state when none is
-# named), one per line.
+# The processes holding a device's holder.lock under the DIRs named (the stack's state when
+# none is), one per line.
 people_holders() {
-  local lock inode dir=${1:-$state}
+  local lock inode
   while IFS= read -r lock; do
     inode=$(stat -c %i "$lock" 2>/dev/null) || continue
     awk -v inode="$inode" '{ split($6, at, ":"); if (at[3] == inode) print $5 }' /proc/locks
-  done < <(find "$dir" -xdev -name holder.lock 2>/dev/null)
+  done < <(find "${@:-$state}" -xdev -name holder.lock 2>/dev/null)
+}
+
+# The processes holding the stack's own person's daemon lock, one per line: the
+# device state under their own home, and never another device of the stack's. The
+# Lounge server's device holds a lock of its own under the stack's state, and is
+# no reason to leave the person without a daemon.
+person_holders() {
+  people_holders "$state/owner/home/.local/state/tilo" "$state/owner/home/.config/tilo"
 }
 
 # host_keeps_no_vault: whether the server of the stack that is up keeps no
