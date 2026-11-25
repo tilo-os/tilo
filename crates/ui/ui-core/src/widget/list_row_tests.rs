@@ -3,7 +3,7 @@ use crate::app::driver::Driver;
 use crate::component::{Bound, Described, Fired, Intent};
 use crate::headless::InspectionNode;
 use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
-use crate::widget::{Column, Element};
+use crate::widget::{Column, Element, RowLeadingShape};
 use std::cell::Cell;
 use std::rc::Rc;
 use vello::Scene;

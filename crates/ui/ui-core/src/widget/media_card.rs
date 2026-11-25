@@ -18,7 +18,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::DrawChild;
 use crate::widget::activation::{Activation, Interaction};
-use crate::widget::{Element, TaffyTreeExt, Widget, card_column_width, card_columns};
+use crate::widget::{Element, MediaAspect, TaffyTreeExt, Widget, card_column_width, card_columns};
 
 /// Where a card stands in its grid, and the cell the grid reads the card the pointer is over
 /// from: what a range of cards is taken by.
@@ -29,38 +29,6 @@ pub struct CardSlot {
     pub hovered: Rc<Cell<Option<usize>>>,
     /// The card's place in the grid, in the order its cards stand.
     pub index: usize,
-}
-
-/// The shape of a card's art.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum MediaAspect {
-    #[default]
-    Square,
-    Wide,
-    Portrait,
-    Ratio(f64),
-    Circle,
-}
-
-// The shapes a component's art takes by name; a photo's own ratio comes from the photo.
-crate::component::choice!(MediaAspect, "MediaAspect", {
-    Square => "square",
-    Wide => "wide",
-    Portrait => "portrait",
-    Circle => "circle",
-});
-
-impl MediaAspect {
-    /// Width over height.
-    #[must_use]
-    pub fn ratio(self) -> f64 {
-        match self {
-            Self::Wide => 16.0 / 9.0,
-            Self::Portrait => 2.0 / 3.0,
-            Self::Ratio(r) if r.is_finite() && r > 0.0 => r,
-            Self::Square | Self::Circle | Self::Ratio(_) => 1.0,
-        }
-    }
 }
 
 /// Paints a card's art into the rect it is given, from theme values.

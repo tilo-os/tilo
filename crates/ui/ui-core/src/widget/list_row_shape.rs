@@ -1,5 +1,5 @@
-//! The geometry of a kind of list row, apart from what it says: what a row on its way
-//! reserves and what its skeleton draws.
+//! What a row of a kind shows and how its skeleton draws it, from the geometry [`RowShape`]
+//! holds: what a row on its way reserves is that geometry's, not what the row says.
 
 use vello::kurbo::{Rect, RoundedRect};
 use vello::peniko::Fill;
@@ -9,79 +9,10 @@ use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::skeleton::{LAST_LINE_SHARE, TITLE_SHARE, paint_bar};
-use crate::widget::{AvatarFace, MediaArt, MediaAspect};
-
-/// What leads a kind of row.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum RowLeadingShape {
-    #[default]
-    None,
-    Mark,
-    Avatar,
-    Tile,
-    Media(MediaAspect),
-}
-
-crate::component::choice!(RowLeadingShape, "RowLeadingShape", {
-    None => "none",
-    Mark => "mark",
-    Avatar => "avatar",
-    Tile => "tile",
-});
-
-/// The geometry of a kind of list row.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RowShape {
-    pub leading: RowLeadingShape,
-    pub title_lines: u8,
-    pub subtitle: bool,
-    pub secondary_lines: u8,
-    pub title_value: bool,
-}
-
-impl Default for RowShape {
-    fn default() -> Self {
-        Self::TITLE
-    }
-}
+use crate::widget::{AvatarFace, MediaArt};
+use crate::widget::{RowLeadingShape, RowShape};
 
 impl RowShape {
-    pub const TITLE: Self = Self {
-        leading: RowLeadingShape::None,
-        title_lines: 1,
-        subtitle: false,
-        secondary_lines: 0,
-        title_value: false,
-    };
-
-    /// This kind with `lines` secondary lines under the title.
-    #[must_use]
-    pub const fn with_secondary(mut self, lines: u8) -> Self {
-        self.secondary_lines = lines;
-        self
-    }
-
-    /// This kind led by `leading`.
-    #[must_use]
-    pub const fn led_by(mut self, leading: RowLeadingShape) -> Self {
-        self.leading = leading;
-        self
-    }
-
-    /// This kind with a subtitle line.
-    #[must_use]
-    pub const fn with_subtitle(mut self) -> Self {
-        self.subtitle = true;
-        self
-    }
-
-    /// This kind with a two-line title.
-    #[must_use]
-    pub const fn two_line_title(mut self) -> Self {
-        self.title_lines = 2;
-        self
-    }
-
     /// A face of this kind that says nothing: the geometry of the row.
     #[must_use]
     pub fn face(&self) -> ListRowFace<'static> {

@@ -1,4 +1,6 @@
-//! The [`Widget`] contract: what one node of a toolkit tree implements.
+//! The [`Widget`] contract: what one node of a toolkit tree implements, with the small
+//! vocabulary its implementors share: lengths and width classes, the scroll axis and its
+//! geometry, tooltip sides, and the shapes a skeleton or a list row stands in with.
 
 use super::{
     AppModel, Disclosing, DrawCtx, Edits, EventCtx, HashMap, Instant, LayoutInfo, ManualPolicy,
@@ -236,6 +238,141 @@ impl PrimaryScrollResult {
                 Self::Changed(r)
             }
         }
+    }
+}
+
+/// The shape of a card's art.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum MediaAspect {
+    #[default]
+    Square,
+    Wide,
+    Portrait,
+    Ratio(f64),
+    Circle,
+}
+
+// The shapes a component's art takes by name; a photo's own ratio comes from the photo.
+crate::component::choice!(MediaAspect, "MediaAspect", {
+    Square => "square",
+    Wide => "wide",
+    Portrait => "portrait",
+    Circle => "circle",
+});
+
+impl MediaAspect {
+    /// Width over height.
+    #[must_use]
+    pub fn ratio(self) -> f64 {
+        match self {
+            Self::Wide => 16.0 / 9.0,
+            Self::Portrait => 2.0 / 3.0,
+            Self::Ratio(r) if r.is_finite() && r > 0.0 => r,
+            Self::Square | Self::Circle | Self::Ratio(_) => 1.0,
+        }
+    }
+}
+
+/// What leads a kind of row.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum RowLeadingShape {
+    #[default]
+    None,
+    Mark,
+    Avatar,
+    Tile,
+    Media(MediaAspect),
+}
+
+crate::component::choice!(RowLeadingShape, "RowLeadingShape", {
+    None => "none",
+    Mark => "mark",
+    Avatar => "avatar",
+    Tile => "tile",
+});
+
+/// The geometry of a kind of list row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowShape {
+    pub leading: RowLeadingShape,
+    pub title_lines: u8,
+    pub subtitle: bool,
+    pub secondary_lines: u8,
+    pub title_value: bool,
+}
+
+impl Default for RowShape {
+    fn default() -> Self {
+        Self::TITLE
+    }
+}
+
+impl RowShape {
+    pub const TITLE: Self = Self {
+        leading: RowLeadingShape::None,
+        title_lines: 1,
+        subtitle: false,
+        secondary_lines: 0,
+        title_value: false,
+    };
+
+    /// This kind with `lines` secondary lines under the title.
+    #[must_use]
+    pub const fn with_secondary(mut self, lines: u8) -> Self {
+        self.secondary_lines = lines;
+        self
+    }
+
+    /// This kind led by `leading`.
+    #[must_use]
+    pub const fn led_by(mut self, leading: RowLeadingShape) -> Self {
+        self.leading = leading;
+        self
+    }
+
+    /// This kind with a subtitle line.
+    #[must_use]
+    pub const fn with_subtitle(mut self) -> Self {
+        self.subtitle = true;
+        self
+    }
+
+    /// This kind with a two-line title.
+    #[must_use]
+    pub const fn two_line_title(mut self) -> Self {
+        self.title_lines = 2;
+        self
+    }
+}
+
+/// What a skeleton stands in for: the geometry of the content that will
+/// replace it, the box a read on its way reserves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SkeletonShape {
+    /// `lines` lines of body text; the last is shorter.
+    Text { lines: u8 },
+    /// A list row of a kind ([`RowShape`]): the list's real row geometry.
+    Row(RowShape),
+    /// A media card's art and its title.
+    Media(MediaAspect),
+    /// A status chip: a pill of a short label's width.
+    Chip,
+    /// A page: the whole space the region is given, its content filling it
+    /// (and scrolling inside it). Lines of body text fill the skeleton.
+    Page,
+    /// A picture of a known height another program draws over it (an app's own card): one
+    /// rounded block of the skeleton's tone, the width it is given.
+    Block { height: f64 },
+    /// Content whose shape is not known (a window that declared none): its
+    /// ground and nothing on it. The placeholder never guesses what will
+    /// stand there.
+    Ground,
+}
+
+impl SkeletonShape {
+    #[must_use]
+    pub fn fills(self) -> bool {
+        matches!(self, Self::Page)
     }
 }
 

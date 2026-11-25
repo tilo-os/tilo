@@ -1526,8 +1526,7 @@ impl AttachedView {
                         .records
                         .with(&checkout.id, |doc| {
                             doc.get_changes(&[]).iter().any(|change| {
-                                change.message() != Some(founding.as_str())
-                                    && !derived_step(change)
+                                change.message() != Some(founding.as_str()) && !derived_step(change)
                             })
                         })
                         .unwrap_or(false)

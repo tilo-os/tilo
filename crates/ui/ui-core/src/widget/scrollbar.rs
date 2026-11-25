@@ -836,6 +836,7 @@ mod tests {
 #[cfg(test)]
 mod primary_region_tests {
     use super::*;
+    use crate::widget::PrimaryScrollAction;
     #[test]
     fn semantic_primary_offsets_are_finite_clamped_and_geometry_owned() {
         let metrics = ScrollMetrics::new(1000.0, 200.0, 96.0);

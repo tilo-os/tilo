@@ -17,14 +17,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::floating_surface::FloatingSurfaceProvider;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::TileContent;
 use crate::widget::{
-    DEFAULT_STRIP_USABLE_PX, EdgeGrab, FloatingSurfaceProvider, HANDLE_SLOT_PX, ResizeHandle,
-    TabDescriptor, TileHost, Widget, WindowGroup, WindowWidth,
+    DEFAULT_STRIP_USABLE_PX, EdgeGrab, HANDLE_SLOT_PX, ResizeHandle, TabDescriptor, TileHost,
+    Widget, WindowGroup, WindowWidth,
 };
 
 #[path = "group_row_edges.rs"]
@@ -3980,7 +3981,7 @@ impl GroupRow {
 
 impl Widget for GroupRow {
     crate::provides!(
-        dyn crate::widget::FloatingSurfaceProvider,
+        dyn crate::floating_surface::FloatingSurfaceProvider,
         #[cfg(feature = "model")]
         dyn crate::widget::presence_topology::CollaborationTopology,
         dyn crate::component_lifecycle::ComponentLifecycle

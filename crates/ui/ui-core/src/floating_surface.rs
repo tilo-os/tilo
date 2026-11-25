@@ -7,6 +7,9 @@
 use vello::kurbo::Affine;
 use vello::kurbo::{Point, Rect, Size, Vec2};
 
+use crate::draw::DrawCtx;
+use crate::widget::{Edits, EventCtx, Widget, capability};
+
 #[cfg(unix)]
 use std::collections::VecDeque;
 #[cfg(unix)]
@@ -1245,6 +1248,243 @@ pub fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
     out
 }
 
+/// Optional capture and detachable-surface capability.
+pub trait FloatingSurfaceProvider {
+    fn on_floating_surface_focus_changed(&mut self, _id: Option<&str>, _focused: bool) {}
+
+    fn on_floating_surface_ime_source_changed(&mut self, _id: Option<&str>) {}
+
+    fn on_floating_surface_event_source(&mut self, _id: Option<&str>) {}
+
+    fn floating_surface_event(
+        &mut self,
+        _id: &str,
+        _event: &crate::winit::event::WindowEvent,
+        _ctx: &mut EventCtx<'_>,
+    ) -> bool {
+        false
+    }
+
+    fn floating_surface_accessibility(&self, _id: &str) -> Option<crate::a11y::AccessNode> {
+        None
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        _id: &str,
+        _target: &str,
+        _action: &crate::a11y::Action,
+        _state: &mut Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> bool {
+        false
+    }
+
+    fn floating_surface_ime(
+        &self,
+        _id: &str,
+    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)> {
+        None
+    }
+
+    fn take_floating_surface_request(&mut self) -> Option<FloatingSurfaceRequest> {
+        None
+    }
+
+    fn take_pip_area_request(&mut self) -> bool {
+        false
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
+        Vec::new()
+    }
+
+    /// Whether the person dragging the body of surface `id` moves its window: a picture an app
+    /// floats goes where they drag it, while a card with controls of its own stays put.
+    fn floating_surface_moves_on_drag(&self, _id: &str) -> bool {
+        false
+    }
+
+    fn draw_floating_surfaces(&mut self, _ctx: &mut DrawCtx<'_>) {}
+
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut DrawCtx<'_>) -> bool {
+        let presentations = self.floating_surface_presentations();
+        if presentations.len() != 1 || presentations[0].id != id {
+            // A plural paint pass cannot select one of several owners safely.
+            // Multi-surface providers must implement the exact-id pass.
+            return false;
+        }
+        self.draw_floating_surfaces(ctx);
+        true
+    }
+
+    fn floating_surface_presentations(&self) -> Vec<FloatingSurfacePresentation> {
+        Vec::new()
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn set_floating_surface_bounds(&mut self, _bounds: vello::kurbo::Rect) {}
+
+    fn on_floating_surface_host_message(&mut self, _message: &FloatingSurfaceHostMessage) {}
+}
+
+/// Ergonomic forwarding API for optional floating-surface capabilities.
+///
+/// This keeps host/container call sites concise while the core [`Widget`]
+/// contract contains only capability accessors.
+pub trait FloatingSurfaceWidgetExt {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool);
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>);
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>);
+    fn floating_surface_event(
+        &mut self,
+        id: &str,
+        event: &crate::winit::event::WindowEvent,
+        ctx: &mut EventCtx<'_>,
+    ) -> bool;
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode>;
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool;
+    fn floating_surface_ime(
+        &self,
+        id: &str,
+    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)>;
+    fn take_floating_surface_request(&mut self) -> Option<FloatingSurfaceRequest>;
+    /// Whether the person asked to pick an area of the screen to float. Consumed.
+    fn take_pip_area_request(&mut self) -> bool;
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)>;
+    fn floating_surface_moves_on_drag(&self, id: &str) -> bool;
+    fn draw_floating_surfaces(&mut self, ctx: &mut DrawCtx<'_>);
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut DrawCtx<'_>) -> bool;
+    fn floating_surface_presentations(&self) -> Vec<FloatingSurfacePresentation>;
+    fn active_floating_surface_ids(&self) -> Vec<String>;
+    fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect);
+    fn on_floating_surface_host_message(&mut self, message: &FloatingSurfaceHostMessage);
+}
+
+impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.on_floating_surface_focus_changed(id, focused);
+        }
+    }
+
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.on_floating_surface_ime_source_changed(id);
+        }
+    }
+
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.on_floating_surface_event_source(id);
+        }
+    }
+
+    fn floating_surface_event(
+        &mut self,
+        id: &str,
+        event: &crate::winit::event::WindowEvent,
+        ctx: &mut EventCtx<'_>,
+    ) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
+            .is_some_and(|provider| provider.floating_surface_event(id, event, ctx))
+    }
+
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+        capability::capability::<dyn FloatingSurfaceProvider>(self)?
+            .floating_surface_accessibility(id)
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self).is_some_and(|provider| {
+            provider.perform_floating_surface_accessibility_action(id, target, action, state, path)
+        })
+    }
+
+    fn floating_surface_ime(
+        &self,
+        id: &str,
+    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)> {
+        capability::capability::<dyn FloatingSurfaceProvider>(self)?.floating_surface_ime(id)
+    }
+
+    fn take_floating_surface_request(&mut self) -> Option<FloatingSurfaceRequest> {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
+            .and_then(FloatingSurfaceProvider::take_floating_surface_request)
+    }
+
+    fn take_pip_area_request(&mut self) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
+            .is_some_and(FloatingSurfaceProvider::take_pip_area_request)
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self).map_or_else(
+            Vec::new,
+            FloatingSurfaceProvider::take_floating_surface_source_updates,
+        )
+    }
+
+    fn floating_surface_moves_on_drag(&self, id: &str) -> bool {
+        capability::capability::<dyn FloatingSurfaceProvider>(self)
+            .is_some_and(|provider| provider.floating_surface_moves_on_drag(id))
+    }
+
+    fn draw_floating_surfaces(&mut self, ctx: &mut DrawCtx<'_>) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.draw_floating_surfaces(ctx);
+        }
+    }
+
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut DrawCtx<'_>) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
+            .is_some_and(|provider| provider.draw_floating_surface(id, ctx))
+    }
+
+    fn floating_surface_presentations(&self) -> Vec<FloatingSurfacePresentation> {
+        capability::capability::<dyn FloatingSurfaceProvider>(self).map_or_else(
+            Vec::new,
+            FloatingSurfaceProvider::floating_surface_presentations,
+        )
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        capability::capability::<dyn FloatingSurfaceProvider>(self).map_or_else(
+            Vec::new,
+            FloatingSurfaceProvider::active_floating_surface_ids,
+        )
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.set_floating_surface_bounds(bounds);
+        }
+    }
+
+    fn on_floating_surface_host_message(&mut self, message: &FloatingSurfaceHostMessage) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.on_floating_surface_host_message(message);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2189,35 +2429,35 @@ mod tests {
             !std::path::Path::new(&format!("/proc/self/task/{tid}")).exists()
         });
     }
-/// A window's process reads the theme the shell sends with the directory its bundle was staged in:
-/// the bundle's set draws, and a directory holding no such bundle leaves the document unread so the
-/// window keeps the theme it has.
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn a_window_loads_the_staged_theme_bundle_the_host_names() {
-    use crate::theme::PresetDesign as _;
-    use crate::tokens::SurfaceRole;
+    /// A window's process reads the theme the shell sends with the directory its bundle was staged in:
+    /// the bundle's set draws, and a directory holding no such bundle leaves the document unread so the
+    /// window keeps the theme it has.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_window_loads_the_staged_theme_bundle_the_host_names() {
+        use crate::theme::PresetDesign as _;
+        use crate::tokens::SurfaceRole;
 
-    const SET: &str = "test.staged-in-a-process";
+        const SET: &str = "test.staged-in-a-process";
 
-    /// A painter module that draws nothing: the bundle needs one file per set it names.
-    fn module() -> Vec<u8> {
-        use std::fmt::Write as _;
+        /// A painter module that draws nothing: the bundle needs one file per set it names.
+        fn module() -> Vec<u8> {
+            use std::fmt::Write as _;
 
-        let params = tilo_theme_sdk::wire::params_answer(&[]);
-        let answer = tilo_theme_sdk::wire::paint_answer(Some(
-            &crate::part_paint::PaintedPart::new(crate::part_paint::PartScene::new()),
-        ));
-        let data = |bytes: &[u8]| {
-            let mut text = String::new();
-            for byte in bytes {
-                let _ = write!(text, "\\{byte:02x}");
-            }
-            text
-        };
-        let params = data(&params);
-        let answer = data(&answer);
-        wat::parse_str(format!(
+            let params = tilo_theme_sdk::wire::params_answer(&[]);
+            let answer = tilo_theme_sdk::wire::paint_answer(Some(
+                &crate::part_paint::PaintedPart::new(crate::part_paint::PartScene::new()),
+            ));
+            let data = |bytes: &[u8]| {
+                let mut text = String::new();
+                for byte in bytes {
+                    let _ = write!(text, "\\{byte:02x}");
+                }
+                text
+            };
+            let params = data(&params);
+            let answer = data(&answer);
+            wat::parse_str(format!(
             r#"(module
                 (memory (export "memory") 2)
                 (data (i32.const 1024) "{params}")
@@ -2231,51 +2471,54 @@ fn a_window_loads_the_staged_theme_bundle_the_host_names() {
             answer_len = answer.len() / 3,
         ))
         .expect("the module reads")
-    }
-
-    let bundle = tempfile::tempdir().expect("a staged bundle");
-    // A compiled store nothing wrote: the set runs on the interpreter.
-    let compiled = tempfile::tempdir().expect("a compiled store");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("TILO_COMPILED_MODULES", compiled.path());
-    let mut document = serde_json::to_value(crate::theme::Preset::Dark.document())
-        .expect("the theme writes");
-    document["material"]["window"] = serde_json::json!({ "painter": SET });
-    std::fs::write(
-        bundle.path().join(crate::theme_bundle::DOCUMENT),
-        serde_json::to_string(&document).expect("the document writes"),
-    )
-    .expect("the document");
-    std::fs::write(bundle.path().join(format!("{SET}.wasm")), module()).expect("the module");
-
-    let message = |theme: serde_json::Value, staged: Option<&std::path::Path>| {
-        FloatingSurfaceHostMessage::Appearance {
-            theme: Some(theme),
-            theme_bundle: staged.map(|dir| dir.display().to_string()),
-            network_status: None,
-            workspace_hue: None,
-            your_colour: None,
-            workspace_sync: None,
-            corner_radius: None,
         }
-    };
-    let theme = message(document.clone(), Some(bundle.path()))
-        .configured_theme()
-        .expect("the host's theme draws");
-    assert_eq!(
-        theme.finish(SurfaceRole::Window).painter(),
-        SET,
-        "the staged bundle's set draws the window"
-    );
 
-    // Nothing staged there: the set is never registered, the document naming it does not read, and
-    // the window keeps the theme it has.
-    let absent = bundle.path().join("not-staged");
-    let mut unregistered = document;
-    unregistered["material"]["window"] = serde_json::json!({ "painter": "test.absent-in-a-process" });
-    assert!(
-        message(unregistered, Some(&absent)).configured_theme().is_none(),
-        "a document naming a set nothing staged is no theme"
-    );
-}
+        let bundle = tempfile::tempdir().expect("a staged bundle");
+        // A compiled store nothing wrote: the set runs on the interpreter.
+        let compiled = tempfile::tempdir().expect("a compiled store");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_COMPILED_MODULES", compiled.path());
+        let mut document =
+            serde_json::to_value(crate::theme::Preset::Dark.document()).expect("the theme writes");
+        document["material"]["window"] = serde_json::json!({ "painter": SET });
+        std::fs::write(
+            bundle.path().join(crate::theme_bundle::DOCUMENT),
+            serde_json::to_string(&document).expect("the document writes"),
+        )
+        .expect("the document");
+        std::fs::write(bundle.path().join(format!("{SET}.wasm")), module()).expect("the module");
+
+        let message = |theme: serde_json::Value, staged: Option<&std::path::Path>| {
+            FloatingSurfaceHostMessage::Appearance {
+                theme: Some(theme),
+                theme_bundle: staged.map(|dir| dir.display().to_string()),
+                network_status: None,
+                workspace_hue: None,
+                your_colour: None,
+                workspace_sync: None,
+                corner_radius: None,
+            }
+        };
+        let theme = message(document.clone(), Some(bundle.path()))
+            .configured_theme()
+            .expect("the host's theme draws");
+        assert_eq!(
+            theme.finish(SurfaceRole::Window).painter(),
+            SET,
+            "the staged bundle's set draws the window"
+        );
+
+        // Nothing staged there: the set is never registered, the document naming it does not read, and
+        // the window keeps the theme it has.
+        let absent = bundle.path().join("not-staged");
+        let mut unregistered = document;
+        unregistered["material"]["window"] =
+            serde_json::json!({ "painter": "test.absent-in-a-process" });
+        assert!(
+            message(unregistered, Some(&absent))
+                .configured_theme()
+                .is_none(),
+            "a document naming a set nothing staged is no theme"
+        );
+    }
 }

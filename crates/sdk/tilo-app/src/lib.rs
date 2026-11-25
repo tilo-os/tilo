@@ -306,6 +306,7 @@ pub mod prelude {
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
     pub use ui_core::arriving::{Arrival, Arriving};
     pub use ui_core::collection_transition::ListModelChange;
+    pub use ui_core::floating_surface::FloatingSurfaceProvider;
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::resource::{
         DOCUMENT_ID_XATTR, DocumentCheckout, DocumentId, ResourceSaveStatus, ResourceType,
@@ -325,11 +326,10 @@ pub mod prelude {
         ActionEmitter, AudiencePresentationProvider, Banner, Button, Card, Checkbox, Collaborative,
         Column, CompleteContentProvider, Container, ContentKind, Continuable, ControlBindingKind,
         ControlBindingMetadata, Dropdown, Element, EmptyState, EventCtx, FilterCount, Filterable,
-        Filtered, FindBar, FindMatch, FindOptions, FindScope, Findable, FloatingSurfaceProvider,
-        FullscreenProvider, ModelView, NativeViewLifecycle, NavItem, NavList, NavMode, NavPane,
-        NavSection, NavShell, NumberInput, QrWidget, Row, Scrollable, SearchField,
-        SearchResultsView, Slider, Spacer, Spinner, Stack, Text, TextInput, Toggle, Widget,
-        labeled_check, labeled_field,
+        Filtered, FindBar, FindMatch, FindOptions, FindScope, Findable, FullscreenProvider,
+        ModelView, NativeViewLifecycle, NavItem, NavList, NavMode, NavPane, NavSection, NavShell,
+        NumberInput, QrWidget, Row, Scrollable, SearchField, SearchResultsView, Slider, Spacer,
+        Spinner, Stack, Text, TextInput, Toggle, Widget, labeled_check, labeled_field,
     };
     pub use ui_core::{
         LatestRequest, LatestTask, LocalState, PresenceCtx, SearchRegistry, State, TextRenderer,

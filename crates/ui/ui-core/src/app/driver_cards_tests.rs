@@ -32,7 +32,7 @@ struct Card {
     asked: bool,
 }
 
-impl crate::widget::FloatingSurfaceProvider for Card {
+impl crate::floating_surface::FloatingSurfaceProvider for Card {
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
@@ -92,7 +92,7 @@ impl crate::widget::FloatingSurfaceProvider for Card {
 }
 
 impl Widget for Card {
-    crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+    crate::provides!(dyn crate::floating_surface::FloatingSurfaceProvider);
 
     fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
 

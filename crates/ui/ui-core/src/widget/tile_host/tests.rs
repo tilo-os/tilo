@@ -266,7 +266,7 @@ impl FloatingSurfaceProvider for FloatingProbe {
 }
 
 impl Widget for FloatingProbe {
-    crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+    crate::provides!(dyn crate::floating_surface::FloatingSurfaceProvider);
 
     fn build_layout(
         &mut self,

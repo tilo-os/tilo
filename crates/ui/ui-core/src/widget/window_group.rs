@@ -1,6 +1,7 @@
 use crate::icons;
 use crate::num::f32_of_f64;
 
+use crate::floating_surface::FloatingSurfaceProvider;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -10,9 +11,7 @@ use crate::widget::edge_resize::{WidthLimits, WindowEdge};
 use crate::widget::tabs::close_fade;
 use crate::widget::window_controls::WindowControl;
 use crate::widget::{AppModel, ModelPath};
-use crate::widget::{
-    FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, TileHost, Widget,
-};
+use crate::widget::{TabBar, TabDescriptor, TileContent, TileHost, Widget};
 use automerge::AutoCommit;
 use std::collections::HashMap;
 use taffy::style_helpers::length;
@@ -2756,7 +2755,7 @@ impl crate::bound_dispatch::BoundWidget for WindowGroup {
 
 impl Widget for WindowGroup {
     crate::provides!(
-        dyn crate::widget::FloatingSurfaceProvider,
+        dyn crate::floating_surface::FloatingSurfaceProvider,
         #[cfg(feature = "model")]
         dyn crate::widget::presence_topology::CollaborationTopology,
         dyn crate::history_mode::capability::FrameworkHistoryTopology,

@@ -19,7 +19,7 @@ use winit::event::WindowEvent;
 
 #[cfg(feature = "model")]
 use crate::bound_dispatch::BoundOwnerMark;
-use crate::widget::FloatingSurfaceWidgetExt;
+use crate::floating_surface::FloatingSurfaceWidgetExt;
 
 /// What the published tree depends on that an event's dispatch can move,
 /// read before the dispatch.

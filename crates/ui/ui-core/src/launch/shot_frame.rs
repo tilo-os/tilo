@@ -10,13 +10,14 @@ use taffy::prelude::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
+use crate::floating_surface::FloatingSurfaceWidgetExt;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::offscreen::OffscreenRenderer;
 #[cfg(feature = "model")]
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
-use crate::widget::{FloatingSurfaceWidgetExt, Widget, WidgetLayoutError};
+use crate::widget::{Widget, WidgetLayoutError};
 use crate::{State, Theme};
 
 /// The document, theme, text renderer and layout tree of one offscreen frame.

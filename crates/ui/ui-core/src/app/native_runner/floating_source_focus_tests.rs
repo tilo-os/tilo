@@ -21,7 +21,7 @@ impl crate::widget::AppWidget for FocusProbe {
     }
 }
 
-impl crate::widget::FloatingSurfaceProvider for FocusProbe {
+impl crate::floating_surface::FloatingSurfaceProvider for FocusProbe {
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
@@ -92,7 +92,7 @@ impl crate::widget::FloatingSurfaceProvider for FocusProbe {
 }
 
 impl Widget for FocusProbe {
-    crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+    crate::provides!(dyn crate::floating_surface::FloatingSurfaceProvider);
 
     fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
 

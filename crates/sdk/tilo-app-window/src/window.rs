@@ -3535,7 +3535,7 @@ fn fullscreen_params_of(root: &dyn Widget) -> Option<ui::fullscreen::FullscreenR
 /// containers nest it: the window answers for its tree and names the app's own picture as the
 /// floating surface's source, so the surface shows the live video where it stands, with the role
 /// a small video above the window has.
-impl ui::widget::FloatingSurfaceProvider for AppWindow {
+impl ui::floating_surface::FloatingSurfaceProvider for AppWindow {
     fn take_floating_surface_request(&mut self) -> Option<FloatingSurfaceRequest> {
         let ask = picture_in_picture_of(self.body.as_ref())?;
         let aspect = ask.aspect;
@@ -3817,10 +3817,10 @@ impl ui::widget::Decorator for AppWindow {
         }
         // Likewise a player's picture-in-picture: the window floats the picture the view asked
         // for, however deeply its containers nest it.
-        if request.wants::<dyn ui::widget::FloatingSurfaceProvider>()
+        if request.wants::<dyn ui::floating_surface::FloatingSurfaceProvider>()
             && picture_in_picture_wanted(self.body.as_ref())
         {
-            request.provide::<dyn ui::widget::FloatingSurfaceProvider>(self);
+            request.provide::<dyn ui::floating_surface::FloatingSurfaceProvider>(self);
             return;
         }
         self.body.provide(request);
@@ -3849,10 +3849,10 @@ impl ui::widget::Decorator for AppWindow {
             request.provide::<dyn ui::widget::FullscreenProvider>(self);
             return;
         }
-        if request.wants::<dyn ui::widget::FloatingSurfaceProvider>()
+        if request.wants::<dyn ui::floating_surface::FloatingSurfaceProvider>()
             && picture_in_picture_wanted(self.body.as_ref())
         {
-            request.provide::<dyn ui::widget::FloatingSurfaceProvider>(self);
+            request.provide::<dyn ui::floating_surface::FloatingSurfaceProvider>(self);
             return;
         }
         self.body.provide_mut(request);

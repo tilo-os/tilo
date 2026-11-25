@@ -12,42 +12,11 @@ use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::{MediaAspect, RowShape, TaffyTreeExt, Widget};
+use crate::widget::{MediaAspect, RowShape, SkeletonShape, TaffyTreeExt, Widget};
 
 #[path = "skeleton_component.rs"]
 mod component;
 pub use component::{SkeletonForm, SkeletonProps};
-
-/// What a skeleton stands in for: the geometry of the content that will
-/// replace it, the box a read on its way reserves.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum SkeletonShape {
-    /// `lines` lines of body text; the last is shorter.
-    Text { lines: u8 },
-    /// A list row of a kind ([`RowShape`]): the list's real row geometry.
-    Row(RowShape),
-    /// A media card's art and its title.
-    Media(MediaAspect),
-    /// A status chip: a pill of a short label's width.
-    Chip,
-    /// A page: the whole space the region is given, its content filling it
-    /// (and scrolling inside it). Lines of body text fill the skeleton.
-    Page,
-    /// A picture of a known height another program draws over it (an app's own card): one
-    /// rounded block of the skeleton's tone, the width it is given.
-    Block { height: f64 },
-    /// Content whose shape is not known (a window that declared none): its
-    /// ground and nothing on it. The placeholder never guesses what will
-    /// stand there.
-    Ground,
-}
-
-impl SkeletonShape {
-    #[must_use]
-    pub fn fills(self) -> bool {
-        matches!(self, Self::Page)
-    }
-}
 
 const PAGE_LINES: u8 = 12;
 

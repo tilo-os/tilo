@@ -2,9 +2,9 @@ mod contract;
 #[cfg(feature = "model")]
 pub use contract::AppActivation;
 pub use contract::{
-    COMPACT_BELOW, EXPANDED_BELOW, FIT_EPS, HYSTERESIS, Length, MEDIUM_BELOW, PAGE_FRACTION,
-    PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollAxis, ScrollMetrics,
-    TooltipSide, Widget, WidthClass,
+    COMPACT_BELOW, EXPANDED_BELOW, FIT_EPS, HYSTERESIS, Length, MEDIUM_BELOW, MediaAspect,
+    PAGE_FRACTION, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, RowLeadingShape,
+    RowShape, ScrollAxis, ScrollMetrics, SkeletonShape, TooltipSide, Widget, WidthClass,
 };
 mod action_directory_identity;
 pub(crate) mod component_walk;
@@ -852,97 +852,6 @@ pub trait NativeViewLifecycle {
     fn native_view_frame_start(&mut self);
 }
 
-/// Optional capture and detachable-surface capability.
-pub trait FloatingSurfaceProvider {
-    fn on_floating_surface_focus_changed(&mut self, _id: Option<&str>, _focused: bool) {}
-
-    fn on_floating_surface_ime_source_changed(&mut self, _id: Option<&str>) {}
-
-    fn on_floating_surface_event_source(&mut self, _id: Option<&str>) {}
-
-    fn floating_surface_event(
-        &mut self,
-        _id: &str,
-        _event: &crate::winit::event::WindowEvent,
-        _ctx: &mut EventCtx<'_>,
-    ) -> bool {
-        false
-    }
-
-    fn floating_surface_accessibility(&self, _id: &str) -> Option<crate::a11y::AccessNode> {
-        None
-    }
-
-    fn perform_floating_surface_accessibility_action(
-        &mut self,
-        _id: &str,
-        _target: &str,
-        _action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &automerge::ObjId,
-    ) -> bool {
-        false
-    }
-
-    fn floating_surface_ime(
-        &self,
-        _id: &str,
-    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)> {
-        None
-    }
-
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        None
-    }
-
-    fn take_pip_area_request(&mut self) -> bool {
-        false
-    }
-
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
-        Vec::new()
-    }
-
-    /// Whether the person dragging the body of surface `id` moves its window: a picture an app
-    /// floats goes where they drag it, while a card with controls of its own stays put.
-    fn floating_surface_moves_on_drag(&self, _id: &str) -> bool {
-        false
-    }
-
-    fn draw_floating_surfaces(&mut self, _ctx: &mut DrawCtx<'_>) {}
-
-    fn draw_floating_surface(&mut self, id: &str, ctx: &mut DrawCtx<'_>) -> bool {
-        let presentations = self.floating_surface_presentations();
-        if presentations.len() != 1 || presentations[0].id != id {
-            // A plural paint pass cannot select one of several owners safely.
-            // Multi-surface providers must implement the exact-id pass.
-            return false;
-        }
-        self.draw_floating_surfaces(ctx);
-        true
-    }
-
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-        Vec::new()
-    }
-
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    fn set_floating_surface_bounds(&mut self, _bounds: vello::kurbo::Rect) {}
-
-    fn on_floating_surface_host_message(
-        &mut self,
-        _message: &crate::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-    }
-}
-
 /// Optional second-output presentation capability for app roots.
 pub trait AudiencePresentationProvider {
     fn audience_presentation_request(
@@ -1295,174 +1204,6 @@ pub(crate) unsafe fn node_sweep_identity(pointer: *const dyn Widget) -> (*const 
     // SAFETY: the caller guarantees a live, unaliased-for-writes widget.
     let concrete = unsafe { (*pointer).concrete_type_name() };
     (pointer.cast::<()>(), concrete)
-}
-
-/// Ergonomic forwarding API for optional floating-surface capabilities.
-///
-/// This keeps host/container call sites concise while the core [`Widget`]
-/// contract contains only capability accessors.
-pub trait FloatingSurfaceWidgetExt {
-    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool);
-    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>);
-    fn on_floating_surface_event_source(&mut self, id: Option<&str>);
-    fn floating_surface_event(
-        &mut self,
-        id: &str,
-        event: &crate::winit::event::WindowEvent,
-        ctx: &mut EventCtx<'_>,
-    ) -> bool;
-    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode>;
-    fn perform_floating_surface_accessibility_action(
-        &mut self,
-        id: &str,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> bool;
-    fn floating_surface_ime(
-        &self,
-        id: &str,
-    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)>;
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<crate::floating_surface::FloatingSurfaceRequest>;
-    /// Whether the person asked to pick an area of the screen to float. Consumed.
-    fn take_pip_area_request(&mut self) -> bool;
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)>;
-    fn floating_surface_moves_on_drag(&self, id: &str) -> bool;
-    fn draw_floating_surfaces(&mut self, ctx: &mut DrawCtx<'_>);
-    fn draw_floating_surface(&mut self, id: &str, ctx: &mut DrawCtx<'_>) -> bool;
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation>;
-    fn active_floating_surface_ids(&self) -> Vec<String>;
-    fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect);
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &crate::floating_surface::FloatingSurfaceHostMessage,
-    );
-}
-
-impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
-    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
-        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
-            provider.on_floating_surface_focus_changed(id, focused);
-        }
-    }
-
-    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
-        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
-            provider.on_floating_surface_ime_source_changed(id);
-        }
-    }
-
-    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
-        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
-            provider.on_floating_surface_event_source(id);
-        }
-    }
-
-    fn floating_surface_event(
-        &mut self,
-        id: &str,
-        event: &crate::winit::event::WindowEvent,
-        ctx: &mut EventCtx<'_>,
-    ) -> bool {
-        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
-            .is_some_and(|provider| provider.floating_surface_event(id, event, ctx))
-    }
-
-    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
-        capability::capability::<dyn FloatingSurfaceProvider>(self)?
-            .floating_surface_accessibility(id)
-    }
-
-    fn perform_floating_surface_accessibility_action(
-        &mut self,
-        id: &str,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> bool {
-        capability::capability_mut::<dyn FloatingSurfaceProvider>(self).is_some_and(|provider| {
-            provider.perform_floating_surface_accessibility_action(id, target, action, state, path)
-        })
-    }
-
-    fn floating_surface_ime(
-        &self,
-        id: &str,
-    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)> {
-        capability::capability::<dyn FloatingSurfaceProvider>(self)?.floating_surface_ime(id)
-    }
-
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
-            .and_then(FloatingSurfaceProvider::take_floating_surface_request)
-    }
-
-    fn take_pip_area_request(&mut self) -> bool {
-        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
-            .is_some_and(FloatingSurfaceProvider::take_pip_area_request)
-    }
-
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
-        capability::capability_mut::<dyn FloatingSurfaceProvider>(self).map_or_else(
-            Vec::new,
-            FloatingSurfaceProvider::take_floating_surface_source_updates,
-        )
-    }
-
-    fn floating_surface_moves_on_drag(&self, id: &str) -> bool {
-        capability::capability::<dyn FloatingSurfaceProvider>(self)
-            .is_some_and(|provider| provider.floating_surface_moves_on_drag(id))
-    }
-
-    fn draw_floating_surfaces(&mut self, ctx: &mut DrawCtx<'_>) {
-        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
-            provider.draw_floating_surfaces(ctx);
-        }
-    }
-
-    fn draw_floating_surface(&mut self, id: &str, ctx: &mut DrawCtx<'_>) -> bool {
-        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
-            .is_some_and(|provider| provider.draw_floating_surface(id, ctx))
-    }
-
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-        capability::capability::<dyn FloatingSurfaceProvider>(self).map_or_else(
-            Vec::new,
-            FloatingSurfaceProvider::floating_surface_presentations,
-        )
-    }
-
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        capability::capability::<dyn FloatingSurfaceProvider>(self).map_or_else(
-            Vec::new,
-            FloatingSurfaceProvider::active_floating_surface_ids,
-        )
-    }
-
-    fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect) {
-        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
-            provider.set_floating_surface_bounds(bounds);
-        }
-    }
-
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &crate::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
-            provider.on_floating_surface_host_message(message);
-        }
-    }
 }
 
 /// Ergonomic host API for optional second-output presentation support.
@@ -2386,8 +2127,8 @@ pub use activation::{Interaction, PaintedTargets, paint_disabled, paint_focus_ri
 pub mod media_card;
 mod media_grid_component;
 pub use media_card::{
-    ArtPainter, MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize,
-    MediaSource, OwnedBadge, justified_rows,
+    ArtPainter, MediaArt, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize, MediaSource,
+    OwnedBadge, justified_rows,
 };
 pub use media_grid_component::{DescribedCards, MediaCardProps, MediaGridProps};
 pub mod capture_button;
@@ -2410,9 +2151,7 @@ pub use drop_zone::{DropZone, DropZoneFace, DropZoneProps};
 pub mod file_open;
 pub use file_open::{FileOpenEvent, FileOpenSurface};
 pub mod skeleton;
-pub use skeleton::{
-    Skeleton, SkeletonFace, SkeletonForm, SkeletonProps, SkeletonShape, skeleton_tone,
-};
+pub use skeleton::{Skeleton, SkeletonFace, SkeletonForm, SkeletonProps, skeleton_tone};
 pub mod backdrop;
 pub use backdrop::{Backdrop, BackdropProps};
 pub mod arrival_failure;
@@ -2433,8 +2172,8 @@ pub use property_list::{
 pub mod list_row;
 pub use list_row::{
     CARD_TITLE_LINES, CardBody, ControlRow, ControlRowProps, ListRow, ListRowFace, ListRowProps,
-    RowAction, RowAuthor, RowLeading, RowLeadingShape, RowShape, RowStatus, RowValue, RowWriter,
-    ShownChange, SwipeAction, SwipeActionProps, badge_column_width, mark_text_inset,
+    RowAction, RowAuthor, RowLeading, RowStatus, RowValue, RowWriter, ShownChange, SwipeAction,
+    SwipeActionProps, badge_column_width, mark_text_inset,
 };
 pub mod toggle_group;
 pub use toggle_group::{
@@ -2460,7 +2199,6 @@ pub use window_well::{Wells, WindowWell, WindowWellProps};
 pub mod window_preview;
 pub use window_preview::{Previews, WindowPreview, WindowPreviewProps};
 pub mod window_frame;
-pub use crate::control_hints::{ControlHints, ControlHintsProps};
 pub use window_frame::{WindowFrame, WindowFrameProps};
 pub mod empty_state;
 pub use empty_state::{

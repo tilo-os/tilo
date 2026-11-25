@@ -10,11 +10,12 @@
 use vello::kurbo::{Point, Rect, Size};
 
 use crate::floating_layer::{Card, Corner, Placement};
+use crate::floating_surface::FloatingSurfaceWidgetExt as _;
 use crate::floating_surface::{
     FloatingSource, FloatingSurfaceHostMessage, FloatingSurfaceRequest, protocol_rect_array,
 };
 use crate::live_activity::{Kind, Summary};
-use crate::widget::{EventCtx, FloatingSurfaceWidgetExt as _, Widget};
+use crate::widget::{EventCtx, Widget};
 use crate::winit::event::{ElementState, WindowEvent};
 
 /// One card an app presents over the shell.
@@ -320,7 +321,7 @@ mod tests {
         up: bool,
     }
 
-    impl crate::widget::FloatingSurfaceProvider for CardSurface {
+    impl crate::floating_surface::FloatingSurfaceProvider for CardSurface {
         fn on_floating_surface_host_message(&mut self, message: &FloatingSurfaceHostMessage) {
             self.told.borrow_mut().push(message.clone());
         }
@@ -339,7 +340,7 @@ mod tests {
     }
 
     impl Widget for CardSurface {
-        crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+        crate::provides!(dyn crate::floating_surface::FloatingSurfaceProvider);
 
         fn build_layout(
             &mut self,

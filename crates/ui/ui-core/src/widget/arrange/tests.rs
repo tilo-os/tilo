@@ -8,6 +8,7 @@ use vello::kurbo::Point;
 use super::*;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
+use crate::widget::Length;
 use crate::widget::{Spacer, Widget};
 
 fn solve(root: &mut dyn Widget, theme: &Theme, width: f32) {

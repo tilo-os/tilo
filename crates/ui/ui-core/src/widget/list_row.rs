@@ -3405,7 +3405,6 @@ mod keys;
 
 #[path = "list_row_shape.rs"]
 mod shape;
-pub use shape::{RowLeadingShape, RowShape};
 
 mod kept;
 use kept::KeptRow;

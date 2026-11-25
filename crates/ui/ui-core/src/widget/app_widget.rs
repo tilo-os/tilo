@@ -316,14 +316,14 @@ fn lent_permissions<'a>(
 mod component_adapter {
     use super::{AppProcessIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
+    use crate::floating_surface::{FloatingSurfaceProvider, FloatingSurfaceWidgetExt};
     use crate::widget::DrawChild;
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
         AudiencePresentationWidgetExt, AutoCommit, CompleteContentProvider,
-        CompleteContentWidgetExt, ControlBindingMetadata, FloatingSurfaceProvider,
-        FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt, HashMap, HashSet,
-        Instant, NodeId, ObjId, PresenceKey, ResourceOperationStart, Scene, TaffyTree,
-        TaffyTreeExt, TextRenderer, Theme, WindowEvent,
+        CompleteContentWidgetExt, ControlBindingMetadata, FullscreenProvider, FullscreenWidgetExt,
+        HashMap, HashSet, Instant, NodeId, ObjId, PresenceKey, ResourceOperationStart, Scene,
+        TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
 
     pub(crate) struct BoundAppWidget {
@@ -983,7 +983,7 @@ mod component_adapter {
             dyn crate::widget::CompleteContentProvider,
             #[cfg(feature = "model")]
             dyn crate::widget::Continuable,
-            dyn crate::widget::FloatingSurfaceProvider,
+            dyn crate::floating_surface::FloatingSurfaceProvider,
             dyn crate::widget::AudiencePresentationProvider,
             #[cfg(feature = "model")]
             dyn crate::widget::presence_topology::Presences,

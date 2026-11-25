@@ -3826,8 +3826,9 @@ fn a_players_picture_in_picture_request_becomes_a_floating_surface() {
             .fill_height()
             .push_part(part(Box::new(asking), Fit::fill(1.0))),
     );
-    let ask = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page)
-        .expect("the player's request reaches the floating surface");
+    let ask =
+        ui::floating_surface::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page)
+            .expect("the player's request reaches the floating surface");
     assert_eq!(
         ask.role,
         ui::floating_surface::FloatingRole::PictureInPicture
@@ -3849,7 +3850,8 @@ fn a_players_picture_in_picture_request_becomes_a_floating_surface() {
         ask.preferred_size
     );
     assert!(
-        ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page).is_none(),
+        ui::floating_surface::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page)
+            .is_none(),
         "one press makes one surface"
     );
 }
@@ -3891,11 +3893,13 @@ fn a_web_views_picture_in_picture_request_becomes_a_floating_surface() {
     // The window asks the page what video it shows; the answer reaches its session, and the
     // next look floats it.
     assert!(
-        ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page).is_none(),
+        ui::floating_surface::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page)
+            .is_none(),
         "the video the page shows is asked for first"
     );
-    let ask = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page)
-        .expect("the page's request reaches the floating surface");
+    let ask =
+        ui::floating_surface::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page)
+            .expect("the page's request reaches the floating surface");
     assert_eq!(
         ask.role,
         ui::floating_surface::FloatingRole::PictureInPicture
@@ -3916,11 +3920,12 @@ fn a_web_views_picture_in_picture_request_becomes_a_floating_surface() {
         ask.aspect_ratio
     );
     assert!(
-        ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page).is_none(),
+        ui::floating_surface::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page)
+            .is_none(),
         "one press makes one surface"
     );
     assert_eq!(
-        ui::widget::FloatingSurfaceWidgetExt::active_floating_surface_ids(&page),
+        ui::floating_surface::FloatingSurfaceWidgetExt::active_floating_surface_ids(&page),
         ["so.tilo.browser:picture-in-picture"],
         "the window keeps the surface while its view floats the picture"
     );
@@ -4219,7 +4224,7 @@ fn a_window_showing_a_protected_view_is_withheld_from_captures() {
 /// scrolls, and stands still when nothing moved.
 #[test]
 fn a_floating_picture_is_drawn_where_the_shell_stands_it_and_follows_its_source() {
-    use ui::widget::FloatingSurfaceWidgetExt as _;
+    use ui::floating_surface::FloatingSurfaceWidgetExt as _;
     let rect = ui::kurbo::Rect::new(0.0, 100.0, 1_000.0, 600.0);
     let (mut video, _session) = page_showing_a_video(rect);
     video.set_pip(true);

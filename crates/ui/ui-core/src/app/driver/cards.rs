@@ -6,7 +6,7 @@
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::widget::FloatingSurfaceWidgetExt as _;
+use crate::floating_surface::FloatingSurfaceWidgetExt as _;
 
 use super::Driver;
 

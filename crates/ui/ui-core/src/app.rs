@@ -1,3 +1,4 @@
+use crate::floating_surface::FloatingSurfaceWidgetExt as _;
 #[cfg(feature = "native")]
 use crate::gpu::RenderContext;
 #[cfg(feature = "native")]
@@ -8,7 +9,6 @@ use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
 use crate::render_thread::{FrameOutcome, RenderRequest};
 #[cfg(feature = "native")]
 use crate::widget::AudiencePresentationWidgetExt as _;
-use crate::widget::FloatingSurfaceWidgetExt as _;
 #[cfg(feature = "native")]
 use crate::widget::FullscreenWidgetExt as _;
 #[cfg(feature = "native")]

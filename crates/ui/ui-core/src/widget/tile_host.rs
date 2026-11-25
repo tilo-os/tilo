@@ -1,4 +1,5 @@
 use crate::bound_dispatch::BoundWidget;
+use crate::floating_surface::{FloatingSurfaceProvider, FloatingSurfaceWidgetExt};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -7,8 +8,7 @@ use crate::widget::app_widget::{AppKind, AppWidget};
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     AudiencePresentationProvider, AudiencePresentationWidgetExt, CompleteContentWidgetExt as _,
-    FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt,
-    Widget,
+    FullscreenProvider, FullscreenWidgetExt, Widget,
 };
 use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, VecDeque};
@@ -1496,7 +1496,7 @@ impl Widget for TileHost {
         dyn crate::widget::FullscreenProvider,
         #[cfg(feature = "model")]
         dyn crate::widget::Continuable,
-        dyn crate::widget::FloatingSurfaceProvider,
+        dyn crate::floating_surface::FloatingSurfaceProvider,
         dyn crate::widget::AudiencePresentationProvider,
         #[cfg(feature = "model")]
         dyn crate::widget::presence_topology::CollaborationTopology,
