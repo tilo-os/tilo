@@ -107,10 +107,18 @@ impl Stores for Workspaces {
 /// Settings over fresh [`Workspaces`], installed as this process's source.
 #[must_use]
 pub fn installed() -> (Arc<WorkspaceSettings>, Arc<Workspaces>) {
+    let (settings, workspaces) = attached();
+    settings_store::install_source(Some(Arc::clone(&settings) as Arc<dyn SettingsSource>));
+    (settings, workspaces)
+}
+
+/// Settings over fresh [`Workspaces`], kept as the session keeps the person's: what a test host
+/// gives a profile of its own ([`settings_store::keep_profile`]).
+#[must_use]
+pub fn attached() -> (Arc<WorkspaceSettings>, Arc<Workspaces>) {
     let workspaces = Workspaces::new();
     let settings = Arc::new(WorkspaceSettings::new());
     settings.attach(Arc::clone(&workspaces) as Arc<dyn Stores>);
-    settings_store::install_source(Some(Arc::clone(&settings) as Arc<dyn SettingsSource>));
     (settings, workspaces)
 }
 
@@ -118,7 +126,5 @@ pub fn installed() -> (Arc<WorkspaceSettings>, Arc<Workspaces>) {
 /// test sees.
 #[must_use]
 pub fn scoped() -> SourceScope {
-    let settings = Arc::new(WorkspaceSettings::new());
-    settings.attach(Workspaces::new());
-    settings_store::scoped_source(Some(settings))
+    settings_store::scoped_source(Some(attached().0))
 }

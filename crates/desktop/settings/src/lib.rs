@@ -200,6 +200,36 @@ pub fn profile(root: &Path) -> Arc<HostDocument> {
     document
 }
 
+/// Keep the settings of the profile at `root` in what `source` makes, in place of its own
+/// document ([`profile`]), unless something keeps them already: what a host that keeps a
+/// person's settings as resources of a workspace gives the profile it opens a window on, so they
+/// are kept, stepped and read back as that host keeps the person's, and a later window on the
+/// profile finds what an earlier one set.
+pub fn keep_profile(root: &Path, source: impl FnOnce() -> Arc<dyn SettingsSource>) {
+    let mut kept = KEPT_PROFILES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !kept.iter().any(|(held, _)| held == root) {
+        kept.push((root.to_owned(), source()));
+    }
+}
+
+/// The settings of the profile at `root`: what a host gave it to keep them ([`keep_profile`]),
+/// else its own document ([`profile`]).
+#[must_use]
+pub fn profile_source(root: &Path) -> Arc<dyn SettingsSource> {
+    let kept = KEPT_PROFILES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(held, _)| held == root)
+        .map(|(_, source)| Arc::clone(source));
+    kept.unwrap_or_else(|| profile(root))
+}
+
+static KEPT_PROFILES: std::sync::Mutex<Vec<(PathBuf, Arc<dyn SettingsSource>)>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// The file a [`profile`] is kept in, below its root.
 const PROFILE_FILE: &str = "settings.json";
 

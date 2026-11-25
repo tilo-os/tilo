@@ -306,6 +306,8 @@ tilo_test_env::scenario! {
     phase a_section_is_published_and_changed_without_a_window;
     {
         let _home = tilo_test_env::TestHome::new().unwrap();
+        // The session that holds the sections keeps the person's settings in their workspace.
+        let _session = settings_sections::in_memory::scoped();
         let stored = || {
             tilo_app::storage::Settings::<Lock>::for_app(LockApp::ID)
                 .get()

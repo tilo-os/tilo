@@ -127,11 +127,18 @@ pub trait SettingsSource: Send + Sync {
     }
 
     /// Take back (`undo`) or bring back the last step any of `invokers` (actors, as a change
-    /// names them) took on section `section`. Whether there was one.
+    /// names them) took on section `section`, of the app `app` where the section keeps each
+    /// app's preferences apart. Whether there was one.
     ///
     /// # Errors
     /// The settings' history is not kept here, or the step was refused.
-    fn step(&self, _section: &str, _undo: bool, _invokers: &[String]) -> std::io::Result<bool> {
+    fn step(
+        &self,
+        _section: &str,
+        _app: Option<&str>,
+        _undo: bool,
+        _invokers: &[String],
+    ) -> std::io::Result<bool> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "the settings' history is kept by the session",
@@ -219,7 +226,13 @@ shared_source! {
         sections: Vec<(String, Map<String, Value>)>,
         origin: &ChangeOrigin,
     ) -> std::io::Result<ConditionalUpdate>;
-    fn step(&self, section: &str, undo: bool, invokers: &[String]) -> std::io::Result<bool>;
+    fn step(
+        &self,
+        section: &str,
+        app: Option<&str>,
+        undo: bool,
+        invokers: &[String],
+    ) -> std::io::Result<bool>;
     fn stamps(&self, section: &str) -> std::io::Result<Vec<tilo_actions::stamp::Stamp>>;
     fn flush_pending(&self);
     fn take_deferred_failures(&self) -> Vec<DeferredFailure>;

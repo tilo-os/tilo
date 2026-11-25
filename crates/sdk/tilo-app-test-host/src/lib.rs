@@ -6,6 +6,9 @@
 //! shown) are decided by its host, with the broker's ordinary check in the workspace holding the
 //! record. [`TestApp`] answers them as that host does, so a test drives those controls as a
 //! person would.
+//!
+//! The person's settings are kept as the session keeps them, as resources of their workspace
+//! (here in memory), so what a window sets is stepped back and forth from that history.
 
 use tilo_app::framework::testing::{HeadlessApp, Host};
 use tilo_app::framework::{ResourceApp, testing::check_scenarios_reach_every_action};
@@ -23,6 +26,10 @@ pub type TestApp<A> = HeadlessApp<A, Broker>;
 pub struct Broker;
 
 impl Host for Broker {
+    fn keeps_settings(root: &std::path::Path) {
+        settings_store::keep_profile(root, || settings_sections::in_memory::attached().0);
+    }
+
     fn opened(driver: &mut Driver, author: &str) {
         let actor = tilo_broker_core::BrokerActor::person(author);
         let own = workspace_of_person(author).and_then(|id| {

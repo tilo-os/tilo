@@ -286,7 +286,7 @@ impl Served {
                 // step is no failure.
                 for section in [SETTINGS_SECTION, HOSTED_SECTION] {
                     document
-                        .step(section, undo, std::slice::from_ref(&actor))
+                        .step(section, None, undo, std::slice::from_ref(&actor))
                         .map_err(|error| ApiError::Failed(error.to_string()))?;
                 }
                 Ok(())

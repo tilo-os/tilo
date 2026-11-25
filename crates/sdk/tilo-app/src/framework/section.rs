@@ -232,8 +232,10 @@ impl SectionKind {
                     }),
             )
             .collect();
+        let app =
+            ui_core::settings_placement::per_app(self.section).then_some(self.app_id.as_str());
         self.document
-            .step(self.section, undo, &invokers)
+            .step(self.section, app, undo, &invokers)
             .map_err(|error| error.to_string())
     }
 }
