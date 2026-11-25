@@ -49,6 +49,49 @@ pub static KEYS: std::sync::LazyLock<key_group::ContentKeys> = std::sync::LazyLo
     tilo_peer_state::sealed_records::members_keys("00000000-0000-4000-8000-000000000001")
 });
 
+/// `mutation` of `record` of `app` in `workspace`, sealed under [`KEYS`] and signed by `key` as
+/// its `seq`th write, naming `surface`: the write a device signs without its own copy checking
+/// it, as a forger or a misbehaving device sends one.
+pub fn signed_by_hand(
+    key: &SigningKey,
+    (workspace, app, record): (&str, &str, &str),
+    mutation: &collab_types::DocumentMutation,
+    seq: u64,
+    surface: Option<[u8; 32]>,
+) -> neighbour_wire::NeighbourMsg {
+    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+    let artifact = collab_types::document_artifact_id(app, workspace, record);
+    let plaintext = mutation.encode().unwrap();
+    let retention = collab_types::ContentRetention::of_frame(&plaintext);
+    let (encryption, mut payload) = KEYS.seal_content(artifact, retention, &plaintext).unwrap();
+    // A whole record is a checkpoint, which names the writes it holds: none, of a record it starts.
+    if retention == collab_types::ContentRetention::Checkpoint {
+        payload = collab_types::SealedCheckpoint::new([], payload)
+            .encode()
+            .unwrap();
+    }
+    let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
+        payload,
+        artifact,
+        author,
+        collab_types::document_attestation_id(app, workspace, record),
+        collab_types::OpKind::Change,
+        std::time::SystemTime::now(),
+        seq,
+        encryption,
+    )
+    .with_surface(surface);
+    collab_types::sign_op(&mut op, key).unwrap();
+    neighbour_wire::NeighbourMsg::AppDocument {
+        peer: tilo_peer_state::peer_handle(author.as_bytes()),
+        app_id: app.into(),
+        cluster_id: workspace.into(),
+        document_id: record.into(),
+        envelope: Box::new(op),
+        readers: None,
+    }
+}
+
 /// A "user" (root keypair) + on-disk identity root usable by the
 /// tests.
 pub struct TestUser {

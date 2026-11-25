@@ -1900,36 +1900,8 @@ fn forged_in(
         Some(_) => collab_types::DocumentMutation::Incremental(document.save_after(&heads)),
         None => collab_types::DocumentMutation::Snapshot(document.save()),
     };
-    let author = collab_types::Ed25519PublicKey::from_bytes(device.device_pubkey());
-    let artifact = collab_types::document_artifact_id(app, &workspace, record);
-    let plaintext = mutation.encode().unwrap();
-    let (encryption, payload) = crate::common::KEYS
-        .seal_content(
-            artifact,
-            collab_types::ContentRetention::of_frame(&plaintext),
-            &plaintext,
-        )
-        .unwrap();
     // The device's first write: it wrote nothing before it was placed.
-    let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
-        payload,
-        artifact,
-        author,
-        collab_types::document_attestation_id(app, &workspace, record),
-        collab_types::OpKind::Change,
-        std::time::SystemTime::now(),
-        1,
-        encryption,
-    );
-    collab_types::sign_op(&mut op, &device.sk).unwrap();
-    neighbour_wire::NeighbourMsg::AppDocument {
-        peer: tilo_peer_state::peer_handle(author.as_bytes()),
-        app_id: app.into(),
-        cluster_id: workspace,
-        document_id: record.into(),
-        envelope: Box::new(op),
-        readers: None,
-    }
+    crate::common::signed_by_hand(&device.sk, (&workspace, app, record), &mutation, 1, None)
 }
 
 /// The hello a device opens each link with: its certificate.

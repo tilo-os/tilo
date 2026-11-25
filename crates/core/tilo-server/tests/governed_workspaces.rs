@@ -702,35 +702,8 @@ params = []
     // Signed as Bob's device signs, without his own copy checking it.
     let sign = |doc: &mut AutoCommit, seq: u64| {
         let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&[]));
-        let author = collab_types::Ed25519PublicKey::from_bytes(phone.device_pubkey());
-        let artifact = collab_types::document_artifact_id(APP, &workspace.workspace, "");
-        let (encryption, payload) = KEYS
-            .seal_content(
-                artifact,
-                collab_types::ContentRetention::Delta,
-                &mutation.encode().unwrap(),
-            )
-            .unwrap();
-        let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
-            payload,
-            artifact,
-            author,
-            collab_types::document_attestation_id(APP, &workspace.workspace, ""),
-            collab_types::OpKind::Change,
-            SystemTime::now(),
-            seq,
-            encryption,
-        )
-        .with_surface(Some(hash));
-        collab_types::sign_op(&mut op, &phone.sk).unwrap();
-        NeighbourMsg::AppDocument {
-            peer: tilo_peer_state::peer_handle(author.as_bytes()),
-            app_id: APP.into(),
-            cluster_id: workspace.workspace.clone(),
-            document_id: String::new(),
-            envelope: Box::new(op),
-            readers: None,
-        }
+        let route = (workspace.workspace.as_str(), APP, "");
+        crate::common::signed_by_hand(&phone.sk, route, &mutation, seq, Some(hash))
     };
     // An edit of the topic: published by the app, not granted to a commenter.
     let mut doc = AutoCommit::new();
