@@ -76,8 +76,9 @@ RUN set -eu; \
 #
 #   session          hosted-guest.sh session: /usr as the session's
 #                    components install it (os/components.toml)
-#   compiled         os/image/compile.sh's tree: the thin-app runtime, Browser's
-#                    binary and the packing tools
+#   compiled         os/image/compile.sh's tree: the shared runtime, the tilolang
+#                    compiler and runtime, the image's app plan, the apps/tl
+#                    sources and the packing tools
 #   chromium-engine  os-chromium-<arch>: the pinned CEF build
 FROM guest-base AS browser-payload
 ARG CHROMIUM_RUNTIME_VERSION
@@ -109,13 +110,15 @@ COPY --from=chromium-engine / /run/tilo-chromium/
 # launcher mounts into an app's sandbox) come with the compiled tree, which
 # prepared them (os/image/compile.sh).
 RUN test -s /out/fonts/manifest.toml
-# The shared runtime bundle the thin apps link: this build's own, signed here
-# and trusted by the guest's own publisher list (below). It carries the native
-# closure of the runtime, Browser and the runtime's engines, resolved from this
-# stage's root filesystem, so the guest needs none of those libraries itself.
+# The shared runtime bundle: this build's own, signed here and trusted by the
+# guest's own publisher list (below). It carries the native closure of the
+# runtime, its engines and `tilolang-process`, resolved from this stage's root
+# filesystem, so the guest needs none of those libraries itself. The tilolang
+# runtime bundle Browser executes is baked beside it, signed by the same key,
+# exactly as the desktop image bakes it (tools/apps/tilolang_packages.sh).
 RUN set -eu; \
     python3 /build/os/scripts/collect-runtime-dependencies.py --library-dir /out \
-        /out/libruntime_dylib.so \
+        /out/libruntime_dylib.so /out/thin-apps/tilolang-process \
         $(sed "s|^|/out/|" /out/runtime-engines) > /tmp/dependencies; \
     libstd="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)"; \
     test -n "$libstd"; \
@@ -130,7 +133,14 @@ RUN set -eu; \
     /out/tilo-runtime-bundle verify "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)"; \
     bash /build/os/scripts/verify-runtime-bundle-closure.sh \
-        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)"; \
+        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/thin-apps/tilolang-process; \
+    . /build/tools/apps/tilolang_packages.sh; \
+    tilolang_version="$(tilolang_runtime_version /out)"; \
+    tilolang_bake_runtime /out/tilo-runtime-bundle /out/thin-apps/tilolang-process \
+        /out/tilolang-std /out /tmp/runtime-identity.json \
+        "/usr/lib/tilo-runtime/$tilolang_version" "$tilolang_version"; \
+    /out/tilo-runtime-bundle verify "/usr/lib/tilo-runtime/$tilolang_version" \
+        --require-publisher "$(cat /out/runtime-bundle-publisher.hex)"; \
     rm -f /tmp/runtime-identity.json
 # The Chromium engine's own runtime bundle, signed here too: Browser's manifest
 # lists it in `[package].optional-runtimes`, so the launcher mounts it into the
@@ -154,16 +164,36 @@ RUN set -eu; \
         --require-publisher "$(cat /out/browser-runtime-publisher.hex)"; \
     test -x "/usr/lib/tilo-runtime/$CHROMIUM_RUNTIME_VERSION/lib/chromium/tilo-chromium-host"; \
     rm -f /tmp/engine-identity.json
-# Browser, packed and installed the way a device installs an app: `tilo-app-package
-# pack` then `tilo-install install`, into the image-wide store, described by the
-# same registry rows a person's own package gets. The store is written at the
-# path it occupies on the booted guest (`tilo-install` records absolute payload
-# paths), and its trees get the signed records a read-only store is verified
-# against.
+# The tilolang compiler and its standard library's compiler are host tools
+# of this stage alone, linked against the desktop libraries the toolkit uses
+# (PipeWire among them): the packages that provide whatever they load are
+# installed here, by the library's name, so a library the compiler gains is
+# installed with it rather than failing the packing.
+RUN set -eu; \
+    missing="$(LD_LIBRARY_PATH=/out ldd /out/tilolang /out/tilolang-std \
+               | awk '/not found/ { print "/usr/lib64/" $1 }' | sort -u)"; \
+    if [ -n "$missing" ]; then \
+      dnf install -y --setopt=install_weak_deps=False $missing; \
+      dnf clean all; \
+      rm -rf /var/cache/dnf /var/cache/libdnf5; \
+    fi; \
+    test -z "$(LD_LIBRARY_PATH=/out ldd /out/tilolang /out/tilolang-std | grep 'not found' || true)"
+# Browser, built from apps/tl/browser by `tilolang build` and installed the way
+# a device installs an app (`tilo-install install`), into the image-wide store,
+# described by the same registry rows a person's own package gets. The app set
+# is the image's plan (os/image/compile.sh), narrowed to Browser and the two
+# packages it uses (Files for downloads, Print Centre for printing), which it
+# does not resolve without. The store is written at the path it occupies on the
+# booted guest (`tilo-install` records absolute payload paths), and its trees
+# get the signed records a read-only store is verified against.
 RUN export TILO_IMAGE_BUILD=1 \
-    && BIN_DIR=/out/thin-apps \
-       COHORT_APPS=browser \
-       REQUIRE_MIN=1 \
+    && REPO=/out \
+       BIN_DIR=/out/thin-apps \
+       APP_PLAN=/out/app-plan.json \
+       COHORT_APPS="tl-browser tl-files tl-print-centre" \
+       REQUIRE_MIN=3 \
+       TILOLANG_BIN=/out/tilolang \
+       RUNTIME_ROOT=/usr/lib/tilo-runtime \
        TAPP_BUDGET=report \
        PKG_BIN=/out/tilo-app-package INSTALL_BIN=/out/tilo-install \
        BUNDLE_BIN=/out/tilo-runtime-bundle SHIM_BIN=/out/tilo-cli-shim \

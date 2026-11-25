@@ -61,7 +61,8 @@ session_components=(native-runtime-host tilo-session control launcher install ap
 inputs_digest() {
   find os/Containerfile.hosted-guest os/hosted-guest os/external-assets/github-assets.tsv \
     crates/vm/linux-vm-agent crates/vm/linux-vm-protocol \
-    crates/session crates/packaging os/components.toml \
+    crates/session crates/packaging crates/lang os/components.toml \
+    apps/tl dist/apps/app-collections.toml \
     os/scripts/install-components.py os/scripts/pack-apps.sh \
     os/scripts/signed-records.py os/scripts/collect-runtime-dependencies.py \
     os/scripts/verify-runtime-bundle-closure.sh os/etc/containers/policy.json \
@@ -248,8 +249,21 @@ case ${1:-} in
     test -x "$root/usr/libexec/tilo/git-credential-tilo"
     test -s "$root/etc/gitconfig"
     test -x "$root/usr/bin/Xwayland"
-    grep -q 'so\.tilo\.browser' "$root/usr/share/tilo-apps/registry.toml"
+    for app in so.tilo.browser so.tilo.file-explorer so.tilo.print-centre; do
+      grep -Eq "^id *= *[\"']${app//./\\.}[\"']" "$root/usr/share/tilo-apps/registry.toml" \
+        || die "the guest's store has no $app"
+    done
     test -x "$root/usr/lib/tilo-runtime/$(chromium_runtime_version)/lib/chromium/tilo-chromium-host"
+    # Browser runs on its engine and opens the web's links: its installed
+    # manifest pins the engine the guest ships and claims http, https and
+    # web+search.
+    browser=$(find -L "$root/usr/share/tilo-apps" -name manifest.toml \
+      -exec grep -lx 'id = "so\.tilo\.browser"' {} + | head -1)
+    [[ -n $browser ]] || die "the guest's store has no manifest of so.tilo.browser"
+    grep -q "\"tilo-runtime/$(chromium_runtime_version)\"" "$browser" \
+      || die "the guest's Browser does not pin tilo-runtime/$(chromium_runtime_version)"
+    grep -qx 'schemes = \["http", "https", "web+search"\]' "$browser" \
+      || die "the guest's Browser does not claim http, https and web+search"
     wrap_guest "$root" "$kernel" "$out" hosted-guest-image
     ;;
   pins)
