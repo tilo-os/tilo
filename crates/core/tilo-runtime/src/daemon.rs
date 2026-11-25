@@ -2549,7 +2549,7 @@ fn start_requested(
 /// Ask the daemon at `profile` to start an app, and answer what it said.
 #[cfg(unix)]
 fn ask_launch(profile: &Path, request: &Value) -> io::Result<Value> {
-    let stream = std::os::unix::net::UnixStream::connect(native_socket(profile)?)?;
+    let stream = tilo_files::native::socket::connect(&native_socket(profile)?)?;
     stream.set_read_timeout(Some(ANSWERING))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     (&stream).write_all(format!("{request}\n").as_bytes())?;

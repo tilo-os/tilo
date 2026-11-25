@@ -140,7 +140,7 @@ fn exchange(socket: &Path, body: &[u8]) -> Result<Option<String>, String> {
     /// How long the manager may take to answer: a search reads Hugging Face first.
     const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).map_err(|error| {
+    let mut stream = tilo_files::native::socket::connect(socket).map_err(|error| {
         format!(
             "this computer's model service did not answer ({}): {error}",
             socket.display()
