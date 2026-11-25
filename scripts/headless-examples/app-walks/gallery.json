@@ -31,6 +31,267 @@
       ]
     },
     {
+      "id": "basics",
+      "said": "Show the Basics page",
+      "ops": [
+        {
+          "press": "Basics"
+        },
+        {
+          "must": {
+            "see": [
+              "Rich text and a quote"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "controls",
+      "said": "Show the Controls page",
+      "ops": [
+        {
+          "press": "Controls"
+        },
+        {
+          "must": {
+            "see": [
+              "Boxes and switches"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000,
+      "dark": true
+    },
+    {
+      "id": "feedback",
+      "said": "Show the Feedback page",
+      "ops": [
+        {
+          "press": "Feedback"
+        },
+        {
+          "must": {
+            "see": [
+              "Toolbar"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "states",
+      "said": "Show the States page",
+      "ops": [
+        {
+          "press": "States"
+        },
+        {
+          "must": {
+            "see": [
+              "Primary button"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000,
+      "dark": true
+    },
+    {
+      "id": "backlog",
+      "said": "Show the Backlog page",
+      "ops": [
+        {
+          "press": "Backlog"
+        },
+        {
+          "must": {
+            "see": [
+              "Add an item to the backlog"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "release-board",
+      "said": "Show the Release board page",
+      "ops": [
+        {
+          "press": "Release board"
+        },
+        {
+          "must": {
+            "see": [
+              "Doing"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "data",
+      "said": "Show the Data page",
+      "ops": [
+        {
+          "press": "Data"
+        },
+        {
+          "must": {
+            "see": [
+              "Data table"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "media",
+      "said": "Show the Media page",
+      "ops": [
+        {
+          "press": "Media"
+        },
+        {
+          "must": {
+            "see": [
+              "Image"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "places",
+      "said": "Show the Places page",
+      "ops": [
+        {
+          "press": "Places"
+        },
+        {
+          "must": {
+            "see": [
+              "Canvas"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000,
+      "dark": true
+    },
+    {
+      "id": "shell-parts",
+      "said": "Show the Shell parts page",
+      "ops": [
+        {
+          "press": "Shell parts"
+        },
+        {
+          "must": {
+            "see": [
+              "Backdrop"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "charts-and-views",
+      "said": "Show the Charts and views page",
+      "ops": [
+        {
+          "press": "Charts and views"
+        },
+        {
+          "must": {
+            "see": [
+              "A view of its own"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "trends-and-series",
+      "said": "Show the Trends and series page",
+      "ops": [
+        {
+          "press": "Trends and series"
+        },
+        {
+          "must": {
+            "see": [
+              "Cartesian plot"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000,
+      "dark": true
+    },
+    {
+      "id": "shares-and-shapes",
+      "said": "Show the Shares and shapes page",
+      "ops": [
+        {
+          "press": "Shares and shapes"
+        },
+        {
+          "must": {
+            "see": [
+              "Distribution chart"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000,
+      "dark": true
+    },
+    {
+      "id": "flows-and-trees",
+      "said": "Show the Flows and trees page",
+      "ops": [
+        {
+          "press": "Flows and trees"
+        },
+        {
+          "must": {
+            "see": [
+              "Sunburst"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000,
+      "dark": true
+    },
+    {
+      "id": "type-and-scripts",
+      "said": "Show the Type and scripts page",
+      "ops": [
+        {
+          "press": "Type and scripts"
+        },
+        {
+          "must": {
+            "see": [
+              "Type scale"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
       "id": "open-after-quit",
       "said": "Quit Gallery and open it again",
       "ops": [
