@@ -2225,6 +2225,15 @@ impl Workspaces {
                         | NeighbourMsg::DocumentContentRefused { .. }
                 );
                 let asking = matches!(frame.message, NeighbourMsg::DocumentContentWant { .. });
+                // Answers go to the content's own intake as they came: they are
+                // no write of the copy.
+                if answering {
+                    // The intake's thread is gone only with the host.
+                    if intake.send((frame.author, frame.message)).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
                 let Ok(body) = postcard::to_allocvec(&frame.message) else {
                     continue;
                 };
@@ -2263,13 +2272,6 @@ impl Workspaces {
                     } = &frame.message
                 {
                     workspaces.wrote(&name, app_id, document_id);
-                }
-                if answering {
-                    // The intake's thread is gone only with the host.
-                    if intake.send((frame.author, frame.message)).await.is_err() {
-                        return;
-                    }
-                    continue;
                 }
                 if !asking {
                     continue;

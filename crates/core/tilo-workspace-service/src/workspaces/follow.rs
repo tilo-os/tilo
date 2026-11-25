@@ -732,16 +732,12 @@ impl Workspaces {
                         | NeighbourMsg::DocumentContentLacks { .. }
                         | NeighbourMsg::DocumentContentRefused { .. }
                 );
-                let Ok(body) = postcard::to_allocvec(&frame.message) else {
-                    continue;
-                };
-                if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
-                    tracing::warn!(%name, %error, "the host did not keep what its link admitted");
-                }
                 // What a member answers the host with answers a request the
                 // host made, and is the host's to keep: a device that keeps
                 // its workspace's files reads the pieces here
-                // ([`Self::content_for_host`]).
+                // ([`Self::content_for_host`]). Asks and answers are no record
+                // writes: they go to the content's own intake, as they came,
+                // never through the governor's copy.
                 if answering {
                     // The intake's thread is gone only with the host.
                     if intake.send((frame.author, frame.message)).await.is_err() {
@@ -749,12 +745,18 @@ impl Workspaces {
                     }
                     continue;
                 }
-                if !asking {
+                let Ok(body) = postcard::to_allocvec(&frame.message) else {
+                    continue;
+                };
+                if asking {
+                    // The answering is gone only with the host.
+                    if asks.send((frame.author, body)).await.is_err() {
+                        return;
+                    }
                     continue;
                 }
-                // The answering is gone only with the host.
-                if asks.send((frame.author, body)).await.is_err() {
-                    return;
+                if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
+                    tracing::warn!(%name, %error, "the host did not keep what its link admitted");
                 }
             }
         });
