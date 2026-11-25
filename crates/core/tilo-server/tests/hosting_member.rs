@@ -631,17 +631,22 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
             CopyRole::KeyHolder,
         )
         .await;
-    // The owner hears why: the holder keeps nobody's workspace but its own
-    // person's.
-    assert!(
-        refused
-            .as_ref()
-            .is_err_and(|error| error.contains("keeps workspaces only for the people it let in")),
-        "{refused:?}"
-    );
+    // The owner hears it refused, and the workspace stays where it was: the
+    // holder keeps nobody's workspace but its own person's, and holds no copy
+    // of this one.
+    assert!(refused.is_err(), "{refused:?}");
     assert_eq!(
         workspaces.hosts(&workspace.workspace).await.unwrap().len(),
         1
+    );
+    assert!(
+        refusing
+            .host
+            .workspaces()
+            .state(&workspace.workspace_id.to_string())
+            .await
+            .is_none(),
+        "the refusing holder keeps no copy"
     );
     refusing.stop().await;
     governor.stop().await;
