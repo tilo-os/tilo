@@ -16302,6 +16302,7 @@ dependencies = [
  "tilo-fs-protocol",
  "tilo-identity-client",
  "tilo-key-group",
+ "tilo-local-identity",
  "tilo-lock",
  "tilo-media",
  "tilo-process",
@@ -17957,6 +17958,19 @@ name = "tilo-local"
 version = "0.1.0"
 dependencies = [
  "tilo-socket",
+]
+
+[[package]]
+name = "tilo-local-identity"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "tilo-identity-client",
+ "tilo-lock",
+ "tilo-runtime-portal",
+ "tilo-test-env",
+ "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -21239,6 +21253,7 @@ dependencies = [
  "tilo-host-search",
  "tilo-identity-client",
  "tilo-image-codec",
+ "tilo-local-identity",
  "tilo-lock",
  "tilo-media",
  "tilo-mime",

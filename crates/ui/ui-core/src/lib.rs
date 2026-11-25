@@ -199,7 +199,6 @@ pub mod gpu;
 /// to RGB in a shader.
 pub mod gpu_video;
 pub mod headless;
-#[cfg(feature = "model")]
 pub mod history_mode;
 #[cfg(feature = "model")]
 pub mod history_source;
@@ -239,7 +238,6 @@ pub mod launch;
 pub mod lift;
 pub mod live_activity;
 pub mod live_pictures;
-#[cfg(feature = "model")]
 pub mod local_identity;
 pub mod local_state;
 pub mod math;
