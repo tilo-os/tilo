@@ -1,5 +1,5 @@
 //! Enrolling this device's boot key for disk unlock
-//! ([`ENROL_BOOT`](tilo_device_identity::login::ENROL_BOOT)).
+//! ([`SET_UP_UNLOCK`](tilo_device_identity::login::SET_UP_UNLOCK)).
 //!
 //! `tilo-auth sibling enrol` hands the daemon the boot key's request and the sibling half. The
 //! person's root certifies the boot key through the device's one dispatch, as the person's
@@ -10,7 +10,7 @@
 //! this device in the clear, and publishes the enrolment in this device's own entry of their
 //! devices, which every device of theirs carries and answers a boot from.
 //!
-//! Their no ends the enrolment declined, the disk as locked as it was ([`ENROL_DECLINED`]). A
+//! Their no ends the enrolment declined, the disk as locked as it was ([`UNLOCK_DECLINED`]). A
 //! device without the root that reaches none of theirs that keeps it is told so before anything
 //! waits ([`NO_ROOT_DEVICE`]): nobody could answer.
 
@@ -25,7 +25,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    CERTIFY_KEY, ENROL_DECLINED, NO_ROOT_DEVICE, PROVIDER, RESOURCE,
+    CERTIFY_KEY, NO_ROOT_DEVICE, PROVIDER, RESOURCE, UNLOCK_DECLINED,
 };
 use tilo_unlock_protocol::published::{AutoApproval, UnlockEnrolment, UnlockFabricState};
 use tilo_unlock_protocol::{
@@ -46,7 +46,7 @@ pub(crate) const UNLOCK_FACT: &str = "unlock";
 /// What enrols a boot here: the device's certificate, its dispatch of its person's device
 /// actions, and the workspaces it publishes the enrolment in. Installed once the person's services
 /// run.
-pub(crate) struct BootEnrolment {
+pub(crate) struct BootUnlock {
     pub(crate) device: DeviceCert,
     pub(crate) tickets: Arc<Tickets>,
     pub(crate) invocations: Arc<Invocations>,
@@ -54,7 +54,7 @@ pub(crate) struct BootEnrolment {
     pub(crate) workspaces: Arc<ServiceWorkspaces>,
 }
 
-impl BootEnrolment {
+impl BootUnlock {
     /// Enrol the boot `args` names: answers `enrolled`, the enrolment response
     /// as postcard in hex.
     ///
@@ -112,7 +112,7 @@ impl BootEnrolment {
         }
         let certify = Value::Object(certify);
         let answer = self.certify(&cert, certify).await?;
-        let enrolled = enrolment_of(&answer, &request, &half, this, approval)?;
+        let enrolled = certified_unlock(&answer, &request, &half, this, approval)?;
         self.publish(&cert, &enrolled).await?;
         let response = EnrolResponse {
             cert: enrolled.enrolment.cert.clone(),
@@ -133,13 +133,21 @@ impl BootEnrolment {
         this: [u8; 32],
     ) -> Result<(), Refusal> {
         for device in record.root_holders(person) {
-            if device != this && self.tickets.reaches(device).await {
-                return Ok(());
+            if device == this {
+                continue;
+            }
+            match self.tickets.reach(device).await {
+                Ok(()) => return Ok(()),
+                Err(why) => tracing::info!(
+                    device = %hex::encode(device),
+                    %why,
+                    "device unlock: a device that keeps the person's root did not answer"
+                ),
             }
         }
         Err(Refusal {
             code: NO_ROOT_DEVICE,
-            message: crate::i18n::t("boot-enrol-no-root-device"),
+            message: crate::i18n::t("boot-unlock-no-root-device"),
         })
     }
 
@@ -192,8 +200,8 @@ impl BootEnrolment {
             InvocationUpdate::Succeeded { output, .. } => Ok(output.value.unwrap_or(Value::Null)),
             InvocationUpdate::Cancelled { message, .. } if message.as_deref() == Some(DECLINED) => {
                 Err(Refusal {
-                    code: ENROL_DECLINED,
-                    message: crate::i18n::t("boot-enrol-declined"),
+                    code: UNLOCK_DECLINED,
+                    message: crate::i18n::t("boot-unlock-declined"),
                 })
             }
             InvocationUpdate::Cancelled { message, .. } => {
@@ -239,8 +247,8 @@ impl BootEnrolment {
                 )
                 .await;
                 return Err(Refusal {
-                    code: ENROL_DECLINED,
-                    message: crate::i18n::t("boot-enrol-unanswered"),
+                    code: UNLOCK_DECLINED,
+                    message: crate::i18n::t("boot-unlock-unanswered"),
                 });
             }
         }
@@ -310,12 +318,12 @@ pub(crate) fn asked_facts(request: &InvokeRequest) -> Option<AskedFacts> {
     let unattended = args.contains_key("approval_digest");
     let line = |value: String| Fact::new(String::new(), value);
     let mut facts = vec![
-        line(crate::i18n::t("boot-enrol-detail")),
-        Fact::new(crate::i18n::t("boot-enrol-computer"), computer.clone()),
-        Fact::new(crate::i18n::t("boot-enrol-key"), fingerprint),
+        line(crate::i18n::t("boot-unlock-detail")),
+        Fact::new(crate::i18n::t("boot-unlock-computer"), computer.clone()),
+        Fact::new(crate::i18n::t("boot-unlock-key"), fingerprint),
     ];
     if unattended {
-        facts.push(line(crate::i18n::t("boot-enrol-unattended")));
+        facts.push(line(crate::i18n::t("boot-unlock-unattended")));
     }
     Some(AskedFacts {
         by: AskedBy::Device(Named {
@@ -323,7 +331,7 @@ pub(crate) fn asked_facts(request: &InvokeRequest) -> Option<AskedFacts> {
             name: computer.clone(),
         }),
         words: crate::i18n::t_args(
-            "boot-enrol-asked",
+            "boot-unlock-asked",
             &[("computer", computer.as_str().into())],
         ),
         facts,
@@ -342,7 +350,7 @@ struct Enrolled {
 /// What the root's `answer` certifies for `request`: the certificate, the half sealed to the
 /// secret-sync key it names, the person's devices that carry it, and the signed acceptance of the
 /// boot chain where one was asked for.
-fn enrolment_of(
+fn certified_unlock(
     answer: &Value,
     request: &EnrolRequest,
     half: &Half,

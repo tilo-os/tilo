@@ -31,8 +31,8 @@ path = "tests/daemon.rs"
 required-features = ["service"]
 
 [[test]]
-name = "sibling_enrol"
-path = "tests/sibling_enrol.rs"
+name = "disk_unlock"
+path = "tests/disk_unlock.rs"
 required-features = ["service"]
 
 [[test]]
@@ -133,6 +133,8 @@ unicode-normalization = { version = "0.1.25", optional = true }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The device key taken as the daemon takes it, before the test founds its person.
+tilo-identity = { path = "../../core/tilo-identity", features = ["test-support"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tilo-test-env = { path = "../../../tools/test-env" }

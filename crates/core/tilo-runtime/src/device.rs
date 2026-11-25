@@ -31,9 +31,9 @@ mod app_listing_tests;
 #[cfg(target_os = "linux")]
 pub(crate) mod approved_checks;
 mod asked;
-mod boot_enrol;
+mod boot_unlock;
 #[cfg(test)]
-mod boot_enrol_tests;
+mod boot_unlock_tests;
 mod carry;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
 pub mod capabilities;

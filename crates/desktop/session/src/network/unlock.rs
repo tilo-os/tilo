@@ -443,11 +443,11 @@ fn slot_name(slot: &SlotId) -> String {
     format!("{}:{}", hex::encode(slot.volume_uuid), slot.keyslot)
 }
 
-/// What `device`, whose entry of the person's devices `record` is `kept`, keeps about disk unlock:
-/// its enrolments and auto-approvals, and the answers the person gave on it that the record holds,
-/// the newest where it holds more than one device publishes. Nothing where that does not hold for
-/// the device.
-pub(crate) fn kept_unlock(record: &Devices, kept: &Device, device: &DeviceId) -> UnlockFabricState {
+/// What the device `key`, whose entry of the person's devices `record` is `kept`, keeps about disk
+/// unlock: its enrolments and auto-approvals, and the newest answers the person gave on it that the
+/// record keeps. Nothing where that is not true of the device.
+pub(crate) fn kept_unlock(record: &Devices, kept: &Device, key: &[u8; 32]) -> UnlockFabricState {
+    let device = hex::encode(key);
     let mut state = kept
         .facts
         .get(UNLOCK)
@@ -456,17 +456,14 @@ pub(crate) fn kept_unlock(record: &Devices, kept: &Device, device: &DeviceId) ->
     let mut answers = record
         .unlocks
         .values()
-        .filter(|answer| answer.device == device.as_str())
+        .filter(|answer| answer.device == device)
         .filter_map(decision_of)
         .collect::<Vec<_>>();
     answers.sort_by_key(|answer| answer.decided_at_ns);
     let over = answers.len().saturating_sub(MAX_UNLOCK_DECISIONS);
     answers.drain(..over);
     state.decisions = answers;
-    let owner = hex::decode(device.as_str())
-        .ok()
-        .and_then(|key| <[u8; 32]>::try_from(key).ok());
-    if owner.is_none_or(|owner| state.validate(&owner).is_err()) {
+    if state.validate(key).is_err() {
         return UnlockFabricState::default();
     }
     state

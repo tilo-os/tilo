@@ -7,7 +7,7 @@
 //! the device key and the person's root, and their devices record. The enrolment reads neither
 //! the key nor the root; it asks the daemon. A device without the root has its boot key certified
 //! at one of the person's devices that keeps it, where they are asked: the daemon's own test of
-//! two devices proves that (`tilo_runtime`'s `boot_enrol_tests`).
+//! two devices proves that (`tilo_runtime`'s `boot_unlock_tests`).
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -52,13 +52,13 @@ use tilo_user_identity::{
 tilo_automerge_isolate::test_worker!();
 
 /// Names the test the process [`on_own_device`] starts runs, and where its daemon's profile is.
-const OWN: &str = "TILO_AUTH_SIBLING_ENROL_TEST";
-const PROFILE: &str = "TILO_AUTH_SIBLING_ENROL_PROFILE";
+const OWN: &str = "TILO_AUTH_DISK_UNLOCK_TEST";
+const PROFILE: &str = "TILO_AUTH_DISK_UNLOCK_PROFILE";
 
 /// Run `body` on a device of its own: in a process of its own, with a home, identity store and
 /// runtime directory of its own, and its person founded there. `body` is handed the daemon's
 /// profile. A device is one per process, as a computer has one daemon.
-fn on_own_device(body: impl FnOnce(&Path)) {
+fn on_own_device(body: impl FnOnce(&Path, SigningIdentity)) {
     let test = std::thread::current()
         .name()
         .expect("libtest names a test's thread after the test")
@@ -76,13 +76,23 @@ fn on_own_device(body: impl FnOnce(&Path)) {
         .with_writer(std::io::stderr)
         .try_init();
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
+    // The person is founded as the daemon founds them, with the device key taken as it takes it,
+    // and their root read while it is: the daemon this test starts takes the key again.
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
+    let taken = tilo_identity::provisioning::device_key_taken_as_daemon(&paths)
+        .expect("the device key is taken as the daemon's");
     tilo_runtime::device::services::found_account_person(
-        &tilo_identity::provisioning::collaboration_identity_paths(),
+        &paths,
         "",
         tilo_runtime::device::services::this_account_uid(),
     )
     .expect("the person is founded on this device");
-    body(&profile);
+    let root = tilo_identity::store::load_from_path(
+        tilo_runtime::device::services::device_root_record().expect("the person founded here"),
+    )
+    .expect("the person's root reads here");
+    drop(taken);
+    body(&profile, root);
 }
 
 /// Keep `certs` in the person's devices record, as the daemon of the device on `profile` keeps a
@@ -336,7 +346,7 @@ fn carried_half(daemon: &DaemonPlace, root: &SigningIdentity, cert: &DeviceCert,
 /// prompt; every way the enrolment, the header or the answer can be wrong is refused, and with
 /// no daemon running the enrolment says so.
 #[test]
-fn a_volume_enrols_through_the_daemon_and_opens_at_boot_with_the_half_the_devices_carry() {
+fn a_volume_sets_up_unlock_through_the_daemon_and_opens_at_boot_with_the_half_the_devices_carry() {
     require_capability!(
         Swtpm,
         match Command::new("cryptsetup").arg("--version").output_locked() {
@@ -345,10 +355,10 @@ fn a_volume_enrols_through_the_daemon_and_opens_at_boot_with_the_half_the_device
         },
         "the header is written with cryptsetup"
     );
-    on_own_device(enrols_and_opens);
+    on_own_device(sets_up_and_opens);
 }
 
-fn enrols_and_opens(profile: &Path) {
+fn sets_up_and_opens(profile: &Path, root: SigningIdentity) {
     let dir = tempfile::tempdir().unwrap();
     let work = dir.path().join("work");
     std::fs::create_dir(&work).unwrap();
@@ -371,10 +381,6 @@ fn enrols_and_opens(profile: &Path) {
 
     // The person this device was founded for, their root kept here, and their other devices,
     // which their record keeps beside an earlier machine's boot key: one that carries no half.
-    let root = tilo_identity::store::load_from_path(
-        tilo_runtime::device::services::device_root_record().expect("the person founded here"),
-    )
-    .unwrap();
     let (_, laptop) = certify(&root, "The laptop", DeviceCapabilities::member());
     let (_, phone) = certify(&root, "The phone", DeviceCapabilities::member());
     let (_, earlier_boot) = certify(&root, "An earlier boot key", DeviceCapabilities::nothing());

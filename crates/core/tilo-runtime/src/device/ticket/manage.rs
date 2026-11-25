@@ -186,14 +186,19 @@ impl Tickets {
     }
 
     /// Whether the person's device `device` answers this one now, within [`REACH_WITHIN`]: what
-    /// it says of itself, asked over the action service between their devices.
-    pub(crate) async fn reaches(&self, device: [u8; 32]) -> bool {
-        tokio::time::timeout(
+    /// it says of itself, asked over the action service between their devices; why not where it
+    /// does not.
+    pub(crate) async fn reach(&self, device: [u8; 32]) -> Result<(), String> {
+        match tokio::time::timeout(
             REACH_WITHIN,
             self.ask_device(device, (RESOURCE, super::INFO), &json!({})),
         )
         .await
-        .is_ok_and(|answered| answered.is_ok())
+        {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(why)) => Err(format!("{why:#}")),
+            Err(_) => Err(format!("it did not answer within {}s", REACH_WITHIN.as_secs())),
+        }
     }
 
     /// Start this device's updates with `start` rather than `tilo update`.
@@ -282,7 +287,7 @@ impl ActionProvider for OnThisDevice {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(catalogue_of(&query, |action| {
-            matches!(action, UPDATE | PENDING | APPROVE | REPORTED)
+            matches!(action, super::INFO | UPDATE | PENDING | APPROVE | REPORTED)
                 || tilo_server::operations::ACTIONS.contains(&action)
         })))
     }
@@ -322,6 +327,15 @@ impl ActionProvider for OnThisDevice {
         // workspaces it serves alone.
         if address.resource == super::SERVER {
             return self.0.control(&request, Some(caller.clone()));
+        }
+        // What this device is, to another device of its person's: how one that needs this device
+        // (to ask the person on it) learns that it answers now.
+        if address.resource == RESOURCE
+            && address.action == super::INFO
+            && caller.user_public_key() == Some(&self.0.0.cert.user_public_key)
+        {
+            let info = super::device_info(&self.0.0.place, &self.0.0.key);
+            return Pending::ready(Ok(self.keep(invocation, succeeded(invocation, info))));
         }
         if address.resource != RESOURCE || address.action != UPDATE {
             return Pending::ready(Err(ActionCallError::UnknownAction));

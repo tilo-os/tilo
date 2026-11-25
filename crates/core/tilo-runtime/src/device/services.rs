@@ -2182,7 +2182,7 @@ impl Daemon {
         // on: the tickets, the endpoint they name and what serves it are up, and nothing the
         // rest of the part opens is needed to issue one. The founder waits for a start, not for
         // every service of it.
-        let founding_for_enrolment = founding;
+        let founding_for_unlock = founding;
         if let Some(founding) = founding {
             founding.serving(identity.cert.user_public_key, Arc::clone(&tickets));
         }
@@ -2420,8 +2420,8 @@ impl Daemon {
         );
         asked.withdraw_what_ended();
         // This device's boot key is enrolled through the same dispatch, asked of the person.
-        if let Some(founding) = founding_for_enrolment {
-            founding.enrolling(Arc::new(super::boot_enrol::BootEnrolment {
+        if let Some(founding) = founding_for_unlock {
+            founding.enrolling(Arc::new(super::boot_unlock::BootUnlock {
                 device: workspaces.device_cert(),
                 tickets: Arc::clone(&tickets),
                 invocations: Arc::clone(&invocations),
@@ -5007,7 +5007,7 @@ fn hand_on_to_root(
             .map(|action| action.action_label.clone())
             .unwrap_or_default(),
         on: listed.map(|action| action.resource_label),
-        ..super::boot_enrol::asked_facts(request).unwrap_or_default()
+        ..super::boot_unlock::asked_facts(request).unwrap_or_default()
     };
     // An agent asking for the person's root answers as the agent it is, so the card says who
     // wants it; the person's own call is theirs.

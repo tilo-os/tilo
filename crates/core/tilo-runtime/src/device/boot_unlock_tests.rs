@@ -7,7 +7,7 @@
 //! The two devices are the person's laptop, which keeps their root in this account's identity
 //! store, and their desk, on its own endpoint, which keeps none. Both run the daemon's own
 //! dispatch of the person's device actions over the person's workspace, and the desk enrols
-//! through the daemon's `enrolBoot`.
+//! through the daemon's `setUpUnlock`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,7 +21,7 @@ use tilo_actions::remote::asked::{
 use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_device_identity::login::{
-    ENROL_DECLINED, NO_ROOT_DEVICE, PROVIDER, RELEASE_HALF, RESOURCE,
+    UNLOCK_DECLINED, NO_ROOT_DEVICE, PROVIDER, RELEASE_HALF, RESOURCE,
 };
 use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_unlock_protocol::published::UnlockFabricState;
@@ -30,7 +30,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert, verif
 use tilo_workspace_service::workspaces::person_workspace::{self, devices};
 
 use super::asked::DeviceAsked;
-use super::boot_enrol::{BootEnrolment, UNLOCK_FACT};
+use super::boot_unlock::{BootUnlock, UNLOCK_FACT};
 use super::ticket::{OnThisDevice, Tickets};
 use super::ticket_tests::{endpoint, no_root, root_in, serve};
 
@@ -76,6 +76,23 @@ fn a_boot(keyslot: u16) -> Boot {
         "half": hex::encode(half),
     });
     Boot { key, half, args }
+}
+
+/// How the desk's set-up `setting_up` ends once `answering`, the person's answer on the laptop,
+/// was given: a set-up that ends before they answered fails the test with how it ended.
+async fn answered(
+    setting_up: impl std::future::Future<Output = Result<Value, super::key_use::Refusal>>,
+    answering: impl std::future::Future<Output = ()>,
+) -> Result<Value, super::key_use::Refusal> {
+    tokio::pin!(setting_up);
+    tokio::select! {
+        biased;
+        ended = &mut setting_up => {
+            panic!("the desk's set-up ended before the person answered: {ended:?}")
+        }
+        () = answering => {}
+    }
+    setting_up.await
 }
 
 /// What the person is asked on the laptop, once the desk's call reached it there.
@@ -166,7 +183,7 @@ async fn released(
     reason = "one computer's enrolment through another, its yes, its no and nobody to ask, read \
               top to bottom"
 )]
-async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_keeps_it() {
+async fn a_computer_without_the_root_sets_up_its_disk_unlock_through_one_that_keeps_it() {
     // The person is the one this account founded here: their root is kept for this account
     // alone, on the laptop.
     let mut home = tilo_test_env::TestHome::new().unwrap();
@@ -209,6 +226,14 @@ async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_kee
     devices::keep(copies, &desk_cert)
         .await
         .expect("the desk is in the person's devices");
+    // The desk enters the person's own workspace, as each of their devices does.
+    copies
+        .enter(
+            &tilo_server_protocol::servers::person_workspace_id(&person),
+            (&desk_cert, &desk_key),
+        )
+        .await
+        .expect("the desk enters the person's workspace");
     let desk = desk_cert.device_public_key;
 
     // The laptop's daemon: the person's device actions under their root, answered to their other
@@ -237,7 +262,11 @@ async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_kee
         desk_endpoint.clone(),
         None,
         no_root(),
-        None,
+        // The person's own workspace, which the desk reaches their other devices in.
+        Some(super::first_workspace::FirstWorkspace::founded(
+            Arc::clone(&laptop_service),
+            super::first_workspace::own_workspace(&person),
+        )),
         Some(Arc::clone(&laptop_service)),
         tilo_device_identity::login::Place::at(
             home.root().join("desk"),
@@ -258,7 +287,7 @@ async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_kee
             }
         });
     }
-    let desk_enrolment = BootEnrolment {
+    let desk_unlock = BootUnlock {
         device: desk_cert.clone(),
         tickets: Arc::new(desk_tickets),
         invocations: desk_invocations,
@@ -266,6 +295,18 @@ async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_kee
         workspaces: Arc::clone(&laptop_service),
     };
     let router = serve(&laptop_service, copies.action_service());
+    // The person's devices name the laptop as one that keeps their root, and the desk reaches it.
+    let laptop_key = laptop_cert.device_public_key;
+    let keeping_root = devices::of(copies, &person).await.root_holders(&person);
+    assert!(
+        keeping_root.contains(&laptop_key),
+        "the laptop is named as keeping the root: {keeping_root:?}"
+    );
+    desk_unlock
+        .tickets
+        .reach(laptop_key)
+        .await
+        .expect("the desk reaches the laptop");
 
     // The desk's identity store keeps no root of the person's; the laptop's does.
     let laptop_store = home.config().to_owned();
@@ -277,7 +318,7 @@ async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_kee
     // their yes there certifies it.
     home.env().set("XDG_CONFIG_HOME", &desk_store);
     let boot = a_boot(1);
-    let (enrolled, ()) = tokio::join!(desk_enrolment.enrol(&boot.args), async {
+    let enrolled = answered(desk_unlock.enrol(&boot.args), async {
         let asked = asked_on_the_laptop(&laptop_asked, &person).await;
         assert_eq!(
             asked.facts.words.replace(['\u{2068}', '\u{2069}'], ""),
@@ -308,7 +349,8 @@ async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_kee
             .await
             .expect("the answer is decided at once")
             .expect("the person's yes is taken on the laptop");
-    });
+    })
+    .await;
     let enrolled = enrolled.expect("the desk's boot key is certified through the laptop");
     let response: EnrolResponse =
         postcard::from_bytes(&hex::decode(enrolled["enrolled"].as_str().unwrap()).unwrap())
@@ -340,7 +382,7 @@ async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_kee
     // nothing is certified or published for it.
     home.env().set("XDG_CONFIG_HOME", &desk_store);
     let refused = a_boot(2);
-    let (declined, ()) = tokio::join!(desk_enrolment.enrol(&refused.args), async {
+    let declined = answered(desk_unlock.enrol(&refused.args), async {
         let asked = asked_on_the_laptop(&laptop_asked, &person).await;
         laptop_asks
             .resolve(
@@ -354,9 +396,10 @@ async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_kee
             .await
             .expect("the answer is decided at once")
             .expect("the person's no is taken on the laptop");
-    });
+    })
+    .await;
     let declined = declined.expect_err("a declined enrolment certifies nothing");
-    assert_eq!(declined.code, ENROL_DECLINED);
+    assert_eq!(declined.code, UNLOCK_DECLINED);
     assert_eq!(
         declined.message,
         "You said no on your other device, so this computer won’t unlock its disk with your \
@@ -372,13 +415,30 @@ async fn a_computer_without_the_root_enrols_its_disk_unlock_through_one_that_kee
     assert!(state.enrolments.iter().all(
         |enrolment| enrolment.cert.device_public_key != refused.key.verifying_key().to_bytes()
     ),);
+    // The person answered: the laptop asks them nothing more.
+    let started = Instant::now();
+    loop {
+        let waiting = laptop_asked.store().asked_of(&person);
+        if waiting.is_empty() {
+            break;
+        }
+        assert!(
+            started.elapsed() < WITHIN,
+            "the answered ask still waits on the laptop: {:?}",
+            waiting
+                .iter()
+                .map(|asked| (&asked.name, &asked.facts.words))
+                .collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     // The laptop goes away: with no device of theirs that keeps the root to ask, the desk is told
     // so at once, and nothing waits for an answer nobody can give.
     let _ = router.shutdown().await;
     laptop_service.endpoint().close().await;
     let unreachable = a_boot(3);
-    let nobody = desk_enrolment
+    let nobody = desk_unlock
         .enrol(&unreachable.args)
         .await
         .expect_err("nobody can be asked");

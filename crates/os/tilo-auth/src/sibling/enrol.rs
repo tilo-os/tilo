@@ -119,7 +119,7 @@ impl std::error::Error for NotEnrolled {}
 impl From<DeviceRefusal> for NotEnrolled {
     fn from(refusal: DeviceRefusal) -> Self {
         match refusal.code.as_str() {
-            tilo_device_identity::login::ENROL_DECLINED => Self::Declined(refusal.message),
+            tilo_device_identity::login::UNLOCK_DECLINED => Self::Declined(refusal.message),
             tilo_device_identity::login::NO_ROOT_DEVICE => Self::NoRootDevice(refusal.message),
             _ => Self::Failed(refusal.message),
         }
@@ -127,10 +127,10 @@ impl From<DeviceRefusal> for NotEnrolled {
 }
 
 /// This machine's daemon, which alone keeps the device key: it has the person's root certify the
-/// boot key ([`ENROL_BOOT`]), here where it keeps it and otherwise at a device of theirs that does,
+/// boot key ([`SET_UP_UNLOCK`]), here where it keeps it and otherwise at a device of theirs that does,
 /// which asks them, and publishes the enrolment.
 ///
-/// [`ENROL_BOOT`]: tilo_device_identity::login::ENROL_BOOT
+/// [`SET_UP_UNLOCK`]: tilo_device_identity::login::SET_UP_UNLOCK
 pub struct DaemonRegistrar(DaemonPlace);
 
 impl DaemonRegistrar {
@@ -157,7 +157,7 @@ impl Registrar for DaemonRegistrar {
         );
         let half = zeroize::Zeroizing::new(hex::encode(half.expose()));
         let answer = self.0.actions().ask_followed(
-            tilo_device_identity::login::ENROL_BOOT,
+            tilo_device_identity::login::SET_UP_UNLOCK,
             serde_json::json!({ "request": request, "half": half.as_str() }),
         )?;
         answer

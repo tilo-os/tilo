@@ -50,7 +50,7 @@ pub(crate) fn kept(resources: &PersonResources, person: &[u8; 32]) -> Vec<Person
                     )
                 });
             let mut person_device = PersonDevice::new(device.clone(), about);
-            person_device.unlock = crate::network::kept_unlock(&state, kept, &device);
+            person_device.unlock = crate::network::kept_unlock(&state, kept, &cert.device_public_key);
             Some(person_device)
         })
         .collect()

@@ -95,12 +95,12 @@ pub const ENDORSE_IMAGE: &str = "endorseImage";
 /// the key, here where this device keeps it and otherwise at a device of theirs that does, which
 /// asks them ([`CERTIFY_KEY`]); the daemon seals the half to their secret-sync key and publishes
 /// the enrolment in its own entry of their devices. Answers `enrolled` (the enrolment response,
-/// postcard in hex), or refuses with [`ENROL_DECLINED`] or [`NO_ROOT_DEVICE`].
-pub const ENROL_BOOT: &str = "enrolBoot";
-/// The refusal [`ENROL_BOOT`] ends with when the person said no at their device: the boot key is
+/// postcard in hex), or refuses with [`UNLOCK_DECLINED`] or [`NO_ROOT_DEVICE`].
+pub const SET_UP_UNLOCK: &str = "setUpUnlock";
+/// The refusal [`SET_UP_UNLOCK`] ends with when the person said no at their device: the boot key is
 /// not certified, and the disk stays as locked as it was.
-pub const ENROL_DECLINED: &str = "enrol-declined";
-/// The refusal [`ENROL_BOOT`] ends with when this device keeps no root of the person's and none of
+pub const UNLOCK_DECLINED: &str = "unlock-declined";
+/// The refusal [`SET_UP_UNLOCK`] ends with when this device keeps no root of the person's and none of
 /// their devices that keeps it could be reached to ask them.
 pub const NO_ROOT_DEVICE: &str = "no-root-device";
 /// The action the device's shell runtime asks its daemon: carry out `command` (a resource store

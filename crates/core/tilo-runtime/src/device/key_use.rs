@@ -10,7 +10,7 @@
 //!   the device's identity;
 //! - [`ENDORSE_IMAGE`]: an image endorsement the device signs, under the image-signing grant its
 //!   person's root gave it;
-//! - [`ENROL_BOOT`]: this device's boot key enrolled for disk unlock, certified by the person's
+//! - [`SET_UP_UNLOCK`]: this device's boot key enrolled for disk unlock, certified by the person's
 //!   root where it is kept and asked of them there;
 //! - [`SIGN`]: a message the device signs, for a program that proves it is this device.
 //!
@@ -23,7 +23,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::{ActionParam, ParamType};
 use tilo_device_identity::login::{
-    CHECK_CALLER_PROOF, ENDORSE_IMAGE, ENROL_BOOT, MALFORMED_ASK, OPEN_VAULT, SEAL_VAULT,
+    CHECK_CALLER_PROOF, ENDORSE_IMAGE, SET_UP_UNLOCK, MALFORMED_ASK, OPEN_VAULT, SEAL_VAULT,
     SEALED_BY_ANOTHER_KEY, SIGN,
 };
 use tilo_user_identity::ImageEndorsement;
@@ -36,7 +36,7 @@ pub(crate) const FOR_A_PERSON: [&str; 4] = [SEAL_VAULT, OPEN_VAULT, CHECK_CALLER
 
 /// The actions the device's own system asks (root, or the daemon's own account): the boot chain's
 /// and the update's.
-pub(crate) const FOR_THE_SYSTEM: [&str; 2] = [ENDORSE_IMAGE, ENROL_BOOT];
+pub(crate) const FOR_THE_SYSTEM: [&str; 2] = [ENDORSE_IMAGE, SET_UP_UNLOCK];
 
 /// Whether `action` is one of what the device key does.
 pub(crate) fn asked_of_the_key(action: &str) -> bool {
@@ -228,7 +228,7 @@ pub(crate) fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
             )],
         ),
         descriptor(
-            ENROL_BOOT,
+            SET_UP_UNLOCK,
             "Enrol this computer's disk unlock",
             "Have the person's identity certify this computer's boot key, asking them at a device \
              of theirs that keeps it, and publish its unlock to their devices.",

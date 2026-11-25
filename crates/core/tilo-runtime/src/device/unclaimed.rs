@@ -25,7 +25,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, ENROL_BOOT, FOUND, LOG_IN, PROVIDER, Place,
+    ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, SET_UP_UNLOCK, FOUND, LOG_IN, PROVIDER, Place,
     RESOURCE, RESTORE,
 };
 use tilo_lock::MutexRecover as _;
@@ -87,7 +87,7 @@ pub(crate) struct Founding {
     /// The person's services, and the person they serve, once they run.
     serving: std::sync::Mutex<Option<([u8; 32], Arc<super::ticket::Tickets>)>>,
     /// What enrols this device's boot key, once the person's services run.
-    enrolling: std::sync::Mutex<Option<Arc<super::boot_enrol::BootEnrolment>>>,
+    enrolling: std::sync::Mutex<Option<Arc<super::boot_unlock::BootUnlock>>>,
     /// Told when they do.
     announced: tokio::sync::Notify,
     /// The calls the device took while it had no person: its services answer them too, so a
@@ -110,7 +110,7 @@ impl Founding {
     }
 
     /// Have `enrolling` enrol this device's boot key from now on: the person's services run.
-    pub(crate) fn enrolling(&self, enrolling: Arc<super::boot_enrol::BootEnrolment>) {
+    pub(crate) fn enrolling(&self, enrolling: Arc<super::boot_unlock::BootUnlock>) {
         *self.enrolling.lock_recover() = Some(enrolling);
     }
 
@@ -819,7 +819,7 @@ impl DeviceOnly {
             Ok(value) => succeeded(invocation, value),
             Err(refusal) => failed_as(invocation, refusal.code, &refusal.message),
         };
-        if action != ENROL_BOOT {
+        if action != SET_UP_UNLOCK {
             let update = ended(super::key_use::answer(action, &args, &self.0.key));
             return Pending::ready(Ok(self.keep(invocation, update)));
         }
