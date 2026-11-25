@@ -444,6 +444,18 @@ impl ActionContext {
         self.invoker.as_ref().map(|invoker| &invoker.acting)
     }
 
+    /// The message of a change `acting` made to a record directly, naming no finer action than
+    /// an edit of the whole record: what a device commits of its own edit, naming who made it as
+    /// every change a device signs must. Every receiver decides it as `acting`'s, never as its
+    /// signer's alone.
+    #[must_use]
+    pub fn whole_edit_by(acting: &Acting) -> String {
+        Self::default()
+            .with_invoker(ActionInvoker::admitted(acting))
+            .change_message()
+            .unwrap_or_default()
+    }
+
     /// Encode into the Automerge change message. Returning `None` keeps an
     /// empty/default context from displacing an app's ordinary history path.
     pub fn change_message(&self) -> Option<String> {

@@ -346,7 +346,9 @@ tilo_test_env::scenario! {
 }
 
 /// A framework change names no one: it is decided as whoever signed it, here an agent signing
-/// with its own key, and its grants are the agent's, never the person's it works for.
+/// with its own key, and its grants are the agent's, never the person's it works for. Sealed, a
+/// receiver reads only its claims: a claim that names no one is refused, and the same edit naming
+/// who made it is decided as them.
 #[test]
 fn a_framework_change_signed_by_an_agent_is_decided_as_the_agent() {
     let mut doc = AutoCommit::new();
@@ -384,19 +386,32 @@ fn a_framework_change_signed_by_an_agent_is_decided_as_the_agent() {
     assert_eq!(decided, Ok(Receipt::Admit));
     assert_eq!(asked.borrow().clone(), vec![Some(agent.clone())]);
 
-    // Sealed, a receiver that has not opened it reads the same from its claim: the signer's.
+    // Sealed, a receiver that has not opened it reads only its claims: one that names no one is
+    // refused, whoever signed it.
+    let decide_sealed = |op: &collab_types::op::SignedOp| {
+        let (sealed, _) = sealed(op);
+        decide_opened(
+            (&sealed, None),
+            &tree(),
+            (None, None, None),
+            None,
+            &Surfaces::default(),
+            &allows,
+            (None, Some(&agent)),
+        )
+    };
+    assert_eq!(decide_sealed(&op), Err(ReceiptRefusal::NoInvoker));
+
+    // The same edit naming who made it is decided as them.
     asked.borrow_mut().clear();
-    let (sealed, _) = sealed(&op);
-    let decided = decide_opened(
-        (&sealed, None),
-        &tree(),
-        (None, None, None),
-        None,
-        &Surfaces::default(),
-        &allows,
-        (None, Some(&agent)),
-    );
-    assert_eq!(decided, Ok(Receipt::Admit));
+    let mut named = AutoCommit::new();
+    named.put(ROOT, "notes.md", "hello").unwrap();
+    named.commit_with(CommitOptions::default().with_message(ActionContext::whole_edit_by(&agent)));
+    let mut op = op;
+    op.payload = collab_types::op::DocumentMutation::Incremental(named.save_after(&[]))
+        .encode()
+        .unwrap();
+    assert_eq!(decide_sealed(&op), Ok(Receipt::Admit));
     assert_eq!(asked.into_inner(), vec![Some(agent)]);
 }
 

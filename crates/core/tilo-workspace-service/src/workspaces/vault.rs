@@ -499,9 +499,12 @@ impl Workspaces {
         let to = keys(branch, true)
             .await
             .map_err(|why| format!("the branch's vault keys: {why}"))?;
+        // The host carries the vault over of itself: its changes name the person it acts for, as
+        // every change names who made it.
         let mut replica = in_passwords(
             Replica::<WorkspaceVaultEntries>::load(document).map_err(|error| error.to_string())?,
-        );
+        )
+        .as_invoker_acting(self.acting_or_own(None));
         replica.doc_mut().set_actor(automerge::ActorId::from(
             self.inner.host.cert.device_public_key.to_vec(),
         ));

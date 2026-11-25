@@ -269,7 +269,7 @@ where
     if automerge::transaction::Transactable::pending_ops(&doc) != 0 {
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                .with_message(super::authored::own_edit(&workspaces.signing_device().cert)),
         );
     }
     let founding = heads.is_none();

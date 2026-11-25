@@ -262,10 +262,12 @@ mod tests {
         document
             .put(automerge::ROOT, "front", "Elsewhere")
             .expect("the layout's front moves");
-        // Committed as the desktop commits its own edits: a native change, its signer's.
+        // Committed as the device's own edit, naming the person it is for: a change that names
+        // no one is refused.
         document.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            automerge::transaction::CommitOptions::default().with_message(
+                crate::workspaces::authored::own_edit(&workspaces.signing_device().cert),
+            ),
         );
         workspaces
             .own_write(

@@ -632,10 +632,12 @@ impl Workspaces {
             }
         };
         let result = change(&mut doc)?;
+        // This device's own edit of the record, naming the person it acts for.
         if automerge::transaction::Transactable::pending_ops(&doc) != 0 {
             doc.commit_with(
-                automerge::transaction::CommitOptions::default()
-                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                automerge::transaction::CommitOptions::default().with_message(
+                    crate::workspaces::authored::own_edit(&self.signing_device().cert),
+                ),
             );
         }
         if doc.get_heads() == heads {

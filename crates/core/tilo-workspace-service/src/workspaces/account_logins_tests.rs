@@ -239,8 +239,10 @@ impl Members {
         )
         .unwrap();
         let saved = {
+            // Settings names the owner as who added it, as every change names who made it.
             let mut replica = Replica::<AccountList>::from_doc(doc)
-                .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
+                .in_app(accounts::person::ACCOUNTS_OWNER, "Settings")
+                .as_invoker_acting(self.owner.acting_or_own(None));
             replica
                 .apply_confirmed(AccountList::saving(account))
                 .unwrap();

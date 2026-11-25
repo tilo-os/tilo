@@ -74,7 +74,7 @@ impl Workspaces {
                     let (result, written) = record.write(
                         candidate,
                         genesis,
-                        change,
+                        (&own_acting(&self.inner.host.cert), change),
                         (&self.inner.host.key, system_time(now)),
                     )?;
                     let published = !written.is_empty();
@@ -94,6 +94,17 @@ impl Workspaces {
         self.wrote(workspace, app, name);
         Ok(result)
     }
+}
+
+/// Who a device's own write names as its invoker: the person `cert` is for, as every receiver
+/// reads the device that signed it. A change names who made it, a device's own included.
+pub(in crate::workspaces) fn own_acting(cert: &DeviceCert) -> tilo_action_policy::Acting {
+    tilo_action_policy::Acting::person(hex::encode(cert.user_public_key))
+}
+
+/// The message of `cert`'s own direct edit of a record ([`own_acting`]).
+pub(in crate::workspaces) fn own_edit(cert: &DeviceCert) -> String {
+    tilo_actions::ActionContext::whole_edit_by(&own_acting(cert))
 }
 
 /// A record a change of the workspace writes within itself, with the keys it
@@ -161,7 +172,7 @@ impl Workspaces {
 
 impl HeldRecord {
     /// Make `change` to the record as `candidate` holds it, or to `genesis`
-    /// (else nothing) while it holds none, and publish what it added into
+    /// (else nothing) while it holds none, as `by`'s edit, and publish what it added into
     /// `candidate`, signed with `key` at `now`: the record is committed with
     /// whatever else `candidate` changes, or not at all. An existing record
     /// keeps its graph and gains only the change. Answers what `change`
@@ -176,7 +187,10 @@ impl HeldRecord {
         &self,
         candidate: &mut StatePeer,
         genesis: Option<Box<automerge::AutoCommit>>,
-        change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
+        (by, change): (
+            &tilo_action_policy::Acting,
+            impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
+        ),
         (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),
     ) -> Result<(R, Vec<NeighbourMsg>), String> {
         let (workspace, app, name) = (
@@ -211,7 +225,7 @@ impl HeldRecord {
         if automerge::transaction::Transactable::pending_ops(&document) != 0 {
             document.commit_with(
                 automerge::transaction::CommitOptions::default()
-                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                    .with_message(tilo_actions::ActionContext::whole_edit_by(by)),
             );
         }
         if heads.is_none() && !founds_as_read(&document, (app, name), workspace) {

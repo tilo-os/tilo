@@ -1483,10 +1483,12 @@ async fn a_member_copies_layout_write_is_read_back_and_survives_a_restart() {
     layout
         .put(automerge::ROOT, "front", "Moved")
         .expect("the layout's front moves");
-    // Committed as the desktop commits its own edits: a native change, its signer's.
+    // Committed as the device's own edit, naming the person it is for: a change that names no
+    // one is refused.
     layout.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        automerge::transaction::CommitOptions::default().with_message(
+            crate::workspaces::authored::own_edit(&copies.signing_device().cert),
+        ),
     );
     copies
         .own_write(
