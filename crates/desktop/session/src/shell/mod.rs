@@ -137,6 +137,14 @@ pub(crate) struct Shell {
     /// Their own workspace's revision the shell's resources were last taken in at: an unchanged
     /// one is not read again, which is what every pass runs.
     record_synced: std::cell::Cell<Option<u64>>,
+    /// Whether the shell's records are the person's, kept in their own workspace by the device's
+    /// daemon: the installed shell, which the daemon runs too, on a session the daemon started.
+    /// A change of them is then the person's call of the shell's action on the device's dispatch
+    /// ([`Self::own_calls`]); without one the session keeps them for itself.
+    kept_elsewhere: bool,
+    /// What the device's dispatch refused of those calls, as the calls settle off the loop: said
+    /// with the shell's other refusals on the next pass.
+    dispatch_refusals: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// The theme the person's appearance settings make: every part draws in it, and a part made for
     /// a display plugged in later starts in it.
     theme: ui::Theme,
@@ -203,11 +211,15 @@ impl Shell {
         wells: Option<ui::widget::Wells>,
         theme: ui::Theme,
         state: Option<&std::path::Path>,
+        daemon: bool,
     ) -> Result<Self, String> {
         // What the person waits for before the shell can draw: its package compiled, its record
         // read and its views made. The frame path after this is each frame's own cost.
         tilo_startup_metrics::mark("shell-build-start");
-        let packages = compile()?;
+        let (packages, installed) = shell_packages()?;
+        // The daemon runs the shell's actions from the installed package; the build's own copy it
+        // has none of.
+        let kept_elsewhere = daemon && installed;
         let app = packages
             .last()
             .map(|compiled| compiled.meta.app.clone())
@@ -216,7 +228,7 @@ impl Shell {
         // The shell's own record is the person's, kept where every app's own record of theirs is
         // kept and carried to their other devices as one: read back from what an earlier session
         // kept, or the shell's defaults on a device that never showed the shell.
-        let record = crate::shell_document::ShellRecord::open(state);
+        let record = crate::shell_document::ShellRecord::open(state, kept_elsewhere);
         let mut shell = Self {
             lists,
             announced: std::cell::RefCell::new(std::collections::BTreeSet::new()),
@@ -240,6 +252,8 @@ impl Shell {
             wells,
             services_seen: None,
             record_synced: std::cell::Cell::new(None),
+            kept_elsewhere,
+            dispatch_refusals: std::sync::Arc::default(),
             theme,
         };
         shell.person = shell.lists.person.clone();
@@ -392,6 +406,7 @@ impl Shell {
                 // The first part of the shell makes the shell's roots and seeds them; every other
                 // display's part draws the ones the shell already has.
                 seed: self.parts.is_empty(),
+                kept_elsewhere: self.kept_elsewhere,
             },
             scale,
             std::sync::Arc::new(move || wake.wake_by_ref()),
@@ -1062,6 +1077,69 @@ impl Shell {
             .flat_map(|(_, part)| part.borrow().refusals().to_vec())
             .chain(self.link.refused())
             .collect()
+    }
+
+    /// Run the person's changes of the shell's own records on the device's dispatch, as their own
+    /// calls of the shell's actions in `workspace`, the one in front: the call an agent or a
+    /// press on their desktop page makes. The daemon runs each on the record in their own
+    /// workspace and keeps who made it; the shell draws the change as it takes the record back
+    /// in ([`Self::sync_resource`]). Nothing waits for the answer; what the dispatch refuses is
+    /// said with the shell's refusals.
+    pub(crate) fn own_calls(
+        &self,
+        daemon: &tilo_session_client::daemon_documents::DaemonShell,
+        workspace: &str,
+    ) {
+        for why in std::mem::take(
+            &mut *self
+                .dispatch_refusals
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        ) {
+            self.link.refuse(why);
+        }
+        for (address, arguments) in self.link.take_own_calls() {
+            if workspace.is_empty() {
+                self.link.refuse(format!(
+                    "{} on {}: no workspace is in front to change it in",
+                    address.action, address.resource
+                ));
+                continue;
+            }
+            let request = tilo_actions::remote::InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: tilo_actions::remote::application_provider_token(
+                        workspace, &self.app,
+                    ),
+                    address: address.clone(),
+                },
+                argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            };
+            let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+            let (daemon_at, workspace) = (daemon.clone(), workspace.to_owned());
+            let refusals = std::sync::Arc::clone(&self.dispatch_refusals);
+            daemon.runtime().spawn(async move {
+                if let Err(why) = daemon_at.dispatch(Some(&workspace), &message).await {
+                    tracing::warn!(
+                        action = %address.action,
+                        %why,
+                        "the person's change of their shell was refused"
+                    );
+                    refusals
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(format!("{} on {}: {why}", address.action, address.resource));
+                }
+            });
+        }
     }
 
     /// Where the shell's control named `name` stands, logical `(x, y, w, h)` : the first part that
@@ -1841,15 +1919,18 @@ impl crate::Session {
         // note the block each card keeps this pass, whether or not the shell asked anything of
         // the session, and one the shell shows none for has its app draw the activity itself.
         self.shared.live.place_drawn(|name| shell.control(name));
-        if !shell.has_asks() {
-            return Ok(());
-        }
-        let (published, search) = (&self.shared.published, &self.shared.search);
         let workspace = self.shared.handle.read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
                 .unwrap_or_default()
         });
+        // What the person changed of the shell's own records: their calls of its actions where
+        // their workspace keeps them.
+        shell.own_calls(&self.shared.daemon, &workspace);
+        if !shell.has_asks() {
+            return Ok(());
+        }
+        let (published, search) = (&self.shared.published, &self.shared.search);
         let resources = published.resources();
         // Where a press that waits for the person reaches the device's dispatch: it keeps the call
         // as their asked record, which the shell draws.

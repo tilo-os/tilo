@@ -1,22 +1,22 @@
-//! The shell's own resources, kept as the person's: where they live on this device, and how they
-//! reach the person's other devices.
+//! The shell's own resources, kept as the person's: where they live, and how a change of them is
+//! made.
 //!
 //! The shell keeps the person's shell choices in their own workspace (`resources: .own`): the
-//! style, the bar and the dock, the strips' and the frames' settings, and the person's layout.
-//! They are the person's as an app's own resources are, so they are kept beside those: a store of
-//! the shell's own, in the directory the launcher binds into every app as `TILO_PERSON_DIR`,
-//! which writes each change as the shell's parts make it.
+//! style, the bar and the dock, the strips' and the frames' settings. The device's daemon keeps
+//! that workspace and carries it to the person's other devices. A session the daemon started,
+//! running the installed shell, holds no copy of its own: the store its parts draw from is what
+//! the daemon holds of the shell's documents, taken in as it moves (`Shell::sync_resource`), and a
+//! change the person makes is their call of the shell's action on the device's dispatch
+//! (`Shell::own_calls`), the same call an agent's `shell#show-style` or a press on their desktop
+//! page makes. So the person's shell is one set of documents, whoever changes it, wherever.
 //!
-//! Between the person's devices they travel in their own workspace
-//! ([`crate::PersonResources`]), which the device's daemon keeps: what it holds of the shell's
-//! documents is merged here (`Shell::sync_resource`), and the session never writes it. Each
-//! document is named there as the store names it here, under the shell's app: the name the
-//! device's dispatch writes when it runs the shell's actions (an agent's `shell#show-style`, a
-//! press on a desktop page), so the person's shell is one set of documents, whoever changes it.
-//!
-//! A store this build cannot read is never written over: the session keeps the shell's resources
-//! in memory for that session alone and says so (`ShellRecord::take_refusal`), so a person is
-//! never shown a shell whose choices were quietly reset.
+//! A session no daemon started, or one showing this build's own copy of the shell (which the
+//! daemon does not run), keeps the shell's resources for itself: on this device, in the directory
+//! the launcher binds into every app as `TILO_PERSON_DIR`, or in memory for a session that keeps
+//! nothing (a test's, a screenshot's). A store there this build cannot read is never written over:
+//! the session keeps the resources in memory for that session alone and says so
+//! (`ShellRecord::take_refusal`), so a person is never shown a shell whose choices were quietly
+//! reset.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -37,6 +37,9 @@ pub(crate) struct ShellRecord {
     path: Option<PathBuf>,
     /// Why the store on disk was not opened, once: the person is told, and is not told again.
     refused: RefCell<Option<String>>,
+    /// Whether the store only shows what the person's workspace holds: a document taken in
+    /// stands in place of the defaults this session drew before it came, never merged with them.
+    shows_theirs: bool,
 }
 
 impl ShellRecord {
@@ -45,7 +48,16 @@ impl ShellRecord {
     /// read back from what an earlier session kept on this device; none on a device that never
     /// showed the shell, whose defaults this session's first part seeds by the package's
     /// migrations.
-    pub(crate) fn open(state: Option<&Path>) -> Self {
+    ///
+    /// `kept_elsewhere`: the person's workspace keeps them, and the store is only what this
+    /// session draws of it.
+    pub(crate) fn open(state: Option<&Path>, kept_elsewhere: bool) -> Self {
+        if kept_elsewhere {
+            return Self {
+                shows_theirs: true,
+                ..Self::keeping(LocalPort::in_memory(), None, None)
+            };
+        }
         let Some(dir) = state.and_then(|_| person_dir()) else {
             return Self::keeping(LocalPort::in_memory(), None, None);
         };
@@ -71,6 +83,7 @@ impl ShellRecord {
             store,
             path,
             refused: RefCell::new(refused),
+            shows_theirs: false,
         }
     }
 
@@ -94,7 +107,12 @@ impl ShellRecord {
     /// Take in `theirs`, what another of the person's devices holds of the document `doc`, so
     /// this session's shell draws it. Whether it changed.
     pub(crate) fn take_in(&self, doc: &str, theirs: &[u8]) -> bool {
-        match self.port.merge(doc, theirs) {
+        let taken = if self.shows_theirs {
+            self.port.replace(doc, theirs)
+        } else {
+            self.port.merge(doc, theirs)
+        };
+        match taken {
             Ok(changed) => {
                 if changed {
                     // What was read of it before is not what it holds now.

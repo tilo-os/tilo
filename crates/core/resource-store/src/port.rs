@@ -192,6 +192,29 @@ impl LocalPort {
         Ok(true)
     }
 
+    /// Hold `theirs` as the document `doc` (whole, as [`Self::save`] writes it), in place of
+    /// what this store held of it: for a store that only shows another replica's copy, whose own
+    /// writes (the defaults it drew before that copy came) are not to be merged into it. Whether
+    /// the document changed.
+    ///
+    /// # Errors
+    /// When `theirs` is no document, or it cannot be kept.
+    pub fn replace(&self, doc: &str, theirs: &[u8]) -> Result<bool, String> {
+        let held = automerge::Automerge::load(theirs).map_err(|error| error.to_string())?;
+        if self.heads(doc) == held.get_heads() {
+            return Ok(false);
+        }
+        self.store
+            .borrow_mut()
+            .load(doc, theirs)
+            .map_err(|error| error.to_string())?;
+        if let Some(dir) = &self.dir {
+            std::fs::write(dir.join(format!("{}.changes", escape(doc))), theirs)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(true)
+    }
+
     fn keep(&self, written: &[crate::Written]) -> Result<(), String> {
         use std::io::Write as _;
         let Some(dir) = &self.dir else {

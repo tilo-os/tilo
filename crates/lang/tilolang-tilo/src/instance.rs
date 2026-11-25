@@ -441,6 +441,11 @@ pub struct Instance {
     /// The actions the person chose at the window (a press, the palette), with the press each
     /// is, in order, until the host runs them as the person's own steps.
     chosen: VecDeque<(u64, ActionAddress, Option<String>)>,
+    /// Whether a press of the app's own action on one of its own roots is the host's to run
+    /// elsewhere ([`Self::run_own_records_elsewhere`]) rather than here.
+    own_records_elsewhere: bool,
+    /// Those presses, in order, until the host runs them ([`Self::take_own_record_calls`]).
+    own_record_calls: Vec<(ActionAddress, serde_json::Map<String, serde_json::Value>)>,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
     /// The staged scenario's sample data is dated before the story it dates
@@ -569,6 +574,8 @@ impl Instance {
             history: Vec::new(),
             seen_offer: false,
             chosen: VecDeque::new(),
+            own_records_elsewhere: false,
+            own_record_calls: Vec::new(),
             staged: None,
             story: false,
             stage_failed: None,
@@ -966,6 +973,45 @@ impl Instance {
     /// the call `calls` names for it.
     pub fn set_press_calls(&mut self, calls: Rc<dyn PressCalls>) {
         self.press_calls = Some(calls);
+    }
+
+    /// Run no press of the app's own action on one of its own roots here: the host keeps the
+    /// app's records in the person's workspace and runs each such press there, as the person's
+    /// call of that action ([`Self::take_own_record_calls`]). What it changes comes back as the
+    /// store moves, so every device of theirs, an agent and a web page change the one record.
+    pub fn run_own_records_elsewhere(&mut self) {
+        self.own_records_elsewhere = true;
+    }
+
+    /// The presses of the app's own actions on its own roots since the host last took them, in
+    /// order: each the address its root publishes the action at and its arguments by name.
+    pub fn take_own_record_calls(
+        &mut self,
+    ) -> Vec<(ActionAddress, serde_json::Map<String, serde_json::Value>)> {
+        std::mem::take(&mut self.own_record_calls)
+    }
+
+    /// The call `aref` is on the dispatch when it is the app's own action on one of its own
+    /// roots that changes nothing but the app's records (`press::own_record_call`).
+    #[must_use]
+    pub fn own_record_call(
+        &self,
+        aref: &ActionRef,
+    ) -> Option<(ActionAddress, serde_json::Map<String, serde_json::Value>)> {
+        press::own_record_call(&self.host()?, &self.app, aref)
+    }
+
+    /// Whether a press of `aref` was handed to the host to run elsewhere: the app's own action on
+    /// its own records, while the host runs those where the records are kept.
+    fn handed_elsewhere(&mut self, aref: &ActionRef) -> bool {
+        if !self.own_records_elsewhere {
+            return false;
+        }
+        let Some(call) = self.own_record_call(aref) else {
+            return false;
+        };
+        self.own_record_calls.push(call);
+        true
     }
 
     /// The presses that ran as calls since the host last took them, in order: the host records
@@ -2124,14 +2170,22 @@ impl Instance {
         // A check the project's host approved runs only for an invocation the workspace
         // dispatched, which its invoker can follow and stop: a press of it goes through the
         // dispatch, as the palette's does, rather than running here.
-        if let Some((address, argument)) = view
+        let fired_action = view
             .borrow()
             .fired_action(key, name, value.as_ref(), held)
             .ok()
-            .flatten()
-            .and_then(|aref| self.dispatched_check(&aref))
+            .flatten();
+        if let Some((address, argument)) = fired_action
+            .as_ref()
+            .and_then(|aref| self.dispatched_check(aref))
         {
             self.chosen.push_back((self.fired, address, Some(argument)));
+            return Ok(());
+        }
+        if fired_action
+            .as_ref()
+            .is_some_and(|aref| self.handed_elsewhere(aref))
+        {
             return Ok(());
         }
         // What the action is run on is read before it runs: a destructive one takes it away.
@@ -2380,6 +2434,13 @@ impl Instance {
             }
             self.out.push(ToUi::Form(None));
             self.chosen.push_back((self.fired, address, Some(argument)));
+            return Ok(());
+        }
+        if self.handed_elsewhere(&aref) {
+            if let Some(pending) = self.form.take() {
+                pending.forget();
+            }
+            self.out.push(ToUi::Form(None));
             return Ok(());
         }
         let Some(pending) = self.form.as_mut().filter(|open| open.id == id) else {

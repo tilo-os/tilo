@@ -56,6 +56,21 @@ impl ShellPart {
         for (param, argument) in declared.params.iter().skip(1).zip(arguments) {
             values.push(Self::case_value(meta, &param.ty, &argument)?);
         }
+        // Where the person's workspace keeps the shell's records, the action runs there, as the
+        // person's call: the same call their press of its control makes.
+        if self.kept_elsewhere {
+            let aref = tilolang_tilo::runtime::ActionRef {
+                action: declared.id.clone(),
+                args: values.clone(),
+                author: None,
+                from: None,
+            };
+            if let Some(call) = self.instance.own_record_call(&aref) {
+                self.origin.borrow().link.own_call(call);
+                self.again = true;
+                return Ok(());
+            }
+        }
         let outcome = host
             .runtime()
             .invoke_action(host.viewer(), (declared.id.as_str(), values))

@@ -1267,6 +1267,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
             link: Rc::clone(&link),
             store: tilolang_tilo::resources::ResourceStore::in_memory(),
             seed: true,
+            kept_elsewhere: false,
         },
         1.0,
         std::sync::Arc::new(|| {}),
@@ -1895,4 +1896,64 @@ fn the_mirror_follows_the_session_s_order_of_its_items() {
     assert!(sync(&["b", "c", "a"]).is_empty(), "the mirror is in order");
     // A new one before the last: it and the one after it go in again.
     assert_eq!(sync(&["b", "d", "c", "a"]), ["-c", "-a", "+d", "+c", "+a"]);
+}
+
+/// Where the person's workspace keeps the shell's records, a change of them is the person's call
+/// of the shell's action on its root there, handed to the session once, so the choice is the
+/// workspace's, the one every device of theirs and their agent read.
+#[test]
+fn a_choice_of_a_shell_kept_in_the_workspace_is_a_call_of_its_action_there() {
+    let packages = crate::shell::part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
+    let app = packages.last().unwrap().meta.app.clone();
+    let link = Rc::new(SessionLink::default());
+    crate::shell::part::tests_support::publish_platform_roots(&link);
+    link.publish_layout(reading());
+    let mut part = ShellPart::new(
+        ShellIdentity {
+            app: &app,
+            packages,
+            person: "Pat",
+            link: Rc::clone(&link),
+            store: tilolang_tilo::resources::ResourceStore::in_memory(),
+            seed: true,
+            kept_elsewhere: true,
+        },
+        1.0,
+        std::sync::Arc::new(|| {}),
+        None,
+    );
+    part.prepare_frame();
+    part.run_action("set_frames_snap", vec![serde_json::json!(false)])
+        .unwrap_or_else(|why| panic!("{why}"));
+    part.run_action("dock_on", vec![serde_json::json!("left")])
+        .unwrap_or_else(|why| panic!("{why}"));
+    let calls = link.take_own_calls();
+    let named: Vec<(String, String, serde_json::Value)> = calls
+        .into_iter()
+        .map(|(address, arguments)| {
+            (
+                address.resource.clone(),
+                address.action.clone(),
+                serde_json::Value::Object(arguments),
+            )
+        })
+        .collect();
+    assert_eq!(named.len(), 2, "both choices are calls: {named:?}");
+    assert!(
+        named
+            .iter()
+            .all(|(resource, _, _)| resource.starts_with("tl:so.tilo.shell:root-")),
+        "each call is on the shell's root as it publishes it: {named:?}"
+    );
+    assert_eq!(named[0].1, "set_frames_snap");
+    assert_eq!(named[0].2, serde_json::json!({"on": false}));
+    assert_eq!(named[1].1, "dock_on");
+    assert!(
+        named[1].2.get("edge").is_some(),
+        "the edge goes by its name: {named:?}"
+    );
+    for _ in 0..2 {
+        part.prepare_frame();
+    }
+    assert!(link.take_own_calls().is_empty(), "a call is handed once");
 }

@@ -330,6 +330,10 @@ enum Op {
     Says,
     /// The person's and the device's settings as this session reads them.
     Settings,
+    /// Run the shell's own action `action` with `arguments`, as pressing its control does.
+    ShellAction,
+    /// The shell's own field `field` as the shell draws it now.
+    ShellSetting,
     SearchRows,
     Snapshot,
     StateDump,
@@ -343,7 +347,7 @@ enum Op {
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 28] = [
+    const ALL: [Self; 30] = [
         Self::ClickAt,
         Self::ClickNamed,
         Self::Drag,
@@ -363,6 +367,8 @@ impl Op {
         Self::Scroll,
         Self::Says,
         Self::Settings,
+        Self::ShellAction,
+        Self::ShellSetting,
         Self::SearchRows,
         Self::Snapshot,
         Self::StateDump,
@@ -394,6 +400,8 @@ impl Op {
             "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
             "settings" => Self::Settings,
+            "shell_action" => Self::ShellAction,
+            "shell_setting" => Self::ShellSetting,
             "scroll" => Self::Scroll,
             "says" => Self::Says,
             "search_rows" => Self::SearchRows,
@@ -429,6 +437,8 @@ impl Op {
             Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
             Self::Settings => "settings",
+            Self::ShellAction => "shell_action",
+            Self::ShellSetting => "shell_setting",
             Self::Scroll => "scroll",
             Self::Says => "says",
             Self::SearchRows => "search_rows",
@@ -1153,6 +1163,30 @@ fn asked_of_shell(
         Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
         Op::StateDump => shown(ctx, session.handle.read(|tree| state_dump(tree, session))),
         Op::Settings => json!({"answer": settings_store::load()}),
+        Op::ShellAction => {
+            let Some(action) = request.get("action").and_then(Json::as_str) else {
+                return Some(refusal("parse_error", "`shell_action` takes `action`"));
+            };
+            let arguments = request
+                .get("arguments")
+                .and_then(Json::as_array)
+                .cloned()
+                .unwrap_or_default();
+            match session
+                .shell
+                .map(|shell| shell.run_action(action, arguments))
+            {
+                Some(Ok(())) => json!({"ok": {}}),
+                Some(Err(why)) => return Some(refusal("refused", &why)),
+                None => return Some(refusal("unavailable", "this session shows no shell")),
+            }
+        }
+        Op::ShellSetting => {
+            let Some(field) = request.get("field").and_then(Json::as_str) else {
+                return Some(refusal("parse_error", "`shell_setting` takes `field`"));
+            };
+            json!({"answer": session.shell.and_then(|shell| shell.record_setting(field))})
+        }
         Op::KeepingDevices => session
             .handle
             .read(|tree| state::keeping_devices(tree, session, ctx)),

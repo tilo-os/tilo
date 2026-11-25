@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use serde_json::Value as Json;
+use tilo_actions::ActionAddress;
 use tilo_session_core::surface::{CursorIcon, KeyClaim, SurfaceKey};
 use tilo_session_core::surface::{ShellSurface, SurfaceIme, SurfaceLayer, SurfaceTextInput};
 
@@ -199,6 +200,11 @@ pub struct SessionLink {
     /// What the shell asked, each with the person's press it answered, when one did: the
     /// compositor's serial, under which the session runs it ([`Self::serve`]).
     asked: RefCell<VecDeque<(Ask, Option<u32>)>>,
+    /// The person's changes of the shell's own records (`Shell`, `Viewing`) a part handed on, in
+    /// order: each the address its root publishes the shell's action at and its arguments by
+    /// name, which the session runs on the device's dispatch as the person
+    /// ([`SessionLink::take_own_calls`]).
+    own_calls: RefCell<Vec<(ActionAddress, serde_json::Map<String, serde_json::Value>)>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
     served: Cell<u64>,
@@ -279,7 +285,30 @@ impl SessionLink {
     /// Whether the shell asked something the session has not run yet.
     #[must_use]
     pub fn has_asks(&self) -> bool {
-        !self.asked.borrow().is_empty()
+        !self.asked.borrow().is_empty() || !self.own_calls.borrow().is_empty()
+    }
+
+    /// The person changed the shell's own records through `call`: the session runs it on the
+    /// device's dispatch on its next pass.
+    pub fn own_call(&self, call: (ActionAddress, serde_json::Map<String, serde_json::Value>)) {
+        self.own_calls.borrow_mut().push(call);
+        self.handed.set(self.handed.get().wrapping_add(1));
+    }
+
+    /// The person's changes of the shell's own records since the session last took them.
+    pub fn take_own_calls(
+        &self,
+    ) -> Vec<(ActionAddress, serde_json::Map<String, serde_json::Value>)> {
+        let calls = std::mem::take(&mut *self.own_calls.borrow_mut());
+        self.served
+            .set(self.served.get().wrapping_add(calls.len() as u64));
+        calls
+    }
+
+    /// What the device's dispatch refused of a change the person made of the shell's records, in
+    /// its words: kept with what the API refused, never a quiet drop.
+    pub fn refuse(&self, why: String) {
+        self.refused.borrow_mut().push(why);
     }
 
     /// The surface the shell shows now (`none` at rest): what the part covers the outputs for.
@@ -568,6 +597,9 @@ pub struct ShellPart {
     /// or of a connection the session admits (a REPL, an agent).
     moved: Watch,
     origin: Rc<RefCell<SessionOrigin>>,
+    /// Whether the shell's own records are kept in the person's workspace, so a change of them is
+    /// handed to the session to run there ([`ShellIdentity::kept_elsewhere`]).
+    kept_elsewhere: bool,
     /// Input reached the part since its last turn.
     input: bool,
     /// The person's press that input was, as the compositor serialed it: what the next turn
@@ -639,6 +671,10 @@ pub struct ShellIdentity<'a> {
     /// The first part of a shell makes its roots and seeds them; every other part finds them
     /// made, so one shell has one seed, however many displays draw it.
     pub seed: bool,
+    /// The shell's own records are the person's, kept in their own workspace by the device's
+    /// daemon: a press that changes them is the person's call of the shell's action there, handed
+    /// to the session ([`SessionLink::take_own_calls`]), never a write of this part's store.
+    pub kept_elsewhere: bool,
 }
 
 impl ShellPart {
@@ -665,6 +701,7 @@ impl ShellPart {
             link,
             store,
             seed,
+            kept_elsewhere,
         } = identity;
         let placement = Placement {
             origin: (0, 0),
@@ -711,6 +748,9 @@ impl ShellPart {
             Box::new(app_end),
         );
         instance.set_access(Rc::new(shell_access(app, person)));
+        if kept_elsewhere {
+            instance.run_own_records_elsewhere();
+        }
         let origin = Rc::new(RefCell::new(SessionOrigin::new(link)));
         instance.add_origin(Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin);
         instance.sync();
@@ -724,6 +764,7 @@ impl ShellPart {
             instance,
             moved: store.watch(),
             origin,
+            kept_elsewhere,
             input: false,
             press: None,
             again: true,
@@ -1239,6 +1280,7 @@ impl ShellPart {
                 window.flush();
             }
             let updated = self.instance.update();
+            self.hand_own_calls();
             self.work.updating = self.work.updating.saturating_add(lap(&mut at));
             let committed = self.commit();
             self.work.committing = self.work.committing.saturating_add(lap(&mut at));
@@ -1317,6 +1359,19 @@ impl ShellPart {
         self.again = !quiet;
         self.work.turning = self.work.turning.saturating_add(started.elapsed());
         shown
+    }
+
+    /// Hand the session what the person pressed of the shell's own records, to run on the
+    /// device's dispatch.
+    fn hand_own_calls(&mut self) {
+        let calls = self.instance.take_own_record_calls();
+        if calls.is_empty() {
+            return;
+        }
+        let origin = self.origin.borrow();
+        for call in calls {
+            origin.link.own_call(call);
+        }
     }
 
     /// What the shell's views said that a part has no window to show: a refusal is the

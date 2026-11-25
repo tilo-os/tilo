@@ -94,3 +94,64 @@ pub(super) fn begin(
         .begin(&address)
         .map(|invocation| (invocation, address))
 }
+
+/// The call a press of `aref` is on the dispatch, when it is `app`'s own action on one of its own
+/// roots (`root shell: Shell`) that changes nothing but the app's records: the action at the
+/// address the root is published under, with every argument after the root by its parameter's
+/// name, as an agent or another device calls it. `None` for any other action: one that reaches
+/// another app's actions or the session, one that reads this device (`uses files`), a scenario,
+/// or one on a resource the session keeps (`origin: session.layout`) or on a record that is not a
+/// root. A host that keeps the app's records in the person's workspace runs these there, so the
+/// press is the person's change of their own records wherever they look at them.
+pub(super) fn own_record_call(
+    host: &Host,
+    app: &str,
+    aref: &ActionRef,
+) -> Option<(ActionAddress, serde_json::Map<String, serde_json::Value>)> {
+    use crate::runtime::meta::{Ty, parse_ty};
+    let package = host.package(app)?;
+    let meta = &package.meta;
+    let declared = meta
+        .actions
+        .iter()
+        .find(|action| action.id == aref.action)?;
+    if declared.scenario
+        || !declared.uses.is_empty()
+        || declared.reaches.iter().any(|reach| !reach.own)
+    {
+        return None;
+    }
+    let Ok(Ty::Record(key)) = parse_ty(&declared.params.first()?.ty, &meta.app) else {
+        return None;
+    };
+    if key.app != meta.app {
+        return None;
+    }
+    let ty = meta.type_named(&key.name)?;
+    if ty.origin.is_some() {
+        return None;
+    }
+    let root = meta
+        .named_roots
+        .iter()
+        .find(|root| root.ty == ty.id && !root.device)?;
+    let resource = root
+        .published
+        .clone()
+        .unwrap_or_else(|| crate::publish::resource_id(app, &format!("root-{}", root.ty)));
+    let owner = |other: &str| {
+        host.package(other)
+            .map(|package| package.meta)
+            .ok_or_else(|| format!("no package of {other} is loaded"))
+    };
+    let mut arguments = serde_json::Map::new();
+    for (param, value) in declared.params.iter().zip(&aref.args).skip(1) {
+        let ty = parse_ty(&param.ty, &meta.app).ok()?;
+        let value = crate::host::argument_json(&owner, meta, value, &ty).ok()?;
+        arguments.insert(param.name.clone(), value);
+    }
+    Some((
+        ActionAddress::new(resource, declared.name.clone()),
+        arguments,
+    ))
+}

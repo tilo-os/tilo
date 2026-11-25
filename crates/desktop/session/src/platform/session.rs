@@ -1004,6 +1004,7 @@ impl Session {
             Some(wells),
             presentation.theme.clone(),
             options.state.as_deref(),
+            daemon_link.is_ok(),
         )
         .map_err(|why| {
             Error::Backend(tilo_compositor::BackendError(format!(

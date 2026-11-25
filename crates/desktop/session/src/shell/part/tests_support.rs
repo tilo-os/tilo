@@ -262,6 +262,7 @@ fn part_at(
             person: "Pat",
             link: Rc::clone(&link),
             seed: shared.is_none(),
+            kept_elsewhere: false,
             store: shared.unwrap_or_else(tilolang_tilo::resources::ResourceStore::in_memory),
         },
         1.0,

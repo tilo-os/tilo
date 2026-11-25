@@ -2,7 +2,9 @@
 //! other, also when both change something at the same moment, and what a machine keeps of its
 //! own stays on it. Two real sessions of one person, each changing its settings through the
 //! settings' own published setters (what Settings and Quick Settings run), and each read back
-//! as its session reads them, and a step the person took on one is taken back on both.
+//! as its session reads them, and a step the person took on one is taken back on both. Their
+//! shell's choices follow them too: what they set of their shell on one device is the shell their
+//! other device draws.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -18,7 +20,8 @@ use serde_json::{Value, json};
 use settings_store::{appearance, power};
 
 use crate::common::people::{
-    Device, at, set_setting, setting, setting_section, two_devices_of_one_person, waited,
+    Device, at, set_setting, setting, setting_section, two_devices_of_one_person,
+    two_devices_of_one_person_with_apps, waited,
 };
 
 /// What `device`'s session reads of `key`.
@@ -99,6 +102,64 @@ fn a_persons_settings_follow_them_and_a_machines_stay_on_it() {
             devices.iter().all(|device| {
                 read(device, &appearance::MODE).as_deref() == Some("dark")
                     && read(device, &appearance::HIGH_CONTRAST)
+            })
+        },
+    );
+}
+
+/// The shell's field `field` as `device`'s shell draws it now.
+fn shell_setting(device: &Device, field: &str) -> Value {
+    device.ask(&json!({"op": "shell_setting", "field": field}))["answer"].take()
+}
+
+/// Run the shell's own action `action` on `device`, as pressing its control there does.
+fn shell_action(device: &Device, action: &str, arguments: &Value) {
+    let answer =
+        device.ask(&json!({"op": "shell_action", "action": action, "arguments": arguments}));
+    assert!(
+        answer.get("ok").is_some(),
+        "{} runs the shell's {action}: {answer}",
+        device.label
+    );
+}
+
+/// The person moves their dock and turns the frames' grid off on their laptop, and turns the
+/// strips' tabs off on their phone: each choice is the person's call of the shell's action on
+/// their own record, so both devices draw all three.
+#[test]
+fn a_persons_shell_choices_follow_them_to_their_other_device() {
+    let (site, _ada, laptop, phone) = two_devices_of_one_person_with_apps();
+    let devices = [&laptop, &phone];
+
+    let docked = shell_setting(&laptop, "dock_edge");
+    shell_action(&laptop, "dock_on", &json!(["left"]));
+    shell_action(&laptop, "set_frames_snap", &json!([false]));
+    // The laptop draws its own choice once its record holds it, as the phone does.
+    let mut moved = Value::Null;
+    waited("the laptop draws its dock moved", &site, &devices, || {
+        moved = shell_setting(&laptop, "dock_edge");
+        !moved.is_null() && moved != docked
+    });
+    waited(
+        "the laptop's dock and grid are on the phone",
+        &site,
+        &devices,
+        || {
+            shell_setting(&phone, "dock_edge") == moved
+                && shell_setting(&phone, "frames_snap") == json!(false)
+        },
+    );
+
+    shell_action(&phone, "set_strips_tabs", &json!([false]));
+    waited(
+        "the phone's strip tabs are on the laptop, and the laptop's choices stay on both",
+        &site,
+        &devices,
+        || {
+            devices.iter().all(|device| {
+                shell_setting(device, "strips_tabs") == json!(false)
+                    && shell_setting(device, "dock_edge") == moved
+                    && shell_setting(device, "frames_snap") == json!(false)
             })
         },
     );
