@@ -21,8 +21,8 @@ use serde_json::json;
 use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
 
-/// The video site the window shows.
-const TUBE: &str = "so.tilo.tube";
+/// The app's directory, which `support::installed` reads the package from.
+const TUBE_DIR: &str = "tube";
 /// The video the scripted service answers a search with.
 const VIDEO: &str = "v-compositor";
 /// Its title, as the window names it.
@@ -111,7 +111,7 @@ fn a_window_without_a_session_browses_and_plays_through_the_connector() {
     }
     let profile = std::env::temp_dir().join(format!("tilo-tube-origins-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&profile);
-    crate::support::installed(TUBE);
+    crate::support::installed(TUBE_DIR);
     let mut app = TubeApp::open_data_dir(&profile).expect("the window opens");
     app.call("search", json!({ "query": "compositor" }))
         .expect("the client searches");
