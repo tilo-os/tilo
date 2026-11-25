@@ -356,7 +356,11 @@ impl Providers {
                 rows.extend(listed.rows);
                 providers.extend(listed.providers);
                 revisions.push(listed.revision.clone());
-                if listed.exhausted || listed.next_cursor.is_empty() {
+                // A cursor that does not move on would read the same page forever.
+                if listed.exhausted
+                    || listed.next_cursor.is_empty()
+                    || listed.next_cursor == asked.cursor
+                {
                     break;
                 }
                 asked.cursor = listed.next_cursor;
