@@ -88,7 +88,9 @@ impl Provider for Echo {
         let stopped = {
             let mut waiting = self.waiting.lock().unwrap();
             let at = waiting.iter().position(|(named, _)| named == job);
-            at.map(|at| waiting.remove(at).1)
+            let stopped = at.map(|at| waiting.remove(at).1);
+            drop(waiting);
+            stopped
         };
         let Some(moved) = stopped else {
             return false;
@@ -248,6 +250,7 @@ fn engine_jobs_run_where_their_ops_may_run_and_say_every_move() {
     assert!(asked.needs.secret && asked.needs.network);
     assert_eq!(asked.handlers, handlers);
     let records = moves(&device, &own, "done");
+    drop(device);
     assert_eq!(states(&records), ["running", "done"]);
     assert_eq!(records[1]["workspace"], WORKSPACE);
     assert!(!engines::busy(), "the process is let go once its job ended");

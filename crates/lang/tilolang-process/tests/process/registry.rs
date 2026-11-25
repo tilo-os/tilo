@@ -47,10 +47,9 @@ action poke(address: Text, arguments: json.Value) -> Text {
 const APP: &str = "test.registry";
 
 fn bundle() -> Bundle {
-    let used = tilolang_tilo::platform_apps::platform_packages_of(
-        ["tilo.actions", "tilo.invocations"].into_iter(),
-    )
-    .expect("the platform's registry packages read");
+    let used =
+        tilolang_tilo::platform_apps::platform_packages_of(["tilo.actions", "tilo.invocations"])
+            .expect("the platform's registry packages read");
     let compiled = tilolang::compile_package(REGISTRY, &tilolang::IdsLock::new(), &used)
         .unwrap_or_else(|diagnostics| panic!("the registry app compiles: {diagnostics:#?}"));
     Bundle::new(&compiled, [])
@@ -67,30 +66,6 @@ fn published(host: &TilolangProcess, action: &str) -> tilo_actions::ActionAddres
         .unwrap_or_else(|| panic!("{action} is published"))
         .address
         .clone()
-}
-
-/// Deliver `address` to the app as ada, waiting until it answers, and answer with the update.
-fn delivered(
-    host: &mut TilolangProcess,
-    window: &mut Window,
-    sent: &Sent,
-    inbox: &Inbox,
-    id: u64,
-    address: &tilo_actions::ActionAddress,
-    arguments: Option<serde_json::Value>,
-) -> tilo_actions::InvocationUpdate {
-    inbox.borrow_mut().push_back(CollabEvent::Invocation {
-        id,
-        invocation: tilo_actions::InvocationId::new(),
-        resource: address.resource.clone(),
-        action: address.action.clone(),
-        argument: arguments
-            .map(|arguments| format!("{}{arguments}", tilo_actions::ARGUMENTS_JSON_PREFIX)),
-        actor: tilo_actions::MemberId::person("ada").into(),
-        context: None,
-    });
-    settle(host, window);
-    answered(sent, id).unwrap_or_else(|| panic!("the app ends the invocation {id}"))
 }
 
 /// The child call the instance sent, as the dispatch reads it.
@@ -192,7 +167,7 @@ tilo_test_env::scenario! {
             id: 1,
             invocation: served,
             resource: look.resource.clone(),
-            action: look.action.clone(),
+            action: look.action,
             argument: None,
             actor: tilo_actions::MemberId::person("ada").into(),
             context: None,

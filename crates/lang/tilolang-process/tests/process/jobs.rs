@@ -32,7 +32,9 @@ fn opened(
     let _ = manager.poll();
     let connection = Connection::new(manager).expect("the connection joined its route");
     let store = ResourceStore::new(Rc::new(connection.port(None)));
-    let number = u64::try_from(host.instances().count()).unwrap() + 1;
+    let number = u64::try_from(host.instances().count())
+        .unwrap()
+        .saturating_add(1);
     let spec = Spec::new(
         route.app_id.clone(),
         route.cluster_id.to_string(),
@@ -178,7 +180,7 @@ fn a_backup_runs_to_its_end_after_its_window_and_process_closed() {
     let (mut window, _, _) = instance_on(
         &mut first,
         spec(1, "ada", &route),
-        bundle.clone(),
+        bundle,
         &route,
         Rc::default(),
         &bus,
@@ -192,7 +194,7 @@ fn a_backup_runs_to_its_end_after_its_window_and_process_closed() {
     invoke(
         &first,
         "start_work",
-        vec![Value::text("backup"), Value::text(&ask.to_string())],
+        vec![Value::text("backup"), Value::text(ask.to_string())],
     );
     settle(&mut first, &mut window);
     // The device is asked to run it, with what the app runs once it ends.
@@ -217,6 +219,7 @@ fn a_backup_runs_to_its_end_after_its_window_and_process_closed() {
     // The device's engine host runs it to its end.
     engines::run(&job);
     let ended = ended(&device);
+    drop(device);
     assert_eq!(ended["state"], "done", "the backup ran: {ended}");
     assert!(
         std::fs::read_dir(&destination).unwrap().next().is_some(),
@@ -242,14 +245,7 @@ fn a_print_runs_to_its_end_after_its_window_closed() {
         r#"{"serving":true,"queues":[],"jobs":[],"nearby":[]}"#,
     );
     let mut process = TilolangProcess::new(wake());
-    let (window, _) = opened(
-        &mut process,
-        bundle.clone(),
-        &route,
-        &bus,
-        content.clone(),
-        true,
-    );
+    let (window, _) = opened(&mut process, bundle, &route, &bus, content, true);
     let mut window = window.expect("a window");
     settle(&mut process, &mut window);
     invoke(&process, "absorb_document", vec![Value::file(letter)]);
@@ -274,6 +270,7 @@ fn a_print_runs_to_its_end_after_its_window_closed() {
         first_text(&process, "documents", "failed")
     );
     let ended = ended(&device);
+    drop(device);
     assert_eq!(ended["id"], job.job);
 
     // The window closes; the process the device held for the print stays.
@@ -537,16 +534,22 @@ mod clipper {
         moved: &JobSink,
     ) -> Result<(), String> {
         let (device, moved) = (*device, *moved);
-        std::thread::spawn(move || {
-            moved.moved("running", r#"{"done":1,"total":2}"#);
-            match device.keep_content("clip.avi", "video/x-msvideo", b"a moving picture") {
-                Ok(kept) => moved.moved(
-                    "done",
-                    &serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string(),
-                ),
-                Err(why) => moved.moved("failed", &serde_json::json!({ "error": why }).to_string()),
-            }
-        });
+        std::thread::Builder::new()
+            .name("clipper".to_owned())
+            .spawn(move || {
+                moved.moved("running", r#"{"done":1,"total":2}"#);
+                match device.keep_content("clip.avi", "video/x-msvideo", b"a moving picture") {
+                    Ok(kept) => moved.moved(
+                        "done",
+                        &serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) })
+                            .to_string(),
+                    ),
+                    Err(why) => {
+                        moved.moved("failed", &serde_json::json!({ "error": why }).to_string());
+                    }
+                }
+            })
+            .map_err(|error| format!("the clipper's thread: {error}"))?;
         Ok(())
     }
 
@@ -622,6 +625,7 @@ fn a_loaded_engines_job_reaches_its_done_after_its_window_closed() {
     drop(window);
     settle_with_no_view(&mut process);
     let ended = ended(&device);
+    drop(device);
     assert_eq!(ended["id"], job.job, "{ended}");
     assert_eq!(ended["state"], "done", "the clip was made: {ended}");
     let url = ended["detail"]["url"].as_str().expect("the clip's file");

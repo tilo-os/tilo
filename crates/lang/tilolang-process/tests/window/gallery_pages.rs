@@ -47,9 +47,13 @@ const SIZES: [(u32, u32); 2] = [(1280, 800), (390, 844)];
 /// The control named `name` that `composition` offers assistive technology, as a widget path and
 /// the target its press goes to.
 fn offered(composition: &Composition, role: Role, name: &str) -> Option<(String, Option<String>)> {
-    fn find(access: &ui::a11y::AccessNode, role: Role, name: &str) -> Option<Option<String>> {
+    fn find<'a>(
+        access: &'a ui::a11y::AccessNode,
+        role: Role,
+        name: &str,
+    ) -> Option<&'a ui::a11y::AccessNode> {
         if access.role == role && access.name.as_deref() == Some(name) && !access.state.hidden {
-            return Some(access.action_target.clone());
+            return Some(access);
         }
         access
             .children
@@ -57,7 +61,9 @@ fn offered(composition: &Composition, role: Role, name: &str) -> Option<(String,
             .find_map(|child| find(child, role, name))
     }
     nodes(composition).into_iter().find_map(|node| {
-        let target = find(node.semantics.as_ref()?, role, name)?;
+        let target = find(node.semantics.as_ref()?, role, name)?
+            .action_target
+            .clone();
         let widget = node
             .path
             .split_once('#')

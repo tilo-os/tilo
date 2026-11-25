@@ -1,5 +1,5 @@
 //! A window with no session browsing a video site: the window runs its instance here, so it has
-//! no network of its own, and reaches YouTube through the connector process this launch starts
+//! no network of its own, and reaches `YouTube` through the connector process this launch starts
 //! for the app's `youtube` origin (`TILO_TILOLANG_CONNECTOR`), as a session's host reaches the
 //! connector its daemon runs. The child this test starts is the connector: the platform's own
 //! connector loop over a scripted service, on the socket the window handed it, so what reaches
@@ -57,7 +57,7 @@ fn connector_process() {
     }
 }
 
-/// What the scripted YouTube answers: one search's page, and the video's stream.
+/// What the scripted `YouTube` answers: one search's page, and the video's stream.
 fn scripted() -> tilolang_youtube::Scripted {
     tilolang_youtube::Scripted {
         searches: [(

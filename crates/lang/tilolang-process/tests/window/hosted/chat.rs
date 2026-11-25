@@ -64,7 +64,7 @@ fn open_the_agents_conversation(session: &mut Session) {
     let nodes = session.window.harness().a11y_nodes();
     let (_, row) = nodes
         .iter()
-        .find_map(|(at, node)| (node.label().as_deref() == Some(AGENT_NAME)).then_some((*at, node)))
+        .find_map(|(at, node)| (node.label() == Some(AGENT_NAME)).then_some((*at, node)))
         .unwrap_or_else(|| {
             let named = session
                 .controls()
@@ -78,7 +78,7 @@ fn open_the_agents_conversation(session: &mut Session) {
     let message = nodes
         .iter()
         .filter_map(|(_, node)| {
-            (node.label().as_deref() == Some("Message"))
+            (node.label() == Some("Message"))
                 .then(|| node.bounds())
                 .flatten()
                 .filter(|rect| rect.y0 >= row.y0 - 1.0 && rect.y1 <= row.y1 + 1.0)

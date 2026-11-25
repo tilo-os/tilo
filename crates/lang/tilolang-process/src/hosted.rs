@@ -1916,6 +1916,37 @@ fn open_instance(
     }
 }
 
+/// The receipt a message from the dispatch carries: what it says of the call. `None` for a message
+/// that is not one.
+fn receipt_of(
+    message: &tilo_actions::remote::RemoteActionMessage,
+) -> Option<tilo_actions::remote::InvocationReceipt> {
+    use tilo_actions::remote::{ReceiptStatus, RemoteActionMessage};
+    match message {
+        RemoteActionMessage::Receipt(receipt) => Some(receipt.clone()),
+        RemoteActionMessage::Update {
+            state: Some(state), ..
+        } => Some(state.receipt()),
+        // The dispatch no longer knows a call a run waits on: the run cannot hear from it.
+        RemoteActionMessage::Update {
+            invocation,
+            state: None,
+            ..
+        } => Some(tilo_actions::remote::InvocationReceipt {
+            invocation: *invocation,
+            status: ReceiptStatus::Failed {
+                error: tilo_actions::ActionFailure {
+                    code: "unknown_invocation".into(),
+                    message: "the call is no longer known where it ran".into(),
+                    details: None,
+                    retryable: false,
+                },
+            },
+        }),
+        _ => None,
+    }
+}
+
 impl Hosted {
     /// The instance `spec` of `bundle` on `connection`, its resources in `store` and their content
     /// in `content`, its words read by `phrases` and written in `formats`.
@@ -2270,20 +2301,13 @@ impl Hosted {
         }
     }
 
-    /// One frame: what the connection delivered taken in, what the person did run (its writes
-    /// sent to the store as it ran), what the broker delivered run, and the surface published.
-    /// Whether anything changed.
-    pub fn turn(&mut self) -> bool {
-        let _code = self.scope.enter();
-        let mut events = std::mem::take(&mut self.early);
-        events.extend(self.connection.poll());
-        let mut changed = !events.is_empty();
-        self.instance.sync();
+    /// What the instance needs once the runtime's host is open, before anything the connection
+    /// delivered is served.
+    fn prepare(&mut self) {
         // A run an earlier host over this store left waiting on a child call cannot be answered:
         // the invocation the call went out as died with that host, and the change the run held
         // went with it. It is ended with the failure that is true of it, rather than left waiting
-        // for ever, once the runtime that holds it is open, before anything the connection
-        // delivered is served.
+        // for ever, once the runtime that holds it is open.
         if !self.left_runs_ended
             && let Some(host) = self.instance.host()
         {
@@ -2310,6 +2334,18 @@ impl Hosted {
             }
             self.sending = true;
         }
+    }
+
+    /// One frame: what the connection delivered taken in, what the person did run (its writes
+    /// sent to the store as it ran), what the broker delivered run, and the surface published.
+    /// Whether anything changed.
+    pub fn turn(&mut self) -> bool {
+        let _code = self.scope.enter();
+        let mut events = std::mem::take(&mut self.early);
+        events.extend(self.connection.poll());
+        let mut changed = !events.is_empty();
+        self.instance.sync();
+        self.prepare();
         // What the person picked and saw, as their own document keeps it, before the views run.
         if self.personal.take_moved(&self.store)
             && !self
@@ -3479,6 +3515,31 @@ impl Hosted {
         );
     }
 
+    /// What the dispatch says of a press it has not handed back: refused, the calls it made
+    /// continue nothing, and each is answered so. Whether that was this answer's whole work.
+    fn refused_press(&mut self, receipt: &tilo_actions::remote::InvocationReceipt) -> bool {
+        use tilo_actions::remote::{ActionCallError, ReceiptStatus, RemoteActionMessage};
+        let Some((refusal, held)) = press_refusal(&receipt.status).and_then(|refusal| {
+            let held = self.presses.borrow_mut().refused(receipt.invocation)?;
+            Some((refusal, held))
+        }) else {
+            return false;
+        };
+        tracing::warn!(app = self.spec.app, refusal, "the dispatch refused a press");
+        for call in held {
+            let refused = RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+                invocation: call.invocation,
+                status: ReceiptStatus::Rejected {
+                    error: ActionCallError::Refused {
+                        reason: refusal.clone(),
+                    },
+                },
+            });
+            self.answered(&refused);
+        }
+        true
+    }
+
     fn answered(&mut self, message: &tilo_actions::remote::RemoteActionMessage) -> bool {
         use tilo_actions::remote::{ActionCallError, ReceiptStatus, RemoteActionMessage};
         if let RemoteActionMessage::Update {
@@ -3495,49 +3556,10 @@ impl Hosted {
         {
             self.asked_in(*invocation, record.clone().unwrap_or_default());
         }
-        let receipt = match message {
-            RemoteActionMessage::Receipt(receipt) => receipt.clone(),
-            RemoteActionMessage::Update {
-                state: Some(state), ..
-            } => state.receipt(),
-            // The dispatch no longer knows a call a run waits on: the run cannot hear from it.
-            RemoteActionMessage::Update {
-                invocation,
-                state: None,
-                ..
-            } => tilo_actions::remote::InvocationReceipt {
-                invocation: *invocation,
-                status: ReceiptStatus::Failed {
-                    error: tilo_actions::ActionFailure {
-                        code: "unknown_invocation".into(),
-                        message: "the call is no longer known where it ran".into(),
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            },
-            _ => return false,
+        let Some(receipt) = receipt_of(message) else {
+            return false;
         };
-        // What the dispatch says of a press it has not handed back: refused, the calls it made
-        // continue nothing, and each is answered so.
-        let refused = press_refusal(&receipt.status).and_then(|refusal| {
-            let held = self.presses.borrow_mut().refused(receipt.invocation)?;
-            Some((refusal, held))
-        });
-        if let Some((refusal, held)) = refused {
-            tracing::warn!(app = self.spec.app, refusal, "the dispatch refused a press");
-            for call in held {
-                let refused =
-                    RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
-                        invocation: call.invocation,
-                        status: ReceiptStatus::Rejected {
-                            error: ActionCallError::Refused {
-                                reason: refusal.clone(),
-                            },
-                        },
-                    });
-                self.answered(&refused);
-            }
+        if self.refused_press(&receipt) {
             return true;
         }
         // The dispatch admitted it and runs it: it is followed until it ends.
@@ -4038,8 +4060,8 @@ impl Hosted {
                     call: waiting.call,
                     run: waiting.run,
                     action: Some(ServedAction {
-                        app: action.app.clone(),
-                        action: action.action_id.clone(),
+                        app: action.app,
+                        action: action.action_id,
                     }),
                 });
             }
@@ -5040,6 +5062,49 @@ fn vault_reading(text: &str) -> Option<tilolang_tilo::runtime::host_work::VaultC
     })
 }
 
+/// The published resources whose history the resource `address` names keeps, of those
+/// `resources` the window publishes: the one it names, or every one for the app's own resource,
+/// which has the history of everything the app keeps.
+fn history_trees<'a>(
+    resources: &'a [ResourceSpec],
+    address: &ActionAddress,
+) -> Result<Vec<&'a ResourceSpec>, Refused> {
+    let tree = resources
+        .iter()
+        .find(|tree| tree.id.as_str() == address.resource)
+        .ok_or_else(|| {
+            Refused::new(
+                "action_unavailable",
+                format!("{} keeps no history here", address.resource),
+            )
+        })?;
+    Ok(
+        if address
+            .resource
+            .strip_prefix("tl:")
+            .is_some_and(|app| !app.contains(':'))
+        {
+            resources.iter().collect()
+        } else {
+            vec![tree]
+        },
+    )
+}
+
+/// What the press whose run `value` returned answers: the resource it made, if any.
+fn output_of(app: &str, value: &Value) -> tilo_actions::ActionOutput {
+    match value {
+        Value::Ref(made) => tilo_actions::ActionOutput {
+            value: None,
+            resources: vec![tilolang_tilo::publish::resource_id(
+                app,
+                &made.target.id_string(),
+            )],
+        },
+        _ => tilo_actions::ActionOutput::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -5140,47 +5205,5 @@ mod tests {
             "carrying one of them would leave the rest behind"
         );
         assert_eq!(script.asked(), 3, "listed, then each read once");
-    }
-}
-/// The published resources whose history the resource `address` names keeps, of those
-/// `resources` the window publishes: the one it names, or every one for the app's own resource,
-/// which has the history of everything the app keeps.
-fn history_trees<'a>(
-    resources: &'a [ResourceSpec],
-    address: &ActionAddress,
-) -> Result<Vec<&'a ResourceSpec>, Refused> {
-    let tree = resources
-        .iter()
-        .find(|tree| tree.id.as_str() == address.resource)
-        .ok_or_else(|| {
-            Refused::new(
-                "action_unavailable",
-                format!("{} keeps no history here", address.resource),
-            )
-        })?;
-    Ok(
-        if address
-            .resource
-            .strip_prefix("tl:")
-            .is_some_and(|app| !app.contains(':'))
-        {
-            resources.iter().collect()
-        } else {
-            vec![tree]
-        },
-    )
-}
-
-/// What the press whose run `value` returned answers: the resource it made, if any.
-fn output_of(app: &str, value: &Value) -> tilo_actions::ActionOutput {
-    match value {
-        Value::Ref(made) => tilo_actions::ActionOutput {
-            value: None,
-            resources: vec![tilolang_tilo::publish::resource_id(
-                app,
-                &made.target.id_string(),
-            )],
-        },
-        _ => tilo_actions::ActionOutput::default(),
     }
 }

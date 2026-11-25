@@ -1407,7 +1407,7 @@ fn typed_rich(text: &str) -> patch::rich::RichText {
             ..patch::rich::Block::default()
         }],
         embeds: Vec::new(),
-        styles: Default::default(),
+        styles: BTreeMap::new(),
     }
 }
 
@@ -2392,7 +2392,7 @@ scenario "empty" {
 
 /// The content package, compiled against the workspace package it reads.
 fn contented() -> Bundle {
-    let used = tilolang_tilo::platform_apps::platform_packages_of(["tilo.workspace"].into_iter())
+    let used = tilolang_tilo::platform_apps::platform_packages_of(["tilo.workspace"])
         .expect("the workspace package reads");
     let compiled = tilolang::compile_package(CONTENT_SOURCE, &tilolang::IdsLock::new(), &used)
         .unwrap_or_else(|diagnostics| panic!("the content package compiles: {diagnostics:#?}"));

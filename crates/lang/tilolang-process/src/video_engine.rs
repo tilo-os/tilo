@@ -254,11 +254,16 @@ fn measure_mix(cut: &model::Project) -> (f64, Vec<f64>, Vec<String>) {
     let block = video_edit::audio::MONITOR_BLOCK;
     let step = ui_core::num::f64_of_usize(block) / f64::from(video_edit::audio::SAMPLE_RATE);
     let end = cut.duration().max(0.0);
-    let mut at = 0.0;
-    while at < end {
+    let mut index = 0u64;
+    loop {
+        // Each block's start is counted, not accumulated: a mix's length never drifts.
+        let at = ui_core::num::f64_of_u64(index) * step;
+        if at >= end {
+            break;
+        }
         let (_, report) = video_edit::audio::mix_block_metered(cut, at, block, &mut source);
         meters.record(at, &report);
-        at += step;
+        index = index.saturating_add(1);
     }
     let snapshot = meters.snapshot();
     let hot = snapshot
@@ -490,8 +495,10 @@ fn play(store: &ContentStore, input: &str, push: Arc<dyn Push>) -> Result<String
     let width = ask.width.unwrap_or(LIVE_WIDTH).clamp(64, 1920);
     let height = ask.height.map_or_else(
         || {
-            let by_shape = u64::from(width) * u64::from(project.height.max(1))
-                / u64::from(project.width.max(1));
+            let by_shape = u64::from(width)
+                .saturating_mul(u64::from(project.height.max(1)))
+                .checked_div(u64::from(project.width.max(1)).max(1))
+                .unwrap_or_default();
             u32::try_from(by_shape).unwrap_or(u32::MAX).clamp(64, 1920)
         },
         |height| height.clamp(64, 1920),
@@ -632,7 +639,7 @@ fn run_play(
                 monitor.seek(now);
             }
         }
-        if frames % SAY_EVERY_FRAMES == 0 {
+        if frames.is_multiple_of(SAY_EVERY_FRAMES) {
             worker.done.store(frames, Ordering::Relaxed);
             push.state(slot, &play_word(now, &meters));
         }
@@ -675,11 +682,9 @@ fn play_word(at: f64, meters: &video_edit::audio::MixMeters) -> String {
 /// Waits until frame `frames` is due, so a play runs at the cut's rate rather than as fast as the
 /// device can draw.
 fn frames_due(began: std::time::Instant, period: f64, frames: u64) {
-    let due = began + std::time::Duration::from_secs_f64(period * ui_core::num::f64_of_u64(frames));
-    let now = std::time::Instant::now();
-    if due > now {
-        std::thread::sleep(due - now);
-    }
+    let wait = std::time::Duration::from_secs_f64(period * ui_core::num::f64_of_u64(frames));
+    let due = began.checked_add(wait).unwrap_or(began);
+    std::thread::sleep(due.saturating_duration_since(std::time::Instant::now()));
 }
 
 /// The cut a live play starts from, which the app handed over with the play.
@@ -757,22 +762,26 @@ fn scrub(store: &ContentStore, input: &str) -> Result<String, String> {
     }
     let ask: Ask = reads(input)?;
     let project = Arc::new(reads::<Shot>(&ask.project)?.into_project(Some(store))?);
-    let mut held = scrubber()
-        .lock()
-        .map_err(|_| "the scrubbing output is unreadable".to_owned())?;
-    if held.is_none() {
-        *held = Some(open_scrubbing()?);
-    }
     let asked = ScrubAsk {
         project,
         at: ask.at.max(0.0),
         seconds: ask.seconds,
     };
-    let Some(scrubbing) = held.as_ref() else {
+    // The output is taken out of the lock before the ask is queued: the send is the thread's
+    // work, not the scrubber's.
+    let sender = {
+        let mut held = scrubber()
+            .lock()
+            .map_err(|_| "the scrubbing output is unreadable".to_owned())?;
+        if held.is_none() {
+            *held = Some(open_scrubbing()?);
+        }
+        held.as_ref().map(|scrubbing| scrubbing.asked.clone())
+    };
+    let Some(sender) = sender else {
         return Ok(String::new());
     };
-    scrubbing
-        .asked
+    sender
         .send(asked)
         .map_err(|_| "the scrubbing output has gone".to_owned())?;
     Ok(String::new())
@@ -1400,7 +1409,9 @@ fn curves_of(clip: &ShotClip) -> video_edit::curve::Curve {
     let spline = |points: &[f64]| -> video_edit::curve::Spline {
         let mut drawn = video_edit::curve::Spline::identity();
         for pair in points.chunks_exact(2) {
-            drawn.set_point(pair[0], pair[1]);
+            if let [x, y] = pair {
+                drawn.set_point(*x, *y);
+            }
         }
         drawn.normalised()
     };
@@ -1443,8 +1454,8 @@ mod tests {
         )
         .expect("a cut without an anchor still reads");
         let project = shot.into_project(None).expect("it is a cut");
-        assert_eq!(project.clips[0].transform.anchor_x, 0.5);
-        assert_eq!(project.clips[0].transform.anchor_y, 0.5);
+        assert!((project.clips[0].transform.anchor_x - 0.5).abs() < 1e-9);
+        assert!((project.clips[0].transform.anchor_y - 0.5).abs() < 1e-9);
     }
 
     #[test]
@@ -1612,9 +1623,8 @@ mod tests {
         let edited = Arc::new(cut(0.2));
         *job.cut.lock().expect("the job's cut") = Some(Arc::clone(&edited));
         let taken = swapped(&job).expect("the edit reaches the play");
-        assert_eq!(
-            taken.clips[0].end(),
-            0.2,
+        assert!(
+            (taken.clips[0].end() - 0.2).abs() < 1e-9,
             "the play draws the cut as it now is"
         );
         assert!(swapped(&job).is_none(), "and keeps it until the next edit");

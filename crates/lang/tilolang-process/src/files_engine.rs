@@ -81,7 +81,11 @@ fn facts(path: &Path) -> Result<String, String> {
             .read_to_end(&mut bytes)
             .map_err(|error| error.to_string())?;
         if len > scan.saturating_mul(2) {
-            file.seek(SeekFrom::End(-(scan as i64)))
+            let back = i64::try_from(scan)
+                .ok()
+                .and_then(i64::checked_neg)
+                .unwrap_or(i64::MIN);
+            file.seek(SeekFrom::End(back))
                 .map_err(|error| error.to_string())?;
             file.read_to_end(&mut bytes)
                 .map_err(|error| error.to_string())?;
@@ -156,7 +160,7 @@ fn transfer(id: &str, ask: Ask, moved: JobSink) -> Result<(), String> {
     jobs()
         .lock()
         .map_err(|_| "the job table is unreadable".to_owned())?
-        .insert(id.clone(), Arc::clone(&job));
+        .insert(id, Arc::clone(&job));
     std::thread::Builder::new()
         .name("files-transfer".to_owned())
         .spawn(move || {
@@ -244,7 +248,7 @@ fn free_path(folder: &Path, name: &str) -> PathBuf {
         Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
         _ => (name, String::new()),
     };
-    (2..)
+    (2..u32::MAX)
         .map(|n| folder.join(format!("{stem} ({n}){extension}")))
         .find(|path| !taken(path))
         .unwrap_or(first)
@@ -256,14 +260,12 @@ fn size_of(path: &Path) -> u64 {
         return 0;
     };
     if meta.is_dir() {
-        std::fs::read_dir(path)
-            .map(|items| {
-                items
-                    .filter_map(Result::ok)
-                    .map(|item| size_of(&item.path()))
-                    .sum()
-            })
-            .unwrap_or(0)
+        std::fs::read_dir(path).map_or(0, |items| {
+            items
+                .filter_map(Result::ok)
+                .map(|item| size_of(&item.path()))
+                .sum()
+        })
     } else if meta.is_file() {
         meta.len()
     } else {

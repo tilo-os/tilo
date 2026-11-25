@@ -175,7 +175,12 @@ pub fn start(
     // The context is the job's number, not a pointer: a callback after the job ended finds no
     // job rather than freed memory.
     let context = std::ptr::without_provenance_mut::<c_void>(held);
-    let device = Device::new(context, job_moment, job_keep_content, job_read);
+    let device = Device::new(
+        context,
+        |context| Ok(job_moment(context)),
+        job_keep_content,
+        job_read,
+    );
     let sink = tilo_engine_loader::JobSink::new(context, tell);
     (engine.start)(&device, job, op, input, &sink).inspect_err(|_| {
         running().remove(&held);
@@ -217,18 +222,31 @@ fn tell(context: *mut c_void, state: &str, detail: &str) {
     let Ok(job) = running_job(context) else {
         return;
     };
-    let state = State::from_word(state)
-        .unwrap_or_else(|| panic!("a loaded engine told a job's move as {state:?}, no state"));
-    let detail = serde_json::from_str(detail)
-        .unwrap_or_else(|error| panic!("a loaded engine told a job's fields not as JSON: {error}"));
+    let Some(state) = State::from_word(state) else {
+        tracing::warn!(
+            state,
+            "a loaded engine told a job's move in no state this host knows"
+        );
+        return;
+    };
+    let detail = match serde_json::from_str(detail) {
+        Ok(detail) => detail,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "a loaded engine told a job's fields not as JSON: the move carries none"
+            );
+            serde_json::Value::Null
+        }
+    };
     if state.ended() {
         running().remove(&context.addr());
     }
     job.moved.moved(state, detail);
 }
 
-fn job_moment(_context: *mut c_void) -> Result<(String, i64), String> {
-    Ok(said_moment(&tilolang_tilo::instance::wall_moment()))
+fn job_moment(_context: *mut c_void) -> (String, i64) {
+    said_moment(&tilolang_tilo::instance::wall_moment())
 }
 
 fn job_keep_content(

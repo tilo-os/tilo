@@ -188,7 +188,7 @@ fn a_checkpoint_is_restored_after_a_review_and_undo_takes_the_restore_back() {
     let packing =
         tilolang_tilo::publish::resource_id(TASKS, &task(&window, "Pack the boxes").id_string());
     let mut asked = serde_json::Map::new();
-    asked.insert("version".to_owned(), change.clone().into());
+    asked.insert("version".to_owned(), change.into());
     asked.insert("paths".to_owned(), serde_json::json!([packing]));
     let review = |window: &mut Session| {
         window

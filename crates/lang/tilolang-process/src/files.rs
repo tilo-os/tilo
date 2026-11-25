@@ -283,11 +283,7 @@ pub fn preview(
     let edge = size.clamp(1, 4096);
     let dimension = thumbnail::ThumbSize::edge(edge);
     let key = thumbnail::ThumbKey::of_path_meta(path, mtime, meta.len(), dimension);
-    let state = thumbnails.request(thumbnail::ThumbRequest::file(
-        key,
-        category,
-        path.to_path_buf(),
-    ));
+    let state = thumbnails.request(thumbnail::ThumbRequest::file(key, category, path.clone()));
     let preview = match state {
         thumbnail::ThumbState::Ready(preview) => Some(preview),
         thumbnail::ThumbState::Badge(_) => None,
@@ -635,7 +631,7 @@ fn copy_file_told(
             Err(error) => return Err(format!("{}: {error}", from.display())),
         };
         target
-            .write_all(&chunk[..read])
+            .write_all(chunk.get(..read).unwrap_or_default())
             .map_err(|error| format!("{}: {error}", to.display()))?;
         if !copied(read as u64) {
             return Err(STOPPED.to_owned());

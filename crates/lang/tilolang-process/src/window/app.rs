@@ -198,7 +198,7 @@ fn live_origins(window: &mut super::hosted::HostedWindow) {
         match connector_origin(origin, waker) {
             Ok(origin) => window.add_origin(origin),
             Err(error) => {
-                tracing::error!(%error, origin, "the app's origin is not kept in step with its service")
+                tracing::error!(%error, origin, "the app's origin is not kept in step with its service");
             }
         }
     }

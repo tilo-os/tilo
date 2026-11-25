@@ -200,6 +200,7 @@ impl tilolang_tilo::held::Release for SignInRelease {
         let secret = signing
             .secret(&account, login)
             .map_err(|error| format!("the device's dispatch: {error}"))?;
+        drop(signing);
         let released: tilolang_tilo::held::Released = Box::new(zeroize::Zeroizing::new(secret));
         Ok(released)
     }

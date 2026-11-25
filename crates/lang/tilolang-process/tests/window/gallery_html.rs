@@ -327,15 +327,16 @@ fn apply(html: &str, patch: &Patch, place: &str) -> String {
         } => {
             // Past the parent's opening tag and its own words, then past `at` child elements.
             let skip_words = |from: usize| {
-                from + html
-                    .get(from..)
-                    .and_then(|rest| rest.find('<'))
-                    .expect("the parent closes inside the page")
+                from.saturating_add(
+                    html.get(from..)
+                        .and_then(|rest| rest.find('<'))
+                        .expect("the parent closes inside the page"),
+                )
             };
             let mut point = skip_words(held(*parent).1);
             for _ in 0..*at {
                 let child = html.get(point..).expect("a child starts there");
-                point = skip_words(point + element_len(child));
+                point = skip_words(point.saturating_add(element_len(child)));
             }
             let (before, after) = html.split_at_checked(point).expect("a tag starts there");
             format!("{before}{fresh}{after}")
