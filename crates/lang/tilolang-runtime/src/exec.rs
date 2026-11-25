@@ -1560,7 +1560,7 @@ impl Core {
         // published the verb. What a person answers an ask with, and stops or runs a turn
         // again with, reaches the dispatch from the app whose view draws the ask.
         if declared.as_deref() == Some(tilolang::HOST_APP)
-            && target.target.ty == tilolang::INVOCATION_TYPE
+            && tilolang::is_invocation_type(&target.target.ty)
         {
             return Some(self.invocation_of(aref));
         }

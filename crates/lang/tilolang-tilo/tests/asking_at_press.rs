@@ -115,6 +115,21 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase its_yes_reaches_the_record_where_nothing_publishes_its_resolve;
+    {
+        // A session publishes no verb on an asked record: the record is the workspace's, and
+        // its answer goes to the dispatch as the host's own action on it, its yes as its no.
+        let (host, called) = staged("a press that needs a yes", &[]);
+        let desktop = desktop(&host);
+        desktop
+            .press(&confirm_button(&desktop, "Share"))
+            .unwrap_or_else(|why| panic!("the yes reaches the record: {why}"));
+        assert_eq!(answers(&called), ["approve"], "the yes is the record's resolve");
+        desktop
+            .press(&confirm_button(&desktop, "Don't allow"))
+            .unwrap_or_else(|why| panic!("the no reaches the record: {why}"));
+    }
+
     phase escape_or_a_press_outside_it_declines;
     {
         // Escape and a press off the panel are the popover's one dismissal.

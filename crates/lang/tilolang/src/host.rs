@@ -9,6 +9,19 @@ use crate::types::{EffectClass, MergeKind};
 
 pub const HOST_APP: &str = "tilo.host";
 pub const INVOCATION_TYPE: &str = "host-invocation";
+/// The name a module calls the host's invocation type by (`host.Invocation`).
+pub const INVOCATION_NAME: &str = "Invocation";
+
+/// Whether `ty` is the host's invocation type: by its id, as the store keeps a record of it, or
+/// as another package names it (`tilo.host#Invocation`), as `resource(key, of: host.Invocation)`
+/// addresses one.
+#[must_use]
+pub fn is_invocation_type(ty: &str) -> bool {
+    ty == INVOCATION_TYPE
+        || ty
+            .split_once('#')
+            .is_some_and(|(app, name)| app == HOST_APP && name == INVOCATION_NAME)
+}
 pub const NOTICE_TYPE: &str = "host-notice";
 pub const NOTICE_TO: &str = "notice-to";
 pub const NOTICE_TITLE: &str = "notice-title";
@@ -1122,7 +1135,7 @@ pub fn host_meta() -> PackageMeta {
         title: "Host".to_string(),
         types: std::iter::once(TypeMeta {
             id: INVOCATION_TYPE.to_string(),
-            name: "Invocation".to_string(),
+            name: INVOCATION_NAME.to_string(),
             doc: "An action a block applied, or one that waits for a person's answer, and what became of it.".to_string(),
             fields: vec![
                 field("action", "Text", "The id of the action."),
