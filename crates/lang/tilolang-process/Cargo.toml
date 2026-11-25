@@ -41,6 +41,7 @@ app-launch = [
     "dep:tilo-tiles",
     "dep:code-engine",
     "dep:tilo-maps-engine",
+    "dep:tilo-terminal",
 ]
 # The toolkit and `libstd` linked from the Tilo runtime's one shared library, as every thin app
 # links them: the runtime bundle's build, and `tilolang dev`'s, whose window maps a rebuild of this
@@ -116,6 +117,8 @@ uuid.workspace = true
 tilo-tiles = { version = "0.1.0", path = "../../engines/tilo-tiles", optional = true }
 # Maps' device work: the areas it keeps for offline use, answered for `so.tilo.maps`.
 tilo-maps-engine = { version = "0.1.0", path = "../../engines/maps-engine", optional = true }
+# Terminal's device work: the shell a session runs, its grid and the runs it marks.
+tilo-terminal = { version = "0.1.0", path = "../../engines/tilo-terminal", optional = true }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false, features = ["blocking"] }
 # The mail origin, reaching the connector process the system runs for the app.
 tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }

@@ -43,6 +43,9 @@ pub fn register_all() {
             crate::files_engine::register();
             // Maps' kept areas are this device's pictures, which a window may already have drawn.
             tilo_maps_engine::register();
+            // The Terminal's shells: a session's pty, its grid and the runs it marks, answered
+            // for the app's `engine.call` and `engine.start` in the process that draws its window.
+            tilo_terminal::ops::register(Arc::new(Portal));
         }
         #[cfg(all(
             feature = "app-launch",
@@ -57,6 +60,16 @@ pub fn register_all() {
 
 /// The API Tester's app id: the one app the general network client answers requests for.
 pub const API_TESTER_APP: &str = "so.tilo.api-tester";
+
+/// A link a program printed, opened in what the person's device opens that kind with: the
+/// portal the app's grants already reach, never a second opener of this process's own.
+struct Portal;
+
+impl tilo_terminal::ops::Opener for Portal {
+    fn open_uri(&self, url: &str) -> Result<(), String> {
+        tilo_dialogs::portal::open_uri(url).map_err(|error| error.to_string())
+    }
+}
 
 /// The API Tester's engine: requests sent by the general network client, with the credentials
 /// this device keeps for the app.

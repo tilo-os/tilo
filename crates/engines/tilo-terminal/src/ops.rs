@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider, State};
 
 use crate::live::{self, Event, Live};
 use crate::provider::{
@@ -399,6 +400,131 @@ static CONFIGURED: std::sync::OnceLock<Device> = std::sync::OnceLock::new();
 /// start; a process that never does keeps an empty store and wakes nobody.
 pub fn configure(content: tilo_content::ContentStore, wake: Option<Wake>) {
     let _ = CONFIGURED.set((content, wake));
+}
+
+/// The app's engine, as the process that draws its windows answers `engine.call` and
+/// `engine.start`: the ops above, with the device's way to open a link.
+struct Answers {
+    opener: Arc<dyn Opener>,
+}
+
+impl Provider for Answers {
+    fn jobs(&self) -> &'static [JobOp] {
+        // A run drives a session this process keeps, so it runs here rather than in the device's
+        // shared engine host.
+        const JOBS: &[JobOp] = &[JobOp::new("run", Needs::APP_STATE)];
+        JOBS
+    }
+
+    fn call(&self, op: &str, input: &str) -> Result<String, String> {
+        call(op, input, &*self.opener)
+    }
+
+    fn start(&self, job: &str, op: &str, input: &str, moved: JobSink) -> Result<(), String> {
+        if op != "run" {
+            return Err(format!("`{op}` is no job this device starts"));
+        }
+        let ask = parse(input);
+        let live = live_of(&ask)?;
+        let command = text(&ask)?.to_owned();
+        begin_run_told(job, live, command, moved);
+        Ok(())
+    }
+
+    fn cancel(&self, job: &str) -> bool {
+        let Some(live) = running()
+            .lock()
+            .map(|mut jobs| jobs.remove(job))
+            .ok()
+            .flatten()
+        else {
+            return false;
+        };
+        let _ = live.interrupt();
+        true
+    }
+}
+
+/// Register this crate as the Terminal app's engine: what the process that answers its windows
+/// calls once at its start, before the app asks. `opener` is the device's way to open a link a
+/// program printed.
+pub fn register(opener: Arc<dyn Opener>) {
+    tilolang_tilo::engine::register(APP, Arc::new(Answers { opener }));
+}
+
+/// The sessions the runs started here drive, by the job the device named.
+fn running() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, Arc<Live>>> {
+    static RUNNING: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, Arc<Live>>>,
+    > = std::sync::OnceLock::new();
+    RUNNING.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
+}
+
+/// Run `command` in `live` as the job `job`, telling `moved` each move it makes: running once
+/// the line is sent, done with the run the shell marked, or failed why nothing ran.
+fn begin_run_told(job: &str, live: Arc<Live>, command: String, moved: JobSink) {
+    let job = job.to_owned();
+    if let Ok(mut jobs) = running().lock() {
+        jobs.insert(job.clone(), Arc::clone(&live));
+    }
+    let handle_job = job.clone();
+    let spawned = std::thread::Builder::new()
+        .name(format!("terminal-run-{job}"))
+        .spawn(move || {
+            let job = handle_job;
+            moved.moved(State::Running, json!({}));
+            let (_, cursor) = live.events(0);
+            if let Err(error) = live.run(&command) {
+                moved.failed(&error.to_string());
+                if let Ok(mut jobs) = running().lock() {
+                    jobs.remove(&job);
+                }
+                return;
+            }
+            let started = std::time::Instant::now();
+            let mut cursor = cursor;
+            loop {
+                let (events, next) = live.events(cursor);
+                cursor = next;
+                for event in events {
+                    if let Event::Finished(run) = event {
+                        moved.moved(State::Done, json!({"run": finished_value(&run)}));
+                        if let Ok(mut jobs) = running().lock() {
+                            jobs.remove(&job);
+                        }
+                        return;
+                    }
+                    if let Event::Exit(_) | Event::Lost(_) = event {
+                        moved.failed("the shell ended before the run did");
+                        if let Ok(mut jobs) = running().lock() {
+                            jobs.remove(&job);
+                        }
+                        return;
+                    }
+                }
+                if started.elapsed() > RUN_PATIENCE {
+                    moved.failed("the run did not finish in time");
+                    if let Ok(mut jobs) = running().lock() {
+                        jobs.remove(&job);
+                    }
+                    return;
+                }
+                if live.ended() {
+                    moved.failed("the shell ended before the run did");
+                    if let Ok(mut jobs) = running().lock() {
+                        jobs.remove(&job);
+                    }
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+    if spawned.is_err() {
+        moved.failed("the run's reader did not start");
+        if let Ok(mut jobs) = running().lock() {
+            jobs.remove(&job);
+        }
+    }
 }
 
 #[cfg(test)]

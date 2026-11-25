@@ -798,6 +798,11 @@ impl HostPlatform {
         }
         #[cfg(feature = "app-launch")]
         crate::photos_engine::register(self.store(), self.previews());
+        // A terminal's pictures and transcripts are kept in this app's store, as its window's
+        // own content; what wakes the window when the grid changed is the toolbox's, set when
+        // the session is handed to it.
+        #[cfg(feature = "app-launch")]
+        tilo_terminal::ops::configure(self.store().clone(), None);
     }
 }
 
