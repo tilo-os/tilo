@@ -285,10 +285,14 @@ run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tes
 # family's, so the shared libraries resolve to the same units in both. It declares `unify` like
 # the test families: a run that asks for a few of its packages builds them beside workspace-unify,
 # so every shared library resolves with the features the family's whole build gives it, and an
-# ad-hoc `t cargo clippy -p` of a package resolves them the same way.
+# ad-hoc `t cargo clippy -p` of a package resolves them the same way. Its lints don't depend on
+# the architecture it runs on (the per-architecture packages are excluded below), so it runs
+# anywhere: t gives the Arm node such work only when x86 has no room, so its units stay shared
+# with x86's `test` and `check` while x86 can take it.
 [[cargo]]
 name = "clippy"
 egress = { to = ["code.tilo.so:443"], pinned = true }
+requires = ["arch=any"]
 tool = "clippy"
 args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
