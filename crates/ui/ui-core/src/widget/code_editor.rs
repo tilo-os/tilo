@@ -633,7 +633,7 @@ impl Widget for CodeEditor {
 
     crate::provides!(
         dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::widget::undo_points::UndoPoints
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -996,7 +996,7 @@ pub fn paint_diagnostic_underline(
     );
 }
 
-impl crate::undo::UndoPoints for CodeEditor {
+impl crate::widget::undo_points::UndoPoints for CodeEditor {
     fn get_state(&self) -> Option<String> {
         self.inner.get_state()
     }

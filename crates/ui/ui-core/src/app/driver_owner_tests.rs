@@ -52,7 +52,7 @@ impl tilo_actions::Action for BackgroundWrite {
 
 impl Widget for OwnerProbe {
     crate::provides!(
-        dyn crate::undo::UndoPoints,
+        dyn crate::widget::undo_points::UndoPoints,
         dyn crate::undo::CommittedActions
     );
 
@@ -110,7 +110,7 @@ impl crate::undo::CommittedActions for OwnerProbe {
     }
 }
 
-impl crate::undo::UndoPoints for OwnerProbe {
+impl crate::widget::undo_points::UndoPoints for OwnerProbe {
     fn get_state(&self) -> Option<String> {
         None
     }

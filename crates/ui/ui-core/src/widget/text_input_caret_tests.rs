@@ -90,14 +90,14 @@ tilo_test_env::scenario! {
         {
             let mut original = TextInput::local().with_initial_value("hello world");
             original.core.set_selection(1, 5);
-            let saved = crate::undo::get_state(&original).unwrap();
+            let saved = crate::widget::undo_points::get_state(&original).unwrap();
             let mut rebuilt = TextInput::local().with_initial_value("hello world");
-            crate::undo::set_state(&mut rebuilt, &saved);
+            crate::widget::undo_points::set_state(&mut rebuilt, &saved);
             assert_eq!(rebuilt.selection_range_public(), Some((1, 5)));
-            crate::undo::set_state(&mut rebuilt, "3");
+            crate::widget::undo_points::set_state(&mut rebuilt, "3");
             assert_eq!(rebuilt.cursor_pos(), 3);
             assert_eq!(rebuilt.selection_range_public(), None);
-            crate::undo::set_state(&mut rebuilt, "4:a");
+            crate::widget::undo_points::set_state(&mut rebuilt, "4:a");
             assert_eq!(
                 rebuilt.caret_position(),
                 TextPosition::with_affinity(4, TextAffinity::After)
@@ -108,10 +108,10 @@ tilo_test_env::scenario! {
             let mut original = TextInput::local().with_initial_value("abc אבג");
             let position = TextPosition::with_affinity(4, TextAffinity::After);
             original.set_caret_position(position);
-            let saved = crate::undo::get_state(&original).unwrap();
+            let saved = crate::widget::undo_points::get_state(&original).unwrap();
 
             let mut rebuilt = TextInput::local().with_initial_value("abc אבג");
-            crate::undo::set_state(&mut rebuilt, &saved);
+            crate::widget::undo_points::set_state(&mut rebuilt, &saved);
             assert_eq!(rebuilt.caret_position(), position);
             assert_eq!(saved, "4:a");
         }

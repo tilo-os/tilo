@@ -365,7 +365,10 @@ fn caret_review_announces_characters_and_words_for_text_widgets() {
         assert!(pre.is_some(), "focused text input yields a review snapshot");
         rec.0.borrow_mut().reset(); // forget the autofocus narration
         unsafe {
-            crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "2");
+            crate::widget::undo_points::set_state(
+                &mut (*(*app.layout.node_map.get(&id).unwrap())),
+                "2",
+            );
         }
         app.announce_text_review(pre);
         assert_eq!(
@@ -380,7 +383,10 @@ fn caret_review_announces_characters_and_words_for_text_widgets() {
         let pre = app.text_review_snapshot();
         rec.0.borrow_mut().reset(); // forget the autofocus narration
         unsafe {
-            crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "0");
+            crate::widget::undo_points::set_state(
+                &mut (*(*app.layout.node_map.get(&id).unwrap())),
+                "0",
+            );
         }
         app.announce_text_review(pre);
         assert_eq!(

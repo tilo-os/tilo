@@ -438,7 +438,7 @@ fn resize_restores_editor_identity_selection_and_focus() {
         frame(&mut app, 1200);
         app.set_focused_node(Some(app.focusable_order[0]));
         app.mutate_node(app.focused_node.unwrap(), |widget| {
-            crate::undo::set_state(widget, "5:b:1");
+            crate::widget::undo_points::set_state(widget, "5:b:1");
         })
         .unwrap();
         for width in [920, 600, 1200] {
@@ -456,7 +456,7 @@ fn resize_restores_editor_identity_selection_and_focus() {
                 Some("editor")
             );
             assert_eq!(
-                app.inspect_node(node, |widget| crate::undo::get_state(widget))
+                app.inspect_node(node, |widget| crate::widget::undo_points::get_state(widget))
                     .unwrap()
                     .as_deref(),
                 Some("5:b:1")
@@ -537,8 +537,10 @@ fn resize_restores_editor_identity_selection_and_focus() {
         frame(&mut app, 1200);
         let editor = app.focusable_order[0];
         app.set_focused_node(Some(editor));
-        app.mutate_node(editor, |widget| crate::undo::set_state(widget, "5:b:1"))
-            .unwrap();
+        app.mutate_node(editor, |widget| {
+            crate::widget::undo_points::set_state(widget, "5:b:1")
+        })
+        .unwrap();
         for width in [920, 600, 1200] {
             frame(&mut app, width);
             assert!(app.accessibility.focus_trap_active);
@@ -558,9 +560,11 @@ fn resize_restores_editor_identity_selection_and_focus() {
                     .unwrap()
             );
             assert_eq!(
-                app.inspect_node(focused, |widget| crate::undo::get_state(widget))
-                    .unwrap()
-                    .as_deref(),
+                app.inspect_node(focused, |widget| crate::widget::undo_points::get_state(
+                    widget
+                ))
+                .unwrap()
+                .as_deref(),
                 Some("5:b:1")
             );
         }
@@ -575,8 +579,10 @@ fn resize_restores_editor_identity_selection_and_focus() {
         assert!(!app.accessibility.focus_trap_active);
         let outside = app.focusable_order[0];
         app.set_focused_node(Some(outside));
-        app.mutate_node(outside, |widget| crate::undo::set_state(widget, "5:b:1"))
-            .unwrap();
+        app.mutate_node(outside, |widget| {
+            crate::widget::undo_points::set_state(widget, "5:b:1")
+        })
+        .unwrap();
         frame(&mut app, 920);
         assert!(app.accessibility.focus_trap_active);
         let focused = app.focused_node.expect("modal owns focus");
@@ -595,9 +601,11 @@ fn resize_restores_editor_identity_selection_and_focus() {
             Some("outside")
         );
         assert_eq!(
-            app.inspect_node(focused, |widget| crate::undo::get_state(widget))
-                .unwrap()
-                .as_deref(),
+            app.inspect_node(focused, |widget| crate::widget::undo_points::get_state(
+                widget
+            ))
+            .unwrap()
+            .as_deref(),
             Some("0"),
             "fallback editor keeps its own caret and no selection"
         );

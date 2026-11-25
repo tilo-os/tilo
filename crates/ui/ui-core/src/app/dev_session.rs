@@ -292,7 +292,7 @@ struct DevCaretField {
 
 #[cfg(test)]
 impl crate::widget::Widget for DevCaretField {
-    crate::provides!(dyn crate::undo::UndoPoints);
+    crate::provides!(dyn crate::widget::undo_points::UndoPoints);
 
     crate::testing::inert_widget_methods!(leaf_layout, name = "DevCaretField");
 
@@ -302,7 +302,7 @@ impl crate::widget::Widget for DevCaretField {
 }
 
 #[cfg(test)]
-impl crate::undo::UndoPoints for DevCaretField {
+impl crate::widget::undo_points::UndoPoints for DevCaretField {
     fn get_state(&self) -> Option<String> {
         Some(self.caret.clone())
     }
@@ -374,8 +374,10 @@ fn dev_checkpoint_restores_document_and_route() {
     app.autofocus_first = true;
     app.init_layout();
     let focused = app.focused_node.expect("settings caret field is focused");
-    app.mutate_node(focused, |widget| crate::undo::set_state(widget, "12"))
-        .expect("caret state is writable");
+    app.mutate_node(focused, |widget| {
+        crate::widget::undo_points::set_state(widget, "12")
+    })
+    .expect("caret state is writable");
     assert!(write_dev_checkpoint(&app, &directory));
 
     let restored_router = Router::new("home", ["home", "settings"], &theme, screen).unwrap();
@@ -391,7 +393,9 @@ fn dev_checkpoint_restores_document_and_route() {
         .focused_node
         .expect("restored settings field is focused");
     let caret = restored
-        .inspect_node(restored_focus, |widget| crate::undo::get_state(widget))
+        .inspect_node(restored_focus, |widget| {
+            crate::widget::undo_points::get_state(widget)
+        })
         .expect("restored field is addressable");
     assert_eq!(caret.as_deref(), Some("12"));
     let title = restored

@@ -1275,7 +1275,7 @@ impl crate::view::FreezeThaw for App {
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         let focus = crate::view::capture_focus(ordinal, || {
             self.focused_node.and_then(|id| {
-                self.inspect_node(id, |widget| crate::undo::get_state(widget))
+                self.inspect_node(id, |widget| crate::widget::undo_points::get_state(widget))
                     .ok()
                     .flatten()
             })

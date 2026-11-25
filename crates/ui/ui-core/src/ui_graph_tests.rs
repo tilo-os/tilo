@@ -673,12 +673,12 @@ fn set_named_state(widget: &mut dyn Widget, id: &str, state: &str) -> bool {
         return false;
     };
     widget.set_focus(true);
-    crate::undo::set_state(widget, state);
+    crate::widget::undo_points::set_state(widget, state);
     true
 }
 
 fn named_state(widget: &dyn Widget, id: &str) -> Option<String> {
-    crate::undo::get_state(crate::widget::find_test_id(widget, id)?)
+    crate::widget::undo_points::get_state(crate::widget::find_test_id(widget, id)?)
 }
 
 fn named_widget_ptr(widget: &dyn Widget, id: &str) -> Option<usize> {

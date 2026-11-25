@@ -222,13 +222,13 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
             .with(&checkout.id, AutoCommit::get_heads)
             .unwrap();
         a.invoke(&mut outer, |widget, doc, _| {
-            tilo_ui::undo::set_state(widget, "A metadata");
+            tilo_ui::widget::undo_points::set_state(widget, "A metadata");
             doc.put(ROOT, "a", "first").unwrap();
         })
         .unwrap();
         // B reports an action that wrote nothing while A's burst is pending.
         b.invoke(&mut outer, |widget, doc, _| {
-            tilo_ui::undo::set_state(widget, "B metadata");
+            tilo_ui::widget::undo_points::set_state(widget, "B metadata");
             report_probe_action(doc.get_heads());
         })
         .unwrap();

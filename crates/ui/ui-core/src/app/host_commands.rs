@@ -106,7 +106,7 @@ impl App {
     #[cfg(feature = "model")]
     fn perform_document_undo(&mut self, request: crate::undo::UndoRequest) -> bool {
         // Otherwise round-tripping document undo/redo loses caret position.
-        let current_meta = crate::undo::get_state(self.root_widget.as_ref());
+        let current_meta = crate::widget::undo_points::get_state(self.root_widget.as_ref());
         let current_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|x| *x == id));

@@ -4866,7 +4866,7 @@ impl Widget for TextInput {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints,
+        dyn crate::widget::undo_points::UndoPoints,
         dyn crate::widget::ResourceOperations,
         dyn crate::widget::PlaceholderFit
     );
@@ -5952,7 +5952,7 @@ impl Widget for TextInput {
     }
 }
 
-impl crate::undo::UndoPoints for TextInput {
+impl crate::widget::undo_points::UndoPoints for TextInput {
     fn get_state(&self) -> Option<String> {
         if self.core.has_selection() {
             let anchor = self.core.anchor();

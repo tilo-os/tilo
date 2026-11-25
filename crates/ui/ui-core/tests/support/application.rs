@@ -622,7 +622,7 @@ impl Widget for ProbeRoot {
         dyn tilo_ui::widget::resources::PublishesResources,
         dyn tilo_ui::search::capability::SearchSource,
         dyn tilo_ui::view::capability::ViewState,
-        dyn tilo_ui::undo::UndoPoints,
+        dyn tilo_ui::widget::undo_points::UndoPoints,
         dyn tilo_ui::undo::CommittedActions,
         dyn tilo_ui::host_operation::ResourceOperations
     );
@@ -744,7 +744,7 @@ impl tilo_ui::undo::CommittedActions for ProbeRoot {
     }
 }
 
-impl tilo_ui::undo::UndoPoints for ProbeRoot {
+impl tilo_ui::widget::undo_points::UndoPoints for ProbeRoot {
     fn get_state(&self) -> Option<String> {
         Some(self.caret.clone())
     }

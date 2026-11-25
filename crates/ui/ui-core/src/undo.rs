@@ -327,30 +327,6 @@ pub fn handle_local_undo_request(
         .any(|child| handle_local_undo_request(child, request))
 }
 
-/// A widget that restores its ephemeral state (caret, selection) around the undo points
-/// its owner's actions make.
-pub trait UndoPoints: crate::widget::Widget {
-    /// Ephemeral state (caret, selection) saved with an undo point.
-    fn get_state(&self) -> Option<String> {
-        None
-    }
-
-    /// Restore ephemeral state saved by [`Self::get_state`].
-    fn set_state(&mut self, _state: &str) {}
-}
-
-/// `widget`'s ephemeral state.
-pub fn get_state(widget: &(impl crate::widget::Widget + ?Sized)) -> Option<String> {
-    crate::widget::capability::capability::<dyn UndoPoints>(widget)?.get_state()
-}
-
-/// Restore `widget`'s ephemeral state.
-pub fn set_state(widget: &mut (impl crate::widget::Widget + ?Sized), state: &str) {
-    if let Some(points) = crate::widget::capability::capability_mut::<dyn UndoPoints>(widget) {
-        points.set_state(state);
-    }
-}
-
 #[cfg(feature = "model")]
 fn earliest_bracket(
     state: &mut crate::state::State,

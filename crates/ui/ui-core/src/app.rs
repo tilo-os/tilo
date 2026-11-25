@@ -2373,7 +2373,7 @@ impl App {
                 .focused_node
                 .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
             self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-                self.inspect_node(id, |widget| crate::undo::get_state(widget))
+                self.inspect_node(id, |widget| crate::widget::undo_points::get_state(widget))
                     .ok()
                     .flatten()
             });
@@ -2514,7 +2514,7 @@ impl App {
                 None
             } else {
                 self.focused_node.and_then(|id| {
-                    self.inspect_node(id, |widget| crate::undo::get_state(widget))
+                    self.inspect_node(id, |widget| crate::widget::undo_points::get_state(widget))
                         .ok()
                         .flatten()
                 })
@@ -2684,8 +2684,9 @@ impl App {
                     if exact.is_some()
                         && let Some(state) = prev_focus_state.as_deref()
                     {
-                        let _ =
-                            self.mutate_node(id, |widget| crate::undo::set_state(widget, state));
+                        let _ = self.mutate_node(id, |widget| {
+                            crate::widget::undo_points::set_state(widget, state)
+                        });
                     }
                 }
             }

@@ -3969,7 +3969,7 @@ impl TakenActionBracket {
         Some(Self {
             before,
             keep_open: crate::undo::keeps_undo_step_open(widget),
-            metadata: crate::undo::get_state(widget),
+            metadata: crate::widget::undo_points::get_state(widget),
         })
     }
 }

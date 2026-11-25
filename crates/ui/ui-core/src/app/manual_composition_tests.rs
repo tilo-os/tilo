@@ -81,7 +81,7 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
             run(&mut app, 900);
             app.set_focused_node(Some(app.focusable_order[0]));
             app.mutate_node(app.focused_node.unwrap(), |widget| {
-                crate::undo::set_state(widget, "8:b:2")
+                crate::widget::undo_points::set_state(widget, "8:b:2")
             })
             .unwrap();
             for (width, x) in [(340, 0.25), (900, 5.75), (900, 0.25)] {
@@ -91,7 +91,7 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
                 assert_eq!(
                     app.inspect_node(focused, |widget| (
                         widget.test_id().map(str::to_owned),
-                        crate::undo::get_state(widget),
+                        crate::widget::undo_points::get_state(widget),
                         widget.text_review().unwrap().1
                     ))
                     .unwrap(),
@@ -206,8 +206,10 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
             let input_node = app.focusable_order[0];
             let save_node = app.focusable_order[1];
             app.set_focused_node(Some(input_node));
-            app.mutate_node(input_node, |widget| crate::undo::set_state(widget, "8:b:2"))
-                .unwrap();
+            app.mutate_node(input_node, |widget| {
+                crate::widget::undo_points::set_state(widget, "8:b:2")
+            })
+            .unwrap();
             paint(&mut app);
             let input_before = app
                 .inspect_node(input_node, |widget| widget.get_rect())
@@ -238,7 +240,7 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
             assert_eq!(app.focused_node, Some(input_node));
             assert_eq!(
                 app.inspect_node(input_node, |widget| (
-                    crate::undo::get_state(widget),
+                    crate::widget::undo_points::get_state(widget),
                     widget.text_review().unwrap().1
                 ))
                 .unwrap(),

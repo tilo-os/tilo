@@ -66,9 +66,11 @@ fn native_focus_and_selection_follow_only_the_semantic_target() {
         assert_ne!(old, current);
         assert_eq!(app.focused_node, Some(current));
         assert_eq!(
-            app.inspect_node(current, |widget| crate::undo::get_state(widget))
-                .unwrap()
-                .as_deref(),
+            app.inspect_node(current, |widget| crate::widget::undo_points::get_state(
+                widget
+            ))
+            .unwrap()
+            .as_deref(),
             Some("own selection")
         );
     }

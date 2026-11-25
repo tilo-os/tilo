@@ -746,7 +746,7 @@ fn widget_state_snapshot(widget: &dyn Widget) -> HashMap<String, Option<String>>
     let mut states = HashMap::new();
     fn walk(widget: &dyn Widget, states: &mut HashMap<String, Option<String>>) {
         if let Some(id) = widget.test_id() {
-            states.insert(id.to_owned(), crate::undo::get_state(widget));
+            states.insert(id.to_owned(), crate::widget::undo_points::get_state(widget));
         }
         widget.for_each_child(&mut |child| walk(child, states));
     }
@@ -758,7 +758,7 @@ fn restore_widget_states(widget: &mut dyn Widget, states: &HashMap<String, Optio
     if let Some(id) = widget.test_id().map(str::to_owned)
         && let Some(Some(state)) = states.get(&id)
     {
-        crate::undo::set_state(widget, state);
+        crate::widget::undo_points::set_state(widget, state);
     }
     for child in widget.children_mut() {
         restore_widget_states(child, states);
@@ -1578,7 +1578,7 @@ fn focused_widget_snapshot(widget: &dyn Widget) -> Option<(String, Option<String
     if widget.is_focused()
         && let Some(id) = widget.test_id()
     {
-        return Some((id.to_owned(), crate::undo::get_state(widget)));
+        return Some((id.to_owned(), crate::widget::undo_points::get_state(widget)));
     }
     widget
         .children()
@@ -1592,7 +1592,7 @@ fn restore_widget_focus(widget: &mut dyn Widget, id: &str, state: Option<&str>) 
     };
     widget.set_focus(true);
     if let Some(state) = state {
-        crate::undo::set_state(widget, state);
+        crate::widget::undo_points::set_state(widget, state);
     }
     true
 }

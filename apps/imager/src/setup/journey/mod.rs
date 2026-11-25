@@ -1277,7 +1277,7 @@ impl InstallerPreview {
         ) && let Some(input) = root
             .as_any()
             .and_then(|widget| widget.downcast_ref::<TextInput>())
-            && let Some(state) = ui::undo::UndoPoints::get_state(input)
+            && let Some(state) = ui::widget::undo_points::UndoPoints::get_state(input)
         {
             states.push((root.test_id().unwrap().to_string(), state));
         }
@@ -1295,7 +1295,7 @@ impl InstallerPreview {
                 .as_any_mut()
                 .and_then(|widget| widget.downcast_mut::<TextInput>())
         {
-            ui::undo::UndoPoints::set_state(input, state);
+            ui::widget::undo_points::UndoPoints::set_state(input, state);
         }
         for child in root.children_mut() {
             Self::restore_password_input_state(child, states);

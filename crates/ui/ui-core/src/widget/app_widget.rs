@@ -1052,7 +1052,7 @@ mod component_adapter {
             #[cfg(feature = "model")]
             dyn crate::component_lifecycle::HearsElsewhere,
             dyn crate::widget::WindowHistory,
-            dyn crate::undo::UndoPoints,
+            dyn crate::widget::undo_points::UndoPoints,
             dyn crate::widget::ResourceOperations,
             dyn crate::bound_dispatch::BoundWidget,
             dyn crate::widget::component_walk::ComponentBoundary,
@@ -1818,12 +1818,13 @@ mod component_adapter {
         }
     }
 
-    impl crate::undo::UndoPoints for BoundAppWidget {
+    impl crate::widget::undo_points::UndoPoints for BoundAppWidget {
         fn get_state(&self) -> Option<String> {
-            self.in_root(|root| crate::undo::get_state(root)).flatten()
+            self.in_root(|root| crate::widget::undo_points::get_state(root))
+                .flatten()
         }
         fn set_state(&mut self, state: &str) {
-            self.in_root_mut(|root| crate::undo::set_state(root, state));
+            self.in_root_mut(|root| crate::widget::undo_points::set_state(root, state));
         }
     }
 

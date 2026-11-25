@@ -180,7 +180,9 @@ impl Table {
     pub(super) fn project_cells(&mut self, rows: &[Vec<String>]) {
         let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
         let saved_focus = self.projected_focus().and_then(|(row, column)| {
-            let state = ui::undo::get_state(self.cells.get(self.projected_index(row, column)?)?);
+            let state = ui::widget::undo_points::get_state(
+                self.cells.get(self.projected_index(row, column)?)?,
+            );
             Some((row, column, state))
         });
         let shape_changed = self.n_rows() != rows.len() || self.n_cols() != columns;
@@ -256,7 +258,7 @@ impl Table {
 
     pub(super) fn projected_caret(&self) -> Option<String> {
         let (row, column) = self.projected_focus()?;
-        ui::undo::get_state(self.cells.get(self.projected_index(row, column)?)?)
+        ui::widget::undo_points::get_state(self.cells.get(self.projected_index(row, column)?)?)
     }
 
     pub(super) fn restore_projected_caret(&mut self, state: &str) {
@@ -269,7 +271,7 @@ impl Table {
         let Some(input) = self.cells.get_mut(index) else {
             return;
         };
-        ui::undo::set_state(input, state);
+        ui::widget::undo_points::set_state(input, state);
         let caret = input.caret_position();
         let selection = input.selection_range_public();
         input.set_caret_position(caret);

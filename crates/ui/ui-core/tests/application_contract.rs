@@ -1461,7 +1461,7 @@ mod paired_local {
     impl Widget for LocalRoot {
         tilo_ui::provides!(
             dyn tilo_ui::view::capability::ViewState,
-            dyn tilo_ui::undo::UndoPoints
+            dyn tilo_ui::widget::undo_points::UndoPoints
         );
 
         fn build_layout(
@@ -1486,7 +1486,7 @@ mod paired_local {
         }
     }
 
-    impl tilo_ui::undo::UndoPoints for LocalRoot {
+    impl tilo_ui::widget::undo_points::UndoPoints for LocalRoot {
         fn get_state(&self) -> Option<String> {
             Some("current caret".into())
         }

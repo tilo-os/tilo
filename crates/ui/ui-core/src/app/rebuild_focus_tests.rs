@@ -147,7 +147,7 @@ impl Widget for RebuildHarness {
 fn caret(app: &App) -> Option<String> {
     let id = app.focused_node?;
     let w = *app.layout.node_map.get(&id)?;
-    unsafe { crate::undo::get_state(&(*w)) }
+    unsafe { crate::widget::undo_points::get_state(&(*w)) }
 }
 
 /// A window with nothing laid out yet, as a surface host shows it before its
@@ -179,7 +179,7 @@ tilo_test_env::scenario! {
 
             let id = app.focused_node.expect("input focused at startup");
             unsafe {
-                crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
+                crate::widget::undo_points::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
             }
             assert_eq!(caret(&app).as_deref(), Some("3"));
 
@@ -216,7 +216,7 @@ tilo_test_env::scenario! {
 
             let id = app.focused_node.unwrap();
             unsafe {
-                crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
+                crate::widget::undo_points::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
             }
 
             let mut tmp = AutoCommit::new();

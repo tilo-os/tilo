@@ -86,7 +86,7 @@ fn names_retain_form_anchors_and_mid_string_caret() {
                 );
                 let input = control(preview, "installer.device-name").unwrap();
                 assert!(input.is_focused());
-                let caret = ui::undo::get_state(input).unwrap();
+                let caret = ui::widget::undo_points::get_state(input).unwrap();
                 assert_eq!(
                     caret.split(':').next().unwrap().parse::<usize>().unwrap(),
                     preview.journey.device_name.len() - 2

@@ -148,7 +148,7 @@ pub(crate) fn restore_focus_state_bound(widget: &mut dyn crate::widget::Widget, 
         return;
     };
     if !focus.ephemeral.is_empty() {
-        crate::undo::set_state(widget, &focus.ephemeral);
+        crate::widget::undo_points::set_state(widget, &focus.ephemeral);
     }
 }
 
@@ -160,7 +160,9 @@ pub(crate) fn capture_tree_focus_bound(root: &dyn crate::widget::Widget) -> Opti
             let current = *ordinal;
             *ordinal = ordinal.saturating_add(1);
             if root.is_focused() {
-                return capture_focus(Some(current), || crate::undo::get_state(root));
+                return capture_focus(Some(current), || {
+                    crate::widget::undo_points::get_state(root)
+                });
             }
         }
         for child in root.children() {
@@ -347,7 +349,7 @@ mod tests {
         crate::provides!(
             dyn crate::resource::capability::ResourceScoped,
             dyn crate::view::capability::ViewState,
-            dyn crate::undo::UndoPoints
+            dyn crate::widget::undo_points::UndoPoints
         );
 
         fn build_layout(
@@ -375,7 +377,7 @@ mod tests {
         }
     }
 
-    impl crate::undo::UndoPoints for DocRoot {
+    impl crate::widget::undo_points::UndoPoints for DocRoot {
         fn get_state(&self) -> Option<String> {
             Some(self.caret.clone())
         }
