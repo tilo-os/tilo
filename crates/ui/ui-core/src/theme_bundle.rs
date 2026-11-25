@@ -124,8 +124,7 @@ pub fn load_from(
     dir: &std::path::Path,
     compiled: Option<&std::path::Path>,
 ) -> Result<Theme, BundleError> {
-    let document = std::fs::read_to_string(dir.join(DOCUMENT))
-        .map_err(|error| BundleError::Read(format!("{}: {error}", dir.join(DOCUMENT).display())))?;
+    let document = read_document(dir)?;
     load_with(
         &document,
         |set| {
@@ -141,6 +140,32 @@ pub fn load_from(
             tilo_theme_painter_wasm::compiled_in(compiled, bytes)
         },
     )
+}
+
+/// The bundle's document in `dir`: its [`DOCUMENT`], read and validated like any other theme
+/// document, without loading the painter sets. A device that applies the bundle loads it with
+/// [`load_from`] to register the sets the document names; this reads what the theme is.
+///
+/// # Errors
+///
+/// A document that does not read, or one that is not a theme this build admits.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn document(dir: &std::path::Path) -> Result<crate::theme::ThemeDocument, BundleError> {
+    let text = read_document(dir)?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| BundleError::Document(e.to_string()))?;
+    let document: crate::theme::ThemeDocument =
+        serde_json::from_value(value).map_err(|e| BundleError::Document(e.to_string()))?;
+    document
+        .validate()
+        .map_err(|why| BundleError::Document(why.to_owned()))?;
+    Ok(document)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_document(dir: &std::path::Path) -> Result<String, BundleError> {
+    std::fs::read_to_string(dir.join(DOCUMENT))
+        .map_err(|error| BundleError::Read(format!("{}: {error}", dir.join(DOCUMENT).display())))
 }
 
 #[cfg(test)]

@@ -390,6 +390,14 @@ refused. The material bench (`ui-perf material_bench DIR`) and
 `tilo-layout-check --theme DIR` take a bundle directory where they
 take a theme's name.
 
+An installed package whose payload is a bundle is applied by the appearance's
+`apply-theme` action, over the place the settings keep it
+(`settings/appearance`): it names the package, and every device that has it
+loads the bundle through the same loader, registering its sets on the machine
+code the device compiled when the package arrived. The choice follows the
+person; a device without the package draws the theme its mode names and
+Settings' Appearance page says the package is missing.
+
 **Writing a set.** A set is a crate that depends on `tilo-theme-sdk`
 alone, built as a `cdylib` for `wasm32-unknown-unknown`, exporting its
 painter with `export_painter!`. Its tests run the painter natively through

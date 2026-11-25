@@ -41,6 +41,8 @@ wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../pla
 postcard = { workspace = true, features = ["use-std"] }
 serde_bytes.workspace = true
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+# The device's data home, under which the compiled modules are kept.
+tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 
 [target.'cfg(unix)'.dependencies]
 # An origin connector's connections (`origin_connector`), as on Windows.

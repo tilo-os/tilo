@@ -1,5 +1,7 @@
-/// The person's themes: which one each mode shows, the looks Tilo ships, and every theme of
-/// their own, each role a field of the appearance resource. A slider here, the shell's style
+/// The person's themes: which one each mode shows, the looks Tilo ships, the theme packages
+/// installed on this device, and every theme of their own, each role a field of the appearance
+/// resource. A package is applied by the appearance's own action, which names it so their
+/// devices that have it draw it and one without it says so. A slider here, the shell's style
 /// panel and an agent change the same field with the same edit, so the desktop takes it live
 /// and History keeps who changed it. An edit that would leave a pair of ink and surface under
 /// its contrast floor is refused, and the refusal names the pair.
@@ -8,6 +10,16 @@ view themes_pane(s: Settings) {
     state new_id: Text = ""
     state base: Text = "tilo-dark"
     let a = settings.appearance
+    let packages = settings.theme_packages
+    if let chosen = a.theme_package {
+        if not packages.packages.any(p -> p.key == chosen) {
+            ui.Banner(
+                "The theme package is not installed on this device",
+                message: "Every app shows Tilo's theme until the package is installed here; your other devices that have it show it.",
+                kind: .warning,
+            )
+        }
+    }
     ui.Section("Shown") {
         setting("In dark mode", "A look's dark side, or one of your themes") {
             ui.Text(theme_title(a.dark_theme), role: .body)
@@ -20,6 +32,30 @@ view themes_pane(s: Settings) {
         for look in ["Tilo", "Paper", "Moss", "Dusk", "Mono"] {
             ui.ListRow(look, secondary: "Designed for light and for dark", icon: .palette) {
                 on activate: settings.choose_theme(a, theme: look)
+            }
+        }
+    }
+    ui.Section("Installed theme packages") {
+        if packages.packages.is_empty() {
+            ui.Text(
+                "A theme package brings its own painters; install one from the Store and it appears here.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+        for package in packages.packages {
+            ui.ListRow(
+                package.name,
+                secondary: package.key,
+                selected: a.theme_package == .some(package.key),
+                icon: .palette,
+            ) {
+                on activate: settings.apply_theme(a, package: package.key)
+                trailing: {
+                    ui.Button("Use", size: .small) {
+                        on press: settings.apply_theme(a, package: package.key)
+                    }
+                }
             }
         }
     }

@@ -27,6 +27,7 @@ mod i18n;
 pub mod languages;
 pub mod shortcuts_table;
 pub mod tablet_choices;
+pub mod theme_packages;
 
 use serde_json::{Map, Value};
 use settings_store::index::{self, Change, Setting};
@@ -193,6 +194,13 @@ impl SettingsService {
         >(
             tablet_choices::RESOURCE,
             i18n::t("settings-tablet-choices"),
+        ));
+        // The theme packages installed here, as Appearance's page offers them.
+        resources.push(tilo_resource::typed_resource::<
+            theme_packages::ThemePackagesReading,
+        >(
+            theme_packages::RESOURCE,
+            i18n::t("settings-theme-packages"),
         ));
         resources
     }
@@ -380,6 +388,9 @@ impl Service for SettingsService {
         }
         if resource == languages::RESOURCE {
             return serde_json::to_value(languages::Languages::spoken()).ok();
+        }
+        if resource == theme_packages::RESOURCE {
+            return serde_json::to_value(theme_packages::ThemePackages::installed()).ok();
         }
         if resource == shortcuts_table::RESOURCE {
             // The table read from the person's shortcuts section as it is stored now.

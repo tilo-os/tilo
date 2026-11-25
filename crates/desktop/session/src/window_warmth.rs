@@ -178,10 +178,18 @@ pub(crate) fn window_workspace<'a>(
 }
 
 /// The theme the shell and its windows wear: the settings document's, with the host's accessibility
-/// overrides on top, built as the shell's own theme was when the session started.
+/// overrides on top, built as the shell's own theme was when the session started. An appearance
+/// that names an applied theme package wears that package's theme, loaded through the one bundle
+/// loader, so its painter sets draw; a device without the package shows the mode's theme, as if
+/// none were applied, and Settings says the package is missing.
 fn shell_theme(document: &Map<String, Value>) -> Theme {
     let accessibility = ui::process::environment().accessibility;
-    Theme::configured_from(document).with_a11y(
+    let applied = document
+        .get("appearance")
+        .and_then(|appearance| appearance.get("theme_package"))
+        .and_then(Value::as_str)
+        .and_then(settings_sections::prefs::applied_theme);
+    Theme::configured_with(document, applied).with_a11y(
         &ui::a11y::A11ySettings {
             high_contrast: accessibility.high_contrast,
             reduce_motion: accessibility.reduce_motion,

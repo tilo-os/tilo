@@ -732,15 +732,37 @@ impl Theme {
     /// [`Theme::configured`] from an explicit settings document, with the host's own light or dark
     /// ([`host_scheme`]) in place of an appearance the person left open.
     pub fn configured_from(settings: &serde_json::Map<String, serde_json::Value>) -> Self {
+        Self::configured_with(settings, None)
+    }
+
+    /// [`Theme::configured_from`] with `applied` drawn in place of the theme the appearance's mode
+    /// names: the document of a theme package the person applied and this device has installed,
+    /// which the caller loads through [`crate::theme_bundle::load_from`] so the package's painter
+    /// sets are the ones that draw. `None` on a device without the package: the mode's theme shows.
+    pub fn configured_with(
+        settings: &serde_json::Map<String, serde_json::Value>,
+        applied: Option<ThemeDocument>,
+    ) -> Self {
         let text = serde_json::Value::Object(with_host_scheme(settings.clone(), host_scheme()))
             .to_string();
         let reduce_motion_override = crate::process::environment().accessibility.reduce_motion;
-        Self::configured_from_text(&text, reduce_motion_override)
+        Self::configured_with_applied(&text, applied, reduce_motion_override)
     }
 
     fn configured_from_text(text: &str, reduce_motion_override: bool) -> Self {
+        Self::configured_with_applied(text, None, reduce_motion_override)
+    }
+
+    fn configured_with_applied(
+        text: &str,
+        applied: Option<ThemeDocument>,
+        reduce_motion_override: bool,
+    ) -> Self {
         let mut stack =
             crate::theme_layers::ThemeLayerStack::from_settings_json(text, local_moment());
+        if applied.is_some() {
+            stack.user_theme = applied;
+        }
         // Hosts apply text and UI scale on top of this theme (`App::rebuild_theme`).
         // Reduced motion is either source: the person's switch in Settings (the file), or
         // the host override — the compositor is itself a UI host, so an explicitly

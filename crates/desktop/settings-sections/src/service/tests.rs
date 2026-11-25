@@ -777,4 +777,228 @@ fn every_declared_verb_of_a_section_is_published_where_the_section_stands() {
         }
     }
     assert!(checked > 20, "{checked} declared verbs are published");
+/// A painter module for a theme bundle: it declares the SDK's parameters and draws a triangle
+/// whose apex is `dx` from the centre, so a changed module draws a visibly other frame. It is the
+/// module the bundle's document names, compiled by the daemon into the device's store at install.
+fn triangle_module(dx: f64) -> Vec<u8> {
+    use ui::part_paint::{Brush, PaintedPart, ParamSpec, PartScene};
+
+    let mut part = PartScene::new();
+    let mut triangle = ui::kurbo::BezPath::new();
+    triangle.move_to((60.0 + dx, 0.0));
+    triangle.line_to((108.0, 40.0));
+    triangle.line_to((12.0, 40.0));
+    triangle.close_path();
+    part.fill(
+        triangle,
+        Brush::Solid(ui::peniko::Color::from_rgb8(0xd0, 0x30, 0x20)),
+    );
+    let answer = tilo_theme_sdk::wire::paint_answer(Some(&PaintedPart::new(part)));
+    let params = tilo_theme_sdk::wire::params_answer(&[
+        ParamSpec::new("levels", Some(4.0), 2.0..=16.0),
+        ParamSpec::new("depth", Some(0.14), 0.0..=1.0),
+        ParamSpec::new("shadow", Some(3.0), 0.0..=10.0),
+    ]);
+    let data = |bytes: &[u8]| {
+        let mut text = String::new();
+        for byte in bytes {
+            use std::fmt::Write as _;
+            let _ = write!(text, "\\{byte:02x}");
+        }
+        text
+    };
+    let params = data(&params);
+    let answer = data(&answer);
+    wat::parse_str(format!(
+        r#"(module
+            (memory (export "memory") 2)
+            (data (i32.const 1024) "{params}")
+            (data (i32.const 8192) "{answer}")
+            (func (export "tilo_theme_buffer") (param i32) (result i32) (i32.const 65536))
+            (func (export "tilo_theme_call") (param i32) (result i64)
+                (if (result i64) (i32.eq (i32.load8_u (i32.const 65536)) (i32.const 3))
+                    (then (i64.or (i64.shl (i64.const 1024) (i64.const 32)) (i64.const {params_len})))
+                    (else (i64.or (i64.shl (i64.const 8192) (i64.const 32)) (i64.const {answer_len}))))))"#,
+        params_len = params.len() / 3,
+        answer_len = answer.len() / 3,
+    ))
+    .expect("the module reads")
+}
+
+/// The theme bundle of the package `PACKAGE`: Bauhaus's document naming `SET`, and that set's
+/// module beside it. The bytes are what the device's daemon compiles when the package arrives.
+fn theme_bundle(dir: &std::path::Path) -> Vec<u8> {
+    const DOCUMENT: &str = include_str!("../../../../ui/themes/bauhaus/theme.json");
+    const SET: &str = "test.theme-triangle";
+    std::fs::create_dir_all(dir).expect("the payload tree");
+    let document = DOCUMENT.replace("\"bauhaus\"", &format!("{SET:?}"));
+    std::fs::write(dir.join(ui::theme_bundle::DOCUMENT), document).expect("the document");
+    let bytes = triangle_module(0.0);
+    std::fs::write(dir.join(format!("{SET}.wasm")), &bytes).expect("the set's module");
+    bytes
+}
+
+/// Lay the package `PACKAGE` out as an install leaves it: its payload tree under the device's
+/// user store, a row in the store's registry, and the machine code the daemon compiled for the
+/// set it carries in the store the launcher grants read-only.
+fn install_theme_package() -> (std::path::PathBuf, Vec<u8>) {
+    let store = package_store::layout::default_user_root().expect("the device's store");
+    let payload = store.join("pkgs").join("theme-triangle");
+    let bytes = theme_bundle(&payload);
+    tilo_wasm_aot::Cache::at(
+        tilo_paths::data_dir()
+            .expect("the test home")
+            .join("tilolang-compiled"),
+    )
+    .expect("the device compiles")
+    .ensure(&bytes)
+    .expect("the set compiles");
+    let mut registry =
+        package_store::Registry::load(&store.join("registry.toml")).expect("the registry reads");
+    let mut row = package_store::InstalledPackage::detached(
+        PACKAGE,
+        String::new(),
+        payload.clone(),
+        payload.join("manifest.toml"),
+    );
+    "1.0.0".clone_into(&mut row.version);
+    registry.upsert(row);
+    registry
+        .save(&store.join("registry.toml"))
+        .expect("the registry is written");
+    (payload, bytes)
+}
+
+const PACKAGE: &str = "so.tilo.theme.triangle";
+const APPEARANCE: &str = "settings/appearance";
+
+/// One frame of a theme: a button drawn into a scene, as the toolkit draws one.
+fn frame(theme: &ui::Theme) -> ui::vello::Scene {
+    use ui::widget::{Button, Widget as _};
+    let mut button = Button::new("go", "Go");
+    button.apply_layout_external(ui::kurbo::Rect::new(100.0, 50.0, 220.0, 90.0));
+    let mut scene = ui::vello::Scene::new();
+    button.draw(&mut ui::draw::DrawCtx::new(
+        &mut scene,
+        ui::kurbo::Affine::IDENTITY,
+        &mut ui::text_render::TextRenderer::new(),
+        theme,
+        ui::presence::PresenceCtx::default().draw_env(),
+    ));
+    scene
+}
+
+/// Applying an installed theme package: the appearance names it, its painters draw the frame on
+/// the machine code the device compiled when the package arrived, and undo puts the previous
+/// theme back.
+#[test]
+fn a_theme_package_is_applied_by_its_action_and_undo_returns_the_previous_theme() {
+    let _home = tilo_test_env::TestHome::new().expect("a home");
+    let _settings = crate::in_memory::scoped();
+    let (_payload, bytes) = install_theme_package();
+    let mut services = services();
+
+    // What the appearance says before: no package, and the theme its mode names.
+    assert_eq!(
+        services.read(&section("appearance")).expect("published")["theme_package"],
+        Value::Null
+    );
+    let before = crate::prefs::AppearancePrefs::default()
+        .user_document()
+        .expect("the stock theme");
+    let before_frame = frame(&ui::Theme::from_document(&before).expect("the stock theme draws"));
+
+    // The store the daemon wrote holds the set's machine code before anything applies it: what
+    // the install compiled, and the only thing the apply path reads.
+    assert!(
+        tilo_wasm_aot::kept_in(
+            &tilo_paths::data_dir()
+                .expect("the test home")
+                .join("tilolang-compiled"),
+            &bytes
+        )
+        .is_some(),
+        "the install compiled the set into the device's store"
+    );
+
+    let lookups = tilo_wasm_aot::lookups();
+    services
+        .invoke(
+            APPEARANCE,
+            "apply-theme",
+            &arguments(json!({ "package": PACKAGE })),
+        )
+        .expect("published")
+        .expect("applied");
+    assert_eq!(
+        services.read(APPEARANCE).expect("published")["theme_package"],
+        json!(PACKAGE),
+        "the person's appearance names the package"
+    );
+    assert!(
+        tilo_wasm_aot::lookups() > lookups,
+        "applying read the device's compiled store rather than compiling on that path"
+    );
+
+    // The theme the appearance now draws is the bundle's, drawn by the set it ships on that
+    // machine code, and its frame is not the stock theme's.
+    let prefs: crate::prefs::AppearancePrefs =
+        serde_json::from_value(services.read(APPEARANCE).expect("published")).expect("the section");
+    let applied = prefs.user_document().expect("the applied theme");
+    let theme = ui::Theme::from_document(&applied).expect("the bundle's theme draws");
+    assert_eq!(
+        theme.finish(ui::tokens::SurfaceRole::Control).painter(),
+        "test.theme-triangle",
+        "the set the bundle names is the one that draws the parts"
+    );
+    let applied_frame = frame(&theme);
+    assert!(
+        !applied_frame.encoding().is_empty(),
+        "the applied theme's frame drew nothing"
+    );
+    assert!(
+        !before_frame.encoding_eq(&applied_frame),
+        "the applied theme draws another frame than the stock theme"
+    );
+
+    // Undo takes back the person's step: the appearance names no package again, and the theme
+    // the mode shows is what every app draws.
+    services
+        .invoke(APPEARANCE, "undo", &Map::new())
+        .expect("published")
+        .expect("undone");
+    let section = services.read(APPEARANCE).expect("published");
+    assert_eq!(section["theme_package"], Value::Null);
+    let prefs: crate::prefs::AppearancePrefs =
+        serde_json::from_value(section).expect("the section reads");
+    assert_eq!(
+        prefs.user_document().map(|document| document.id),
+        Some(before.id),
+        "undo returns the previous theme"
+    );
+}
+
+/// A package this device does not have is refused, naming what is missing, and the appearance is
+/// unchanged: only an installed bundle can be applied.
+#[test]
+fn a_package_that_is_not_installed_is_refused() {
+    let _home = tilo_test_env::TestHome::new().expect("a home");
+    let _settings = crate::in_memory::scoped();
+    let mut services = services();
+    let refused = services
+        .invoke(
+            APPEARANCE,
+            "apply-theme",
+            &arguments(json!({ "package": "so.tilo.theme.missing" })),
+        )
+        .expect("published");
+    let refused = refused.expect_err("a package that is not installed is refused");
+    assert!(
+        format!("{refused}").contains("so.tilo.theme.missing"),
+        "the refusal names the package: {refused}"
+    );
+    assert_eq!(
+        services.read(APPEARANCE).expect("published")["theme_package"],
+        Value::Null
+    );
 }

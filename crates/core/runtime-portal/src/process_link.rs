@@ -67,6 +67,17 @@ pub const STORAGE_ENV: &str = "TILO_TILOLANG_PROCESS_STORAGE";
 /// the interpreter.
 pub const COMPILED_ENV: &str = "TILO_COMPILED_MODULES";
 
+/// Where this process reads the machine code the device's daemon compiled for its modules: the
+/// directory [`COMPILED_ENV`] names when the launcher mounted one, else the device's own store
+/// under its data home. `None` when neither can be located.
+#[must_use]
+pub fn compiled_modules() -> Option<std::path::PathBuf> {
+    std::env::var_os(COMPILED_ENV)
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| tilo_paths::data_dir().map(|data| data.join("tilolang-compiled")))
+}
+
 /// Set on a launch whose window shows an instance a tilolang process runs.
 pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
 

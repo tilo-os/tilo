@@ -12,6 +12,7 @@ fields = [
   { path = "mode", type = "text" },
   { path = "dark_theme", type = "text" },
   { path = "light_theme", type = "text" },
+  { path = "theme_package", type = { option = "text" }, readonly = true },
   { path = "themes", type = { collection = { named = "ThemeRecord" } }, stored = "collection" },
   { path = "themes.*.name", type = "text", label = true },
   { path = "themes.*.dark", type = "bool", readonly = true },
@@ -87,6 +88,13 @@ id = "choose-theme"
 kind = "undoable"
 params = [
   { name = "theme", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "apply-theme"
+kind = "undoable"
+params = [
+  { name = "package", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -2040,6 +2048,21 @@ fields = [
   { name = "pad_strips", type = { map = { list = "text" } } },
 ]
 
+[[resources]]
+kind = "settings.theme-packages"
+label = "Theme packages"
+version = 1
+fields = [
+  { path = "packages", type = { list = { named = "ThemePackage" } }, readonly = true },
+]
+
+[[resources.types]]
+name = "ThemePackage"
+fields = [
+  { name = "key", type = "text" },
+  { name = "name", type = "text" },
+]
+
 [[roots]]
 name = "appearance"
 kind = "settings.appearance"
@@ -2229,4 +2252,9 @@ published = "settings/languages"
 name = "tablet_choices"
 kind = "settings.tablet-choices"
 published = "settings/tablet-choices"
+
+[[roots]]
+name = "theme_packages"
+kind = "settings.theme-packages"
+published = "settings/theme-packages"
 

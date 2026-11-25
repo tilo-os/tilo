@@ -517,6 +517,11 @@ tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 # What a person types at their desktop: `tilo do` lists the catalogue and runs one
 # action over the control socket the session serves here.
 tilo-control = { path = "../control-cli" }
+# A theme bundle's painter module built in the test, and the store the device compiles it into:
+# a session applies an installed theme package and draws its frames.
+wat = "1"
+tilo-theme-sdk = { version = "0.1.0", path = "../../ui/theme-sdk" }
+tilo-wasm-aot = { path = "../../platform/tilo-wasm-aot", features = ["compile"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The runtimes a device runs tilolang apps' windows on, signed and installed as a device's own

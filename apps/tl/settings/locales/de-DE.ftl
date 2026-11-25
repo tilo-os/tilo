@@ -1727,6 +1727,10 @@ d-juhocpyw = About pane
     .w-these-reports-stay-on-this-computer = Diese Berichte bleiben auf diesem Computer.
 
 d-ozpkxud5 = Themes pane
+    .w-the-theme-package-is-not-installed = Das Theme-Paket ist auf diesem Gerät nicht installiert
+    .w-every-app-shows-tilo-s-theme-until = Jede App zeigt Tilos Theme, bis das Paket hier installiert ist; deine anderen Geräte, die es haben, zeigen es.
+    .w-installed-theme-packages = Installierte Theme-Pakete
+    .w-a-theme-package-brings-its-own = Ein Theme-Paket bringt eigene Zeichner mit; installiere eines aus dem Store, dann erscheint es hier.
     .w-shown = Gezeigt
     .w-in-dark-mode = Im dunklen Modus
     .w-a-look-s-dark-side-or = Die dunkle Seite eines Looks oder eines deiner Themen

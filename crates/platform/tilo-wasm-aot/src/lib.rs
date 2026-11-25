@@ -137,6 +137,17 @@ pub fn open_for<'a>(bytes: &'a [u8], module: &[u8]) -> Result<&'a [u8], String> 
     Ok(opened.serialized)
 }
 
+/// How many times a runtime looked in a store for a module's machine code ([`kept_in`]), since
+/// this process started: what a test reads to hold a path to the store rather than to a compile.
+static LOOKUPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The lookups runtimes made in this process: [`kept_in`]'s count. A path that draws a module on
+/// the device's compiled code reads the store, so it moves this; nothing compiles here.
+#[must_use]
+pub fn lookups() -> u64 {
+    LOOKUPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The entry `dir` holds for `module`, without compiling: what a runtime reads from the store the
 /// daemon owns, which it is granted read-only. `None` when no entry there is the one made for
 /// these bytes.
@@ -146,6 +157,7 @@ pub fn open_for<'a>(bytes: &'a [u8], module: &[u8]) -> Result<&'a [u8], String> 
 /// where it is used.
 #[must_use]
 pub fn kept_in(dir: &Path, module: &[u8]) -> Option<Vec<u8>> {
+    LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let prefix = format!("{}-", blake3::hash(module).to_hex());
     for entry in std::fs::read_dir(dir).ok()? {
         let path = entry.ok()?.path();

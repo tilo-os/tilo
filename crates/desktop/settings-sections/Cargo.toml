@@ -44,6 +44,11 @@ tilo-resource-store = { path = "../../core/resource-store" }
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types", optional = true }
 # The invocation one change's writes share.
 uuid.workspace = true
+# The device's installed packages: the theme packages Appearance offers, and the one it applies.
+package-store = { package = "tilo-package-store", path = "../../core/package-store" }
+# Where a process reads the machine code the device compiled: the store an applied theme's
+# painter sets are drawn from.
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
 
 [features]
 # Settings over the person's and the device owner's workspaces in memory, for tests.
@@ -59,6 +64,14 @@ workspace-hack = { version = "0.1" }
 settings-sections = { path = ".", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
+# Where the test's device keeps its store and the compiled modules under its data home.
+tilo-paths = { path = "../../platform/tilo-paths" }
+# A theme bundle's painter module built in the test, and the store the device compiles it into.
+wat = "1"
+tilo-theme-sdk = { version = "0.1.0", path = "../../ui/theme-sdk" }
+tilo-wasm-aot = { path = "../../platform/tilo-wasm-aot", features = ["compile"] }
+# The registry the install writes, so the test lays out what an install leaves.
+package-store = { package = "tilo-package-store", path = "../../core/package-store", features = ["store"] }
 # A view of another language reading the sections and setting them through their setters.
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 

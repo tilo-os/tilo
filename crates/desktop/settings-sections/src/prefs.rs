@@ -1609,6 +1609,13 @@ pub struct AppearancePrefs {
     /// The theme light mode shows: a preset id or `custom:<id>`.
     #[serde(default = "default_light_theme")]
     pub light_theme: String,
+    /// The theme package the person applied ([`Self::apply_theme`]), by its id: the bundle's
+    /// document and painters draw every app on a device that has the package installed, and a
+    /// device without it shows Tilo's theme and says the package is missing. Unset shows the
+    /// theme the mode and schedule show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(readonly)]
+    pub theme_package: Option<String>,
     /// The person's own themes, each one a `custom:<id>` names: every role a
     /// field, changed by the same edits from Settings, the shell and an agent.
     #[serde(
@@ -1771,6 +1778,7 @@ impl Default for AppearancePrefs {
             mode: default_mode(),
             dark_theme: default_dark_theme(),
             light_theme: default_light_theme(),
+            theme_package: None,
             themes: ui::tilo_resource::Collection::default(),
             density: default_density(),
             high_contrast: false,
@@ -1794,6 +1802,19 @@ impl Default for AppearancePrefs {
     }
 }
 
+/// The theme the installed package `id` draws on this device: its bundle loaded through
+/// [`ui::theme_bundle::load_from`], which registers each painter set it names on the machine code
+/// the device's daemon compiled when the package arrived, and its document. `None` when the
+/// package is not installed here, or its bundle is refused: the device then shows the theme the
+/// appearance's mode names, and Settings says the package is missing.
+#[must_use]
+pub fn applied_theme(id: &str) -> Option<ui::theme::ThemeDocument> {
+    let installed = package_store::find_installed(id).ok().flatten()?;
+    let compiled = runtime_portal::process_link::compiled_modules();
+    ui::theme_bundle::load_from(&installed.payload_root, compiled.as_deref()).ok()?;
+    ui::theme_bundle::document(&installed.payload_root).ok()
+}
+
 impl AppearancePrefs {
     /// The settings document these preferences describe, in the shape the
     /// theme layers read.
@@ -1815,9 +1836,13 @@ impl AppearancePrefs {
         }
     }
 
-    /// The theme document the current mode shows, with the density over it.
+    /// The theme document every app draws: the applied package's on a device that has it, else
+    /// the theme the current mode shows, with the density over it.
     pub fn user_document(&self) -> Option<ui::theme::ThemeDocument> {
-        ui::theme::user_document(&self.settings_value(), ui::theme::local_moment())
+        self.theme_package
+            .as_deref()
+            .and_then(applied_theme)
+            .or_else(|| ui::theme::user_document(&self.settings_value(), ui::theme::local_moment()))
     }
 
     fn layers(
@@ -1941,6 +1966,39 @@ impl AppearancePrefs {
             ))
         })?;
         self.choose_look(look);
+        self.theme_package = None;
+        Ok(())
+    }
+
+    /// Dress every app in a theme package installed on this device: the bundle's document and
+    /// the painter sets it ships, the sets drawn on the machine code the device compiled when the
+    /// package arrived. The appearance names the package, so it follows the person to their other
+    /// devices; one without the package installed shows Tilo's theme and says it is missing.
+    #[action(
+        id = "apply-theme",
+        keywords = "theme, look, appearance, style, package"
+    )]
+    pub fn apply_theme(
+        &mut self,
+        #[param("An installed theme package's id", example = "so.tilo.theme.bauhaus")]
+        package: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let id = package.trim();
+        if id.is_empty() {
+            return Err(ui::tilo_resource::Refusal::new("a theme package is needed"));
+        }
+        let Some(installed) = package_store::find_installed(id).ok().flatten() else {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{id}` is not a package installed on this device"
+            )));
+        };
+        let compiled = runtime_portal::process_link::compiled_modules();
+        ui::theme_bundle::load_from(&installed.payload_root, compiled.as_deref()).map_err(
+            |error| {
+                ui::tilo_resource::Refusal::new(format!("`{id}` does not draw a theme: {error}"))
+            },
+        )?;
+        self.theme_package = Some(installed.id);
         Ok(())
     }
 
@@ -2002,6 +2060,7 @@ impl AppearancePrefs {
         } else {
             self.light_theme = reference;
         }
+        self.theme_package = None;
         Ok(())
     }
 
