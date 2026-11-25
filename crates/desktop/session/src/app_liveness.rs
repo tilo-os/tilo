@@ -27,10 +27,18 @@ impl crate::Session {
     }
 
     /// The windows that say "Not responding", as the compositor judges them now: the same set the
-    /// overview, the bar and an agent read.
+    /// overview, the bar and an agent read. Their shapes go with them, so a place picturing a
+    /// window keeps its aspect.
     fn publish_app_liveness(&self) {
         self.handle()
             .set_unresponsive_windows(self.compositor.not_responding_windows().to_vec());
+        self.handle().set_window_sizes(
+            self.compositor
+                .windows()
+                .into_iter()
+                .map(|(info, (_, _, width, height))| (info.id, (width, height)))
+                .collect(),
+        );
     }
 
     /// The person chose `choice` on the window of `tab` .

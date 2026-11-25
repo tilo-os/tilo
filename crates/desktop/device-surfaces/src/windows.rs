@@ -57,6 +57,14 @@ pub struct Window {
     pub focused: bool,
     /// Whether it may be pictured: `live`, `withheld` (it holds secrets) or `none`.
     pub preview: String,
+    /// The window's own shape, as the compositor draws it: its width in logical pixels. `0` while
+    /// it has no window here to measure (one on another device, or a placeholder what its app
+    /// left).
+    #[serde(default)]
+    pub width: i32,
+    /// Its height in logical pixels, as [`Self::width`] tells it.
+    #[serde(default)]
+    pub height: i32,
     /// Whether its app stopped answering the compositor's pings.
     pub not_responding: bool,
     /// Whether its window covers its display.

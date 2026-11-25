@@ -49,17 +49,7 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
             if bar_shows(s) {
                 bar_on_edge(s, traditional)
             }
-            if resting {
-                // What the style shows keeps the whole band under the bar, and the banner floats
-                // over it: a notice rising never moves what the person had on screen.
-                over_band {
-                    content
-                }
-            } else if device.overlays.here == "switcher" {
-                over_band {
-                    surface(fill)
-                }
-            } else if device.overlays.here == "emoji" {
+            if device.overlays.here == "emoji" {
                 // The picker stands over the windows: this layer draws nothing of the style, so
                 // the windows stay live behind its card, which is the only thing that takes the
                 // keys and the pointer while it is up.
@@ -78,23 +68,34 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                 // stays behind them, so nothing of the style is drawn here; the card itself
                 // stands over everything in `shell_around`.
                 banners_over(roomy: not (space.compact or space.width < 44.0))
-            } else if device.overlays.here == "quick-settings" {
-                // Beside a caret, the panel is drawn over the whole shell, at the point the stack
-                // settled (below the bar too). Left at its own place it keeps the band under the
-                // bar's trailing end.
-                if device.overlays.place == .none {
-                    over_band {
-                        scroll(fill) {
-                            quick_settings(fill)
-                        }
-                    }
-                }
             } else {
-                // A surface of the shell's own over the places: the launcher, the centre, quick
-                // settings or the workspaces.
+                // The band's page: what rests on it, or the surface standing over it. One stage,
+                // so a surface opens and closes with the shared motion rather than appearing and
+                // vanishing at once. What the style shows keeps the whole band under the bar, and
+                // the banner floats over it: a notice rising never moves what the person had on
+                // screen.
                 over_band {
-                    scroll(fill) {
-                        surface()
+                    layers(fill, transition: .cross_fade) {
+                        if resting {
+                            content
+                        } else if device.overlays.here == "switcher" {
+                            surface(fill)
+                        } else if device.overlays.here == "quick-settings" {
+                            // Beside a caret, the panel is drawn over the whole shell, at the
+                            // point the stack settled (below the bar too). Left at its own place
+                            // it keeps the band under the bar's trailing end.
+                            if device.overlays.place == .none {
+                                scroll(fill) {
+                                    quick_settings(fill)
+                                }
+                            }
+                        } else {
+                            // A surface of the shell's own over the places: the launcher, the
+                            // centre, quick settings or the workspaces.
+                            scroll(fill) {
+                                surface()
+                            }
+                        }
                     }
                 }
             }

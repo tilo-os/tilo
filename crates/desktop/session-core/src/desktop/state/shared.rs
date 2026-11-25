@@ -138,6 +138,8 @@ impl Shared {
             withheld: std::collections::BTreeSet::new(),
             unresponsive: std::collections::BTreeSet::new(),
             unresponsive_revision: 0,
+            window_sizes: std::collections::BTreeMap::new(),
+            window_sizes_revision: 0,
             liveness: Vec::new(),
             notice: Rc::default(),
             notice_actions: RefCell::default(),

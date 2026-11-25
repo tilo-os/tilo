@@ -26,6 +26,14 @@ view key_hints_switcher(this_app: Text) {
     }
 }
 
+/// The window's own shape, as the compositor draws it: every place that pictures a window takes
+/// this aspect, so the picture fills the place and no ground shows round it. A window with no
+/// window here to measure (one on another device, or a placeholder what its app left) takes the
+/// shell's own shape for a window.
+fn window_aspect(w: device.Window) -> Float {
+    if w.width <= 0 or w.height <= 0 { 1.6 } else { w.width.to_float() / w.height.to_float() }
+}
+
 /// A window whose app stopped answering says so, with the two ways out: keep waiting for it, or
 /// quit it. Wait gives the app another period to answer and takes the card away; Force quit ends
 /// the app, and the window with it. Both are the window's own published actions, so a script or an

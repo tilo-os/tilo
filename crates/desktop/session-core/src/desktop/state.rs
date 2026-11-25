@@ -59,6 +59,7 @@ pub mod tile_content;
 pub mod window_bars;
 pub use window_bars::BarField;
 pub mod window_menu;
+pub mod window_sizes;
 pub mod workspace_share;
 
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
@@ -355,6 +356,12 @@ pub struct Shared {
     pub unresponsive: std::collections::BTreeSet<u64>,
     /// Bumped whenever `unresponsive` changes, so a reading made from it is published again.
     pub unresponsive_revision: u64,
+    /// The shape of each window the compositor shows
+    /// ([`DesktopHandle::set_window_sizes`]), by its id for it: the size it draws at, so a place
+    /// picturing it keeps its own aspect.
+    pub window_sizes: std::collections::BTreeMap<u64, (i32, i32)>,
+    /// Bumped whenever `window_sizes` changes, so a reading made from them is published again.
+    pub window_sizes_revision: u64,
     /// What the person chose on a window that stopped answering, for the host to carry out
     /// ([`DesktopHandle::take_liveness_choices`]).
     pub liveness: Vec<(TabId, LivenessChoice)>,

@@ -164,7 +164,7 @@ view window_place(w: device.Window, weight: Float, peek: Bool, compact: Bool, ro
         max: cap,
     ) {
         stack(gap: .tight) {
-            layers(aspect: 1.6) {
+            layers(aspect: window_aspect(w)) {
                 window_picture(w)
             }
             if peek {

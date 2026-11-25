@@ -152,7 +152,7 @@ view window_names(w: device.Window) {
 /// app's glyph. A window that may not be pictured (its app holds secrets) shows the glyph alone,
 /// marked as withheld. `compact` is the room the cards stand in, as `window_card` says.
 view window_face(w: device.Window, compact: Bool) {
-    layers(min: if compact { 4rem } else { 11rem }, aspect: 1.6) {
+    layers(min: if compact { 4rem } else { 11rem }, aspect: window_aspect(w)) {
         window_picture(w)
     }
 }

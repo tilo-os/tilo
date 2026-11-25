@@ -79,6 +79,11 @@ fn window_reading(
         TileContent::Foreign { .. } => "live",
         _ => "none",
     };
+    // The shape of the window the compositor draws, when the tab holds one here.
+    let size = match &tab.tile {
+        TileContent::Foreign { surface_id, .. } => handle.window_size(*surface_id),
+        _ => None,
+    };
     // A window that runs only on another device may not be pictured here yet: it says which
     // device it is on.
     let (elsewhere, device, device_name) = match &tab.tile {
@@ -117,6 +122,10 @@ fn window_reading(
         recency: 0,
         focused: at.focused,
         preview: preview.to_owned(),
+        // The window's own shape, as the compositor draws it: a place picturing it keeps its
+        // aspect. A window with no window here to measure says nothing.
+        width: size.map_or(0, |(width, _)| width),
+        height: size.map_or(0, |(_, height)| height),
         // Its app is the compositor's to judge: the window it holds there is the one the pings went
         // to.
         not_responding: match &tab.tile {

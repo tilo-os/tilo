@@ -23,7 +23,7 @@ use crate::windows::{reaching, windows};
 /// What the device's lists are made from ([`DeviceLists::lists_key`]), one entry per resource: the
 /// windows, the tray, the agents and the styles. An entry that moved is a reading that moved.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct ListsKey([(u64, u64, u64, bool); 8]);
+pub(crate) struct ListsKey([(u64, u64, u64, bool); 9]);
 
 /// The shell's windows, every workspace's: what the switcher, the dock and the launcher list.
 pub(crate) const WINDOWS_RESOURCE: &str = "session:windows";
@@ -530,6 +530,9 @@ impl DeviceLists {
                 self.surfaces.overlays.revision(),
                 self.surfaces.overlays.revealed(tilo_clock::now()),
             ),
+            // A window's shape is the compositor's too: a resize changes the place a view
+            // picturing it takes, without the tree moving.
+            (self.handle.window_sizes_revision(), 0, 0, false),
             (
                 self.tray.as_ref().map_or(0, |tray| tray.revision()),
                 // Each item's badge is its app's unread count: an arrival or a change of the
