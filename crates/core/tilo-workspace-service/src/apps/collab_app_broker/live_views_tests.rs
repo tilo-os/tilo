@@ -251,6 +251,8 @@ tilo_test_env::scenario! {
     {
         let counter = Arc::new(Counter::new());
         let (state, tree, _owner, workspace) = broker(Arc::clone(&counter), |workspace| {
+            // The agent's person, who gave it its grants.
+            workspace.policy.add_member("ada", tilo_action_policy::Role::Viewer);
             workspace.allow_agent("scribe", KindSet::READ);
         });
 

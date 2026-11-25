@@ -33,6 +33,31 @@ mod durable_local_matrix {
         }
     }
     impl Environment {
+        /// The person's agent `id`: an agent their certified device runs.
+        fn agent(&self, id: &str) -> tilo_actions::MemberId {
+            tilo_actions::MemberId::agent(id, person_id_for_root(self.cert.user_public_key))
+        }
+        /// The person's agent `scribe`.
+        fn scribe(&self) -> tilo_actions::MemberId {
+            self.agent("scribe")
+        }
+        /// Let the person's agent `id` take actions of `reads` across the workspace and every
+        /// action of `apps`; answers the grant across the workspace.
+        fn agent_may(
+            &self,
+            id: &str,
+            reads: crate::apps::test_support::KindSet,
+            apps: &[&str],
+        ) -> tilo_action_policy::GrantId {
+            use crate::apps::test_support::{Grants as _, KindSet, TreePath};
+            let scribe = || tilo_action_policy::Grantee::member(self.agent(id));
+            let workspace = &mut self.membership.write().workspaces[0];
+            let across = workspace.allow(scribe(), &TreePath::root(), reads);
+            for app in apps {
+                workspace.allow_app(scribe(), app, KindSet::ALL);
+            }
+            across
+        }
         #[expect(
             clippy::new_ret_no_self,
             reason = "the thread-bound identity guard stays separate from the Send broker fixture"

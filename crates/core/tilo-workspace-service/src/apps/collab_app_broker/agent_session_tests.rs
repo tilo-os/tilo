@@ -147,7 +147,11 @@ async fn an_agent_sessions_step_waits_for_its_person_by_the_sessions_name() {
             let wire = stream.next().await.unwrap();
             assert_eq!(
                 wire.actor,
-                tilo_actions::MemberId::agent("scribe", "ada").into()
+                tilo_actions::MemberId::agent(
+                    "scribe",
+                    person_id_for_root(f.native.certificate.user_public_key)
+                )
+                .into()
             );
             let context = wire.context().cloned().expect("the session's context");
             assert_eq!(context.group.expect("the session's group").id, SESSION);

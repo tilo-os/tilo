@@ -54,13 +54,10 @@ fn fixture() -> Fixture {
         crate::apps::test_support::Workspace::new(WorkspaceId::from_u128(71), "Record changes");
     workspace.policy.set_owner(person.clone());
     let workspace_id = workspace.id().to_string();
-    workspace.allow_agent("scribe", KindSet::READ);
-    workspace.allow_app(Grantee::agent("scribe", "ada"), NOTES, KindSet::ALL);
-    workspace.deny(
-        Grantee::agent("scribe", "ada"),
-        &TreePath::root().app(MAIL),
-        KindSet::UNDOABLE,
-    );
+    let scribe = || Grantee::agent("scribe", person.as_str());
+    workspace.allow(scribe(), &TreePath::root(), KindSet::READ);
+    workspace.allow_app(scribe(), NOTES, KindSet::ALL);
+    workspace.deny(scribe(), &TreePath::root().app(MAIL), KindSet::UNDOABLE);
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
@@ -113,7 +110,7 @@ tilo_test_env::scenario! {
         assert_eq!(applied, &change(NOTES));
         assert_eq!(
             invoker.acting.by,
-            tilo_actions::Actor::member(tilo_actions::MemberId::agent("scribe", "ada"))
+            tilo_actions::Actor::member(tilo_actions::MemberId::agent("scribe", f.person.as_str()))
         );
         assert!(invoker.acting.is_agent());
         assert_eq!(invoker.acting.acted_for_person(), Some(f.person.as_str()));

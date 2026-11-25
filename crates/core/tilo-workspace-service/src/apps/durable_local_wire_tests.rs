@@ -55,14 +55,10 @@ async fn device_caller(
 
 /// Admit the person's agent `scribe` to the rig's application.
 fn admit_scribe(env: &Environment) {
-    use crate::apps::test_support::{Grants as _, KindSet};
-    let mut tree = env.membership.write();
-    let workspace = tree.workspaces.first_mut().unwrap();
-    workspace.allow_agent("scribe", KindSet::ALL);
-    workspace.allow_app(
-        tilo_action_policy::Grantee::agent("scribe", "ada"),
-        &env.route.app_id,
-        KindSet::ALL,
+    env.agent_may(
+        "scribe",
+        crate::apps::test_support::KindSet::ALL,
+        &[&env.route.app_id],
     );
 }
 
@@ -286,15 +282,10 @@ async fn durable_admission_survives_restart_and_journal_barrier_failures() {
 async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::apps::test_support::{Grants as _, KindSet};
+            use crate::apps::test_support::KindSet;
             let env = Environment::new();
             let rig = Rig::new(&env).await;
-            env.membership.write().workspaces[0].allow_agent("scribe", KindSet::READ);
-            env.membership.write().workspaces[0].allow_app(
-                tilo_action_policy::Grantee::agent("scribe", "ada"),
-                &env.route.app_id,
-                KindSet::ALL,
-            );
+            env.agent_may("scribe", KindSet::READ, &[&env.route.app_id]);
             // The person's own member access in the workspace, which the agent
             // session stands on.
             let person_grant = tilo_action_policy::GrantId("changes-for-a-while".into());
@@ -312,10 +303,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                 "the person cannot cancel their agent's invocation"
             );
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            assert_eq!(
-                delivered.actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
-            );
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(env.scribe()));
             let request = crate::apps::collab_app_broker::InvocationRequest {
                 wire_id: delivered.id,
                 invocation,
@@ -329,7 +317,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
             assert!(observe(&agent.handle, invocation).await.unwrap().is_some());
             assert!(
                 rig.state
-                    .invocation_statuses(&tilo_actions::MemberId::agent("scribe", "ada").into())
+                    .invocation_statuses(&env.scribe().into())
                     .is_empty(),
                 "an actor name alone discloses no authenticated invocation"
             );
@@ -363,16 +351,10 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
 async fn an_application_reaches_another_applications_action_only_as_a_granted_actor() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::apps::test_support::{Grants as _, KindSet};
+            use crate::apps::test_support::KindSet;
             let env = Environment::new();
             let rig = Rig::new(&env).await;
-            let agent_grant =
-                env.membership.write().workspaces[0].allow_agent("scribe", KindSet::ALL);
-            env.membership.write().workspaces[0].allow_app(
-                tilo_action_policy::Grantee::agent("scribe", "ada"),
-                &env.route.app_id,
-                KindSet::ALL,
-            );
+            let agent_grant = env.agent_may("scribe", KindSet::ALL, &[&env.route.app_id]);
             let application = rig.app_caller(&env, 904, "so.tilo.files", None).await;
             let invocation = id(0xb101);
             let refused = invoke(&application.handle, invocation).await.unwrap_err();
@@ -413,15 +395,10 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
             let workspace = env.route.cluster_id.clone();
             {
                 use crate::apps::test_support::{Grantee, Grants as _, KindSet, TreePath};
+                env.agent_may("scribe", KindSet::READ, &[&env.route.app_id]);
                 let workspace = &mut env.membership.write().workspaces[0];
-                workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(
-                    Grantee::agent("scribe", "ada"),
-                    &env.route.app_id,
-                    KindSet::ALL,
-                );
                 workspace.deny(
-                    Grantee::agent("scribe", "ada"),
+                    Grantee::member(env.scribe()),
                     &TreePath::root()
                         .app(env.route.app_id.clone())
                         .any(tilo_action_policy::Level::Kind)
@@ -436,10 +413,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
             let invocation = id(0xc001);
             invoke(&agent.handle, invocation).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            assert_eq!(
-                delivered.actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
-            );
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(env.scribe()));
 
             let continued = rig
                 .state
@@ -508,7 +482,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
             ));
             assert_eq!(
                 app.try_recv().unwrap().actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
+                tilo_actions::Actor::Member(env.scribe())
             );
             assert!(!matches!(
                 rig.state

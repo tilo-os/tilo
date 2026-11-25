@@ -436,7 +436,7 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
             ] {
                 let mut altered = snapshot.clone();
                 altered["records"][0]["intent"][field] = if field == "actor" {
-                    serde_json::json!({"person": "substituted actor"})
+                    serde_json::json!({"member": {"person": "substituted actor"}})
                 } else {
                     serde_json::json!({"substituted": field})
                 };

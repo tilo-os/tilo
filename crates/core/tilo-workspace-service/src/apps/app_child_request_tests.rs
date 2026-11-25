@@ -183,14 +183,12 @@ fn ran(
     notes: &mut tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
     request: &tilo_actions::remote::InvokeRequest,
     answer: &tilo_actions::remote::RemoteActionMessage,
+    scribe: tilo_actions::MemberId,
 ) -> tilo_actions::InvocationId {
     assert!(admitted(answer), "{answer:?}");
     let delivered = notes.try_recv().expect("Notes runs the call");
     assert_eq!(delivered.invocation, request.invocation);
-    assert_eq!(
-        delivered.actor,
-        tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
-    );
+    assert_eq!(delivered.actor, tilo_actions::Actor::Member(scribe));
     request.invocation
 }
 
@@ -211,29 +209,17 @@ fn admitted(answer: &tilo_actions::remote::RemoteActionMessage) -> bool {
 async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::apps::test_support::{Grantee, Grants as _, KindSet};
+            use crate::apps::test_support::KindSet;
             let env = Environment::new();
             let rig = Rig::new(&env).await;
-            {
-                let workspace = &mut env.membership.write().workspaces[0];
-                workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(
-                    Grantee::agent("scribe", "ada"),
-                    &env.route.app_id,
-                    KindSet::ALL,
-                );
-                workspace.allow_app(Grantee::agent("scribe", "ada"), NOTES, KindSet::ALL);
-            }
+            env.agent_may("scribe", KindSet::READ, &[&env.route.app_id, NOTES]);
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
             let agent = rig.caller(&env, 905, Some("scribe")).await;
             let asked = id(0xc4a1);
             invoke(&agent.handle, asked).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            assert_eq!(
-                delivered.actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
-            );
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(env.scribe()));
 
             // The person could send mail, and the app is theirs; the agent
             // may not, so its effect may not either.
@@ -247,13 +233,13 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             assert_eq!(note.action, "create-page");
             assert_eq!(
                 note.actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada")),
+                tilo_actions::Actor::Member(env.scribe()),
                 "delivered as the agent's own"
             );
             let invoker = tilo_actions::ActionInvoker::delivered(&note.actor, note.context());
             assert_eq!(
                 invoker.acting.by,
-                tilo_actions::Actor::member(tilo_actions::MemberId::agent("scribe", "ada")),
+                tilo_actions::Actor::member(env.scribe()),
                 "its history names the agent"
             );
             assert!(notes.try_recv().is_err(), "one call, one delivery");
@@ -333,12 +319,11 @@ async fn a_call_continuing_the_persons_press_is_theirs_and_an_app_cannot_make_on
             let press = id(0xc4c1);
             {
                 use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
-                let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(durable_request(
-                    press,
-                )))
-                .pressed(Some(7))
-                .encode()
-                .unwrap();
+                let frame =
+                    RemoteActionFrame::new(RemoteActionMessage::Invoke(durable_request(press)))
+                        .pressed(Some(7))
+                        .encode()
+                        .unwrap();
                 app.remote_action(&frame).await.unwrap();
             }
             let pressed = delivered(press).await;
@@ -369,19 +354,10 @@ async fn a_call_continuing_the_persons_press_is_theirs_and_an_app_cannot_make_on
 async fn a_child_reaches_no_further_than_what_it_continues() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::apps::test_support::{Grantee, Grants as _, KindSet};
+            use crate::apps::test_support::KindSet;
             let env = Environment::new();
             let rig = Rig::new(&env).await;
-            {
-                let workspace = &mut env.membership.write().workspaces[0];
-                workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(
-                    Grantee::agent("scribe", "ada"),
-                    &env.route.app_id,
-                    KindSet::ALL,
-                );
-                workspace.allow_app(Grantee::agent("scribe", "ada"), NOTES, KindSet::ALL);
-            }
+            env.agent_may("scribe", KindSet::READ, &[&env.route.app_id, NOTES]);
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
             // Notes runs on a connection of its own, whose effects continue
@@ -392,12 +368,13 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
             invoke(&agent.handle, begun).await.unwrap();
             rig.stream.as_ref().unwrap().read().await.unwrap();
             let notes = &mut notes;
+            let scribe = || env.scribe();
 
             // An edit continuing an edit, and a read, stay within it.
             let edit = new_note(Some(begun));
-            let edit = ran(notes, &edit, &app_asks(&app, edit.clone()).await);
+            let edit = ran(notes, &edit, &app_asks(&app, edit.clone()).await, scribe());
             let read = notebook("read-page", begun);
-            let read = ran(notes, &read, &app_asks(&app, read.clone()).await);
+            let read = ran(notes, &read, &app_asks(&app, read.clone()).await, scribe());
 
             // The agent may edit Notes, but what continues its read reads:
             // an edit is put to the person, and nobody here answers.
@@ -408,12 +385,14 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
                 notes,
                 &within,
                 &app_asks(&notes_app.handle, within.clone()).await,
+                scribe(),
             );
             let after_edit = notebook("create-page", edit);
             ran(
                 notes,
                 &after_edit,
                 &app_asks(&notes_app.handle, after_edit.clone()).await,
+                scribe(),
             );
 
             // Down a chain: what continues the read reaches no further than it.

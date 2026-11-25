@@ -341,22 +341,20 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
         roster.iter().find(|row| row.is_self).unwrap().joined_at,
         Some(0)
     );
-    assert_eq!(
-        joined(collab_types::MemberId::agent(tide, other_person)),
-        None
-    );
-    assert!(roster.iter().any(|row| row.id
-        == collab_types::MemberId::agent(person.clone(), other_person)
-        && !row.is_self));
+    assert_eq!(joined(collab_types::MemberId::agent(tide, "ada")), None);
     assert!(
-        roster
-            .iter()
-            .any(|row| row.id == collab_types::MemberId::agent(tide, "fixture-owner"))
+        roster.iter().any(
+            |row| row.id == collab_types::MemberId::agent(person.clone(), "ada") && !row.is_self
+        )
     );
     assert!(
         roster
             .iter()
-            .all(|row| row.id != collab_types::MemberId::agent("wrong-workspace", "fixture-owner")),
+            .any(|row| row.id == collab_types::MemberId::agent(tide, "ada"))
+    );
+    assert!(
+        roster.iter().all(|row| row.id
+            != collab_types::MemberId::agent("wrong-workspace", "person-in-other-workspace")),
         "a grant for another workspace is not native membership here"
     );
     assert!(
@@ -439,7 +437,7 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     assert!(
         members
             .iter()
-            .all(|row| row.id != collab_types::MemberId::agent(person.clone(), other_person))
+            .all(|row| row.id != collab_types::MemberId::agent(person.clone(), "ada"))
     );
     assert!(
         members
@@ -457,7 +455,7 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     assert!(
         members
             .iter()
-            .all(|row| row.id != collab_types::MemberId::agent(person.clone(), person.clone()))
+            .all(|row| row.id != collab_types::MemberId::agent(person.clone(), "ada"))
     );
     membership.write().workspaces[0].allow_agent(reed, crate::apps::test_support::KindSet::READ);
     state.refresh_workspace_context_services().unwrap();
@@ -467,7 +465,7 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     assert!(
         members
             .iter()
-            .any(|row| row.id == collab_types::MemberId::agent(reed, "fixture-owner"))
+            .any(|row| row.id == collab_types::MemberId::agent(reed, "ada"))
     );
     let ContextUpdate::Snapshot { members, .. } = parallel.try_recv().unwrap() else {
         panic!("every mounted root must receive membership addition");
@@ -475,7 +473,7 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     assert!(
         members
             .iter()
-            .any(|row| row.id == collab_types::MemberId::agent("reed", "fixture-owner"))
+            .any(|row| row.id == collab_types::MemberId::agent("reed", "ada"))
     );
 
     let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));
@@ -1088,7 +1086,8 @@ async fn the_member_list_draws_a_persons_profile_picture_and_an_agents_persona()
         }
     }
 
-    struct Scouts;
+    /// Ada's agent Scout.
+    struct Scouts(String);
 
     impl crate::apps::services::AgentRoster for Scouts {
         fn listed(&self, _: &str) -> Vec<crate::apps::services::ListedAgent> {
@@ -1096,7 +1095,7 @@ async fn the_member_list_draws_a_persons_profile_picture_and_an_agents_persona()
                 id: "scout".to_owned(),
                 name: "Scout".to_owned(),
                 avatar: Some(PERSONA.to_owned()),
-                acts_for: String::new(),
+                acts_for: self.0.clone(),
             }]
         }
     }
@@ -1109,7 +1108,7 @@ async fn the_member_list_draws_a_persons_profile_picture_and_an_agents_persona()
     );
     workspace.policy.set_owner(person.clone());
     workspace.members.push(collab_types::Member::of_person(
-        &collab_types::Person::new(person, "Ada"),
+        &collab_types::Person::new(person.clone(), "Ada"),
         None,
     ));
     let cluster_id = workspace.id().to_string();
@@ -1127,7 +1126,7 @@ async fn the_member_list_draws_a_persons_profile_picture_and_an_agents_persona()
         None,
         ProcessServices {
             workspace_memberships: Some(Arc::new(Photos(root.verifying_key().to_bytes()))),
-            agents: Some(Arc::new(Scouts)),
+            agents: Some(Arc::new(Scouts(person.clone()))),
             ..Default::default()
         },
     );
@@ -1141,7 +1140,7 @@ async fn the_member_list_draws_a_persons_profile_picture_and_an_agents_persona()
     );
     let scout = roster
         .iter()
-        .find(|row| row.id == collab_types::MemberId::agent("scout", "fixture-owner"))
+        .find(|row| row.id == collab_types::MemberId::agent("scout", person.as_str()))
         .expect("Scout's row");
     assert_eq!(scout.name, "Scout", "the audience reads its persona's name");
     assert_eq!(

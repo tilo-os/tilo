@@ -249,33 +249,21 @@ async fn an_invocation_an_app_made_of_itself_opens_nothing_without_a_press() {
 async fn an_agents_invocation_opens_what_the_agent_may_open() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::apps::test_support::{Grantee, Grants as _, KindSet};
+            use crate::apps::test_support::KindSet;
             let env = Environment::new();
             let (rig, launcher) = pressed_opens_rig(&env).await;
-            {
-                let workspace = &mut env.membership.write().workspaces[0];
-                workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(
-                    Grantee::agent("scribe", "ada"),
-                    &env.route.app_id,
-                    KindSet::ALL,
-                );
-                workspace.allow_app(
-                    Grantee::agent("scribe", "ada"),
-                    "so.tilo.chat",
-                    KindSet::ALL,
-                );
-            }
+            env.agent_may(
+                "scribe",
+                KindSet::READ,
+                &[&env.route.app_id, "so.tilo.chat"],
+            );
             let workspace = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();
             let agent = rig.caller(&env, 905, Some("scribe")).await;
             let asked = id(0xa0d2);
             invoke(&agent.handle, asked).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            assert_eq!(
-                delivered.actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
-            );
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(env.scribe()));
 
             let beyond = app_asks_pressed(
                 &app,

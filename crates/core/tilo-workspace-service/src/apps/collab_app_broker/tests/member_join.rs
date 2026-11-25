@@ -23,7 +23,10 @@ impl MemberJoinFixture {
         workspace.policy.set_owner(actor.clone());
         let route = CrdtRoute::cluster(workspace.id().to_string());
         for agent in agents {
-            workspace.allow_agent(agent, crate::apps::test_support::KindSet::READ);
+            // The owner's own agents: their certified device runs them.
+            use crate::apps::test_support::{Grantee, Grants as _, KindSet, TreePath};
+            let theirs = Grantee::agent(agent.as_str(), actor.as_str());
+            workspace.allow(theirs, &TreePath::root(), KindSet::READ);
         }
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -122,7 +125,7 @@ async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
                 };
                 assert!(matches!(event,
                     CollabEvent::RemotePresenceUpdate { member, key: delivered, payload: PresencePayload::Arrived }
-                        if member == collab_types::MemberId::agent(expected, "ada") && delivered == key));
+                        if member == collab_types::MemberId::agent(expected, fixture.actor.as_str()) && delivered == key));
             }
         })
         .await;

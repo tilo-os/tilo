@@ -324,9 +324,7 @@ impl JoinedChannel {
                 collab_types::store::wire::Reply::Written,
             ))));
         };
-        let service = self.state.services.resources.clone().ok_or_else(|| {
-            BrokerError::failed("this device keeps no store for apps' resources".into())
-        })?;
+        let service = self.state.services.resources.clone();
         let channel = std::rc::Rc::clone(self);
         Ok(Box::pin(async move {
             channel
@@ -339,14 +337,18 @@ impl JoinedChannel {
     /// device's one store `service`.
     async fn store_command(
         &self,
-        service: std::sync::Arc<dyn crate::apps::services::ResourceServices>,
+        service: Option<std::sync::Arc<dyn crate::apps::services::ResourceServices>>,
         command: collab_types::store::wire::Command,
         current: AdmittedJoinIdentity,
         route: CrdtRoute,
     ) -> Result<collab_types::store::wire::Reply, BrokerError> {
+        // A change the caller may not make is refused for that, whether or not a store is here.
         if command.writes() {
             self.may_write(&current, &route).await?;
         }
+        let service = service.ok_or_else(|| {
+            BrokerError::failed("this device keeps no store for apps' resources".into())
+        })?;
         let record = self.record_of(&command, &current, &route).await?;
         let caller = current.certified_caller(&route.cluster_id, false);
         let mut context = crate::apps::services::ResourceRequestContext::authenticated(

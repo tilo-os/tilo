@@ -437,14 +437,8 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
             // A real published Agent invocation retains its original identity through
             // this Settings worker; it never borrows the worker's person certificate.
             {
-                use crate::apps::test_support::{Grantee, Grants as _, KindSet};
-                let workspace = &mut env.membership.write().workspaces[0];
-                workspace.allow_agent("display-agent", KindSet::ALL);
-                workspace.allow_app(
-                    Grantee::agent("display-agent", "other-person"),
-                    &env.route.app_id,
-                    KindSet::ALL,
-                );
+                use crate::apps::test_support::KindSet;
+                env.agent_may("display-agent", KindSet::ALL, &[&env.route.app_id]);
             }
             let agent = rig
                 .app_caller(&env, 906, "so.tilo.settings", Some("display-agent"))

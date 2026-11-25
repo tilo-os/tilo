@@ -945,6 +945,8 @@ fn continuation_fixture() -> (
         KindSet::ALL,
     );
     workspace.policy.add_member("b2".repeat(32), Role::Editor);
+    // The agent's person, who gave it its grants.
+    workspace.policy.add_member("ada", Role::Editor);
     workspace.deny(
         Grantee::agent("scribe", "ada"),
         &TreePath::root()

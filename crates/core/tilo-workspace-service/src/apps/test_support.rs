@@ -43,28 +43,36 @@ impl Grants for Workspace {
         kinds: KindSet,
         answer: Answer,
     ) -> GrantId {
-        let owner = self.policy.owner().unwrap_or_default().to_owned();
+        let by = giver(&self.policy, &subject);
         self.policy.grant(tilo_action_policy::Grant::new(
             format!("fixture:{}", uuid::Uuid::new_v4()),
             subject,
             self.policy.node().join(relative),
             kinds,
             answer,
-            Grantee::person(owner),
+            by,
         ))
     }
 
     fn allow_in_workspace(&mut self, subject: Grantee, workspace: &str, kinds: KindSet) -> GrantId {
-        let owner = self.policy.owner().unwrap_or_default().to_owned();
+        let by = giver(&self.policy, &subject);
         self.policy.grant(tilo_action_policy::Grant::new(
             format!("fixture:{}", uuid::Uuid::new_v4()),
             subject,
             TreePath::workspace(workspace),
             kinds,
             Answer::Allow,
-            Grantee::person(owner),
+            by,
         ))
     }
+}
+/// Who gives a fixture's grant: an agent holds only what its own person gave it, anyone else
+/// what the workspace's owner gave.
+fn giver(policy: &tilo_action_policy::WorkspacePolicy, subject: &Grantee) -> Grantee {
+    let person = subject
+        .as_agent()
+        .map_or(policy.owner().unwrap_or_default(), |(_, of)| of.as_str());
+    Grantee::person(person.to_owned())
 }
 #[derive(Clone, Default)]
 pub struct WorkspaceTree {

@@ -1160,21 +1160,21 @@ async fn a_workspace_ask_is_answered_only_by_the_persons_approve_of_its_record()
         ),
         KindSet::ALL,
         Answer::Ask,
-        Grantee::person(owner.clone()),
+        Grantee::person(owner),
     ));
-    // The agent acts for the person under its own delegation, and the person's grants reach it
-    // through theirs: an outside step of theirs asks it too.
+    // The person's agent acts for them under its own delegation, with what they gave it: an
+    // outside step of theirs asks it too.
     workspace.policy.grant(Grant::new(
         "fixture:scout-reads",
-        Grantee::agent("scout", owner.clone()),
+        Grantee::agent("scout", person.clone()),
         workspace.policy.node(),
         KindSet::READ,
         Answer::Allow,
-        Grantee::person(owner.clone()),
+        Grantee::person(person.clone()),
     ));
     workspace.policy.grant(Grant::new(
         "fixture:scout-asks",
-        Grantee::agent("scout", owner.as_str()),
+        Grantee::agent("scout", person.as_str()),
         tilo_actions::action_node(
             &workspace.policy.node(),
             tilo_automation::SHORTCUTS_APP_ID,
@@ -1185,7 +1185,7 @@ async fn a_workspace_ask_is_answered_only_by_the_persons_approve_of_its_record()
         ),
         KindSet::ALL,
         Answer::Ask,
-        Grantee::person(owner),
+        Grantee::person(person.clone()),
     ));
     let (state, _bridge) = AppBrokerState::test_state(None, ProcessServices::default());
     let now = tilo_clock::unix_now_ns() / 1_000_000_000;
