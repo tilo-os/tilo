@@ -2101,9 +2101,10 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
         "search holds the Mail app's conversations and messages"
     );
 
-    // Search reads that index through its production source: a word that appears only inside a
-    // message's body (not its subject, its sender or its conversation's snippet) finds the
-    // message, with no window running a search of its own.
+    // Search reads that index through its production source: a word a message's body holds
+    // finds the message, with no window running a search of its own. Its conversation holds it
+    // too, since the conversation's snippet is the start of that body, so the two records the
+    // word is in are the two hits.
     let search = IndexSearch::new(
         std::sync::Arc::clone(&index),
         tilo_workspace_service::search::deciding(|_, _| true),
@@ -2116,15 +2117,20 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
         std::sync::Arc::new(|| {}),
     );
     let found = content.query("widths");
+    let mut kinds: Vec<&str> = found
+        .iter()
+        .filter_map(|hit| hit.subtitle.as_deref())
+        .collect();
+    kinds.sort_unstable();
     assert_eq!(
-        found.len(),
-        1,
-        "a word only a message's body holds finds that one message: {found:?}"
+        kinds,
+        ["Message", "Thread"],
+        "the word is found in the message that says it, and in its conversation: {found:?}"
     );
     assert_eq!(
         found[0].subtitle.as_deref(),
         Some("Message"),
-        "the hit is the message, by its type"
+        "the message leads, by its type"
     );
 
     // A hit opens Mail at the resource: scoping to Mail keeps it, scoping to another app drops
@@ -2149,8 +2155,8 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
     };
     assert_eq!(
         in_app("widths", MAIL),
-        1,
-        "scoped to Mail: the hit is there"
+        2,
+        "scoped to Mail: the message and its conversation are there"
     );
     assert_eq!(
         in_app("widths", "so.tilo.notes"),
