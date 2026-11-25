@@ -1519,44 +1519,73 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
 
     {
         use crate::widget::control_result_probe::Probe;
-        let (probe, observed) = Probe::new(false);
-        let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
-        observed.enqueue("run");
-        // The workspace's peer plays the device a refused press is handed to.
-        let sent = Rc::new(RefCell::new(Vec::new()));
-        host.collaboration.manager =
-            CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
-        let readonly = crate::permissions::PermissionContext::member(
-            &crate::permissions::MemberId::person("reader"),
-            collab_types::role::Role::Viewer,
-        );
-        host.set_permission_ctx(readonly);
-        let before = host.state.doc.base_heads();
-        assert_eq!(host.dispatch_control_invocations(), 1);
-        assert_eq!(observed.calls.get(), 0, "permission checked before handler");
-        assert_eq!(host.state.doc.base_heads(), before);
-        assert_eq!(
-            automerge::transaction::Transactable::pending_ops(&host.state.doc),
-            0
-        );
-        assert_eq!(
-            *observed.results.borrow(),
-            vec![Ok(crate::widget::ResourceOperationStart::Accepted)],
-            "the control hears its press went to the workspace to be decided"
-        );
-        assert!(observed.pending.borrow().is_empty());
-        let asked = sent
-            .borrow()
-            .iter()
-            .find_map(|request| match request {
-                CollabRequest::RemoteAction {
-                    message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
-                    ..
-                } => Some(request.clone()),
-                _ => None,
-            })
-            .expect("the press went to the workspace");
-        assert_eq!(asked.target.address.action, "run");
+        // A Viewer's press is decided by the workspace: the control hears the call go, and,
+        // with no workspace to carry it, hears the refusal it settles with instead of a
+        // press dropped silent.
+        for connected in [true, false] {
+            let (probe, observed) = Probe::new(false);
+            let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+            observed.enqueue("run");
+            let sent = Rc::new(RefCell::new(Vec::new()));
+            if connected {
+                host.collaboration.manager =
+                    CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
+            }
+            let readonly = crate::permissions::PermissionContext::member(
+                &crate::permissions::MemberId::person("reader"),
+                collab_types::role::Role::Viewer,
+            );
+            host.set_permission_ctx(readonly);
+            let before = host.state.doc.base_heads();
+            assert_eq!(
+                host.dispatch_control_invocations(),
+                usize::from(connected),
+                "connected={connected}"
+            );
+            assert_eq!(observed.calls.get(), 0, "permission checked before handler");
+            assert_eq!(host.state.doc.base_heads(), before);
+            assert_eq!(
+                automerge::transaction::Transactable::pending_ops(&host.state.doc),
+                0
+            );
+            if connected {
+                assert_eq!(
+                    *observed.results.borrow(),
+                    vec![Ok(crate::widget::ResourceOperationStart::Accepted)],
+                    "the control hears its press went to the workspace to be decided"
+                );
+                let asked = sent
+                    .borrow()
+                    .iter()
+                    .find_map(|request| match request {
+                        CollabRequest::RemoteAction {
+                            message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                            ..
+                        } => Some(request.clone()),
+                        _ => None,
+                    })
+                    .expect("the press went to the workspace");
+                assert_eq!(asked.target.address.action, "run");
+            } else {
+                let shown = observed.results.borrow();
+                assert!(
+                    matches!(
+                        shown.as_slice(),
+                        [Err(tilo_actions::ApiError::Unavailable { .. })]
+                    ),
+                    "the control shows the refusal its press settled with: {shown:?}"
+                );
+                assert!(
+                    host.actions
+                        .refusals
+                        .iter()
+                        .any(|(said, _)| { said.contains("reached") || said.contains("go-ahead") }),
+                    "the window says why the press did not go: {:?}",
+                    host.actions.refusals
+                );
+            }
+            assert!(observed.pending.borrow().is_empty());
+        }
     }
 
     {
