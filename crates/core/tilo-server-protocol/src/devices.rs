@@ -173,7 +173,7 @@ pub fn fleet(
                 .capabilities
                 .agent
                 .as_ref()
-                .and_then(|scope| scope.workspace_name())
+                .and_then(tilo_user_identity::AgentScope::workspace_name)
                 .map(|id| {
                     // The list keeps each workspace under its id, its fields under `v`.
                     records
