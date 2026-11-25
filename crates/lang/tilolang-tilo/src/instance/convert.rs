@@ -21,12 +21,15 @@ use crate::runtime::{Actor, Binding, NameHost, ResourceRef, UiNode, Value, ViewI
 /// converting it read of the workspace beside what the view read — the documents the cards in its
 /// text show — which the view then runs again on, so the host converts again. A view that leaves
 /// a capture out shows each secret answered for it in its token's place
-/// ([`crate::page::shown_in`]); every other view, and the view's own values, hold the token.
+/// ([`crate::page::shown_in`]); every other view, and the view's own values, hold the token. A
+/// `page` — a view the window opened with one of its own (`open(r, view: v)`) — carries the mark
+/// the window reads to give it Back ([`mark_page`]).
 #[must_use]
 pub fn window_tree(
     host: &Host,
     names: &dyn NameHost,
     view: &Rc<RefCell<ViewInstance>>,
+    page: bool,
 ) -> tilo_render_protocol::patch::Node {
     let mut tree = convert_with(host, names, view, |convert, instance| {
         convert.node(instance.tree())
@@ -34,7 +37,31 @@ pub fn window_tree(
     if view.borrow().capture_protected() {
         crate::page::shown_in(&mut tree);
     }
+    if page {
+        mark_page(&mut tree);
+    }
     tree
+}
+
+/// Mark the tree as a page of its own: the window shows it over what it showed and gives it
+/// Back ([`ui::PAGE`]), a list beside it or not. The view's shell carries the mark, else the
+/// layout at its root where that is a primitive: a component's props are the ones it declares.
+fn mark_page(tree: &mut tilo_render_protocol::patch::Node) {
+    fn mark(node: &mut tilo_render_protocol::patch::Node) -> bool {
+        if node.kind == "ui.NavShell" {
+            node.props
+                .insert(ui::PAGE.to_owned(), ui::Value::Bool(true));
+            return true;
+        }
+        node.children.iter_mut().any(mark)
+    }
+    if !mark(tree) && ui::validate::primitive(&tree.kind) {
+        // A view that draws no shell of its own is a page all the same: the window wraps what
+        // it drew in one, and reads the mark from the root it was given. A component's props are
+        // the ones it declares, so only a primitive's root may carry it.
+        tree.props
+            .insert(ui::PAGE.to_owned(), ui::Value::Bool(true));
+    }
 }
 
 /// Run `run` with the converter of `view`'s trees over `host`, naming people by `names`, and

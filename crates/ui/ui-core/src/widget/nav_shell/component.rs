@@ -32,6 +32,9 @@ pub struct NavShellProps {
     pub sidebar_actions: Vec<Element>,
     /// Whether the content's Back goes back now (a drill-down the app keeps).
     pub can_go_back: bool,
+    /// The view was opened as a page of its own (`open(r, view: v)`, a search hit's view):
+    /// the window places it over what it showed, a list beside it or not, and gives it Back.
+    pub page: bool,
     /// The places of the app: a navigation list.
     #[component(part)]
     pub sidebar: Option<Element>,
@@ -194,6 +197,7 @@ impl Described for NavShell {
             sidebar_title,
             sidebar_actions,
             can_go_back,
+            page: _,
             sidebar,
             overview,
             content,

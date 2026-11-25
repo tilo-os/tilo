@@ -222,7 +222,9 @@ impl Instance {
     /// `tilo-layout-check` lays out as it lays out a window.
     pub fn open_with(&mut self, resource: &ui::ResourceRef, view: &str) {
         if let Some(target) = wire::runtime_resource(resource) {
-            self.open_detail(&target, Some(view), None);
+            // A page comes to the front of a narrow window as `open(r, view: v)` does, without
+            // the keyboard a person's press takes.
+            self.open_detail(&target, Some(view), Some(ui::Front::Action));
         }
     }
 
@@ -386,7 +388,7 @@ impl Instance {
         view.lists.clear();
         view.bound.clear();
         view.spaces = None;
-        let tree = window_tree(&host, &*names, &view.view);
+        let tree = window_tree(&host, &*names, &view.view, view.with.is_some());
         view.sent = Some(tree.clone());
         // The item the window draws its page for, when its view lists it there.
         view.in_place = in_place_of(view.view.borrow().tree());
@@ -631,8 +633,12 @@ impl Instance {
         // A list inside the content may have rows the view has not rendered yet.
         show_content_rows(&mut shown.view.borrow_mut());
         // Only what changed is converted, where it can be: a clock's minute converts the clock's
-        // text, not the window.
-        let in_place =
+        // text, not the window. A page's tree is converted whole, since the mark the window reads
+        // to give it Back (`mark_page`) belongs to no view's own props: a patch that replaced its
+        // root would take the mark away.
+        let in_place = if shown.with.is_some() {
+            None
+        } else {
             shown
                 .sent
                 .as_mut()
@@ -641,9 +647,10 @@ impl Instance {
                     convert_with(host, &**names, &shown.view, |convert, instance| {
                         patch_in_place(sent, instance.tree(), changed, convert)
                     })
-                });
+                })
+        };
         let patches = in_place.unwrap_or_else(|| {
-            let tree = window_tree(host, &**names, &shown.view);
+            let tree = window_tree(host, &**names, &shown.view, shown.with.is_some());
             let mut patches = Vec::new();
             match &shown.sent {
                 Some(sent) => wire::diff(sent, &tree, &mut patches),

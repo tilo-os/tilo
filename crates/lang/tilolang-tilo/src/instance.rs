@@ -2986,7 +2986,7 @@ impl Instance {
         let Some(view) = self.level_mut(level) else {
             return;
         };
-        let tree = window_tree(&host, &*names, &view.view);
+        let tree = window_tree(&host, &*names, &view.view, view.with.is_some());
         let mut patches = Vec::new();
         if let Some(sent) = &view.sent {
             wire::diff(sent, &tree, &mut patches);

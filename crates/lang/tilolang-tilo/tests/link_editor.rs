@@ -419,7 +419,7 @@ fn live(
     let view = replica.host.open_resource(&target, None).unwrap();
     let view = std::rc::Rc::new(std::cell::RefCell::new(view));
     let names = Names;
-    let tree = tilolang_tilo::instance::window_tree(&replica.host, &names, &view);
+    let tree = tilolang_tilo::instance::window_tree(&replica.host, &names, &view, false);
     (view, tree)
 }
 

@@ -20,6 +20,19 @@ pub const DETAIL: &str = "detail~";
 /// The event of the composed shell that goes back from the window after the root's.
 pub const BACK: &str = "back";
 
+/// The prop of a view's shell that says the window opened it as a page of its own: it stands
+/// over what the window showed, a list beside it or not, and carries Back.
+pub const PAGE: &str = tilo_render_protocol::patch::PAGE;
+
+/// Whether `tree` is a view opened as a page of its own ([`PAGE`]).
+#[must_use]
+pub fn is_page(tree: &UiNode) -> bool {
+    fn marked(node: &UiNode) -> bool {
+        node.props.get(PAGE) == Some(&Value::Bool(true)) || node.children.iter().any(marked)
+    }
+    marked(tree)
+}
+
 /// The prop of a composed shell whose window has nothing at all to list, so it shows the app's one
 /// state where its columns are ([`nothing_listed`]).
 pub const NOTHING_LISTED: &str = "nothing_listed";
@@ -423,7 +436,10 @@ fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     let mut shell = root.clone();
     let chooses =
         !part_children(root, "sidebar").is_empty() && placeholder(part_children(root, "content"));
-    if !overview && !chooses {
+    // A view opened as a page of its own stands over what the window showed, a list beside it or
+    // not, and Back returns to it.
+    let page = detail.is_some_and(is_page);
+    if (!overview && !chooses) || page {
         // A window of a page or a document goes back from the window after it.
         shell.events.insert(BACK.to_owned(), Event::default());
         shell
@@ -453,7 +469,13 @@ fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
                 }
             }
         }
-        if root.events.contains_key(BACK) {
+        if page {
+            // The page moved the window where it stands, and Back returns from it all the same.
+            moved.events.insert(BACK.to_owned(), Event::default());
+            moved
+                .props
+                .insert("can_go_back".to_owned(), Value::Bool(true));
+        } else if root.events.contains_key(BACK) {
             moved.events.insert(BACK.to_owned(), Event::default());
         }
         return header_rules(moved);
@@ -734,6 +756,34 @@ mod tests {
         let chosen = compose(&channels, Some(&detail));
         assert!(!chosen.events.contains_key(BACK));
         assert_eq!(chosen.props.get("can_go_back"), None);
+    }
+
+    /// A view opened as a page of its own (`open(r, view: v)`) carries Back even beside an
+    /// overview: it stands over what the window showed, and Back returns to it.
+    #[test]
+    fn a_page_of_its_own_goes_back_beside_an_overview() {
+        let root = shell(
+            "root",
+            vec![
+                ("overview", vec![node("VirtualList", "list", &[])]),
+                ("content", vec![node("EmptyState", "none", &[])]),
+            ],
+            &[("overview_title", Value::text("All notes"))],
+        );
+        let page = prefixed(
+            &shell(
+                "note",
+                vec![("content", vec![node("Scroll", "body", &[])])],
+                &[("page", Value::Bool(true))],
+            ),
+            DETAIL,
+        );
+        let composed = compose(&root, Some(&page));
+        assert!(
+            composed.events.contains_key(BACK),
+            "the page carries Back beside the overview"
+        );
+        assert_eq!(composed.props.get("can_go_back"), Some(&Value::Bool(true)));
     }
 
     #[test]

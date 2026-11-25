@@ -888,6 +888,8 @@ impl AppWindow {
         // Rows the app sent for a list: its selection then names rows it did not hold yet.
         let mut arrived = false;
         let mut front = None;
+        // The window after the root's closed: a narrow window returns to the list it covered.
+        let mut detail_closed = false;
         // A view a person's press opened: its first field takes the keyboard.
         let mut opened_for_input = false;
         for message in messages {
@@ -933,6 +935,7 @@ impl AppWindow {
                 ToUi::Close => {
                     if self.detail.take().is_some() {
                         self.forget_level(Level::Detail);
+                        detail_closed = true;
                         content = true;
                     }
                 }
@@ -995,6 +998,9 @@ impl AppWindow {
         self.check_budget()?;
         if content {
             self.compose();
+        }
+        if detail_closed {
+            self.front_after_detail_closed();
         }
         if arrived {
             // The list can name the row of the view shown only now that it holds the rows.
@@ -1414,10 +1420,13 @@ impl AppWindow {
             return;
         };
         // Only a window that shows one column at a time chooses: where both stand, the body is
-        // beside the list and there is nothing to put in front of what.
-        let one_column = self
-            .shell()
-            .is_some_and(|shell| shell.geometry().sidebar == SidebarPlacement::Screen);
+        // beside the list and there is nothing to put in front of what. The sidebar's screen is
+        // one such window, and so is one whose list and body do not fit side by side: its body is
+        // a screen pushed over the list.
+        let one_column = self.shell().is_some_and(|shell| {
+            let geometry = shell.geometry();
+            geometry.sidebar == SidebarPlacement::Screen || !geometry.side_by_side
+        });
         if !one_column {
             return;
         }
@@ -1461,6 +1470,46 @@ impl AppWindow {
         self.structure_dirty = true;
     }
 
+    /// The window after the root's as the shell's detail: its tree laid out as a window shows
+    /// it, and the mark that it is a page of its own when the app opened it with a view
+    /// ([`crate::shell::PAGE`]).
+    fn detail_shell(&self) -> Option<UiNode> {
+        let detail = self.detail.as_ref()?;
+        let page = crate::shell::is_page(&detail.tree);
+        let tree = crate::reconcile::normalize_shown(&detail.tree);
+        let mut shell = crate::shell::prefixed(&crate::shell::as_shell(&tree), DETAIL);
+        if page {
+            shell
+                .props
+                .insert(crate::shell::PAGE.to_owned(), Value::Bool(true));
+        }
+        Some(shell)
+    }
+
+    /// Back from the window after the root's: a narrow window returns to the list the detail
+    /// stood over, the screen its push came in from. Where the list and the body stand side by
+    /// side, the list is already there.
+    fn front_after_detail_closed(&mut self) {
+        let (list, side_by_side, front) = match self.shell() {
+            Some(shell) => (
+                shell.has_overview(),
+                shell.geometry().side_by_side,
+                shell.front_pane(),
+            ),
+            None => return,
+        };
+        if !list || side_by_side {
+            return;
+        }
+        if front != NavPane::Overview
+            && let Some(shell) = self.shell()
+        {
+            shell.show_from(NavPane::Overview, MotionSource::Action);
+        }
+        self.front = Some(NavPane::Overview);
+        self.structure_dirty = true;
+    }
+
     /// Bring the shell up to date with the views: the root's shell with the view after it as its
     /// content, reconciled into the widgets it was built into.
     fn compose(&mut self) {
@@ -1490,10 +1539,11 @@ impl AppWindow {
             return;
         }
         let root_shell = crate::shell::as_shell(&root_tree);
-        let detail_shell = self.detail.as_ref().map(|detail| {
-            let tree = crate::reconcile::normalize_shown(&detail.tree);
-            crate::shell::prefixed(&crate::shell::as_shell(&tree), DETAIL)
-        });
+        let detail_page = self
+            .detail
+            .as_ref()
+            .is_some_and(|detail| crate::shell::is_page(&detail.tree));
+        let detail_shell = self.detail_shell();
         let composed = crate::shell::compose(&root_shell, detail_shell.as_ref());
         // A page while it shows something other than the window itself: a view that shows the
         // resource the window already is (`show(r)` of the app's own root, a scenario that stages
@@ -1502,6 +1552,7 @@ impl AppWindow {
         let composed = match (&self.root, &self.detail) {
             (Some(root), Some(detail))
                 if !self.history.is_open()
+                    && !detail_page
                     && (root.target == detail.target
                         // A page the window's own view already shows (a tree beside what it
                         // shows) is no page after it: nothing behind it to go back to.

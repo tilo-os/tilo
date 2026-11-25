@@ -58,6 +58,11 @@ pub fn is_virtual_list(kind: &str) -> bool {
     matches!(kind, "ui.VirtualList" | "ui.TreeView" | "ui.MediaGrid")
 }
 
+/// The prop of a view's shell that says the window opened it as a page of its own
+/// (`open(r, view: v)`, a search hit's view): the window places it over what it showed, a list
+/// beside it or not, and gives it the shell's Back.
+pub const PAGE: &str = "page";
+
 /// One window's two views: the app's root, and the view of the resource `open(r)` (or a
 /// row) went to, shown after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
