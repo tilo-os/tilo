@@ -1,22 +1,19 @@
 //! What an edit does to the text: the splice, replace and repeat
 //! primitives, a secret field's masking, what assistive technology and a binding
-//! see, and the touch selection.
+//! see.
 use super::super::*;
 use super::draw_to_populate;
 use super::drive;
 use super::mods;
-use super::touch;
-use super::x_for_byte;
 use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
 use crate::testing::Dispatch;
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
-use winit::event::TouchPhase;
 
 tilo_test_env::scenario! {
-    /// Editing a field: its primitives, its accessibility, its bound text and a finger's selection.
+    /// Editing a field: its primitives, its accessibility, and its bound text.
     /// Each phase was a test of its own and builds its own fixture.
-    fn edits_bindings_accessibility_and_touch_selection;
+    fn edits_bindings_and_accessibility;
 
     phase editing_primitives_splice_replace_filter_and_repeat;
     {
@@ -250,77 +247,6 @@ tilo_test_env::scenario! {
                 "the input never writes the document"
             );
             assert_eq!(input.take_dirty().as_deref(), Some("Project Atlas"));
-        }
-    }
-
-    phase touch_owns_text_selection_until_release;
-    {
-        let _settled = crate::motion::testing::settled();
-        {
-            let mut input = TextInput::local().with_initial_value("abcdef");
-            input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 44.0));
-            draw_to_populate(&mut input);
-            let mut doc = AutoCommit::new();
-            let start = Point::new(x_for_byte(&input, 1), 22.0);
-            let end = Point::new(x_for_byte(&input, 5), 22.0);
-
-            assert!(drive(
-                &mut input,
-                &mut doc,
-                &touch(TouchPhase::Started, 7, start),
-                Modifiers::default()
-            ));
-            assert_eq!(input.active_touch, Some(7));
-            assert!(drive(
-                &mut input,
-                &mut doc,
-                &touch(TouchPhase::Moved, 7, end),
-                Modifiers::default()
-            ));
-            assert_eq!(input.selection_range(), Some((1, 5)));
-            assert!(drive(
-                &mut input,
-                &mut doc,
-                &touch(TouchPhase::Ended, 7, end),
-                Modifiers::default()
-            ));
-            assert_eq!(input.active_touch, None);
-            assert!(!input.is_dragging);
-        }
-
-        {
-            let mut input = TextInput::local().with_initial_value("abcdef");
-            input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 44.0));
-            draw_to_populate(&mut input);
-            let mut doc = AutoCommit::new();
-            let point = Point::new(x_for_byte(&input, 2), 22.0);
-            assert!(drive(
-                &mut input,
-                &mut doc,
-                &touch(TouchPhase::Started, 7, point),
-                Modifiers::default()
-            ));
-            assert!(drive(
-                &mut input,
-                &mut doc,
-                &touch(TouchPhase::Started, 8, point),
-                Modifiers::default()
-            ));
-            assert_eq!(input.active_touch, Some(7));
-            assert!(drive(
-                &mut input,
-                &mut doc,
-                &touch(TouchPhase::Ended, 8, point),
-                Modifiers::default()
-            ));
-            assert_eq!(input.active_touch, Some(7));
-            assert!(drive(
-                &mut input,
-                &mut doc,
-                &touch(TouchPhase::Cancelled, 7, point),
-                Modifiers::default()
-            ));
-            assert_eq!(input.active_touch, None);
         }
     }
 }
@@ -577,21 +503,6 @@ tilo_test_env::scenario! {
             assert_eq!(focus_target, None, "the click does not move focus");
             assert!(ti.is_focused());
             assert_eq!(ti.cursor_pos(), caret, "the caret stays where it was");
-
-            let tap = Point::new(target.x, target.y);
-            drive(
-                &mut ti,
-                &mut doc,
-                &touch(TouchPhase::Started, 7, tap),
-                mods(false, false),
-            );
-            drive(
-                &mut ti,
-                &mut doc,
-                &touch(TouchPhase::Ended, 7, tap),
-                mods(false, false),
-            );
-            assert!(!ti.is_revealed(), "a tap hides it again");
         }
 
         {

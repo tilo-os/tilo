@@ -81,10 +81,6 @@ use spelling::{
 mod menu;
 use menu::CtxAction;
 
-#[path = "text_input_touch.rs"]
-mod touch;
-use touch::TouchIntent;
-
 #[path = "text_input_input.rs"]
 mod input;
 
@@ -313,13 +309,6 @@ pub struct TextInput {
     core: EditCore,
     typing: TypingRun,
     is_dragging: bool,
-    /// Exclusive finger ownership for native touch selection. Mouse state is
-    /// deliberately separate so a secondary finger cannot steal or complete
-    /// an in-progress selection gesture.
-    active_touch: Option<u64>,
-    /// Where that finger came down, in the window's pixels.
-    touch_origin: winit::dpi::PhysicalPosition<f64>,
-    touch_intent: TouchIntent,
     drag_unit: DragUnit,
     drag_anchor_span: (usize, usize),
     drag_select: DragSelect,
@@ -686,9 +675,6 @@ impl TextInput {
             core: EditCore::new(),
             typing: TypingRun::default(),
             is_dragging: false,
-            active_touch: None,
-            touch_origin: winit::dpi::PhysicalPosition::new(0.0, 0.0),
-            touch_intent: TouchIntent::Undecided,
             drag_unit: DragUnit::Char,
             drag_anchor_span: (0, 0),
             drag_select: DragSelect::new(),
@@ -5353,7 +5339,6 @@ impl Widget for TextInput {
             ..
         } = event
             && self.is_focused
-            && self.active_touch.is_none()
             && self
                 .suggestion_chip
                 .is_some_and(|chip| chip.contains(self.last_mouse_pos))
@@ -5399,11 +5384,6 @@ impl Widget for TextInput {
             }
         }
 
-        if self.touch_takes_wheel(event, ctx) {
-            self.notify_user_change(false);
-            return;
-        }
-
         match event {
             // Only when hovered, so it never steals the wheel from a surrounding scroll region.
             WindowEvent::MouseWheel { delta, phase, .. }
@@ -5447,15 +5427,6 @@ impl Widget for TextInput {
                 ..
             } if self.is_hovered && !self.disabled && !self.read_only => {
                 self.handle_middle_click(ctx.focus_target, ctx.node_id, ctx.handled);
-            }
-            WindowEvent::Touch(touch) => {
-                self.handle_touch_event(
-                    touch,
-                    ctx.scale_factor,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.handled,
-                );
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -5904,6 +5875,18 @@ impl Widget for TextInput {
 
     fn wants_pointer_capture(&self) -> bool {
         self.is_dragging
+    }
+
+    /// A finger dragged across the text selects it, as the mouse does; one
+    /// dragged up or down scrolls what holds the field (or the lines of a
+    /// field that scrolls itself), so a swipe that begins on a field neither
+    /// focuses it nor brings up the keyboard. A tap is a click where it lifts.
+    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+        if !self.disabled && self.rect.contains(point) {
+            crate::interaction::TouchClaim::DragAcross
+        } else {
+            crate::interaction::TouchClaim::Pointer
+        }
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {

@@ -410,8 +410,9 @@ pub enum TouchClaim {
     /// for [`Self::Pointer`], but a still hold lifts the item, a left press where the finger rests, and
     /// a drag after it moves the item.
     HoldDrag,
-    /// A sideways drag moves something (a switch's knob) while a column of such things still scrolls:
-    /// the contact's direction is read once, as it passes the tap's slop.
+    /// A sideways drag moves something (a switch's knob, a selection across a field's text) while a
+    /// column of such things still scrolls: the contact's direction is read once, as it passes the
+    /// tap's slop.
     DragAcross,
     /// The widget reads the raw contact stream itself
     /// ([`Widget::claims_raw_touch`](crate::widget::Widget::claims_raw_touch)).

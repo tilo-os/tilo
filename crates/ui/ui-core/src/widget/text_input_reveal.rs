@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect};
-use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
@@ -27,7 +27,6 @@ pub(super) struct RevealToggle {
     hovered: bool,
     pressed: crate::pointer_replay::HeldPress,
     focused: bool,
-    touch: Option<u64>,
     test_id: String,
 
     dirty: bool,
@@ -43,7 +42,6 @@ impl RevealToggle {
             hovered: false,
             pressed: crate::pointer_replay::HeldPress::default(),
             focused: false,
-            touch: None,
             test_id: "text_input_reveal".to_string(),
         }
     }
@@ -64,7 +62,6 @@ impl RevealToggle {
             self.hovered = false;
             self.pressed.cancel();
             self.focused = false;
-            self.touch = None;
         }
     }
 
@@ -213,13 +210,6 @@ impl Widget for RevealToggle {
                 // A hover change is a repaint, never consumed input.
                 self.hovered = self.rect.contains(ctx.logical(position));
             }
-            // The click the window's touch emulation makes of a tap comes
-            // while that finger is still down, before its lift: the lift
-            // toggles, so the click must not toggle it back.
-            WindowEvent::MouseInput {
-                button: MouseButton::Left,
-                ..
-            } if self.touch.is_some() => *ctx.handled = true,
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
@@ -245,28 +235,6 @@ impl Widget for RevealToggle {
                             self.toggle();
                         }
                     }
-                }
-            }
-            WindowEvent::Touch(touch) => {
-                let point = ctx.logical(touch.location);
-                match touch.phase {
-                    TouchPhase::Started if self.touch.is_none() && self.rect.contains(point) => {
-                        self.touch = Some(touch.id);
-                        *ctx.handled = true;
-                    }
-                    TouchPhase::Moved if self.touch == Some(touch.id) => *ctx.handled = true,
-                    TouchPhase::Ended if self.touch == Some(touch.id) => {
-                        self.touch = None;
-                        if self.rect.contains(point) {
-                            self.toggle();
-                        }
-                        *ctx.handled = true;
-                    }
-                    TouchPhase::Cancelled if self.touch == Some(touch.id) => {
-                        self.touch = None;
-                        *ctx.handled = true;
-                    }
-                    _ => {}
                 }
             }
             _ => {}

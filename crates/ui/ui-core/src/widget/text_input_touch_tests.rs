@@ -81,6 +81,78 @@ fn a_finger_scrolls_a_form_up_or_down_and_selects_across_a_field() {
     );
 }
 
+/// Where byte `at` of the field's text sits, in the window.
+fn x_of(frame: &mut crate::app::driver::Driver, at: usize) -> f64 {
+    frame
+        .with_widget_mut::<TextInput, _>(|field| {
+            field.rect.x0 + 10.0 + field.char_x_positions()[at]
+        })
+        .expect("the field")
+}
+
+#[test]
+fn a_finger_selects_what_it_crosses_and_lets_go_where_it_lifts() {
+    let _settled = crate::motion::testing::settled();
+    let name = crate::LocalState::new("Ada Lovelace".to_owned());
+    let mut frame = touch_form(TextInput::from_state(&name));
+    let y = frame.targets()["name"].center().y;
+
+    let (from, to) = (x_of(&mut frame, 1), x_of(&mut frame, 5));
+    frame.swipe_at((from, y), (to, y));
+
+    assert_eq!(
+        frame.with_widget_mut::<TextInput, _>(|field| field.selection_range_public()),
+        Some(Some((1, 5))),
+        "the selection runs from where the finger came down to where it lifted"
+    );
+    assert_eq!(
+        frame.with_widget_mut::<TextInput, _>(|field| field.is_dragging),
+        Some(false),
+        "the lift ends the selection gesture"
+    );
+}
+
+#[test]
+fn a_second_finger_ends_a_selection_without_taking_it_over() {
+    use winit::event::TouchPhase;
+    let _settled = crate::motion::testing::settled();
+    let name = crate::LocalState::new("Ada Lovelace".to_owned());
+    let mut frame = touch_form(TextInput::from_state(&name));
+    let y = frame.targets()["name"].center().y;
+    let (from, to) = (x_of(&mut frame, 1), x_of(&mut frame, 5));
+
+    frame.touch(0, TouchPhase::Started, from, y);
+    frame.touch(0, TouchPhase::Moved, (from + to) / 2.0, y);
+    frame.touch(0, TouchPhase::Moved, to, y);
+    let selected = frame
+        .with_widget_mut::<TextInput, _>(|field| field.selection_range_public())
+        .flatten();
+    assert_eq!(selected, Some((1, 5)), "the first finger selects");
+
+    let second = x_of(&mut frame, 9);
+    frame.touch(1, TouchPhase::Started, second, y);
+    assert_eq!(
+        frame.with_widget_mut::<TextInput, _>(|field| field.is_dragging),
+        Some(false),
+        "a second finger ends the selection where the first one is"
+    );
+    frame.touch(1, TouchPhase::Ended, second, y);
+    frame.touch(0, TouchPhase::Cancelled, to, y);
+
+    assert_eq!(
+        frame
+            .with_widget_mut::<TextInput, _>(|field| field.selection_range_public())
+            .flatten(),
+        selected,
+        "neither finger moves the selection or the caret after that"
+    );
+    assert_eq!(
+        frame.with_widget_mut::<TextInput, _>(|field| field.value().to_owned()),
+        Some("Ada Lovelace".to_owned()),
+        "and the text is as it was"
+    );
+}
+
 #[test]
 fn a_tap_on_a_fields_clear_button_clears_it() {
     let _settled = crate::motion::testing::settled();
@@ -121,5 +193,12 @@ fn a_tap_on_a_secret_fields_show_control_shows_it() {
     assert!(
         frame.ime_window().is_none(),
         "the field keeps out of focus, so no keyboard comes up"
+    );
+
+    frame.tap_at(reveal.center().x, reveal.center().y);
+    assert_eq!(
+        frame.with_widget_mut::<TextInput, _>(|field| field.is_revealed()),
+        Some(false),
+        "a second tap hides it again"
     );
 }

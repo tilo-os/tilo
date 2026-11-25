@@ -150,6 +150,19 @@ impl TextInput {
         *handled = true;
     }
 
+    pub(super) fn end_drag(&mut self) {
+        self.is_dragging = false;
+        self.drag_select.release();
+        self.publish_primary_selection();
+        if self.read_only && !self.has_selection() {
+            let byte = self.resolve_position(self.last_mouse_pos).byte;
+            if let Some(target) = self.link_at(byte) {
+                crate::widget::open_external_url(&target);
+            }
+        }
+        self.report_selection();
+    }
+
     pub(super) fn handle_left_click(
         &mut self,
         element_state: ElementState,
@@ -159,7 +172,6 @@ impl TextInput {
         handled: &mut bool,
     ) {
         match element_state {
-            ElementState::Pressed if self.active_touch.is_some() => *handled = true,
             ElementState::Pressed if self.is_hovered && self.press_accessory() => {
                 *handled = true;
             }

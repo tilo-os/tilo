@@ -4,7 +4,6 @@
 //! paints.
 use super::*;
 use crate::testing::Dispatch;
-use winit::event::TouchPhase;
 
 pub(super) fn body_size() -> f32 {
     crate::tokens::typography::stock().size(TextRole::Body)
@@ -56,16 +55,6 @@ pub(super) fn test_node() -> (TaffyTree<()>, NodeId) {
     let mut taffy = TaffyTree::new();
     let node = taffy.leaf_node(Style::default());
     (taffy, node)
-}
-
-pub(super) fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
-    WindowEvent::Touch(winit::event::Touch {
-        device_id: winit::event::DeviceId::dummy(),
-        phase,
-        location: winit::dpi::PhysicalPosition::new(point.x, point.y),
-        force: None,
-        id,
-    })
 }
 
 pub(super) fn drive(
