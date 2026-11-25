@@ -21,7 +21,7 @@ use tilo_session_client::{Cmd, Outbox};
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::support::{
-    TestHost, enrol, entry_grant, hears, ready, redeem, refused, say, start_peer,
+    TestHost, enrol, entry_grant, hears, person_of, ready, redeem, refused, say, start_peer,
     start_workspace_host, wait_for,
 };
 
@@ -88,7 +88,11 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     carol
         .write(
             welcome.clone(),
-            &say(&mut automerge::AutoCommit::new(), "welcome to the lounge"),
+            &say(
+                &mut automerge::AutoCommit::new(),
+                person_of(&carol),
+                "welcome to the lounge",
+            ),
         )
         .unwrap();
     let receipt = carol.barrier().unwrap();

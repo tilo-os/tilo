@@ -22,7 +22,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    enrol, hears, ready, route, say, start_host, start_peer, wait_for, workspace,
+    enrol, hears, person_of, ready, route, say, start_host, start_peer, wait_for, workspace,
 };
 
 fn record(record: String) -> DocumentRoute {
@@ -36,19 +36,23 @@ fn part(index: u64) -> DocumentRoute {
     record(neighbour_wire::document_part("chat", index))
 }
 
-/// Each record's document as its author writes it, by record.
-#[derive(Default)]
-struct Author(BTreeMap<String, AutoCommit>);
+/// Each record's document as its author, the person whose root key it keeps, writes it, by
+/// record.
+struct Author([u8; 32], BTreeMap<String, AutoCommit>);
 
 impl Author {
     fn change(&mut self, route: &DocumentRoute, text: &str) -> DocumentMutation {
-        say(self.0.entry(route.document.clone()).or_default(), text)
+        say(
+            self.1.entry(route.document.clone()).or_default(),
+            self.0,
+            text,
+        )
     }
 
     /// A record's first publication, which the host keeps as its checkpoint.
     fn first(&mut self, route: &DocumentRoute, text: &str) -> DocumentMutation {
-        let doc = self.0.entry(route.document.clone()).or_default();
-        say(doc, text);
+        let doc = self.1.entry(route.document.clone()).or_default();
+        say(doc, self.0, text);
         DocumentMutation::Snapshot(doc.save())
     }
 }
@@ -146,7 +150,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     ready(&[&author]).await;
     let note = route();
     let archive = record(neighbour_wire::on_demand_document("uuid:archive"));
-    let mut writes = Author::default();
+    let mut writes = Author(person_of(&author), BTreeMap::new());
     author
         .write(note.clone(), &writes.first(&note, "note"))
         .unwrap();

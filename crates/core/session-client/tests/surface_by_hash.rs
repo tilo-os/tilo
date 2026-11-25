@@ -29,7 +29,8 @@ use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::native::NativeDevice;
 use crate::support::{
-    WORKSPACE, commit_change, enrol, ready, start_host, start_peer, wait_for, workspace,
+    WORKSPACE, commit_change, commit_edit, enrol, ready, start_host, start_peer, wait_for,
+    workspace,
 };
 
 /// The surface the laptop's write names: an app's own `surface.toml` in the
@@ -95,33 +96,6 @@ fn held(peer: &Link) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Commit the pending change as the tasks app's executor commits an edit of
-/// `issue`, one item of the issues collection.
-fn commit_issue_edit(document: &mut automerge::AutoCommit, issue: &str) {
-    use tilo_actions::{ActionContext, Did, EditOp, FieldEdit, PathStep};
-    let kind = "tasks.issues";
-    let context = ActionContext {
-        what: Some(Did::Edit(FieldEdit {
-            ty: kind.to_owned(),
-            field: "issues".to_owned(),
-            path: vec![
-                PathStep::Field("issues".to_owned()),
-                PathStep::Item(issue.to_owned()),
-            ],
-            op: EditOp::Set,
-            old: None,
-            new: None,
-            args: std::collections::BTreeMap::new(),
-        })),
-        ..ActionContext::for_resource(kind, kind, kind)
-    };
-    let mut options = automerge::transaction::CommitOptions::default();
-    if let Some(message) = context.change_message() {
-        options.set_message(message);
-    }
-    document.commit_with(options).unwrap();
-}
-
 /// Write `note`'s history from the laptop as the tasks app starts one: its issues a unit each,
 /// then three issue edits naming `surface`, each with the claim its executor makes, so every
 /// edit is decided against that surface. Every write is sealed with the note's content key.
@@ -157,7 +131,15 @@ fn write_history(
         document
             .put(&issues, issue.clone(), format!("issue {issue_number}"))
             .unwrap();
-        commit_issue_edit(&mut document, &issue);
+        commit_edit(
+            &mut document,
+            laptop.device.cert.user_public_key,
+            "tasks.issues",
+            vec![
+                tilo_actions::PathStep::Field("issues".to_owned()),
+                tilo_actions::PathStep::Item(issue.clone()),
+            ],
+        );
         let mutation = DocumentMutation::Incremental(document.save_incremental());
         let claims = automerge::Automerge::parse_changes(mutation.data())
             .unwrap()

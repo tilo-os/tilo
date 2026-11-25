@@ -52,6 +52,11 @@ fn seeded_with(revocations: RevocationList) -> Seeded {
 /// [`seeded_with`], the workspace's record of its agents seeded beside the record when
 /// `with_agents`.
 fn seeded_holding(revocations: RevocationList, with_agents: bool) -> Seeded {
+    seeded_records(revocations, with_agents, &[])
+}
+
+/// [`seeded_holding`], with the records `empty` of the app kept as well, empty yet.
+fn seeded_records(revocations: RevocationList, with_agents: bool, empty: &[&str]) -> Seeded {
     let (a, ac, b, bc, now) = fixtures();
     let mut peer = StatePeer::new(
         WORKSPACE,
@@ -83,6 +88,12 @@ fn seeded_holding(revocations: RevocationList, with_agents: bool) -> Seeded {
             ]
             .into_iter()
             .flatten()
+            .chain(empty.iter().map(|record| SeedDocument {
+                app_id: APP.into(),
+                document_id: (*record).into(),
+                kind: KIND.into(),
+                bytes: AutoCommit::new().save(),
+            }))
             .collect(),
         },
         &a,
@@ -229,11 +240,23 @@ fn committed_unclaimed(
     value: &str,
     now: SystemTime,
 ) -> NeighbourMsg {
-    let mut envelope = unsigned_commit(copy, signer, message, value, now);
+    committed_unclaimed_at(copy, (APP, RECORD), signer, message, value, now)
+}
+
+/// [`committed_unclaimed`] to `record` of `app`.
+fn committed_unclaimed_at(
+    copy: &StatePeer,
+    (app, record): (&str, &str),
+    signer: &SigningKey,
+    message: &str,
+    value: &str,
+    now: SystemTime,
+) -> NeighbourMsg {
+    let mut envelope = unsigned_commit_at(copy, (app, record), signer, message, value, now);
     let bytes = envelope.signing_bytes().unwrap();
     let signature = collab_types::signer::sign_now(signer, bytes).unwrap();
     envelope.signature = collab_types::Signature(signature);
-    document_message(envelope)
+    document_message_at((app, record), envelope)
 }
 
 /// The unsigned write of the change `message` by `signer`'s device.
@@ -365,7 +388,11 @@ fn take(
 }
 
 fn value(peer: &StatePeer) -> String {
-    AutoCommit::load(&peer.document(APP, RECORD).unwrap())
+    value_at(peer, RECORD)
+}
+
+fn value_at(peer: &StatePeer, record: &str) -> String {
+    AutoCommit::load(&peer.document(APP, record).unwrap())
         .unwrap()
         .get(ROOT, "value")
         .unwrap()
@@ -868,15 +895,17 @@ fn a_change_naming_nothing_is_refused_and_a_framework_change_is_its_signers() {
 }
 
 /// A change named the record's genesis that is not the founding every holder derives names no
-/// one, so it is decided as its signer's person: taken from an editor, refused from a member the
-/// workspace lets only read.
+/// one, so it is decided as its signer's person: a record's first content taken from an editor,
+/// refused from a member the workspace lets only read.
 #[test]
 fn a_genesis_that_is_not_the_derived_founding_is_decided_as_its_signers_person() {
-    let (mut receiver, a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+    let (mut receiver, a, _ac, b, _bc, now) =
+        seeded_records(RevocationList::new(), false, &["tab:2", "tab:3"]);
     let genesis = tilo_actions::FrameworkChange::Genesis.change_message();
-    let edited = committed_unclaimed(&receiver, &b, &genesis, "by an editor", now);
-    take(&mut receiver, edited, now).expect("an editor's own genesis-named edit is theirs");
-    assert_eq!(value(&receiver), "\"by an editor\"");
+    let edited =
+        committed_unclaimed_at(&receiver, (APP, "tab:2"), &b, &genesis, "by an editor", now);
+    take(&mut receiver, edited, now).expect("an editor's first content is theirs");
+    assert_eq!(value_at(&receiver, "tab:2"), "\"by an editor\"");
 
     let (key, _cert, person) = add_member_with(&mut receiver, &a, now, 41, 42);
     assert!(
@@ -885,10 +914,68 @@ fn a_genesis_that_is_not_the_derived_founding_is_decided_as_its_signers_person()
             .set_member_role(person, crate::join::Role::Viewer, &a, now)
             .unwrap()
     );
-    let dressed = committed_unclaimed(&receiver, &key, &genesis, "by a viewer", now);
+    let dressed = committed_unclaimed_at(
+        &receiver,
+        (APP, "tab:3"),
+        &key,
+        &genesis,
+        "by a viewer",
+        now,
+    );
     let refused = take(&mut receiver, dressed, now).unwrap_err();
     assert!(refused.reason.contains("not granted"), "{}", refused.reason);
-    assert_eq!(value(&receiver), "\"by an editor\"", "never applied");
+    assert!(
+        AutoCommit::load(&receiver.document(APP, "tab:3").unwrap())
+            .unwrap()
+            .get_heads()
+            .is_empty(),
+        "never applied"
+    );
+}
+
+/// A record's genesis is its first change. Named on a later edit of a record that has what
+/// someone made, it would be decided by the grant to create the record rather than against the
+/// edits the record's app publishes, and let any writer rewrite the record whole: refused, from
+/// an editor too, while the record's first content and a later edit of it named as an edit are
+/// taken.
+#[test]
+fn a_genesis_is_taken_only_as_a_records_first_change() {
+    let (mut receiver, _a, _ac, b, _bc, now) =
+        seeded_records(RevocationList::new(), false, &["tab:2"]);
+    let genesis = tilo_actions::FrameworkChange::Genesis.change_message();
+    let rewrite = committed_unclaimed(&receiver, &b, &genesis, "rewritten", now);
+    let refused = take(&mut receiver, rewrite, now).unwrap_err();
+    assert!(
+        refused.reason.contains("genesis is its first change"),
+        "{}",
+        refused.reason
+    );
+    assert_eq!(value(&receiver), "\"seed\"", "never applied");
+
+    let first = committed_unclaimed_at(&receiver, (APP, "tab:2"), &b, &genesis, "first", now);
+    take(&mut receiver, first, now).expect("a record's first content may be its genesis");
+    assert_eq!(value_at(&receiver, "tab:2"), "\"first\"");
+
+    let again = committed_unclaimed_at(&receiver, (APP, "tab:2"), &b, &genesis, "again", now);
+    let refused = take(&mut receiver, again, now).unwrap_err();
+    assert!(
+        refused.reason.contains("genesis is its first change"),
+        "{}",
+        refused.reason
+    );
+    assert_eq!(value_at(&receiver, "tab:2"), "\"first\"", "never applied");
+
+    let native = tilo_actions::FrameworkChange::Native.change_message();
+    let mut edited = unsigned_commit_at(&receiver, (APP, "tab:2"), &b, &native, "edited", now);
+    edited.seq = 2;
+    collab_types::sign_op(&mut edited, &b).unwrap();
+    take(
+        &mut receiver,
+        document_message_at((APP, "tab:2"), edited),
+        now,
+    )
+    .expect("a later edit named as one is taken");
+    assert_eq!(value_at(&receiver, "tab:2"), "\"edited\"");
 }
 
 /// A write of `signer`'s device at `seq` whose change names no one: a resource store's stamp with

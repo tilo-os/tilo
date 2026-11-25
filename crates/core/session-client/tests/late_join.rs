@@ -7,12 +7,12 @@
     reason = "a test holds its fixtures' locks for the length of a step"
 )]
 
-use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
+use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use collab_types::DocumentMutation;
 use tilo_session_client::Outbox;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{commit_change, enrol, ready, route, start_host, start_peer};
+use crate::support::{enrol, person_of, ready, route, set_field, start_host, start_peer};
 
 fn noise(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
@@ -53,17 +53,25 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
         .unwrap();
     ready(&[&author]).await;
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "checkpoint", noise(5 * 1024 * 1024 / 2, 1))
-        .unwrap();
-    commit_change(&mut doc);
+    set_field(
+        &mut doc,
+        person_of(&author),
+        "note",
+        "checkpoint",
+        noise(5 * 1024 * 1024 / 2, 1),
+    );
     author
         .write(route(), &DocumentMutation::Snapshot(doc.save()))
         .unwrap();
     // A file put into the document: changes larger than one segment, and everything written
     // after them builds on them.
-    doc.put(ROOT, "file", noise(3 * 1024 * 1024 / 2, 1_000))
-        .unwrap();
-    commit_change(&mut doc);
+    set_field(
+        &mut doc,
+        person_of(&author),
+        "note",
+        "file",
+        noise(3 * 1024 * 1024 / 2, 1_000),
+    );
     author
         .write(
             route(),
@@ -71,13 +79,13 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
         )
         .unwrap();
     for index in 0..TAIL {
-        doc.put(
-            ROOT,
-            format!("tail-{index}"),
+        set_field(
+            &mut doc,
+            person_of(&author),
+            "note",
+            &format!("tail-{index}"),
             noise(8 * 1024, index as u64 + 2),
-        )
-        .unwrap();
-        commit_change(&mut doc);
+        );
         author
             .write(
                 route(),

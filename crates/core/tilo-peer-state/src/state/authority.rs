@@ -1392,7 +1392,12 @@ impl StatePeer {
                 document: record,
             },
             (kind.as_deref(), held, pinned),
-            document.map(|document| document.doc.committed_document()),
+            // The record as this peer keeps it, surfaces enforced or not: what decides a
+            // genesis-named change is whether the record already has what someone made.
+            self.core
+                .documents
+                .get(&route)
+                .map(|document| document.doc.committed_document()),
             &self.surfaces,
             &allows,
             // A framework change that names no one is its signer's: the device's person, or the

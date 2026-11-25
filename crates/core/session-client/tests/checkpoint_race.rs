@@ -15,13 +15,13 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
+use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_session_client::{Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{commit_change, enrol, ready, route, start_host, start_peer, wait_for};
+use crate::support::{enrol, person_of, ready, route, set_field, start_host, start_peer, wait_for};
 
 async fn durable(peer: &Link) {
     let receipt = peer.barrier().unwrap();
@@ -65,16 +65,14 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     ready(&[&a, &b]).await;
 
     let mut base = AutoCommit::new();
-    base.put(ROOT, "title", "base").unwrap();
-    commit_change(&mut base);
+    set_field(&mut base, person_of(&a), "note", "title", "base");
     a.write(route(), &DocumentMutation::Snapshot(base.save()))
         .unwrap();
     durable(&a).await;
 
     // B commits a change A has not merged yet ...
     let mut on_b = base.fork();
-    on_b.put(ROOT, "from_b", "concurrent").unwrap();
-    commit_change(&mut on_b);
+    set_field(&mut on_b, person_of(&b), "note", "from_b", "concurrent");
     b.write(
         route(),
         &DocumentMutation::Incremental(on_b.save_after(&base.get_heads())),
@@ -83,8 +81,7 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     durable(&b).await;
     // ... and A then checkpoints its own replica, which lacks it.
     let mut on_a = base.fork();
-    on_a.put(ROOT, "from_a", "own").unwrap();
-    commit_change(&mut on_a);
+    set_field(&mut on_a, person_of(&a), "note", "from_a", "own");
     a.write(route(), &DocumentMutation::Snapshot(on_a.save()))
         .unwrap();
     durable(&a).await;

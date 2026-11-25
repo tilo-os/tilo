@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use automerge::{AutoCommit, transaction::Transactable as _};
+use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -21,7 +21,7 @@ use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use super::support::{
-    commit_change, durable, enrol, enter_page, start_workspace_host_relaying, wait_keyed,
+    durable, enrol, enter_page, person_of, set_field, start_workspace_host_relaying, wait_keyed,
 };
 
 fn new_key() -> SigningKey {
@@ -116,9 +116,13 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
     let mut tree = AutoCommit::new();
     for file in 0..40 {
         let before = tree.get_heads();
-        tree.put(automerge::ROOT, format!("file-{file}"), "x".repeat(4096))
-            .unwrap();
-        commit_change(&mut tree);
+        set_field(
+            &mut tree,
+            person_of(&computer),
+            "chat",
+            &format!("file-{file}"),
+            "x".repeat(4096),
+        );
         let write = if before.is_empty() {
             DocumentMutation::Snapshot(tree.save())
         } else {
@@ -139,11 +143,14 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
 
     // A page's profile keeps them, for the session a reload starts: the
     // record as the index and parts a later session reads it from.
-    let mut note = AutoCommit::new();
-    note.put(automerge::ROOT, "kind", "tree").unwrap();
-    commit_change(&mut note);
-    page.write(files.clone(), &DocumentMutation::Incremental(note.save()))
-        .unwrap();
+    let mut note = tree.fork();
+    let before = note.get_heads();
+    set_field(&mut note, person_of(&page), "chat", "kind", "tree");
+    page.write(
+        files.clone(),
+        &DocumentMutation::Incremental(note.save_after(&before)),
+    )
+    .unwrap();
     durable(&page).await;
     assert!(
         tilo_peer_state::owner::Journaled::open(&Parts(Arc::clone(&profile)))

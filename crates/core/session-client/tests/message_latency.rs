@@ -143,7 +143,7 @@ async fn a_message_reaches_the_other_page_without_waiting_for_a_poll() {
     let mut doc = AutoCommit::new();
     for index in 0..=MESSAGES {
         let text = format!("message-{index}");
-        let message = crate::support::say(&mut doc, &text);
+        let message = crate::support::say(&mut doc, crate::support::person_of(a), &text);
         let sent = Instant::now();
         a.write(route(), &message).unwrap();
         let heard = arrival(sent, &format!("the message {text:?}"), || {

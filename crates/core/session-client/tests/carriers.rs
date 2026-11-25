@@ -37,8 +37,8 @@ use tilo_user_identity::{
 };
 
 use crate::support::{
-    Device, HostSettings, TestHost, WORKSPACE, enrol, holds, in_workspace, place, ready, route,
-    say, start_host_serving, start_page, start_peer, wait_for,
+    Device, HostSettings, TestHost, WORKSPACE, enrol, holds, in_workspace, person_of, place, ready,
+    route, say, start_host_serving, start_page, start_peer, wait_for,
 };
 
 /// Each scenario, once per carrier.
@@ -480,8 +480,11 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
     // An acknowledged commit from the page reaches the laptop, and the
     // laptop's reply reaches the page.
     let mut note = automerge::AutoCommit::new();
-    page.write(route(), &say(&mut note, "written on the page"))
-        .unwrap();
+    page.write(
+        route(),
+        &say(&mut note, person_of(&page), "written on the page"),
+    )
+    .unwrap();
     // Behind a lock: the receipt itself is not shared between threads, and
     // the wait holds it across its sleeps.
     let receipt = std::sync::Mutex::new(page.barrier().unwrap());
@@ -493,7 +496,10 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
     .unwrap();
     let mut on_laptop = holds(&laptop, &route(), &note).await;
     laptop
-        .write(route(), &say(&mut on_laptop, "typed on the laptop"))
+        .write(
+            route(),
+            &say(&mut on_laptop, person_of(&laptop), "typed on the laptop"),
+        )
         .unwrap();
     holds(&page, &route(), &on_laptop).await;
     assert_eq!(page.snapshot().synchronization, "acknowledged");

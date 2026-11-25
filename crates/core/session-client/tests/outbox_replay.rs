@@ -16,8 +16,8 @@ use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use crate::support::{
-    HostSettings, admitted, enrol, holds, ready, restart_host_relayed, route, say, start_host,
-    start_host_serving, start_peer, wait_for,
+    HostSettings, admitted, enrol, holds, person_of, ready, restart_host_relayed, route, say,
+    start_host, start_host_serving, start_peer, wait_for,
 };
 
 /// How many of `peer`'s writes to the workspace its replica's ownership still holds.
@@ -51,7 +51,11 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
     // Before the page joins, it holds no keys.
     peer.write(
         route(),
-        &say(&mut AutoCommit::new(), "written before the replay"),
+        &say(
+            &mut AutoCommit::new(),
+            person_of(&peer),
+            "written before the replay",
+        ),
     )
     .unwrap();
     let receipt = peer.barrier().unwrap();
@@ -124,7 +128,11 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     for typed in 0..OFFLINE {
         peer.write(
             route(),
-            &say(&mut offline, &format!("typed while offline {typed}")),
+            &say(
+                &mut offline,
+                person_of(&peer),
+                &format!("typed while offline {typed}"),
+            ),
         )
         .unwrap();
     }

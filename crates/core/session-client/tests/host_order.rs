@@ -13,7 +13,7 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_session_client::{Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{enrol, holds, ready, route, say, start_host, start_peer};
+use crate::support::{enrol, holds, person_of, ready, route, say, start_host, start_peer};
 
 const EACH: usize = 12;
 
@@ -77,15 +77,24 @@ async fn https_and_iroh_commits_share_one_host_order() {
     ready(&[&browser_peer, &laptop_peer, &observer_peer]).await;
 
     // Interleave the two authors' commits.
-    let (mut over_https, mut over_iroh) = (AutoCommit::new(), AutoCommit::new());
+    // The browser founds the note; the laptop writes into the note once it has it.
+    let mut over_https = AutoCommit::new();
+    let mut over_iroh: Option<AutoCommit> = None;
     for index in 0..EACH {
-        browser_peer
-            .write(route(), &say(&mut over_https, &format!("https-{index}")))
-            .unwrap();
-        laptop_peer
-            .write(route(), &say(&mut over_iroh, &format!("iroh-{index}")))
-            .unwrap();
+        let https = say(
+            &mut over_https,
+            person_of(&browser_peer),
+            &format!("https-{index}"),
+        );
+        browser_peer.write(route(), &https).unwrap();
+        if over_iroh.is_none() {
+            over_iroh = Some(holds(&laptop_peer, &route(), &over_https).await);
+        }
+        let on_laptop = over_iroh.as_mut().expect("the laptop has the note");
+        let iroh = say(on_laptop, person_of(&laptop_peer), &format!("iroh-{index}"));
+        laptop_peer.write(route(), &iroh).unwrap();
     }
+    let mut over_iroh = over_iroh.expect("the laptop wrote");
     let (browser_kept, browser_last) = durable(&browser_peer).await;
     let (laptop_kept, laptop_last) = durable(&laptop_peer).await;
     assert_eq!((browser_kept, laptop_kept), (EACH as u64, EACH as u64));

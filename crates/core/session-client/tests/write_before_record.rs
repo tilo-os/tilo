@@ -19,7 +19,7 @@ tilo_automerge_isolate::test_worker!();
 
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
+use automerge::{AutoCommit, ReadDoc as _};
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -31,8 +31,8 @@ use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use super::support::{
-    commit_change, durable, enrol, enter_page, holder, start_workspace_host_relaying, wait_keyed,
-    written,
+    durable, enrol, enter_page, holder, person_of, set_field, start_workspace_host_relaying,
+    wait_keyed, written,
 };
 use tilo_peer_state::workspace_documents::DeviceDocuments as _;
 
@@ -72,12 +72,11 @@ async fn arrive(
     )
 }
 
-/// The change `edit` makes to `doc`, as the write that carries it: the record whole the first
-/// time, what it changed after.
-fn write(doc: &mut AutoCommit, edit: impl FnOnce(&mut AutoCommit)) -> DocumentMutation {
+/// The change setting `field` of `doc` to `value` makes, as the write that carries it: the record
+/// whole the first time, what it changed after.
+fn write(doc: &mut AutoCommit, writer: &Link, field: &str, value: &str) -> DocumentMutation {
     let before = doc.get_heads();
-    edit(doc);
-    commit_change(doc);
+    set_field(doc, person_of(writer), "chat", field, value);
     if before.is_empty() {
         DocumentMutation::Snapshot(doc.save())
     } else {
@@ -141,13 +140,9 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
     // The early page holds the record's keys, and no record: nobody founded it yet. It writes a
     // change of the record as it will be founded.
     let mut record = AutoCommit::new();
-    let founding = write(&mut record, |doc| {
-        doc.put(automerge::ROOT, "kind", "chat").unwrap();
-    });
+    let founding = write(&mut record, &founder, "kind", "chat");
     let mut early_copy = record.clone();
-    let first = write(&mut early_copy, |doc| {
-        doc.put(automerge::ROOT, "early-1", "first").unwrap();
-    });
+    let first = write(&mut early_copy, &early, "early-1", "first");
     assert!(
         !holder(&early, &chat.cluster_id).is_some_and(|holder| holder.holds(
             &chat.cluster_id,
@@ -162,9 +157,7 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
     // second, which builds on the first.
     written(&founder, &chat, &founding).await;
     durable(&early).await;
-    let second = write(&mut early_copy, |doc| {
-        doc.put(automerge::ROOT, "early-2", "second").unwrap();
-    });
+    let second = write(&mut early_copy, &early, "early-2", "second");
     written(&early, &chat, &second).await;
     assert!(
         early.status().failures.is_empty(),

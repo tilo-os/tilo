@@ -22,7 +22,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use automerge::{ROOT, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::StatePeer;
@@ -31,8 +30,8 @@ use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::{DeviceCapabilities, RevocationEntry, RevocationReason, UserIdentity};
 
 use crate::support::{
-    Device, TestHost as Server, WORKSPACE, commit_change, durable, enrol, entry_grant,
-    in_workspace, ready, redeem, refused, resource_of, said, start_host_admitting as start_server,
+    Device, TestHost as Server, WORKSPACE, durable, enrol, entry_grant, in_workspace, person_of,
+    ready, redeem, refused, resource_of, said, set_field, start_host_admitting as start_server,
     start_peer_with_store, wait_for, wait_keyed, workspace,
 };
 
@@ -140,8 +139,7 @@ impl World {
     async fn write(&mut self, peer: &Link, route: &DocumentRoute, text: &str) {
         let mut copy = resource_of(peer, route).unwrap_or_default();
         let before = copy.get_heads();
-        copy.put(ROOT, text, true).unwrap();
-        commit_change(&mut copy);
+        set_field(&mut copy, person_of(peer), "chat", text, true);
         let mutation = if before.is_empty() {
             DocumentMutation::Snapshot(copy.save())
         } else {
@@ -326,8 +324,7 @@ const FROM_THE_REMOVED: &str = "the phone wrote after it was removed";
 fn attempt(peer: &Link, route: &DocumentRoute, text: &str) {
     let mut copy = resource_of(peer, route).unwrap_or_default();
     let before = copy.get_heads();
-    copy.put(ROOT, text, true).unwrap();
-    commit_change(&mut copy);
+    set_field(&mut copy, person_of(peer), "chat", text, true);
     let _ = peer.write(
         route.clone(),
         &DocumentMutation::Incremental(copy.save_after(&before)),

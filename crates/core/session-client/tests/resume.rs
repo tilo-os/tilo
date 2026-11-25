@@ -11,15 +11,15 @@
     reason = "in a test these are the assertion, not a hazard; the host lives as long as the phase that uses it"
 )]
 
-use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
+use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_server_protocol::workspaces::WorkspacesRequest;
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    HostSettings, commit_change, enrol, hears, holds, ready, restart_host_relayed, route, say,
-    start_host_serving, start_peer, wait_for,
+    HostSettings, enrol, hears, holds, person_of, ready, restart_host_relayed, route, say,
+    set_field, start_host_serving, start_peer, wait_for,
 };
 
 /// How many members' writes landed in `peer`'s replica since the last count.
@@ -65,7 +65,9 @@ async fn before_marker(
     doc: &mut AutoCommit,
     marker: &str,
 ) -> usize {
-    author.write(route(), &say(doc, marker)).unwrap();
+    author
+        .write(route(), &say(doc, person_of(author), marker))
+        .unwrap();
     hears(peer, &route(), marker).await;
     settled(peer).await;
     landed(heard)
@@ -118,19 +120,24 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     ready(&[&author, &observer]).await;
 
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "seed", vec![1_u8; 4096]).unwrap();
-    commit_change(&mut doc);
+    set_field(
+        &mut doc,
+        person_of(&author),
+        "note",
+        "seed",
+        vec![1_u8; 4096],
+    );
     author
         .write(route(), &DocumentMutation::Snapshot(doc.save()))
         .unwrap();
     for index in 0..HISTORY {
-        doc.put(
-            ROOT,
-            format!("h{index}"),
+        set_field(
+            &mut doc,
+            person_of(&author),
+            "note",
+            &format!("h{index}"),
             vec![u8::try_from(index % 250).unwrap(); 4096],
-        )
-        .unwrap();
-        commit_change(&mut doc);
+        );
         author
             .write(
                 route(),
@@ -157,7 +164,9 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     let host = restart_host_relayed(&root, &host_device, state.path()).await;
     author.send(Cmd::Reconnect).unwrap();
     ready(&[&author]).await;
-    author.write(route(), &say(&mut doc, "missed")).unwrap();
+    author
+        .write(route(), &say(&mut doc, person_of(&author), "missed"))
+        .unwrap();
     let receipt = author.barrier().unwrap();
     wait_for("the missed edit to be durable", || async {
         receipt.try_recv().ok()
