@@ -752,6 +752,7 @@ fn certified_provider(provider: &str) -> bool {
     ) || provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
         || super::launchable::is_launchable_provider(provider)
+        || tilo_actions::remote::is_resource_provider(provider)
         || tilo_actions::remote::provider_workspace(provider).is_some()
 }
 
@@ -798,6 +799,14 @@ mod tests {
             &ActionAddress::new("app.so.tilo.notes", "open")
         ));
         assert!(certified_target("42", &ActionAddress::new("note", "edit")));
+        // An app's record is a provider this device serves like its workspace: a key's call
+        // reaches a built-in app's actions, and its listing keeps the record's rows.
+        let record = format!("{}:so.tilo.chat:", tilo_actions::remote::RESOURCE_PROVIDER);
+        assert!(certified_provider(&record), "{record}");
+        assert!(certified_target(
+            &record,
+            &ActionAddress::new("tl:so.tilo.chat:root", "send")
+        ));
     }
 
     fn row(provider: &str, address: ActionAddress) -> CatalogueRow {
