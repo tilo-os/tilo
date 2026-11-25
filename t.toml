@@ -6596,6 +6596,9 @@ default = false
 
 [[check]]
 name = "os-compile-x86_64"
+# On main's board: a break only the OS compile catches shows in the commit that made it, not
+# an hour later in the image or installer run. Keyed by what it reads, so a commit that touches
+# none of it is answered from the cache.
 # Pinned: the build image comes by digest, the crates by Cargo.lock, and the font catalog's faces
 # from tilo's package store by the SHA-256 the catalog pins (tools/font-catalog.py).
 egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
@@ -6606,7 +6609,6 @@ env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/compiled/**"]
 timeout_secs = 10800
-default = false
 
 [[check]]
 name = "os-compile-release-x86_64"
@@ -6757,6 +6759,8 @@ arch = ["x86_64", "aarch64"]
 # font catalog (tools/font-catalog.py, from tilo's package store by the SHA-256 the catalog pins).
 [[check]]
 name = "os-payload-{arch}"
+# On main's board, as os-compile-x86_64 is: keyed by what it and its needs read, so only a
+# commit that changes the payload builds it.
 egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh image payload {arch} /target/os/{arch}/payload"
 needs = ["os-base-{arch}", "signing-tools", "image-rpms-{arch}", "rpm-snapshot-{arch}", "os-builder-{arch}", "os-compiled-apps-{arch}", "os-chromium-{arch}"]
@@ -6765,7 +6769,6 @@ requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/os/{arch}/payload/**"]
 timeout_secs = 7200
-default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
