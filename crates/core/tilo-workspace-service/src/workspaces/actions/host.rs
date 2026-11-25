@@ -1693,6 +1693,7 @@ impl Workspaces {
                         .map_err(|error| ActionCallError::refused(error.to_string()))?;
                     return answer(&HostedWorkspace {
                         host_hint: hex_postcard(&hint)?,
+                        kept: Vec::new(),
                     });
                 };
                 let request = super::super::HostWorkspaceRequest {
@@ -1710,11 +1711,12 @@ impl Workspaces {
                 Box::pin(self.kept_for(device, &request, now))
                     .await
                     .map_err(ActionCallError::refused)?;
-                let hint = Box::pin(self.hold(device, &request))
+                let (hint, kept) = Box::pin(self.hold(device, &request))
                     .await
                     .map_err(ActionCallError::refused)?;
                 answer(&HostedWorkspace {
                     host_hint: hex_postcard(&hint)?,
+                    kept,
                 })
             }
             ServiceOperation::UnhostWorkspace => {

@@ -1,13 +1,13 @@
-//! The person's list of their workspaces, written by the device that holds their own workspace.
+//! The person's list of their workspaces, written by a device of theirs that governs their own
+//! workspace.
 //!
 //! A workspace is listed when the person's own daemon makes one for them, redeems the invitation
-//! into one, or lets one go, and when a server their device hands their own workspace to takes it
-//! in: the daemon holds the person's own workspace, so its write is decided there like any other
-//! record's. A host that merely admits someone holds no copy of their own workspace and writes
-//! nothing; a server that makes a workspace for them holds no copy of it either, because founding
-//! it is their own device's. A server their own device hands their own workspace to is named among
-//! its holders as it takes it in, so it writes what it knows of their list there: a login that
-//! reads the list from that server finds their workspaces, not an empty list.
+//! into one, or lets one go, and when their device hands their own workspace to a server of
+//! theirs: the server answers the other workspaces it keeps for them, and the device, which holds
+//! their root, lists them under its own key before the hand-over is done, so a login that reads
+//! the list from that server finds their workspaces, not an empty list. A server, on Tilo OS or
+//! not, never writes the list itself; a host that merely admits someone holds no copy of their own
+//! workspace and writes nothing either.
 //!
 //! One writer runs wherever the person's own workspace is governed: the daemon calls these
 //! changes as part of the action that made the workspace, took the device into one that is
@@ -17,7 +17,7 @@
 use tilo_peer_state::join::TransportHint;
 use tilo_resource::Invoke;
 use tilo_server_protocol::servers::person_workspace_id;
-use tilo_server_protocol::workspaces::IDENTITY_LIST;
+use tilo_server_protocol::workspaces::{IDENTITY_LIST, KeptWorkspace};
 use tilo_user_identity::WorkspaceList;
 
 use super::{Workspaces, person_workspace};
@@ -139,9 +139,83 @@ impl Workspaces {
     }
 
     /// List every workspace this host records `person` in, one they made and one they were invited
-    /// into, in their own list: what a device that starts holding their own workspace writes, so
-    /// the list is as complete as this host knows it.
+    /// into, in their own list: what a device that founds their own workspace writes, so the list
+    /// is as complete as this host knows it.
     pub async fn list_known_for(&self, person: &[u8; 32]) -> bool {
+        for (workspace, name) in self.known_for(person).await {
+            self.list_for(person, &workspace, &name).await;
+        }
+        true
+    }
+
+    /// The workspaces of `person`'s this server keeps, each with its signed address for it: what
+    /// it answers the device of theirs that hands it their own workspace, which lists them.
+    pub(super) async fn keeps_for(&self, person: &[u8; 32]) -> Vec<KeptWorkspace> {
+        let own = self.device_cert().device_public_key;
+        let mut kept = Vec::new();
+        for (workspace, name) in self.known_for(person).await {
+            let Some(KeptAt {
+                device,
+                hint: Some(hint),
+            }) = self.kept_at(&workspace).await
+            else {
+                continue;
+            };
+            let Ok(bytes) = postcard::to_allocvec(&hint) else {
+                continue;
+            };
+            if device == own {
+                kept.push(KeptWorkspace {
+                    workspace,
+                    name,
+                    host_hint: hex::encode(bytes),
+                });
+            }
+        }
+        kept
+    }
+
+    /// List in `person`'s own list, under this device's key, each workspace `kept` names that the
+    /// server `server` says it keeps for them, as it answered the hand-over of their own workspace.
+    /// Only an address `server` signed for that workspace is taken: it names no workspace kept
+    /// elsewhere. Whether every one landed.
+    pub async fn list_kept_by(
+        &self,
+        person: &[u8; 32],
+        server: [u8; 32],
+        kept: &[KeptWorkspace],
+    ) -> bool {
+        let mut written = true;
+        for entry in kept {
+            let Ok(hint) = super::decode_hex::<TransportHint>(&entry.host_hint) else {
+                written = false;
+                continue;
+            };
+            let signed =
+                tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(
+                    &hint,
+                );
+            let theirs = signed.is_ok_and(|signed| {
+                signed.device_certificate.device_public_key == server
+                    && signed.workspace_id.to_string() == entry.workspace
+            });
+            if !theirs || entry.workspace == person_workspace_id(person) {
+                written = false;
+                continue;
+            }
+            let at = KeptAt {
+                device: server,
+                hint: Some(hint),
+            };
+            written &= self
+                .write_person_list(person, listing(&entry.workspace, &entry.name, Some(&at)))
+                .await;
+        }
+        written
+    }
+
+    /// Every workspace this host records `person` in, but their own, by name.
+    async fn known_for(&self, person: &[u8; 32]) -> Vec<(String, String)> {
         let their_own = person_workspace_id(person);
         let mut known: Vec<(String, String)> = Vec::new();
         if *person == self.device_cert().user_public_key {
@@ -181,13 +255,8 @@ impl Workspaces {
                 known.push((summary.workspace, summary.name));
             }
         }
-        for (workspace, name) in known {
-            if workspace == their_own {
-                continue;
-            }
-            self.list_for(person, &workspace, &name).await;
-        }
-        true
+        known.retain(|(workspace, _)| *workspace != their_own);
+        known
     }
 
     /// Apply `changes` to `person`'s own workspace where this device governs it: whether every one

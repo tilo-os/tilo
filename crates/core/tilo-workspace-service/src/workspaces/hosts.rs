@@ -515,6 +515,23 @@ impl Workspaces {
                 )
                 .await);
         }
+        // Handed its person's own workspace, their own server answers the other workspaces it
+        // keeps for them: this device, which holds their root, lists them under its own key, and
+        // before it asks whether the server keeps every change it does, so the server takes the
+        // entries in with the rest and a login that reads the list there finds them. A server
+        // never writes the list itself.
+        let person = host.cert.user_public_key;
+        if role == CopyRole::KeyHolder
+            && member.user_public_key == person
+            && workspace == tilo_server_protocol::servers::person_workspace_id(&person)
+        {
+            let kept = hosted.kept.len();
+            if self.list_kept_by(&person, device, &hosted.kept).await {
+                tracing::info!(%workspace, server = %hex::encode(device), kept, "listed the workspaces a server keeps for its person");
+            } else {
+                tracing::warn!(%workspace, server = %hex::encode(device), kept, "the workspaces a server keeps were not all listed for its person");
+            }
+        }
         let _ = self.inner.changes.send(workspace.to_owned());
         // The holder answered over the action connection, so it is reachable from
         // here. The workspace's own link to it is dialed from this side too: a

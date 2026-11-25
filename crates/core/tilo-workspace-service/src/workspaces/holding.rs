@@ -315,7 +315,9 @@ impl Workspaces {
     /// writable copy of it here, current with its governance. Answers this
     /// host's own signed address for it, saying the role it was asked to hold
     /// it in. Asked again, it takes in what the hand-over carries, and its
-    /// address says the role asked now.
+    /// address says the role asked now. Handed its person's own workspace, it
+    /// answers the other workspaces of theirs it keeps too
+    /// ([`Self::kept_for_person_at_hand_over`]).
     ///
     /// # Errors
     ///
@@ -325,7 +327,13 @@ impl Workspaces {
         &self,
         caller: &DeviceCert,
         request: &HostWorkspaceRequest,
-    ) -> Result<TransportHint, String> {
+    ) -> Result<
+        (
+            TransportHint,
+            Vec<tilo_server_protocol::workspaces::KeptWorkspace>,
+        ),
+        String,
+    > {
         // Refused before any path is built from it.
         let workspace = request.named()?;
         let holder = WorkspaceDeviceHintV1::from_transport_hint(&request.holder_hint)
@@ -387,9 +395,10 @@ impl Workspaces {
             .holder_role(&self.inner.host.cert.device_public_key)
             != Some(CopyRole::Store);
         drop(governed);
-        self.list_for_person_at_hand_over(&workspace, holds_keys)
-            .await?;
-        Ok(hint)
+        let kept = self
+            .kept_for_person_at_hand_over(&workspace, holds_keys)
+            .await;
+        Ok((hint, kept))
     }
 
     /// The hand-over's governance, admitted: [`replica`] of the bootstrap
@@ -533,51 +542,23 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Write `person`'s list of workspaces where `workspace`, just taken in, is
-    /// their own: the list a login reads from the server they log in at. The
-    /// device that signs the hand-over also names the server among its holders,
-    /// so the server writes what it knows of theirs as the holder it is, from
-    /// the hand-over and not after a later sync. A store holds the workspace's
-    /// ciphertext alone and writes nothing of it.
-    ///
-    /// The records are sealed, so the write waits for the group's keys, which
-    /// come from the other holders over the workspace's link. It does so before
-    /// the hand-over answers: whoever reads the list from this server right
-    /// after the hand-over finds it written, never a write still under way,
-    /// which it could not wait for without racing it.
-    ///
-    /// # Errors
-    ///
-    /// The workspace's group did not admit this server in time for the list to
-    /// be written.
-    async fn list_for_person_at_hand_over(
+    /// The other workspaces of its person this server keeps, where `workspace`, just taken in, is
+    /// their own: what the hand-over answers, for the device that handed it over to list them
+    /// under its own key before it answers in turn. The list lives in the person's own workspace
+    /// and is governance only a device holding their root writes: a server, on Tilo OS or not,
+    /// never writes it itself. A store keeps the workspace's ciphertext alone and names nothing.
+    async fn kept_for_person_at_hand_over(
         &self,
         workspace: &str,
         holds_keys: bool,
-    ) -> Result<(), String> {
+    ) -> Vec<tilo_server_protocol::workspaces::KeptWorkspace> {
         let person = self.inner.host.cert.user_public_key;
         if !holds_keys || workspace != tilo_server_protocol::servers::person_workspace_id(&person) {
-            return Ok(());
+            return Vec::new();
         }
-        // A build without the device keys keeps no group keys to wait for: the keys and the
-        // deadline they are waited on come from that module, so it writes in the clear.
-        #[cfg(all(feature = "device-keys", not(target_arch = "wasm32")))]
-        if let Some(device) = self.device_keys() {
-            let keys_here = tokio::time::timeout(
-                super::sealed_documents::OPEN_WAIT,
-                super::sealed_documents::wait_for_group_keys(&device, workspace),
-            )
-            .await
-            .unwrap_or(false);
-            if !keys_here {
-                return Err(format!(
-                    "the person's list of workspaces was not written: the workspace's group has \
-                     not admitted this server ({workspace})"
-                ));
-            }
-        }
-        self.list_known_for(&person).await;
-        Ok(())
+        let kept = self.keeps_for(&person).await;
+        tracing::info!(%workspace, kept = kept.len(), "handed its person's own workspace, this server answers the other workspaces it keeps for them");
+        kept
     }
 
     /// Let `workspace` go, `caller`'s request: another device of this one's own

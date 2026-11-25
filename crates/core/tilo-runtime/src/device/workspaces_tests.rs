@@ -104,13 +104,32 @@ async fn found_front(workspaces: &Workspaces, workspace: &str, want: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_server_sealed() {
+    holds_its_workspace_and_lists_what_the_server_keeps(DeviceCapabilities::member()).await;
+}
+
+/// A server on an operating system Tilo does not control, as one in a container or on a rented
+/// machine is, is certified foreign: it never governs, so the person's device that hands it their
+/// own workspace lists what the server keeps for them, and the login reads it there all the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_foreign_server_handed_the_persons_workspace_has_its_workspaces_listed_by_their_device() {
+    holds_its_workspace_and_lists_what_the_server_keeps(DeviceCapabilities {
+        foreign: true,
+        ..DeviceCapabilities::member()
+    })
+    .await;
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one login, the workspace it holds and the records that open here, read top to bottom"
 )]
-async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_server_sealed() {
+async fn holds_its_workspace_and_lists_what_the_server_keeps(
+    server_capabilities: DeviceCapabilities,
+) {
+    let foreign = server_capabilities.foreign;
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
+    let (server_key, server_cert) = enrol(&root, "home-server", server_capabilities);
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let server = tilo_server::daemon::Server::start_with_relay_mode(
@@ -268,6 +287,36 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
             .iter()
             .any(|hint| hint.host.device_public_key == server_cert.device_public_key),
         "the own workspace's record names the server keeping it: {own_hosts:?}"
+    );
+    if foreign {
+        assert!(
+            !hosted
+                .list_for(&laptop_cert.user_public_key, &workspace, "Studio")
+                .await,
+            "a foreign server writes nothing of its person's list on its own key"
+        );
+    }
+    // The device lists only what the server signed an address for: an entry another device's
+    // address names is no entry of the server's.
+    let elsewhere = own
+        .copies()
+        .kept_at(&person)
+        .await
+        .expect("the own workspace is kept");
+    let forged = tilo_server_protocol::workspaces::KeptWorkspace {
+        workspace: workspace.clone(),
+        name: "Studio".into(),
+        host_hint: hex::encode(postcard::to_allocvec(&elsewhere.hint.unwrap()).unwrap()),
+    };
+    assert!(
+        !own.copies()
+            .list_kept_by(
+                &laptop_cert.user_public_key,
+                server_cert.device_public_key,
+                &[forged]
+            )
+            .await,
+        "an address for another workspace lists nothing"
     );
 
     entered.close();

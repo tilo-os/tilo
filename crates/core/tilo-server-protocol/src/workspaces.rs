@@ -1251,6 +1251,20 @@ struct HintPayload {
 pub struct HostedWorkspace {
     /// The serving host's own signed address for the workspace, postcard in hex.
     pub host_hint: String,
+    /// Handed its person's own workspace, the other workspaces of theirs the serving host keeps:
+    /// what the handing device, which holds their root, lists for them under its own key. A
+    /// server never writes the person's list itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<KeptWorkspace>,
+}
+
+/// A workspace of the person's a server keeps, as its [`HostedWorkspace`] answer names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptWorkspace {
+    pub workspace: String,
+    pub name: String,
+    /// The serving host's signed address for it, postcard in hex.
+    pub host_hint: String,
 }
 
 /// What [`CATCH_UP_WORKSPACE`] answers.
