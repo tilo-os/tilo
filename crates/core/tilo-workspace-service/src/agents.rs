@@ -501,11 +501,13 @@ pub async fn run_on_device(
     // The agents speak the language their person reads this computer in.
     let agents = ServerAgents::on_device(workspaces, actions, keys.clone())
         .speaking(settings_store::appearance::preferred_language);
-    match tickets {
-        Some(tickets) => agents.asking_with(keys, tickets),
-        None => agents,
-    }
-    .run()
+    Box::pin(
+        match tickets {
+            Some(tickets) => agents.asking_with(keys, tickets),
+            None => agents,
+        }
+        .run(),
+    )
     .await;
 }
 
@@ -1021,14 +1023,14 @@ impl ServerAgents {
         };
         let mut writes = self.workspaces.document_writes();
         let mut known = None;
-        self.read_answering(&mut known).await;
+        Box::pin(self.read_answering(&mut known)).await;
         // Where agents run is looked at again now and then, with nothing written meanwhile: a
         // certificate this device's person issued is renewed before it runs out.
         let mut again = tokio::time::interval(RUNS_ON_AGAIN);
         again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
-                _ = again.tick() => self.read_answering(&mut known).await,
+                _ = again.tick() => Box::pin(self.read_answering(&mut known)).await,
                 answer = asked.recv() => {
                     let Some(Answer { workspace, agent, place, event, saver, invocation, started }) = answer else {
                         return;
@@ -1042,7 +1044,7 @@ impl ServerAgents {
                 write = writes.recv() => match write {
                     Ok(write) if write.app != AGENTS_OWNER => {}
                     Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        self.read_answering(&mut known).await;
+                        Box::pin(self.read_answering(&mut known)).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
@@ -1066,9 +1068,7 @@ impl ServerAgents {
             .filter(|agent| agent.is_active() && agent.sub.is_none() && agent.mcp_client.is_none())
         {
             if !keys.signs_from_root(id, agent) {
-                keys.ticketed()
-                    .ask_unless_approved(tickets, id, agent)
-                    .await;
+                Box::pin(keys.ticketed().ask_unless_approved(tickets, id, agent)).await;
             }
         }
     }
@@ -1144,7 +1144,7 @@ impl ServerAgents {
                     }
                 }
             }
-            self.ask_to_run(&id, &agents, offers).await;
+            Box::pin(self.ask_to_run(&id, &agents, offers)).await;
             answering.extend(
                 agents
                     .agents

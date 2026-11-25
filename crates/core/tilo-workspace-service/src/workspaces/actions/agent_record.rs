@@ -261,10 +261,11 @@ impl Workspaces {
         let acting = caller.acting();
         let mut arguments = object(&request.argument)?;
         match operation {
-            WORKSPACE_AGENT_CREATE => self
-                .create_agent((workspace, acting, request), arguments)
-                .await
-                .map(|agent| json!({ "agent": agent })),
+            WORKSPACE_AGENT_CREATE => Box::pin(
+                self.create_agent((workspace, acting, request), arguments),
+            )
+            .await
+            .map(|agent| json!({ "agent": agent })),
             WORKSPACE_AGENT_UPDATE => {
                 let Some(Value::String(action)) = arguments.remove("action") else {
                     return Err(ActionCallError::InvalidRequest {
@@ -289,7 +290,7 @@ impl Workspaces {
                     }
                 };
                 let invoke = declared(&action)?.with_arguments(changed);
-                self.act_on_agents((workspace, acting, Some(request)), invoke)
+                Box::pin(self.act_on_agents((workspace, acting, Some(request)), invoke))
                     .await
                     .map(|()| Value::Null)
             }
@@ -307,8 +308,7 @@ impl Workspaces {
                 let invoke = declared(WorkspaceAgents::RETIRE_AGENT.id)?.with_arguments(
                     Map::from_iter([("agent".to_owned(), Value::String(agent.clone()))]),
                 );
-                self.act_on_agents((workspace, acting, Some(request)), invoke)
-                    .await?;
+                Box::pin(self.act_on_agents((workspace, acting, Some(request)), invoke)).await?;
                 // Retiring an agent takes the triggers its keeper saved for it with it, so a
                 // shortcut that still names a retired agent starts nothing.
                 #[cfg(feature = "agents")]
@@ -531,7 +531,7 @@ impl Workspaces {
             ("device".to_owned(), Value::String(hex::encode(device))),
             (name.to_owned(), Value::String(value)),
         ]));
-        self.act_on_agents((workspace, &acting, None), invoke).await
+        Box::pin(self.act_on_agents((workspace, &acting, None), invoke)).await
     }
 
     /// The workspace's record of its agents as `caller` reads it: the agents, each with its name,
@@ -622,7 +622,7 @@ impl Workspaces {
             Some(Err(reason)) => return Err(unavailable(reason)),
             None => None,
         };
-        self.own_write(
+        Box::pin(self.own_write(
             workspace,
             (OWNER, &route.document),
             None,
@@ -630,7 +630,7 @@ impl Workspaces {
             founding,
             founding,
             sealed.as_ref(),
-        )
+        ))
         .await
         .map(|_| ())
         .map_err(unavailable)
