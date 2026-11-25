@@ -679,7 +679,7 @@ impl Workspaces {
     pub async fn enter_signed_by(
         &self,
         (signer, cert): (&dyn collab_types::signer::DeviceSigner, &DeviceCert),
-        entry: Entry,
+        mut entry: Entry,
     ) -> Result<Entered, String> {
         let answered = Admit::enter(self, cert, entry.clone()).await;
         let Entered::Sign {
@@ -703,10 +703,9 @@ impl Workspaces {
             tilo_clock::wall(),
         )
         .await?;
-        let mut signed = entry;
-        signed.entering.through = through;
-        signed.entering.admission = admission;
-        Ok(Admit::enter(self, cert, signed).await)
+        entry.entering.through = through;
+        entry.entering.admission = admission;
+        Ok(Admit::enter(self, cert, entry).await)
     }
 
     /// Bring the key `cert` certifies for an agent of its person into `workspace`, named `name`,
@@ -734,7 +733,9 @@ impl Workspaces {
         };
         match self.enter_signed_by((signer, cert), entry).await? {
             Entered::Admitted { .. } => Ok(()),
-            refused => Err(format!("the workspace did not let the agent's key in: {refused:?}")),
+            refused => Err(format!(
+                "the workspace did not let the agent's key in: {refused:?}"
+            )),
         }
     }
 }
