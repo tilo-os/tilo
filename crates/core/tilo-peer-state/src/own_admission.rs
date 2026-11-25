@@ -107,6 +107,7 @@ fn signed(signer: SignedBy, changes: &[Vec<u8>]) {
             earlier.push(change.clone());
         }
     }
+    drop(kept);
 }
 
 /// Write `write` on `own`'s copy of the workspace as `governance` makes it,

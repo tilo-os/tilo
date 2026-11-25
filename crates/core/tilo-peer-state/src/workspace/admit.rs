@@ -650,7 +650,7 @@ fn own_grant(
         .capabilities
         .agent
         .as_ref()
-        .map(|scope| scope.workspace_name())
+        .map(tilo_user_identity::AgentScope::workspace_name)
     else {
         return Err(WorkspaceRefusal::WriteForbidden.into());
     };

@@ -2444,7 +2444,7 @@ impl Core {
     fn seeded_id(&self) -> Option<String> {
         let mut seeding = self.seeding.borrow_mut();
         let (holder, inserted) = seeding.as_mut()?;
-        *inserted += 1;
+        *inserted = inserted.saturating_add(1);
         Some(keyed_id(holder, "", &inserted.to_string()))
     }
 }
