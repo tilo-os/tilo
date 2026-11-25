@@ -210,7 +210,8 @@ impl StartedSession {
                 .env("XDG_STATE_HOME", home.path().join(".local/state"))
                 .env("XDG_CACHE_HOME", home.path().join(".cache"))
                 .env_remove("WAYLAND_DISPLAY")
-                .env_remove("DISPLAY");
+                .env_remove("DISPLAY")
+                .env_remove(tilo_paths::machine::DAEMON_PROFILE_VAR);
         };
         // A session is one of a computer's: this account's daemon serves it, and makes the
         // account's identity through `devices#found`.
@@ -225,7 +226,22 @@ impl StartedSession {
             .dies_with_the_test()
             .spawn_locked()
             .expect("this account's daemon starts");
-        let socket = runtime.path().join(tilo_paths::machine::DAEMON_NATIVE);
+        // Where the daemon binds, as it reads it from the environment both are started in.
+        let socket = {
+            let mut environment = tilo_test_env::ScopedEnv::new();
+            environment
+                .set("XDG_RUNTIME_DIR", runtime.path())
+                .set("TILO_IDENTITY_ROOT", home.path().join("identity"))
+                .set("HOME", home.path())
+                .set("XDG_CONFIG_HOME", home.path().join(".config"))
+                .set("XDG_DATA_HOME", home.path().join(".local/share"))
+                .set("XDG_STATE_HOME", home.path().join(".local/state"))
+                .set("XDG_CACHE_HOME", home.path().join(".cache"))
+                .remove(tilo_paths::machine::DAEMON_PROFILE_VAR);
+            tilo_api::daemon::this_computer()
+                .expect("this account's daemon has a place to listen")
+                .native()
+        };
         let bound = std::time::Instant::now();
         while std::os::unix::net::UnixStream::connect(&socket).is_err() {
             assert!(
