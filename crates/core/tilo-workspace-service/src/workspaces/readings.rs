@@ -338,6 +338,7 @@ pub(super) struct Governance<'a> {
 /// What the broker admits an app's connection and checks its calls by: the workspaces this
 /// service holds, each as its copy here describes it, read without waiting on any workspace's
 /// lock.
+#[cfg(feature = "apps")]
 impl crate::apps::services::WorkspaceAuthority for Workspaces {
     /// The revocations the workspace's copy here holds: what an agent's key and a saved
     /// shortcut's signer are checked against here.
