@@ -320,6 +320,11 @@ pub struct Core {
     /// Whether one write the code asked for is being made ([`Core::journaled_write`]): the reads
     /// and changes it makes on its way are its own, and the journal records the write whole.
     pub writing: std::cell::Cell<bool>,
+    /// The resource whose initial content is being written, and how many records it has
+    /// inserted so far ([`crate::exec::Core::start_content`]): those records are named by the
+    /// two, so every replica that makes the resource makes the same records, and a device that
+    /// shows its own making before the workspace's arrives names the records the workspace holds.
+    pub seeding: RefCell<Option<(crate::value::ResourceRef, u64)>>,
     /// Whether a run is being driven: its first change opens it and its last closes it, and the
     /// calls it makes are steps of it rather than runs of their own.
     pub running: std::cell::Cell<bool>,
@@ -511,6 +516,7 @@ impl Core {
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
             writing: std::cell::Cell::new(false),
+            seeding: RefCell::new(None),
             running: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::foreign::Foreign::default()),
             rust_views: crate::rust_views::Shared::default(),

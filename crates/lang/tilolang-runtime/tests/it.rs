@@ -193,6 +193,8 @@ mod record_lists;
 mod rich_text;
 #[path = "runs.rs"]
 mod runs;
+#[path = "seeded_ids.rs"]
+mod seeded_ids;
 #[path = "styles.rs"]
 mod styles;
 #[path = "sync.rs"]

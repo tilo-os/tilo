@@ -934,14 +934,16 @@ impl Core {
         initial: &ActionMeta,
         at: &ResourceRef,
     ) -> Result<(), RuntimeError> {
-        self.call_in_frame(
+        let outer = self.seeding.replace(Some((at.clone(), 0)));
+        let wrote = self.call_in_frame(
             pkg,
             &format!("a_{}", initial.id),
             &initial.params,
             &[Value::resource(at)],
             None,
-        )
-        .map(drop)
+        );
+        *self.seeding.borrow_mut() = outer;
+        wrote.map(drop)
     }
 
     /// `call_fn`: another package's `fn`, as in `todo.finished(list, t)`. It runs as that

@@ -1171,7 +1171,9 @@ impl Core {
         };
         let id = match kept {
             Some(id) => id,
-            None => self.store.borrow_mut().fresh_id("i"),
+            None => self
+                .seeded_id()
+                .unwrap_or_else(|| self.store.borrow_mut().fresh_id("i")),
         };
         let applied = self.apply_mut(
             ctx,
@@ -2433,6 +2435,17 @@ fn whole_map(kind: FieldKind, value: Value) -> Value {
                 .collect(),
         ),
         (_, value) => value,
+    }
+}
+
+impl Core {
+    /// The id of the next record a resource's initial content inserts, while one is written
+    /// ([`Core::seeding`]): the resource's and the count's, the same on every replica.
+    fn seeded_id(&self) -> Option<String> {
+        let mut seeding = self.seeding.borrow_mut();
+        let (holder, inserted) = seeding.as_mut()?;
+        *inserted += 1;
+        Some(keyed_id(holder, "", &inserted.to_string()))
     }
 }
 
