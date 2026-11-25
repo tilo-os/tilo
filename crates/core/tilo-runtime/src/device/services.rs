@@ -5184,11 +5184,12 @@ pub(crate) fn device_action(
     (invocations, asked): (&Arc<Invocations>, Option<&Arc<super::asked::DeviceAsked>>),
     tickets: &Tickets,
     caller: &Caller,
+    asked_by: &Caller,
     request: InvokeRequest,
     workspace: &str,
 ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
     if !Tickets::root_only(&request) {
-        return run_device_action(invocations, tickets, caller, request, workspace);
+        return run_device_action(invocations, tickets, caller, asked_by, request, workspace);
     }
     // What only the calling person's root signs runs here when this computer keeps their root
     // and they are signed in; otherwise it waits in its record for a device of theirs that does.
@@ -5198,7 +5199,7 @@ pub(crate) fn device_action(
         .and_then(|person| hex::decode(person).ok())
         .and_then(|person| <[u8; 32]>::try_from(person).ok());
     if caller.is_system() || person.is_some_and(holds_root_for_person) {
-        return run_device_action(invocations, tickets, caller, request, workspace);
+        return run_device_action(invocations, tickets, caller, asked_by, request, workspace);
     }
     let (done, answer) = tilo_actions::remote::pending();
     let (asked, caller, workspace) = (asked.cloned(), caller.clone(), workspace.to_owned());
@@ -5226,12 +5227,13 @@ fn run_device_action(
     invocations: &Invocations,
     tickets: &Tickets,
     caller: &Caller,
+    asked_by: &Caller,
     request: InvokeRequest,
     workspace: &str,
 ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
     let route: tilo_actions::remote::invocation_record::Route =
         (Arc::new(tickets.clone()), caller.clone());
-    invocations.record(caller, caller, &request, Some(workspace), route);
+    invocations.record(caller, asked_by, &request, Some(workspace), route);
     if Tickets::answers_a_secret(&request) {
         invocations.keep_secret(&request.invocation);
     }
@@ -5972,6 +5974,13 @@ impl RuntimeActionProvider {
         tickets: &Arc<Tickets>,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // The run's own agent asked it, where a session asked: the record names the agent its
+        // person reads, not the connection that carried the call.
+        let asked_by = self
+            .session
+            .as_ref()
+            .filter(|session| session.admits(caller))
+            .map_or_else(|| caller.clone(), |session| session.acting().clone());
         let answered = Tickets::asks_for_a_person(&request)
             || self.is_the_person(caller)
             // What only the person's root signs, asked by their own programs on this
@@ -6010,6 +6019,7 @@ impl RuntimeActionProvider {
                 (&self.invocations, self.asked.as_ref()),
                 tickets,
                 caller,
+                &asked_by,
                 request,
                 &self.workspace,
             );
@@ -6027,6 +6037,7 @@ impl RuntimeActionProvider {
                 (&invocations, asked.as_ref()),
                 &tickets,
                 &caller,
+                &asked_by,
                 request,
                 &workspace,
             )

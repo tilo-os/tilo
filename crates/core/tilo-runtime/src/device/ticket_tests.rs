@@ -1780,6 +1780,7 @@ async fn a_secret_handed_once(
         (invocations, None),
         tickets,
         someone_else,
+        someone_else,
         request(InvocationId::new()),
         "workspace",
     )
@@ -1793,6 +1794,7 @@ async fn a_secret_handed_once(
     let receipt = super::services::device_action(
         (invocations, None),
         tickets,
+        person,
         person,
         request(invocation),
         "workspace",
@@ -2075,6 +2077,7 @@ impl RevokeAtRoot {
             (&self.rootless_invocations, Some(&self.rootless_asked)),
             &self.rootless,
             &self.person,
+            &self.person,
             self.revoke.clone(),
             &self.workspace.to_string(),
         )
@@ -2211,6 +2214,7 @@ impl RevokeAtRoot {
         let again = super::services::device_action(
             (&invocations, Some(&restarted)),
             &self.rootless,
+            &self.person,
             &self.person,
             self.revoke.clone(),
             &self.workspace.to_string(),
