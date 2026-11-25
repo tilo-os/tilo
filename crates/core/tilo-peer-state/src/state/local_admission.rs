@@ -256,12 +256,8 @@ impl StatePeer {
         let attestation = collab_types::document_attestation_id(app, &self.core.workspace, record);
         let surface = self.signed_surface(app);
         // A record this state holds is never started again, in the clear or sealed: an empty
-        // whole write of it is a second founding. A device the workspace runs records for may
-        // publish a start where one is due, as it may repair a record.
-        if document.is_some()
-            && !self.signed_by_governor(author.as_bytes())
-            && matches!(&mutation, Some(collab_types::DocumentMutation::Snapshot(bytes)) if super::empty_genesis(bytes))
-        {
+        // whole write of it is a second founding.
+        if self.second_founding(document.is_some(), mutation.as_ref(), author.as_bytes()) {
             return Err(DraftRefusal::Refused("the record exists already".into()));
         }
         let Some(seal) = seal else {

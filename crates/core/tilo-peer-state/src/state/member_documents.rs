@@ -17,6 +17,19 @@ impl StatePeer {
             &tilo_action_policy::Context::at_time(at),
         ) == tilo_action_policy::Answer::Allow
     }
+
+    /// Whether `mutation`, the whole write `author` makes, starts a record this state holds
+    /// again: an empty record is a second founding, which only a device the workspace runs
+    /// records for may publish (a repair).
+    pub(super) fn second_founding(
+        &self,
+        held: bool,
+        mutation: Option<&DocumentMutation>,
+        author: &[u8; 32],
+    ) -> bool {
+        held && !self.signed_by_governor(author)
+            && matches!(mutation, Some(DocumentMutation::Snapshot(bytes)) if empty_genesis(bytes))
+    }
 }
 
 /// Whether `bytes`, a record's snapshot, is the empty record: a document
