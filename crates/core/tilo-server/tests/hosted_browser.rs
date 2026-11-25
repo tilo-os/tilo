@@ -1875,8 +1875,9 @@ async fn workspace_seed(fixture: &Fixture) -> tilo_peer_state::StatePeer {
     peer
 }
 
-/// A write `device` signs to `record` of `app`, made in a copy of `linked`'s replica: one the
-/// replica has every dependency of, so taking it in is decided by admission alone.
+/// A write `device` signs to `record` of `app` over the record as `linked` reads it, sealed under
+/// the members' keys as a page that escaped its browser signs one: no copy checks it, and
+/// `linked` has every dependency of it, so taking it in is decided by admission alone.
 fn forged_in(
     linked: &Linked,
     device: &TestDevice,
@@ -1884,17 +1885,51 @@ fn forged_in(
     record: &str,
     marker: &str,
 ) -> neighbour_wire::NeighbourMsg {
-    let mut author = linked.read(Clone::clone);
-    tilo_peer_state::sealed_records::sealed_write(
-        &mut author,
-        &crate::common::KEYS,
-        &device.sk,
-        (app, record),
-        |document| {
-            document.put(ROOT, "marker", marker).unwrap();
-        },
-    )
-    .expect("the forger's own copy takes what it forged")
+    let workspace = linked.read(|peer| peer.workspace_id().to_owned());
+    let held = linked.opened((app, record));
+    let mut document = held
+        .as_deref()
+        .map_or_else(AutoCommit::new, |bytes| AutoCommit::load(bytes).unwrap());
+    let heads = document.get_heads();
+    document.put(ROOT, "marker", marker).unwrap();
+    document.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+    );
+    let mutation = match held {
+        Some(_) => collab_types::DocumentMutation::Incremental(document.save_after(&heads)),
+        None => collab_types::DocumentMutation::Snapshot(document.save()),
+    };
+    let author = collab_types::Ed25519PublicKey::from_bytes(device.device_pubkey());
+    let artifact = collab_types::document_artifact_id(app, &workspace, record);
+    let plaintext = mutation.encode().unwrap();
+    let (encryption, payload) = crate::common::KEYS
+        .seal_content(
+            artifact,
+            collab_types::ContentRetention::of_frame(&plaintext),
+            &plaintext,
+        )
+        .unwrap();
+    // The device's first write: it wrote nothing before it was placed.
+    let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
+        payload,
+        artifact,
+        author,
+        collab_types::document_attestation_id(app, &workspace, record),
+        collab_types::OpKind::Change,
+        std::time::SystemTime::now(),
+        1,
+        encryption,
+    );
+    collab_types::sign_op(&mut op, &device.sk).unwrap();
+    neighbour_wire::NeighbourMsg::AppDocument {
+        peer: tilo_peer_state::peer_handle(author.as_bytes()),
+        app_id: app.into(),
+        cluster_id: workspace,
+        document_id: record.into(),
+        envelope: Box::new(op),
+        readers: None,
+    }
 }
 
 /// The hello a device opens each link with: its certificate.

@@ -3179,7 +3179,9 @@ impl DirectSync {
                                     .check_document_read(device, &app, &document, now)
                                     .is_ok()
                         }
-                        _ => true,
+                        // The workspace's own channels are the keys of every record: a
+                        // device confined to some records is sent none of their groups.
+                        _ => scope.reads.is_none(),
                     }
                 }
                 _ => true,
