@@ -879,6 +879,13 @@ fn not_served() -> ActionCallError {
 /// Whether `provider` is answered by a workspace's governance here: its own actions, and the
 /// models its work runs on, which the device holding the workspace keeps for its members' devices
 /// as a host keeps them for a page.
+/// The providers this device's dispatch answers an app's own connection for (Mail's connector
+/// reading the sign-ins and releasing a login's secret): the workspace's accounts and its vault.
+pub(crate) const APP_CONNECTION_PROVIDERS: [&str; 2] = [
+    tilo_actions::remote::person_accounts::PROVIDER,
+    tilo_actions::remote::person_vault::PROVIDER,
+];
+
 fn governed(provider: &str) -> bool {
     provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
         || provider == tilo_actions::remote::model_providers::PROVIDER
@@ -1374,7 +1381,12 @@ impl Answers {
         if request.target.provider == WORK_PROVIDER {
             return self.work.take(caller, &request);
         }
-        if self.work.providers.serves(&request.target.provider) {
+        // The workspace's accounts and vault are registered here for an app's own connection
+        // alone, the process this device launched as the app: anyone else asks them where they
+        // asked before, and a turn is answered above.
+        let registered = caller.launched_app().is_some()
+            || !APP_CONNECTION_PROVIDERS.contains(&request.target.provider.as_str());
+        if registered && self.work.providers.serves(&request.target.provider) {
             return self
                 .work
                 .providers
@@ -1384,11 +1396,12 @@ impl Answers {
         // An address a provider registered on this device publishes is that provider's, whichever
         // provider token the call names: a workspace's own `app.<app>#open` is the open of an app
         // this device places, and page actions of what it placed are its own.
-        if self
-            .work
-            .providers
-            .published(&request.target, super::providers::Reach::Devices)
-            .is_some()
+        if registered
+            && self
+                .work
+                .providers
+                .published(&request.target, super::providers::Reach::Devices)
+                .is_some()
         {
             return self
                 .work

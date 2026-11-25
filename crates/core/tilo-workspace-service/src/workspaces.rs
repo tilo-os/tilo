@@ -1475,16 +1475,13 @@ impl Workspaces {
         action_service.answer_under(answering);
         // The apps this host serves answer on the same action service its workspaces' devices
         // reach it on, beside the work and governance it answers itself. The workspace's accounts
-        // and its vault are registered there too: an app's own connection reaches them through
-        // the broker, and this is the one service that answers them for the person's page.
+        // and its vault are registered there too, for an app's own connection, which reaches
+        // them through the broker ([`device_actions::APP_CONNECTION_PROVIDERS`]).
         if let Some(apps) = host.apps.clone() {
             let served =
                 crate::app_serving::Served::new(&apps, Arc::clone(&workspaces), &action_service);
             answers.serve_apps(served.clone());
-            for provider in [
-                tilo_actions::remote::person_accounts::PROVIDER,
-                tilo_actions::remote::person_vault::PROVIDER,
-            ] {
+            for provider in device_actions::APP_CONNECTION_PROVIDERS {
                 answers.work.providers.provide(
                     provider,
                     provider,
