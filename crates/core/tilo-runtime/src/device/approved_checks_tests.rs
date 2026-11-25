@@ -463,6 +463,7 @@ struct Delivered {
     argument: Option<String>,
     contract: ActionContract,
     identity: ResourceSemanticIdentity,
+    kind: OperationKind,
 }
 
 impl Serving for Delivered {
@@ -484,7 +485,7 @@ impl Serving for Delivered {
         &self.address
     }
     fn kind(&self) -> OperationKind {
-        OperationKind::Effect
+        self.kind
     }
     fn contract(&self) -> &ActionContract {
         &self.contract
@@ -502,6 +503,11 @@ impl Serving for Delivered {
 
 /// The app's `run-approved-check` invocation of `asked`, as delivered.
 fn delivered(workspace: &str, action: &str, asked: &str) -> Delivered {
+    delivered_kind(workspace, action, asked, OperationKind::Effect)
+}
+
+/// The same delivery of an action of `kind`, declaring the device's check effect.
+fn delivered_kind(workspace: &str, action: &str, asked: &str, kind: OperationKind) -> Delivered {
     Delivered {
         workspace: workspace.to_owned(),
         address: tilo_actions::ActionAddress::new(RESOURCE, action),
@@ -521,12 +527,23 @@ fn delivered(workspace: &str, action: &str, asked: &str) -> Delivered {
             ..ActionContract::default()
         },
         identity: identity(),
+        kind,
     }
 }
 
 /// An action of the same kind and contract that declares no effect of the device's.
 fn undeclared(workspace: &str, action: &str, asked: &str) -> Delivered {
-    let mut action = delivered(workspace, action, asked);
+    undeclared_kind(workspace, action, asked, OperationKind::Effect)
+}
+
+/// [`undeclared`] for an action of `kind`.
+fn undeclared_kind(
+    workspace: &str,
+    action: &str,
+    asked: &str,
+    kind: OperationKind,
+) -> Delivered {
+    let mut action = delivered_kind(workspace, action, asked, kind);
     action.contract.effects.clear();
     action
 }
@@ -627,7 +644,15 @@ fn an_action_runs_a_check_only_when_it_declares_the_hosts_effect() {
         &checks,
         &Caller::local_system(),
         &run_call("unit"),
-        &admitted(Some(delivered(&workspace, "another-check", "unit")), &heard),
+        &admitted(
+            Some(delivered_kind(
+                &workspace,
+                "another-check",
+                "unit",
+                OperationKind::Document,
+            )),
+            &heard,
+        ),
     )
     .expect("a declared effect runs")
     .wait_timeout(tilo_test_env::hang_bound())
@@ -638,16 +663,25 @@ fn an_action_runs_a_check_only_when_it_declares_the_hosts_effect() {
     assert_eq!(receipt.check_id, "unit");
 
     // The same kind without the declaration runs nothing, and the refusal names the action.
+    let named = runtime_collab::approved_checks::ACTION_ID;
     let Err(refused) = Admits::start(
         &checks,
         &Caller::local_system(),
         &run_call("unit"),
-        &admitted(Some(undeclared(&workspace, "push", "unit")), &heard),
+        &admitted(
+            Some(undeclared_kind(
+                &workspace,
+                named,
+                "unit",
+                OperationKind::Document,
+            )),
+            &heard,
+        ),
     ) else {
         panic!("an action that declares no effect is refused");
     };
     assert!(
-        refused.contains("`push`") && refused.contains("declares no"),
+        refused.contains(&format!("`{named}`")) && refused.contains("declares no"),
         "the refusal names the action and what it lacks: {refused}"
     );
 }

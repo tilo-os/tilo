@@ -494,18 +494,17 @@ impl NativeChecks {
     }
 }
 
-/// Why a call that is no app's `run-approved-check` at work is refused.
-const NOT_THE_CHECK: &str = "An approved check runs only as the work of the app's own \
-     run-approved-check action, for the check that action was asked to run";
+/// Why a call that is no delivered action's work is refused.
+const NOT_THE_CHECK: &str = "An approved check runs only as the work of an action the workspace \
+     dispatched to the app, for the check that action was asked to run";
 
-/// The check `request` names, when it is the one `serving` was asked to run: an approved check
-/// runs only for the app's own `run-approved-check`, published as the cancellable background job
-/// a check is, and for the check its person or agent asked for.
+/// The check `request` names, when it is the one `serving` was asked to run. The delivered action
+/// must declare work its invoker can stop, an undoable background job, so a check the person
+/// stops is one the action's contract lets them stop; what the action is called, and everything
+/// else about it, is the effect it declares ([`Self::start`]).
 fn asked_check<'a>(serving: &dyn Serving, request: &'a InvokeRequest) -> Result<&'a str, String> {
     let contract = serving.contract();
-    if serving.address().action != checks::ACTION_ID
-        || serving.kind() != OperationKind::Effect
-        || contract.kind != ActionKind::Undoable
+    if contract.kind != ActionKind::Undoable
         || contract.execution != (ExecutionMode::Background { cancellable: true })
     {
         return Err(NOT_THE_CHECK.to_owned());
