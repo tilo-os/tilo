@@ -341,9 +341,6 @@ impl DocumentIndexDigest {
 pub struct MountAuthor {
     author: String,
     person: Option<tilo_actions::MemberId>,
-    /// The workspace whose tree this mount holds, when it is a workspace's: every record of the
-    /// tree names itself as Files' record of it before the mount publishes it.
-    workspace: Option<String>,
 }
 
 impl MountAuthor {
@@ -353,7 +350,6 @@ impl MountAuthor {
         Self {
             author: author.into(),
             person: None,
-            workspace: None,
         }
     }
 
@@ -363,23 +359,13 @@ impl MountAuthor {
         Self {
             author: author.into(),
             person: Some(person),
-            workspace: None,
         }
     }
 
-    /// The mount of `workspace`'s tree: its records name themselves as Files' records of it, so
-    /// every page opens the tree this device wrote.
-    #[must_use]
-    pub fn in_workspace(mut self, workspace: impl Into<String>) -> Self {
-        self.workspace = Some(workspace.into());
-        self
-    }
-
-    /// The document that founds `chunk` of this mount's tree, when it holds a workspace's: the
-    /// identity every founder derives, so this mount's founding and a page's Files that started
-    /// the same tree merge as one document.
+    /// The document that founds `chunk` of this mount's tree: the change every copy of the
+    /// record derives, so two mounts of one tree found it as one document.
     pub(super) fn founding(&self, chunk: TreeChunk) -> Option<AutoCommit> {
-        founding_document(self.workspace.as_deref()?, chunk)
+        founding_document(chunk)
     }
 }
 
@@ -413,9 +399,6 @@ pub struct Namespace {
     /// The person whose certified device this mount is, when it is one: its changes and the
     /// nodes it makes name them.
     person: Option<tilo_actions::MemberId>,
-    /// The workspace whose tree this mount holds, when it is a workspace's: each record names
-    /// itself as Files' record of it when the mount publishes it.
-    workspace: Option<String>,
     next_id: u64,
     /// Stable-record catalogue for the mount's paged record projection, updated with
     /// structural mutations rather than rebuilt by every page request.
@@ -563,7 +546,7 @@ fn read_u64(doc: &Chunks, obj: &Obj, key: &str) -> u64 {
     }
 }
 
-/// `founding`, with an actor of the mount's own for what follows it: the identity change is
+/// `founding`, with an actor of the mount's own for what follows it: the founding change is
 /// nobody's edit, and the root id and the nodes the mount writes after it are its own. An empty
 /// document where the record is not one a founder derives.
 fn started_from(founding: Option<AutoCommit>) -> AutoCommit {
@@ -598,7 +581,6 @@ impl Namespace {
             next_ino: ROOT_INO + 1,
             author: mount.author,
             person: mount.person,
-            workspace: mount.workspace,
             next_id,
             document_index: BTreeMap::new(),
             document_index_revision: String::new(),
@@ -617,20 +599,15 @@ impl Namespace {
     pub fn new(author: impl Into<MountAuthor>) -> Result<Self, automerge::AutomergeError> {
         let mount: MountAuthor = author.into();
         let index = started_from(mount.founding(0));
-        let mut ns = Self::over(
-            Chunks::new(index, mount.workspace.clone(), mount.person.clone()),
-            mount,
-            0,
-        );
+        let mut ns = Self::over(Chunks::new(index, mount.person.clone()), mount, 0);
         let root_document_id = FileDocumentId::new();
         ns.doc.put(
             &Obj::index(),
             ROOT_DOCUMENT_ID_KEY,
             root_document_id.0.to_string(),
         )?;
-        // Name the founding change now, as the making of the tree's root folder: a merge made
-        // later settles a pending change without its name, and a device signs only the changes
-        // that name what made them.
+        // Name the making of the tree's root folder now: a merge made later settles a pending
+        // change without its name, and a device signs only the changes that name what made them.
         let ambient = ns.acting();
         let index = ns.doc.index_mut();
         index.name_as(

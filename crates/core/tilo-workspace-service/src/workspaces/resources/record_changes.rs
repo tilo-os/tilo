@@ -722,19 +722,18 @@ impl Workspaces {
     }
 
     /// Keep `changes`, this device's own changes of `app`'s record `record` of `kind` in
-    /// `workspace`, concatenated, as its write to the workspace's store: founding the record when
-    /// the store holds none of it. On a copy of a workspace another device serves, the write is
-    /// kept here and carried to that device once it is reached.
+    /// `workspace`, concatenated, as its write to the workspace's store: founding the record from
+    /// them when the store holds none of it. On a copy of a workspace another device serves, the
+    /// write is kept here and carried to that device once it is reached.
     ///
     /// # Errors
     /// [`WriteRefusal::Waiting`] while this device does not hold the workspace yet: the write is
     /// made again once it does. [`WriteRefusal::Refused`] when the changes do not read or the
     /// store refuses them.
-    #[cfg(test)]
     pub(crate) async fn own_record_write(
         &self,
         workspace: &str,
-        (app, kind, record): (&str, &str, &str),
+        (app, kind, record): (&str, Option<&str>, &str),
         changes: &[u8],
     ) -> Result<(), tilo_peer_state::owner::WriteRefusal> {
         use tilo_peer_state::owner::WriteRefusal;
@@ -752,7 +751,7 @@ impl Workspaces {
         }
         self.keep_record_change(
             (workspace, self.signing_device()),
-            (app, Some(kind), record),
+            (app, kind, record),
             (parsed, None),
             None,
         )

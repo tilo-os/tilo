@@ -1204,7 +1204,9 @@ async fn shell_reads(
 fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_the_account_does() {
     use automerge::ReadDoc as _;
     use runtime_collab::wire::shell::{ShellCall, ShellReply};
-    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND};
+    use tilo_peer_state::workspace_documents::DeviceDocuments as _;
+    use tilo_workspace_service::device_documents::ServiceDocuments;
     let runtime = || {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1272,31 +1274,33 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
                 .any(|entry| entry.id == workspace && entry.own),
             "the person's own workspace, held here, stands in the list: {listed:?}"
         );
-        // A write the shell sends with no keys: the daemon seals it with the group's keys and
-        // signs it as the device. It waits while the device takes the keys in.
-        let holds = shell_reads(&shell, &workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
-            .await
-            .is_some();
-        let mut layout = automerge::AutoCommit::new();
+        // A write the shell sends: the daemon writes it into the workspace's store as the device,
+        // on the founding every copy of the record derives.
+        let person = tilo_actions::Acting::person(tilo_actions::PersonId::from_root(
+            session.workspaces.device_cert().user_public_key,
+        ));
+        let mut layout = tilo_desktop_model::record::founded().expect("the layout founds");
         automerge::transaction::Transactable::put(&mut layout, automerge::ROOT, "front", "shell")
             .unwrap();
-        let written = tilo_test_env::within("the daemon takes the shell's write", async {
+        layout.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::ActionContext::whole_edit_by(&person)),
+        );
+        tilo_test_env::within("the daemon takes the shell's write", async {
             loop {
                 let reply = shell_asks(
                     &shell,
                     ShellCall::Write {
                         workspace: workspace.clone(),
                         app: DESKTOP_APP.to_owned(),
-                        document: DESKTOP_DOCUMENT.to_owned(),
-                        readers: None,
-                        founding: !holds,
-                        snapshot: true,
+                        kind: Some(DESKTOP_KIND.to_owned()),
+                        record: DESKTOP_DOCUMENT.to_owned(),
                         changes: layout.save(),
                     },
                 )
                 .await;
                 match reply {
-                    ShellReply::Written(Ok(written)) => return written,
+                    ShellReply::Written(Ok(())) => return,
                     ShellReply::Written(Err(refusal)) if refusal.contains("Waiting") => {
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     }
@@ -1305,10 +1309,13 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
             }
         })
         .await;
-        assert_eq!(
-            written.peer,
-            neighbour_wire::peer_handle(&session.workspaces.device_cert().device_public_key),
-            "the shell's write is signed as this device"
+        assert!(
+            ServiceDocuments::of(session.workspaces.copies().clone()).holds(
+                &workspace,
+                DESKTOP_APP,
+                DESKTOP_DOCUMENT
+            ),
+            "the shell's write is the device's own, kept in the workspace's store"
         );
         let bytes = shell_reads(&shell, &workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
             .await
@@ -1320,15 +1327,6 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
                 .and_then(|(value, _)| value.into_string().ok())
                 .as_deref(),
             Some("shell")
-        );
-        let peer = session
-            .workspaces
-            .peer(WorkspaceId::parse(&workspace).unwrap())
-            .unwrap();
-        assert!(
-            peer.publication()
-                .is_sealed_document(DESKTOP_APP, DESKTOP_DOCUMENT),
-            "the daemon sealed the shell's write with the layout's group keys"
         );
         // The resources of an app the shell runs itself, and the workspace's accounts.
         let counted = shell_asks(
@@ -1808,10 +1806,8 @@ async fn another_roles_asks_are_refused(role: &str) {
         ShellCall::Write {
             workspace: workspace.clone(),
             app: "so.tilo.desktop".to_owned(),
-            document: String::new(),
-            readers: None,
-            founding: true,
-            snapshot: true,
+            kind: None,
+            record: String::new(),
             changes: automerge::AutoCommit::new().save(),
         },
         ShellCall::Action {

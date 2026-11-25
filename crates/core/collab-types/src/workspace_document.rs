@@ -95,6 +95,31 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
         app: "so.tilo.passwords",
         kind: "passwords.workspace-vault",
     },
+    // The workspace's files: its tree's own record and each chunk of it (`fs-protocol`'s tree).
+    WorkspaceDocument {
+        app: "so.tilo.file-explorer",
+        kind: "files.tree",
+    },
+    // The workspace's shared desktop, each person's view of it and each window's view of what it
+    // showed (`desktop-model`'s record).
+    WorkspaceDocument {
+        app: "so.tilo.browser-desktop",
+        kind: "tilo.desktop",
+    },
+    WorkspaceDocument {
+        app: "so.tilo.browser-desktop",
+        kind: "desktop.person-view",
+    },
+    WorkspaceDocument {
+        app: "so.tilo.browser-desktop",
+        kind: "desktop.window-view",
+    },
+    // What the person answered about the devices of their machines, kept once for all of them
+    // (`tilo-peer-state`'s device answers).
+    WorkspaceDocument {
+        app: "so.tilo.identity",
+        kind: "identity.device-answers",
+    },
 ];
 
 /// The workspace document of `kind`, whichever app keeps it.

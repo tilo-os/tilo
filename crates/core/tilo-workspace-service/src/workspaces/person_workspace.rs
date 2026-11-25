@@ -130,6 +130,24 @@ pub fn workspace_id(workspaces: &Workspaces) -> String {
     person_workspace_id(&workspaces.device_cert().user_public_key)
 }
 
+/// The document the record `record` of `R` starts as where this device's store holds none of it,
+/// as that store founds a record: the change every copy of the kind derives, the containers of
+/// `R`'s type in it and nothing else.
+///
+/// # Errors
+/// The founding cannot be made, or the document refused it.
+pub fn founded<R: Resource>(record: &str) -> Result<automerge::AutoCommit, String> {
+    use tilo_automerge::ApplyIncoming as _;
+    let containers =
+        collab_types::document::founding::of_kind(&tilo_resource::surface::surface_of::<R>());
+    let founding = collab_types::document::founding::structure(R::KIND, record, &containers)
+        .map_err(|error| error.to_string())?;
+    let mut doc = automerge::AutoCommit::new();
+    doc.apply_incoming([founding])
+        .map_err(|error| error.to_string())?;
+    Ok(doc)
+}
+
 /// Apply `action` to the resource `(app, name)` of this device's person's
 /// workspace, as this device.
 ///
@@ -234,7 +252,28 @@ pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) -> R
             tilo_actions::remote::workspace_invocations::PROVIDER,
             super::asked_kept::surface().as_bytes(),
         )?;
+        // A workspace's shared desktop, each person's view of it, and each window's view.
+        surfaces.declare_system(
+            tilo_desktop_model::ownership::DESKTOP_APP,
+            tilo_desktop_model::record::layout(),
+        );
+        surfaces.declare_system(
+            tilo_desktop_model::ownership::DESKTOP_APP,
+            tilo_desktop_model::record::person_view(),
+        );
+        surfaces.declare_system(
+            tilo_desktop_model::ownership::DESKTOP_APP,
+            tilo_desktop_model::record::window_view(),
+        );
     }
+    // A workspace's files are records of the store: its tree's own record and its chunks.
+    #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
+    surfaces.declare_system(fs_protocol::tree::FILES_APP, fs_protocol::tree::declared());
+    // What the person answered about their devices' capabilities.
+    surfaces.declare_system(
+        tilo_peer_state::PERSON_RECORDS_APP,
+        tilo_peer_state::device_answers::declared(),
+    );
     // The workspace's own record of its agents: its kinds and verbs, kept as an installed
     // package's surface is, so this device decides the changes that name them.
     #[cfg(feature = "agents")]

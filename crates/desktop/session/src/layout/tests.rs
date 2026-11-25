@@ -190,7 +190,6 @@ fn an_undo_never_takes_another_persons_window_from_the_strip() {
     let mut adas = tilo_desktop_model::IdMinter::new(7);
     let main = tilo_desktop_model::Strip::new(tilo_desktop_model::StripId(adas.mint()), "Main");
     let mut doc = automerge::AutoCommit::new().with_actor(as_person("ada", 1));
-    shared_resource::found(&mut doc).expect("the record's maps stand");
     laid_out_as(
         &mut doc,
         vec![main.clone()],
@@ -406,14 +405,13 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
     ) -> tilo_peer_state::workspace_documents::DocumentWrite {
         let hold = Arc::clone(&self.hold);
         let inner = Arc::clone(&self.inner);
-        let (workspace, app, document, changes, sealed) = (
+        let (workspace, app, kind, record, changes) = (
             workspace.to_owned(),
             writing.app.to_owned(),
-            writing.document.to_owned(),
+            writing.kind.map(str::to_owned),
+            writing.record.to_owned(),
             changes.to_vec(),
-            writing.sealed.cloned(),
         );
-        let readers = writing.readers.map(str::to_owned);
         Box::pin(async move {
             std::future::poll_fn(move |context| {
                 if hold.held() {
@@ -434,11 +432,8 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
                     &changes,
                     tilo_peer_state::workspace_documents::DocumentWriting {
                         app: &app,
-                        document: &document,
-                        readers: readers.as_deref(),
-                        founding: writing.founding,
-                        snapshot: writing.snapshot,
-                        sealed: sealed.as_ref(),
+                        kind: kind.as_deref(),
+                        record: &record,
                     },
                 )
                 .await
@@ -1599,11 +1594,12 @@ impl tilo_peer_state::workspace_documents::DeviceDocuments for Opening {
     }
 }
 
-/// A device's workspace service that takes a record's founding write and answers every write after
-/// it that the writes wait for changes it does not hold yet, counting the writes it was handed.
+/// A device's workspace service that takes a record's first write and answers every write after it
+/// that the writes wait for changes it does not hold yet, counting the writes it was handed.
 struct WaitingWrites {
     inner: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     waited: Arc<std::sync::atomic::AtomicUsize>,
+    written: std::sync::atomic::AtomicUsize,
 }
 
 impl tilo_peer_state::workspace_documents::DeviceWrites for WaitingWrites {
@@ -1613,7 +1609,11 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for WaitingWrites {
         changes: &[u8],
         writing: tilo_peer_state::workspace_documents::DocumentWriting<'_>,
     ) -> tilo_peer_state::workspace_documents::DocumentWrite {
-        if writing.snapshot {
+        if self
+            .written
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            == 0
+        {
             return self.inner.write(workspace, changes, writing);
         }
         self.waited
@@ -1653,6 +1653,7 @@ fn a_view_write_that_waits_is_no_refusal_and_waits_for_the_record_to_move() {
         Arc::new(WaitingWrites {
             inner: service.writes(),
             waited: Arc::clone(&waited),
+            written: std::sync::atomic::AtomicUsize::new(0),
         });
     service.attach_as(&desktops, &service.reads(), &writes);
     let patience = std::time::Duration::from_secs(10);

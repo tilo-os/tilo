@@ -31,6 +31,28 @@ pub const PERSON_RECORDS_APP: &str = "so.tilo.identity";
 /// The kind of the person's document that holds their kept device answers.
 pub const DEVICE_ANSWERS_KIND: &str = "identity.device-answers";
 
+/// The kind the store declares [`DEVICE_ANSWERS_KIND`] by: one edit of the document, as each
+/// answer kept or taken back is.
+#[must_use]
+pub fn declared() -> tilo_actions::surface::Surface {
+    tilo_actions::surface::Surface {
+        kind: DEVICE_ANSWERS_KIND.to_owned(),
+        label: "Device answers".to_owned(),
+        version: 1,
+        person: false,
+        readers: None,
+        verbs: vec![tilo_actions::surface::content_verb(
+            tilo_actions::stamp::Stamp::TYPE_VERB,
+            "Edit",
+        )],
+        fields: Vec::new(),
+        types: Vec::new(),
+        shows: Vec::new(),
+        live: None,
+        setters: false,
+    }
+}
+
 /// One kept answer, as the person's document holds it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -331,6 +353,7 @@ fn write(
     store.edit(
         PERSON_RECORDS_APP,
         &document(),
+        Some(DEVICE_ANSWERS_KIND),
         Box::new(move |doc| {
             use collab_types::CommitNamed as _;
             edit(doc).map_err(|error| error.to_string())?;

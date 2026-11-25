@@ -1169,8 +1169,7 @@ pub struct HeldWrite {
     pub workspace: String,
     pub id: String,
     pub changes: Vec<u8>,
-    pub founding: bool,
-    pub readers: Option<String>,
+    pub kind: String,
 }
 
 impl HeldWrites {
@@ -1206,9 +1205,8 @@ impl HeldWrites {
                 &write.app,
                 &write.workspace,
                 &write.id,
+                &write.kind,
                 write.changes,
-                write.founding,
-                write.readers.as_deref(),
             );
             let answer = written(std::time::Duration::ZERO).unwrap_or(Ok(()));
             self.state.answers.borrow_mut().insert(write.ticket, answer);
@@ -1236,19 +1234,9 @@ impl DocumentPort for HeldWrites {
         self.workspace.read(app, workspace, reads)
     }
 
-    fn write(
-        &self,
-        app: &str,
-        workspace: &str,
-        id: &str,
-        changes: Vec<u8>,
-        founding: bool,
-        readers: Option<&str>,
-    ) -> Written {
+    fn write(&self, app: &str, workspace: &str, id: &str, kind: &str, changes: Vec<u8>) -> Written {
         if !self.state.hold.get() {
-            return self
-                .workspace
-                .write(app, workspace, id, changes, founding, readers);
+            return self.workspace.write(app, workspace, id, kind, changes);
         }
         let ticket = self.state.next.get();
         self.state.next.set(ticket.wrapping_add(1));
@@ -1258,13 +1246,12 @@ impl DocumentPort for HeldWrites {
             workspace: workspace.to_owned(),
             id: id.to_owned(),
             changes: changes.clone(),
-            founding,
-            readers: readers.map(str::to_owned),
+            kind: kind.to_owned(),
         });
         let state = Rc::clone(&self.state);
         let inner = Rc::clone(&self.workspace);
         let (app, workspace, id) = (app.to_owned(), workspace.to_owned(), id.to_owned());
-        let readers = readers.map(str::to_owned);
+        let kind = kind.to_owned();
         Box::new(move |wait: std::time::Duration| {
             let answer = match state.answers.borrow_mut().remove(&ticket) {
                 Some(answer) => answer,
@@ -1274,14 +1261,7 @@ impl DocumentPort for HeldWrites {
                 None => Ok(()),
             };
             if answer.is_ok() {
-                let mut written = inner.write(
-                    &app,
-                    &workspace,
-                    &id,
-                    changes.clone(),
-                    founding,
-                    readers.as_deref(),
-                );
+                let mut written = inner.write(&app, &workspace, &id, &kind, changes.clone());
                 let _ = written(std::time::Duration::ZERO);
             }
             Some(answer)

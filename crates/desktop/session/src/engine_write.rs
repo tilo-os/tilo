@@ -11,10 +11,9 @@ use std::task::{Context, Poll, Waker};
 
 use tilo_actions::remote::Pending;
 
-/// What a write came to: the write as the workspace took it, or why it took none — a change the
+/// What a write came to: done, or why the workspace took nothing of it — a change the
 /// workspace's rules refused named as a server's refusal of a change names it.
-pub(crate) type Written =
-    Result<tilo_peer_state::owner::AppWrite, tilo_peer_state::owner::WriteRefusal>;
+pub(crate) type Written = Result<(), tilo_peer_state::owner::WriteRefusal>;
 
 /// Work under way off the loop, answering `T` once it is done.
 pub(crate) struct Polled<T> {

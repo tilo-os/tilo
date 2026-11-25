@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use automerge::ReadDoc as _;
 use ed25519_dalek::SigningKey;
-use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND};
 use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DeviceWrites as _, DocumentRead};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
@@ -45,15 +45,6 @@ fn enrol(
     (key, cert)
 }
 
-/// The workspace's layout, a record every member reads and its group seals.
-fn layout_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
-    tilo_peer_state::document_frame::DocumentRoute {
-        app_id: DESKTOP_APP.into(),
-        cluster_id: workspace.to_owned(),
-        document: DESKTOP_DOCUMENT.into(),
-    }
-}
-
 /// The layout's front as `workspaces` reads it now, when it reads.
 fn front(workspaces: &Workspaces, workspace: &str) -> Option<String> {
     let read = ServiceDocuments::of(workspaces.clone())
@@ -69,38 +60,31 @@ fn front(workspaces: &Workspaces, workspace: &str) -> Option<String> {
     }
 }
 
-/// Found the layout on `workspaces` with `want` as its front, sealed with the keys its group holds.
+/// Found the layout on `workspaces` with `want` as its front, as the device whose service this
+/// is writes it: on the founding every copy of the record derives, naming this device's person.
 async fn found_front(workspaces: &Workspaces, workspace: &str, want: &str) {
-    let sealed = tilo_test_env::within("the server holds the layout's keys", async {
-        loop {
-            if let Some(Ok(keys)) = workspaces
-                .own_route_keys(&layout_route(workspace), true)
-                .await
-            {
-                return keys;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
-    let mut document = automerge::AutoCommit::new();
+    let person = tilo_actions::Acting::person(tilo_actions::PersonId::from_root(
+        workspaces.device_cert().user_public_key,
+    ));
+    let mut document = tilo_desktop_model::record::founded().expect("the layout founds");
     automerge::transaction::Transactable::put(&mut document, automerge::ROOT, "front", want)
         .unwrap();
+    document.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::ActionContext::whole_edit_by(&person)),
+    );
     ServiceWrites::of(workspaces.clone())
         .write(
             workspace,
             &document.save(),
             tilo_peer_state::workspace_documents::DocumentWriting {
                 app: DESKTOP_APP,
-                document: DESKTOP_DOCUMENT,
-                readers: None,
-                founding: true,
-                snapshot: true,
-                sealed: Some(&sealed),
+                kind: Some(DESKTOP_KIND),
+                record: DESKTOP_DOCUMENT,
             },
         )
         .await
-        .unwrap_or_else(|refusal| panic!("the server seals the layout: {refusal:?}"));
+        .unwrap_or_else(|refusal| panic!("the server keeps the layout: {refusal:?}"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

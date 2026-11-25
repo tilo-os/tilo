@@ -188,26 +188,19 @@ impl DocumentPort for MemoryWorkspace {
         app: &str,
         workspace: &str,
         id: &str,
+        _kind: &str,
         changes: Vec<u8>,
-        founding: bool,
-        readers: Option<&str>,
     ) -> Written {
         self.writes.set(self.writes.get() + 1);
         let answer = if self.refuse.get() {
             Err("the workspace refused it".to_owned())
         } else {
             let key = (app.to_owned(), workspace.to_owned(), id.to_owned());
-            match readers {
-                Some(readers) => {
-                    self.readers.borrow_mut().insert(key, readers.to_owned());
-                }
-                None => {
-                    self.readers.borrow_mut().remove(&key);
-                }
+            if !self.documents.borrow().contains_key(&key) {
+                self.readers.borrow_mut().remove(&key);
             }
             // A founding write is the whole document, any other the changes after what is held:
             // both load the same way.
-            let _ = founding;
             self.hold(app, workspace, id, &changes)
         };
         let mut answer = Some(answer);

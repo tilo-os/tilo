@@ -189,16 +189,10 @@ pub type Served = Pin<Box<dyn std::future::Future<Output = Result<(), Refusal>> 
 /// The records of a workspace's tree, written as this device itself: the tree's own record and
 /// its chunks, one write per record.
 pub trait TreeWriter {
-    /// Write `changes` to record `chunk` of the tree: its founding write when `founding` (the
-    /// record does not exist at the workspace yet), a change of it otherwise; the whole record
-    /// when `snapshot`, its changes otherwise.
-    fn write<'a>(
-        &'a mut self,
-        chunk: TreeChunk,
-        changes: &'a [u8],
-        founding: bool,
-        snapshot: bool,
-    ) -> WriteFuture<'a>;
+    /// Write `changes` to record `chunk` of the tree: founding the record from them when the
+    /// workspace holds none of it, a change of it otherwise. A record this device starts carries
+    /// its canonical founding first, so every copy of it derives the one founding.
+    fn write<'a>(&'a mut self, chunk: TreeChunk, changes: &'a [u8]) -> WriteFuture<'a>;
 
     /// Resolves once the serving side answered every earlier write of this device's to
     /// `chunks`, or with the refusal that prevents it; `None` when the peer cannot answer (it
@@ -507,13 +501,12 @@ impl TreeSync {
             wakes,
         } = config;
         // The mount of the person's certified device holds this workspace's tree: every document
-        // it publishes names them and names itself as Files' document of the workspace, so a page
-        // opens the tree this device wrote.
+        // it publishes starts from the founding every copy of the record derives, and names the
+        // person whose changes it carries.
         let mount = MountAuthor::person(
             hex::encode(device),
             tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(person)),
-        )
-        .in_workspace(workspace.clone());
+        );
         // Reading the kept chunks and indexing every node they name walks the whole tree. On
         // a runtime worker it would hold that worker — and the holder's clients, and the agents
         // it serves, wait for one — for as long as a repository's tree takes, so it goes to a
@@ -1217,18 +1210,11 @@ impl Sync {
         }
     }
 
-    /// Write `changes` to record `chunk` through the writer, its founding write and the whole
-    /// record as `founding` and `snapshot` say. A write that did not end within
+    /// Write `changes` to record `chunk` through the writer. A write that did not end within
     /// [`WRITE_WITHIN`] is refused as one the workspace refused: it goes again after the
     /// record's wait, and the folder says why its changes wait.
-    async fn write(
-        &mut self,
-        chunk: TreeChunk,
-        changes: &[u8],
-        founding: bool,
-        snapshot: bool,
-    ) -> Result<(), Refusal> {
-        let writing = self.writer.write(chunk, changes, founding, snapshot);
+    async fn write(&mut self, chunk: TreeChunk, changes: &[u8]) -> Result<(), Refusal> {
+        let writing = self.writer.write(chunk, changes);
         if let Ok(written) = tokio::time::timeout(WRITE_WITHIN, writing).await {
             return written;
         }
@@ -1469,26 +1455,22 @@ impl Sync {
             // changing it while the write goes out, and a change made meanwhile counted as
             // sent would never reach the host, which then leaves out every later write of
             // this device.
-            if !write.changes.is_empty()
-                && self
-                    .write(write.chunk, &write.changes, false, false)
-                    .await
-                    .is_err()
-            {
+            if !write.changes.is_empty() && self.write(write.chunk, &write.changes).await.is_err() {
                 waiting = true;
                 continue;
             }
             // A record that changed more than one write carries goes on with the next pass; one
             // whose write carried nothing and still stands apart from the namespace did not go
             // out, and the folder says so rather than counting it sent.
-            let left = heads.get(&write.chunk) != Some(&write.heads);
-            if left {
+            if heads.get(&write.chunk) != Some(&write.heads) {
                 more = true;
                 if write.changes.is_empty() {
                     unsent = unsent.saturating_add(1);
                 }
             }
             if let Some(held) = self.documents.get_mut(&write.chunk) {
+                // A write that carried changes founded the record where the workspace held none.
+                held.founded |= !write.changes.is_empty();
                 held.sent = write.heads;
             }
         }
@@ -1539,12 +1521,9 @@ impl Sync {
             let founded = self.documents.get(&chunk).is_some_and(|held| held.founded);
             if !founded {
                 // A record this device starts: the host says first whether the workspace has
-                // it. One it has is merged before this device's changes of it go out; one it
-                // has not is founded here, with the empty start every device makes alike.
+                // it. One it has is merged before this device's changes of it go out; one it has
+                // not is founded here, by the changes that carry its canonical founding first.
                 // Its changes are saved only once they can go out: saving walks the record.
-                // The peer's own answer to its open, as a reader of the record hears it: a
-                // record the host holds frames of is merged before this device's changes of it
-                // go out, one it holds none of is founded here.
                 let answered = self.documents.get(&chunk).and_then(|held| held.answered);
                 if !holds_none(answered) || self.peer.holds(chunk) {
                     // Said once per record: a write that waits here for long is one the
@@ -1558,15 +1537,6 @@ impl Sync {
                     waiting = true;
                     continue;
                 }
-                let genesis = automerge::AutoCommit::new().save();
-                if self.write(chunk, &genesis, true, true).await.is_err() {
-                    waiting = true;
-                    continue;
-                }
-                if let Some(held) = self.documents.get_mut(&chunk) {
-                    held.founded = true;
-                }
-                self.again.remove(&chunk);
             }
             let sent = self
                 .documents
@@ -2081,7 +2051,7 @@ mod tests {
     struct Unanswered(Arc<std::sync::atomic::AtomicUsize>);
 
     impl TreeWriter for Unanswered {
-        fn write<'a>(&'a mut self, _: TreeChunk, _: &'a [u8], _: bool, _: bool) -> WriteFuture<'a> {
+        fn write<'a>(&'a mut self, _: TreeChunk, _: &'a [u8]) -> WriteFuture<'a> {
             if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
                 Box::pin(std::future::pending())
             } else {

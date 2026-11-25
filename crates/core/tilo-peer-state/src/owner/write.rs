@@ -522,7 +522,7 @@ impl DeviceWorkspaces {
                 return Box::pin(async move { Err(crate::owner::WriteRefusal::Refused(error)) });
             }
         };
-        let written = crate::draft::admit_local_write(
+        let written = crate::draft::admit_local_write_answering(
             replica,
             Some(self.clone()),
             device,
@@ -546,7 +546,7 @@ impl DeviceWorkspaces {
                     },
                 )
                 .map_err(crate::owner::WriteRefusal::Refused)?;
-            Ok(written)
+            Ok(())
         })
     }
 

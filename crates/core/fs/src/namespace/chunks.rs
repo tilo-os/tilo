@@ -57,9 +57,6 @@ pub(super) struct Chunk {
 pub(crate) struct Chunks {
     index: ChangeTrackedDoc,
     held: BTreeMap<TreeChunk, Chunk>,
-    /// The workspace whose tree this is, when it is one: each of its documents starts from the
-    /// identity every founder derives.
-    workspace: Option<String>,
     /// The chunk each node lives in, as the chunks hold them.
     located: HashMap<String, TreeChunk>,
     /// The last chunk whose node count was asked for, and the count, packed in one word: making
@@ -93,29 +90,22 @@ impl Clone for Chunks {
         Self {
             index: self.index.clone(),
             held: self.held.clone(),
-            workspace: self.workspace.clone(),
             located: self.located.clone(),
             counted: AtomicU64::new(self.counted.load(Ordering::Relaxed)),
         }
     }
 }
 
-/// Make `doc` a chunk of the tree: its map of nodes, the one change every replica makes alike,
-/// so two devices that start the same chunk start the same document.
+/// Make `doc` a chunk of the tree: its map of nodes, which the record's founding stood up.
 fn chunk_maps(doc: &mut AutoCommit) -> Result<ObjId, AutomergeError> {
     fs_protocol::tree::tree_nodes(doc)
 }
 
 impl Chunks {
-    pub(super) fn new(
-        index: AutoCommit,
-        workspace: Option<String>,
-        person: Option<tilo_actions::MemberId>,
-    ) -> Self {
+    pub(super) fn new(index: AutoCommit, person: Option<tilo_actions::MemberId>) -> Self {
         Self {
             index: ChangeTrackedDoc::new(index, person),
             held: BTreeMap::new(),
-            workspace,
             located: HashMap::new(),
             counted: AtomicU64::new(NOT_COUNTED),
         }
@@ -172,11 +162,7 @@ impl Chunks {
             ));
         }
         if !self.held.contains_key(&chunk) {
-            let founding = self
-                .workspace
-                .as_deref()
-                .and_then(|workspace| super::founding_document(workspace, chunk));
-            let mut doc = super::started_from(founding);
+            let mut doc = super::started_from(super::founding_document(chunk));
             doc.set_actor(self.index.get_actor().clone());
             let nodes = chunk_maps(&mut doc)?;
             self.held.insert(
@@ -188,9 +174,9 @@ impl Chunks {
             );
         }
         if list && !fs_protocol::tree::listed_chunks(&*self.index).contains(&chunk) {
-            // Listing a chunk makes the tree's own record's map, a merge of one change every
-            // device derives alike: the map is made by a merge, which settles this replica's
-            // pending edits first, so they are named as the mount's before that happens.
+            // Listing a chunk writes the tree's own record's `chunks` map, which its founding
+            // stood up: this device's pending edits are named as the mount's first, so the
+            // listing is the one change it is.
             self.index.commit_named();
             fs_protocol::tree::list_chunk(&mut self.index, chunk)?;
         }

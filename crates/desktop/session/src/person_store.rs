@@ -102,9 +102,8 @@ impl PersonStore for DaemonPersonStore {
         Box::pin(async move {
             let held = self.saved(&app, &name).await?;
             let founding = held.is_none();
-            // A resource the workspace holds none of starts from its genesis, or from nothing
-            // where it has none (the shell's own documents, which carry their whole history in
-            // the change), as the daemon's own writes of the person's workspace found it.
+            // A record the workspace holds none of starts from its kind's founding, where the
+            // caller names one, as the daemon's own writes of the person's workspace found it.
             let mut document = match held {
                 Some(bytes) => automerge::AutoCommit::load(&bytes)
                     .map_err(|error| format!("the person's resource does not read: {error}"))?,
@@ -129,10 +128,8 @@ impl PersonStore for DaemonPersonStore {
                 .ask(ShellCall::Write {
                     workspace: self.workspace.clone(),
                     app,
-                    document: name,
-                    readers: None,
-                    founding,
-                    snapshot: founding,
+                    kind: authoring.kind.map(str::to_owned),
+                    record: name,
                     changes,
                 })
                 .await?
@@ -204,8 +201,13 @@ mod tests {
             &runtime,
         );
         let shell = DaemonShell::new(link.map(|(link, _)| link), runtime.clone());
+        let person =
+            tilo_actions::Acting::person(tilo_actions::PersonId::from_root(cert.user_public_key));
         let store = DaemonPersonStore::new(shell.clone(), DaemonWritesFeed::start(&shell), cert);
-        let (app, name) = (crate::shell_document::APP, "dock");
+        let (app, name) = (
+            tilo_desktop_model::ownership::DESKTOP_APP,
+            tilo_desktop_model::ownership::DESKTOP_DOCUMENT,
+        );
         runtime.block_on(async {
             let deadline = tokio::time::Instant::now() + within;
             while !store.held().await {
@@ -225,12 +227,20 @@ mod tests {
                     app.to_owned(),
                     name.to_owned(),
                     Authoring {
-                        kind: None,
-                        genesis: None,
-                        edit: Box::new(|document| {
+                        kind: Some(tilo_desktop_model::ownership::DESKTOP_KIND),
+                        genesis: Some(Box::new(
+                            tilo_desktop_model::record::founded().expect("the layout founds"),
+                        )),
+                        edit: Box::new(move |document| {
                             document
                                 .put(automerge::ROOT, "edge", "left")
-                                .map_err(|error| error.to_string())
+                                .map_err(|error| error.to_string())?;
+                            document.commit_with(
+                                automerge::transaction::CommitOptions::default().with_message(
+                                    tilo_actions::ActionContext::whole_edit_by(&person),
+                                ),
+                            );
+                            Ok(())
                         }),
                     },
                 )

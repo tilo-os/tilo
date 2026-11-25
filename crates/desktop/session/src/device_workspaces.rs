@@ -116,11 +116,10 @@ impl DocumentPort for EnginePort {
         app: &str,
         workspace: &str,
         id: &str,
+        kind: &str,
         changes: Vec<u8>,
-        founding: bool,
-        readers: Option<&str>,
     ) -> ui::resource::Written {
-        let readers = readers.map(str::to_owned);
+        let kind = kind.to_owned();
         let Some(room) = WorkspaceId::parse(workspace) else {
             let mut refused = Some(Err(format!("{workspace} names no workspace")));
             return Box::new(move |_| refused.take());
@@ -135,16 +134,16 @@ impl DocumentPort for EnginePort {
             let attached = held.borrow().clone()?;
             if writing.is_none() {
                 // A workspace the daemon does not hold yet (one still being founded) takes the
-                // write once it does. The daemon seals it: for the readers it names, when it
-                // names some.
+                // write once it does. The daemon writes it to the workspace's store as its
+                // device, founding the record when the workspace holds none of it.
                 if !attached.view.holds(room) {
                     return None;
                 }
-                let (writes, key, changes, readers) = (
+                let (writes, key, changes, kind) = (
                     Arc::clone(&attached.writes),
                     key.clone(),
                     changes.clone(),
-                    readers.clone(),
+                    kind.clone(),
                 );
                 writing = Some(Writing::write(Arc::clone(&wake), async move {
                     writes
@@ -153,11 +152,8 @@ impl DocumentPort for EnginePort {
                             &changes,
                             tilo_peer_state::workspace_documents::DocumentWriting {
                                 app: &key.1,
-                                document: &key.2,
-                                readers: readers.as_deref(),
-                                founding,
-                                snapshot: founding,
-                                sealed: None,
+                                kind: Some(&kind),
+                                record: &key.2,
                             },
                         )
                         .await

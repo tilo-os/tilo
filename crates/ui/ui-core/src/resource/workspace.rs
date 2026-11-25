@@ -240,9 +240,8 @@ mod tests {
             _: &str,
             _: &str,
             _: &str,
+            _: &str,
             _: Vec<u8>,
-            _: bool,
-            _: Option<&str>,
         ) -> crate::resource::Written {
             Box::new(|_: crate::time::Duration| Some(Ok(())))
         }

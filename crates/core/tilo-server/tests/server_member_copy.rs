@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND};
 use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DeviceWrites as _, DocumentRead};
 use tilo_server::WorkspaceId;
 use tilo_server::workspaces::Workspaces;
@@ -54,15 +54,6 @@ async fn own_service(
     (service, keys)
 }
 
-/// The workspace's layout, a record every member reads and its group seals.
-fn layout_route() -> tilo_peer_state::document_frame::DocumentRoute {
-    tilo_peer_state::document_frame::DocumentRoute {
-        app_id: DESKTOP_APP.into(),
-        cluster_id: WORKSPACE.to_string(),
-        document: DESKTOP_DOCUMENT.into(),
-    }
-}
-
 /// The layout as `workspaces` reads it now, when it reads.
 fn layout(workspaces: &Workspaces) -> Option<automerge::AutoCommit> {
     let read = ServiceDocuments::of(workspaces.clone())
@@ -100,24 +91,17 @@ async fn reads_front(workspaces: &Workspaces, what: &str, want: &str) {
     .await;
 }
 
-/// Write `front` as the layout's front on `workspaces`, sealed with the keys its device's key
-/// service holds for the layout's group: the layout's founding write where none is held yet.
+/// Write `front` as the layout's front on `workspaces`, on the founding every copy of the
+/// record derives where none is held yet: the record is a store record of the workspace, sealed
+/// as its store seals it.
 async fn write_front(workspaces: &Workspaces, person: &str, what: &str, want: &str) {
-    let sealed = tilo_test_env::within(what, async {
-        loop {
-            if let Some(Ok(keys)) = workspaces.own_route_keys(&layout_route(), true).await {
-                return keys;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
     let read = workspaces.clone();
     let held = tokio::task::spawn_blocking(move || layout(&read))
         .await
         .unwrap();
     let founding = held.is_none();
-    let mut document = held.unwrap_or_default();
+    let mut document =
+        held.unwrap_or_else(|| tilo_desktop_model::record::founded().expect("the layout founds"));
     let heads = document.get_heads();
     automerge::transaction::Transactable::put(&mut document, automerge::ROOT, "front", want)
         .unwrap();
@@ -139,11 +123,8 @@ async fn write_front(workspaces: &Workspaces, person: &str, what: &str, want: &s
             &changes,
             tilo_peer_state::workspace_documents::DocumentWriting {
                 app: DESKTOP_APP,
-                document: DESKTOP_DOCUMENT,
-                readers: None,
-                founding,
-                snapshot: founding,
-                sealed: Some(&sealed),
+                kind: Some(DESKTOP_KIND),
+                record: DESKTOP_DOCUMENT,
             },
         )
         .await
@@ -392,14 +373,6 @@ const NOTES_WRITTEN: [(&str, &str); 3] = [
     ("trip", "Trip"),
 ];
 
-fn note_route(note: &str) -> tilo_peer_state::document_frame::DocumentRoute {
-    tilo_peer_state::document_frame::DocumentRoute {
-        app_id: NOTES.into(),
-        cluster_id: WORKSPACE.to_string(),
-        document: note.into(),
-    }
-}
-
 /// The note's title as `workspaces` reads it now, when it reads.
 fn note_title(workspaces: &Workspaces, note: &str) -> Option<String> {
     use automerge::ReadDoc as _;
@@ -416,19 +389,22 @@ fn note_title(workspaces: &Workspaces, note: &str) -> Option<String> {
     }
 }
 
-/// Write the note `note` on `workspaces`, sealed with the keys its device's key service holds
-/// for the workspace's group, as someone typing it writes it: a founding write, then edits after
-/// it, the last of them titling it `title`.
+/// The kind a note of [`NOTES`] is, as the app's surface declares it.
+const NOTE_KIND: &str = "so.tilo.notes.note";
+
+/// Declare what `so.tilo.notes` keeps in a workspace, as an installed package's surface does: a
+/// note whose title its editor types, and the edit that types it.
+fn declare_notes() {
+    tilo_workspace_service::apps::register_package_surface(
+        NOTES,
+        br#"{"resources":[{"fields":[{"path":"title","type":"text"}],"kind":"so.tilo.notes.note","label":"Note","verbs":[{"id":"type","kind":"undoable","label":"Edit"}],"version":1}]}"#,
+    );
+}
+
+/// Write the note `note` on `workspaces`, in the workspace's store as someone typing it writes
+/// it: a founding write, then edits after it, the last of them titling it `title`.
 async fn write_note(workspaces: &Workspaces, person: &str, note: &str, title: &str) {
-    let sealed = tilo_test_env::within("the note's keys", async {
-        loop {
-            if let Some(Ok(keys)) = workspaces.own_route_keys(&note_route(note), true).await {
-                return keys;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
+    declare_notes();
     let mut document = automerge::AutoCommit::new();
     let mut founding = true;
     for typed in ["", "Untitled", title] {
@@ -453,11 +429,8 @@ async fn write_note(workspaces: &Workspaces, person: &str, note: &str, title: &s
                 &changes,
                 tilo_peer_state::workspace_documents::DocumentWriting {
                     app: NOTES,
-                    document: note,
-                    readers: None,
-                    founding,
-                    snapshot: founding,
-                    sealed: Some(&sealed),
+                    kind: Some(NOTE_KIND),
+                    record: note,
                 },
             )
             .await

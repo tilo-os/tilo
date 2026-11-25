@@ -34,8 +34,9 @@ pub trait PersonDocuments: Send + Sync {
 
     /// Edit the document `id` of `app`: `edit` runs on the document as this device holds
     /// it, and what it writes reaches the person's other devices as any workspace's change
-    /// does. An edit that cannot be made yet waits for the workspace.
-    fn edit(&self, app: &str, id: &str, edit: DocumentEdit);
+    /// does. A typed record's `kind` is the kind its store writes it as; `None` for one that is
+    /// no typed record. An edit that cannot be made yet waits for the workspace.
+    fn edit(&self, app: &str, id: &str, kind: Option<&'static str>, edit: DocumentEdit);
 }
 
 /// An edit of one of the person's documents, run on it as this device holds it.

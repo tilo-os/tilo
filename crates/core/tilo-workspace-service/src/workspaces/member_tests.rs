@@ -666,7 +666,7 @@ async fn served_answers_once_the_serving_device_holds_the_write() {
     copies
         .own_record_write(
             &workspace,
-            ("test.app", &kind, "record"),
+            ("test.app", Some(kind.as_str()), "record"),
             &record_change_of(
                 &copies,
                 &workspace,
@@ -883,7 +883,11 @@ async fn a_write_made_while_the_serving_device_is_away_is_kept_and_reaches_it_la
 
     let written = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        copies.own_record_write(&workspace, ("test.app", &kind, "record"), &change),
+        copies.own_record_write(
+            &workspace,
+            ("test.app", Some(kind.as_str()), "record"),
+            &change,
+        ),
     )
     .await
     .expect("a write does not wait for the serving device");
@@ -1061,7 +1065,7 @@ async fn a_write_before_the_workspace_is_held_here_waits_and_lands_once_it_is() 
     let early = copies
         .own_record_write(
             &workspace,
-            ("test.app", &kind, "record"),
+            ("test.app", Some(kind.as_str()), "record"),
             &snapshot("value", "written-while-joining"),
         )
         .await;
@@ -1086,7 +1090,11 @@ async fn a_write_before_the_workspace_is_held_here_waits_and_lands_once_it_is() 
     )
     .await;
     copies
-        .own_record_write(&workspace, ("test.app", &kind, "record"), &change)
+        .own_record_write(
+            &workspace,
+            ("test.app", Some(kind.as_str()), "record"),
+            &change,
+        )
         .await
         .expect("the write is kept once the workspace is held here");
     tilo_test_env::within("the write reaches the serving device", async {

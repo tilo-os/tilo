@@ -247,24 +247,56 @@ impl DeviceWrites for HeldDocuments {
                 ))
             });
         }
-        tilo_peer_state::owner::admit_local_write(
-            self.replica.clone(),
-            None,
-            self.device,
-            signer,
-            workspace,
-            tilo_peer_state::owner::LocalWrite {
-                app: writing.app,
-                document: writing.document,
-                readers: writing.readers,
-                changes,
-                founding: writing.founding,
-                snapshot: writing.snapshot,
-                sealed: writing.sealed,
-                commit: None,
-                now: tilo_clock::wall(),
-            },
-        )
+        // What a write names besides its changes, read from the copy this device keeps and the
+        // keys it holds: whether it is the whole record, whether the record is one this device
+        // starts, who reads it, and the keys it seals under.
+        let snapshot = automerge::stored_document_heads(changes).is_some();
+        let founding = snapshot
+            && !self
+                .replica
+                .read(|peer| peer.holds_document(writing.app, writing.record));
+        let readers = self.keys.as_ref().and_then(|keys| {
+            collab_types::WorkspaceId::parse(workspace)
+                .and_then(|id| keys.named_readers(id, writing.record))
+        });
+        let keys = self.keys.clone();
+        let workspace = workspace.to_owned();
+        let seals_for = readers
+            .clone()
+            .unwrap_or_else(|| collab_types::EVERY_MEMBER.to_owned());
+        let app = writing.app.to_owned();
+        let record = writing.record.to_owned();
+        let changes = changes.to_vec();
+        let replica = self.replica.clone();
+        let device = self.device;
+        Box::pin(async move {
+            let sealed = match keys {
+                Some(keys) => keys
+                    .group_keys(&workspace, &seals_for, founding)
+                    .await
+                    .and_then(Result::ok),
+                None => None,
+            };
+            tilo_peer_state::owner::admit_local_write(
+                replica,
+                None,
+                device,
+                signer,
+                &workspace,
+                tilo_peer_state::owner::LocalWrite {
+                    app: &app,
+                    document: &record,
+                    readers: readers.as_deref(),
+                    changes: &changes,
+                    founding,
+                    snapshot,
+                    sealed: sealed.as_ref(),
+                    commit: None,
+                    now: tilo_clock::wall(),
+                },
+            )
+            .await
+        })
     }
 }
 
@@ -472,11 +504,8 @@ mod tests {
             &change,
             tilo_peer_state::workspace_documents::DocumentWriting {
                 app: DESKTOP_APP,
-                document: DESKTOP_DOCUMENT,
-                readers: None,
-                founding: false,
-                snapshot: false,
-                sealed: None,
+                kind: Some(DESKTOP_KIND),
+                record: DESKTOP_DOCUMENT,
             },
         ));
         assert!(
@@ -518,11 +547,8 @@ mod tests {
             &checkpointed.save(),
             tilo_peer_state::workspace_documents::DocumentWriting {
                 app: DESKTOP_APP,
-                document: DESKTOP_DOCUMENT,
-                readers: None,
-                founding: false,
-                snapshot: true,
-                sealed: None,
+                kind: Some(DESKTOP_KIND),
+                record: DESKTOP_DOCUMENT,
             },
         ));
         assert!(

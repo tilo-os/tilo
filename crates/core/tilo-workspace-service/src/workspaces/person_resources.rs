@@ -21,7 +21,6 @@ use tilo_user_identity::DeviceCert;
 
 use super::person_workspace::devices::{DEVICES, Devices};
 use super::{Workspaces, person_workspace};
-use tilo_server_protocol::servers::person_workspace_id;
 
 /// What a store answers, once it has.
 pub type Answer<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -137,9 +136,8 @@ impl PersonResources {
             // The store tells its own write as it tells any other: the follower reads it back.
             Box::pin(async move {
                 let cert = store.certificate();
-                let workspace = person_workspace_id(&cert.user_public_key);
-                let genesis = Box::new(person_workspace::genesis::<R>(&workspace)?);
                 let (app, name) = resource;
+                let genesis = Box::new(person_workspace::founded::<R>(name)?);
                 store
                     .author(
                         app.to_owned(),
@@ -182,8 +180,8 @@ impl PersonResources {
 
     /// Edit the document `(app, name)` of the person's workspace, now or once the service holds
     /// the workspace: for what a caller keeps its own Automerge structure under a resource
-    /// address, rather than a typed [`Resource`].
-    pub fn edit_document<F>(&self, resource: (&str, &str), edit: F)
+    /// address, rather than a typed [`Resource`]. A typed record names its `kind`.
+    pub fn edit_document<F>(&self, resource: (&str, &str), kind: Option<&'static str>, edit: F)
     where
         F: Fn(&mut automerge::AutoCommit) -> Result<(), String> + Send + Sync + 'static,
     {
@@ -197,7 +195,7 @@ impl PersonResources {
                         app,
                         name,
                         Authoring {
-                            kind: None,
+                            kind,
                             genesis: None,
                             edit: Box::new(move |document| edit.as_ref()(document)),
                         },
@@ -303,8 +301,14 @@ impl PersonDocuments for PersonResources {
         Self::document(self, (app, id))
     }
 
-    fn edit(&self, app: &str, id: &str, edit: tilo_peer_state::DocumentEdit) {
-        Self::edit_document(self, (app, id), edit);
+    fn edit(
+        &self,
+        app: &str,
+        id: &str,
+        kind: Option<&'static str>,
+        edit: tilo_peer_state::DocumentEdit,
+    ) {
+        Self::edit_document(self, (app, id), kind, edit);
     }
 }
 

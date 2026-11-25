@@ -131,17 +131,18 @@ impl From<crate::workspace::base::KeptChange> for MemberChange {
     }
 }
 
-/// What a write of a document came to: the write as the workspace took it, or why it took none.
-pub type WriteAnswer = Result<crate::owner::AppWrite, crate::owner::WriteRefusal>;
-
-/// A write of one document under way in this device's service.
+/// A write of one document under way in this device's service: done, or why the workspace took
+/// nothing of it.
 #[cfg(not(target_arch = "wasm32"))]
-pub type DocumentWrite =
-    std::pin::Pin<Box<dyn std::future::Future<Output = WriteAnswer> + Send + 'static>>;
-/// A write of one document under way in this device's service.
+pub type DocumentWrite = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(), crate::owner::WriteRefusal>> + Send + 'static>,
+>;
+/// A write of one document under way in this device's service: done, or why the workspace took
+/// nothing of it.
 #[cfg(target_arch = "wasm32")]
-pub type DocumentWrite =
-    std::pin::Pin<Box<dyn std::future::Future<Output = WriteAnswer> + 'static>>;
+pub type DocumentWrite = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(), crate::owner::WriteRefusal>> + 'static>,
+>;
 
 /// Whether the device serving a workspace answered this device's last writes to it: `Ok` once it
 /// holds each of them, or why it refused one.
@@ -156,24 +157,16 @@ pub type DocumentServing =
 pub type DocumentServing =
     std::pin::Pin<Box<dyn std::future::Future<Output = DocumentServed> + 'static>>;
 
-/// What a write names besides the workspace and the changes themselves: the record it is of, who
-/// reads it, and how it carries its changes there.
+/// What a write names besides the workspace and the changes themselves: the record it is of.
 #[derive(Clone, Copy)]
 pub struct DocumentWriting<'a> {
     /// The app whose record this is.
     pub app: &'a str,
-    /// The document of that app.
-    pub document: &'a str,
-    /// The members who read it, where only some do.
-    pub readers: Option<&'a str>,
-    /// Whether this is the document's founding write: the whole document, which the workspace
-    /// must not hold yet.
-    pub founding: bool,
-    /// Whether what is written is the whole document: a founding, or a checkpoint of one the
-    /// workspace holds already.
-    pub snapshot: bool,
-    /// The keys of the document's group, where the workspace seals its documents.
-    pub sealed: Option<&'a key_group::ContentKeys>,
+    /// The record's kind, where the writer names it: what founds a record the workspace holds
+    /// none of yet. `None` reads it from what the workspace holds.
+    pub kind: Option<&'a str>,
+    /// The record itself.
+    pub record: &'a str,
 }
 
 /// The documents of the workspaces a device's service holds, written as that device itself: what
@@ -182,15 +175,12 @@ pub struct DocumentWriting<'a> {
 /// A write is signed and sealed as the device the service serves, so the workspace keeps it as
 /// any of that device's writes and carries it to the workspace's other devices.
 pub trait DeviceWrites: collab_types::signer::MaybeSendSync + 'static {
-    /// Write `changes` to `workspace`'s document of [`DocumentWriting`]: its founding write when
-    /// `writing.founding` (the whole document, which the workspace must not hold yet), a change
-    /// of it otherwise; the whole document when `writing.snapshot` (a founding, or a checkpoint
-    /// of one the workspace holds already), its changes otherwise; kept for `writing.readers`
-    /// where only some members read it, sealed under `writing.sealed` (the keys of the document's
-    /// group) where the workspace seals its documents.
+    /// Write `changes` to `workspace`'s record of [`DocumentWriting`]: founding the record from
+    /// them when the workspace holds none of it, a change of it otherwise. A record a device
+    /// starts is founded by changes that hold its canonical founding first, as every copy of
+    /// it derives it.
     ///
-    /// Answers the write as this device's apps take a member's: the signed op its holder admitted,
-    /// and the author's access in the workspace.
+    /// Answers once the workspace holds the write, or why it took nothing of it.
     fn write(&self, workspace: &str, changes: &[u8], writing: DocumentWriting<'_>)
     -> DocumentWrite;
 

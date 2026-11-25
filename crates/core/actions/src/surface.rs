@@ -452,6 +452,43 @@ pub struct FieldSurface {
     pub ops: Option<serde_json::Value>,
 }
 
+/// A map field of a declared kind, keeping its items under their keys: `path`, the record type
+/// `owner` it belongs to, and the `title` a person reads it by.
+#[must_use]
+pub fn map_field(path: &str, owner: &str, title: &str) -> FieldSurface {
+    FieldSurface {
+        path: path.to_owned(),
+        owner: owner.to_owned(),
+        title: title.to_owned(),
+        stored: "value".to_owned(),
+        ty: FieldType::Map(Box::new(FieldType::Any)),
+        readonly: false,
+        unit: false,
+        label: false,
+        whole: false,
+        ops: None,
+    }
+}
+
+/// The verb `id`, `label`led, that a change of a record's content names.
+#[must_use]
+pub fn content_verb(id: &str, label: &str) -> VerbSurface {
+    VerbSurface {
+        id: id.to_owned(),
+        name: String::new(),
+        label: label.to_owned(),
+        description: None,
+        kind: tilo_action_policy::ActionKind::Undoable,
+        destructive: false,
+        incoming_message: false,
+        params: Vec::new(),
+        returns: None,
+        writes: Vec::new(),
+        field: None,
+        tags: Vec::new(),
+    }
+}
+
 /// The verb that sets the field `key` whole: `set-<key>`, in kebab case.
 #[must_use]
 pub fn setter_id(key: &str) -> String {

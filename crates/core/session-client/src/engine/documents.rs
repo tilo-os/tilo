@@ -42,6 +42,33 @@ impl DeviceWrites for EngineWrites {
                 Err(WriteRefusal::Refused(format!("{named} is not a workspace")))
             });
         };
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: writing.app.to_owned(),
+            cluster_id: workspace.to_owned(),
+            document: writing.record.to_owned(),
+        };
+        // What a write names besides its changes, read from this device's copy and its keys:
+        // whether it is the whole record, whether the record is one this page starts, who reads
+        // it, and the keys it seals under.
+        let snapshot = automerge::stored_document_heads(changes).is_some();
+        let founding = snapshot
+            && !self
+                .0
+                .owner()
+                .with_current(workspace_id, |view| {
+                    Ok(view.peer().holds_document(writing.app, writing.record))
+                })
+                .unwrap_or(false);
+        let readers = self
+            .0
+            .named_document_readers(workspace_id, writing.record)
+            .ok()
+            .flatten();
+        let sealed = match self.0.document_seal_keys(&route) {
+            Ok(crate::engine::SealKeys::Here(keys)) => Some(keys),
+            Ok(crate::engine::SealKeys::Waiting | crate::engine::SealKeys::NoSecretStore)
+            | Err(_) => None,
+        };
         let identity = self.0.identity();
         self.0.owner().write_local(
             workspace_id,
@@ -49,12 +76,12 @@ impl DeviceWrites for EngineWrites {
             Arc::clone(&identity.signer),
             LocalWrite {
                 app: writing.app,
-                document: writing.document,
-                readers: writing.readers,
+                document: writing.record,
+                readers: readers.as_deref(),
                 changes,
-                founding: writing.founding,
-                snapshot: writing.snapshot,
-                sealed: writing.sealed,
+                founding,
+                snapshot,
+                sealed: sealed.as_ref(),
                 commit: None,
                 now: crate::clock::system_time(tilo_clock::unix_now_ns()),
             },

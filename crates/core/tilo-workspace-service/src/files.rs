@@ -62,18 +62,6 @@ const SERVED_WITHIN: Duration = Duration::from_secs(20);
 /// How often the workspace's holders' word on its content is read for a folder.
 const HOLDERS_EVERY: Duration = Duration::from_millis(250);
 
-/// The route a record of the tree is kept under.
-fn route(
-    workspace: WorkspaceId,
-    chunk: TreeChunk,
-) -> tilo_peer_state::document_frame::DocumentRoute {
-    tilo_peer_state::document_frame::DocumentRoute {
-        app_id: FILES_APP.to_owned(),
-        cluster_id: workspace.to_string(),
-        document: tilo_fs::tree_sync::document_for(chunk),
-    }
-}
-
 /// Hold `workspace`'s tree in `workspaces`, this device's own service, kept in `kept_at` between
 /// runs, as the device whose key is `device`; its file bytes are kept in `store` and asked of
 /// the workspace through `content`, where this device keeps and asks for them.
@@ -320,11 +308,9 @@ impl tilo_fs::tree_sync::TreeWriter for Writer {
         &'a mut self,
         chunk: TreeChunk,
         changes: &'a [u8],
-        founding: bool,
-        snapshot: bool,
     ) -> tilo_fs::tree_sync::WriteFuture<'a> {
         Box::pin(async move {
-            let written = write_as_device(&self.copy, chunk, changes, (founding, snapshot)).await;
+            let written = write_as_device(&self.copy, chunk, changes).await;
             match &written {
                 Ok(()) => {
                     count_until_served(&self.copy, &tilo_fs::tree_sync::document_for(chunk));
@@ -371,44 +357,20 @@ fn served(copy: &Copy, chunks: &[TreeChunk]) -> Option<tilo_fs::tree_sync::Serve
     }))
 }
 
-/// Write `changes` to record `chunk` of the tree in `copy` as this device: its founding write
-/// and the whole record as `founding` and `snapshot` say, sealed with the keys of the tree's
-/// group where the workspace seals it.
-async fn write_as_device(
-    copy: &Copy,
-    chunk: TreeChunk,
-    changes: &[u8],
-    (founding, snapshot): (bool, bool),
-) -> Result<(), Refusal> {
-    let route = route(copy.workspace, chunk);
-    let keys = match crate::timing::said_if_long(
-        "the keys of the workspace's files",
-        copy.workspaces.own_route_keys(&route, founding),
-    )
-    .await
-    {
-        Some(Err(why)) => {
-            return Err(Refusal::Other(format!(
-                "the keys of the workspace's files: {why}"
-            )));
-        }
-        keys => keys.and_then(Result::ok),
-    };
+/// Write `changes` to record `chunk` of the tree in `copy` as this device, through the workspace's
+/// store: the write founds the record when the workspace holds none of it.
+async fn write_as_device(copy: &Copy, chunk: TreeChunk, changes: &[u8]) -> Result<(), Refusal> {
     copy.writes
         .write(
             &copy.name,
             changes,
             tilo_peer_state::workspace_documents::DocumentWriting {
                 app: FILES_APP,
-                document: &route.document,
-                readers: None,
-                founding,
-                snapshot,
-                sealed: keys.as_ref(),
+                kind: Some(fs_protocol::tree::TREE_KIND),
+                record: &tilo_fs::tree_sync::document_for(chunk),
             },
         )
         .await
-        .map(drop)
         .map_err(|refusal| match refusal {
             WriteRefusal::HistoryFull { .. } => Refusal::HistoryFull,
             WriteRefusal::ChangeRefused(_) => Refusal::NotPermitted,

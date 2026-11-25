@@ -146,19 +146,9 @@ pub trait DocumentPort {
         false
     }
 
-    /// Write `changes` to `app`'s document `id` in `workspace`: its founding write when
-    /// `founding`, the whole document the workspace does not hold yet. `readers` names who may
-    /// read it, as the workspace writes reader sets (the people's root keys in lowercase hex,
-    /// sorted and joined by `,`); `None` is every member. Answered later.
-    fn write(
-        &self,
-        app: &str,
-        workspace: &str,
-        id: &str,
-        changes: Vec<u8>,
-        founding: bool,
-        readers: Option<&str>,
-    ) -> Written;
+    /// Write `changes` to `app`'s record `id` of `kind` in `workspace`: founding the record from
+    /// them when the workspace holds none of it. Answered later.
+    fn write(&self, app: &str, workspace: &str, id: &str, kind: &str, changes: Vec<u8>) -> Written;
 }
 
 /// Whether a record's changes are kept by its workspace.
@@ -743,17 +733,16 @@ impl ResourceSet {
             if slot.stored.as_ref() == Some(&heads) || heads.is_empty() {
                 continue;
             }
-            let (changes, founding) = match &slot.stored {
-                Some(stored) => (doc.save_after(stored), false),
-                None => (doc.save(), true),
+            let changes = match &slot.stored {
+                Some(stored) => doc.save_after(stored),
+                None => doc.save(),
             };
             let written = port.write(
                 self.app_id.as_str(),
                 &workspace,
                 id.route(),
+                slot.kind.as_str(),
                 changes,
-                founding,
-                None,
             );
             slot.writing = Some((written, heads));
             slot.poll_write(crate::time::Duration::ZERO);

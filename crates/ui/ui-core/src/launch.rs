@@ -1821,9 +1821,8 @@ pub(crate) mod fixture_workspace {
             app,
             workspace,
             checkout.id.route(),
+            checkout.kind.as_str(),
             document.clone().save(),
-            true,
-            None,
         );
         let _ = written(std::time::Duration::ZERO);
     }
@@ -1849,16 +1848,14 @@ pub(crate) mod fixture_workspace {
             app: &str,
             workspace: &str,
             id: &str,
+            kind: &str,
             changes: Vec<u8>,
-            founding: bool,
-            readers: Option<&str>,
         ) -> Written {
             if REFUSE_VIEWS.get() && id.starts_with("derived:view.") {
                 let mut answer = Some(Err("the workspace refused the window's view".to_owned()));
                 return Box::new(move |_: std::time::Duration| answer.take());
             }
-            self.inner
-                .write(app, workspace, id, changes, founding, readers)
+            self.inner.write(app, workspace, id, kind, changes)
         }
     }
 
@@ -1907,15 +1904,7 @@ pub(crate) mod fixture_workspace {
                 .collect())
         }
 
-        fn write(
-            &self,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: Vec<u8>,
-            _: bool,
-            _: Option<&str>,
-        ) -> Written {
+        fn write(&self, _: &str, _: &str, _: &str, _: &str, _: Vec<u8>) -> Written {
             self.writes.set(self.writes.get() + 1);
             Box::new(|_: std::time::Duration| {
                 Some(Err("the workspace refused the write".to_owned()))

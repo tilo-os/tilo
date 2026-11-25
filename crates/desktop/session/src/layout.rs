@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use automerge::ChangeHash;
 use automerge::transaction::Transactable as _;
-use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, OpenedBy};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND, OpenedBy};
 use tilo_desktop_model::person_view::{self, PersonView};
 use tilo_desktop_model::shared_resource::{self, device};
 use tilo_desktop_model::{
@@ -459,18 +459,14 @@ impl Save {
             return Laid::Failed(error.to_string(), Some(Box::new(base)));
         }
         let changes = candidate.save_after(&heads);
-        // A write on no history is the whole record: the one that founds it.
         let took = writes
             .write(
                 &workspace_id.to_string(),
                 &changes,
                 tilo_peer_state::workspace_documents::DocumentWriting {
                     app: DESKTOP_APP,
-                    document: DESKTOP_DOCUMENT,
-                    readers: None,
-                    founding,
-                    snapshot: founding,
-                    sealed: None,
+                    kind: Some(DESKTOP_KIND),
+                    record: DESKTOP_DOCUMENT,
                 },
             )
             .await;
@@ -529,7 +525,6 @@ fn founding_change(
     };
     found(candidate, workspace_id, workspace, &writer)
 }
-
 /// Write what `pending` changed of this device's layout into `candidate`, in the order it changed,
 /// each as its own change, and then the layout as it stands now: `laid_out`. Whether anything was
 /// written. The heads each change of the person's starts from and ends at go to `steps`.
@@ -2460,9 +2455,19 @@ impl Layouts {
             );
         }
         let changes = candidate.save_after(heads);
-        // A write on no history is the whole record: the one that founds it.
-        let founding = heads.is_empty();
-        let (document, app) = (route.document.clone(), route.app);
+        let (document, app, kind) = if route.document == DESKTOP_DOCUMENT {
+            (
+                route.document.clone(),
+                route.app,
+                tilo_desktop_model::ownership::DESKTOP_KIND,
+            )
+        } else {
+            (
+                route.document.clone(),
+                route.app,
+                tilo_action_policy::roles::PERSON_VIEW_KIND,
+            )
+        };
         let workspace = workspace_id.to_string();
         let mut writing = crate::engine_write::Writing::write(self.wake.handle(), async move {
             writes
@@ -2471,11 +2476,8 @@ impl Layouts {
                     &changes,
                     tilo_peer_state::workspace_documents::DocumentWriting {
                         app,
-                        document: &document,
-                        readers: None,
-                        founding,
-                        snapshot: founding,
-                        sealed: None,
+                        kind: Some(kind),
+                        record: &document,
                     },
                 )
                 .await
@@ -2750,7 +2752,10 @@ fn found(
     for strip in &mut strips.strips {
         strip.window_groups.clear();
     }
-    shared_resource::found(doc)?;
+    tilo_desktop_model::record::found_into(doc).map_err(|error| {
+        tracing::warn!(%error, "the layout's founding does not apply");
+        automerge::AutomergeError::Fail
+    })?;
     device::write(doc, workspace_id, &strips, writer)?;
     doc.commit_with(
         automerge::transaction::CommitOptions::default()

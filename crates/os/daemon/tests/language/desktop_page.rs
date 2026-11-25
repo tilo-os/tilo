@@ -24,7 +24,7 @@ use std::time::Duration;
 use runtime_collab::wire::shell::{ShellCall, ShellReply};
 use serde_json::json;
 use tilo_actions::remote::{Caller, Pending};
-use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND};
 use tilo_runtime::device::services::Daemon;
 use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal};
 use tilo_user_identity::DeviceCapabilities;
@@ -386,7 +386,7 @@ impl Computer {
             workspaces: vec![shown],
             ..Layout::default()
         };
-        let mut layout = automerge::AutoCommit::new();
+        let mut layout = tilo_desktop_model::record::founded().expect("the layout founds");
         tilo_desktop_model::desktop_doc::write_shared(
             &mut layout,
             &tree,
@@ -394,7 +394,11 @@ impl Computer {
             &[],
             &std::collections::BTreeMap::default(),
         );
-        layout.commit();
+        layout.commit_with(
+            automerge::transaction::CommitOptions::default().with_message(
+                tilo_desktop_model::shared_resource::housekeeping_message(person),
+            ),
+        );
         let change = tilo_desktop_model::place::place_view(
             &layout,
             &tilo_desktop_model::place::Opener {
@@ -419,10 +423,8 @@ impl Computer {
                     .call(ShellCall::Write {
                         workspace: self.workspace.clone(),
                         app: DESKTOP_APP.to_owned(),
-                        document: DESKTOP_DOCUMENT.to_owned(),
-                        readers: None,
-                        founding: true,
-                        snapshot: true,
+                        kind: Some(DESKTOP_KIND.to_owned()),
+                        record: DESKTOP_DOCUMENT.to_owned(),
                         changes: layout.save(),
                     })
                     .await

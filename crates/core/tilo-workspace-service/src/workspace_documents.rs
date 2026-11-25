@@ -45,7 +45,6 @@ pub struct HostCommit {
 /// implements it over its replicated copy.
 pub use tilo_peer_state::workspace_documents::{
     DeviceDocuments, DeviceWrites, DocumentRead, DocumentServed, DocumentServing, DocumentWrite,
-    WriteAnswer,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

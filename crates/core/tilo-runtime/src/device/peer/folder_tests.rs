@@ -172,37 +172,12 @@ async fn put_in_tree(
     ordered.sort_by_key(|write| write.chunk == 0);
     for write in ordered {
         let route = tree_route(workspace, write.chunk);
-        let keys = tilo_test_env::within("the device holds the tree's keys", async {
-            loop {
-                if let Some(Ok(keys)) = workspaces.own_route_keys(&route, true).await {
-                    return keys;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await;
-        let mut record = tilo_peer_state::workspace_documents::DocumentWriting {
+        let record = tilo_peer_state::workspace_documents::DocumentWriting {
             app: FILES_APP,
-            document: &route.document,
-            readers: None,
-            founding: !held.contains(&write.chunk),
-            snapshot: !held.contains(&write.chunk),
-            sealed: Some(&keys),
+            kind: Some(fs_protocol::tree::TREE_KIND),
+            record: &route.document,
         };
-        let writes = ServiceWrites::of(workspaces.clone());
-        if record.founding {
-            // The whole record first: the workspace must not hold it yet.
-            writes
-                .write(workspace, &automerge::AutoCommit::new().save(), record)
-                .await
-                .map_or_else(
-                    |refusal| panic!("a tree record is founded: {refusal:?}"),
-                    drop,
-                );
-            record.founding = false;
-            record.snapshot = false;
-        }
-        writes
+        ServiceWrites::of(workspaces.clone())
             .write(workspace, &write.changes, record)
             .await
             .map_or_else(|refusal| panic!("the tree changes: {refusal:?}"), drop);

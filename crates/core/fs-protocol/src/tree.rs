@@ -216,8 +216,8 @@ pub const WRITE_FILE: &str = "write-file";
 /// The map of node objects, at the document's root.
 pub const NODES_KEY: &str = "nodes";
 
-/// The tree's map of node objects in `doc`, made when the document has none
-/// ([`root_map`]).
+/// The tree's map of node objects in `doc`, made when the document holds none: the map a record's
+/// founding stands up ([`founding`]) is the one a workspace's tree uses.
 ///
 /// # Errors
 /// The document refused the change, or holds something else under the key.
@@ -225,27 +225,45 @@ pub fn tree_nodes(doc: &mut Doc) -> Result<ObjId, automerge::AutomergeError> {
     root_map(doc, NODES_KEY)
 }
 
-/// The map at `key` of `doc`'s root, made when the document has none.
-///
-/// Every replica makes it with the same change, byte for byte: one writer
-/// named for the key, no dependencies, the time zero. A computer that wrote
-/// files before it ever reached the workspace, a page that put the first file
-/// in and a host that put one for an agent each hold that one change, so their
-/// trees merge into one map. A map each made on its own would be the same key
-/// written twice, and the merge would show one of them: every file of the
-/// other gone.
+/// The map at `key` of `doc`'s root, made in this document when it holds none: a record founded
+/// from [`founding`] holds it already, and every device's changes build on that one founding; a
+/// tree written outside a workspace makes it here under its own actor.
 ///
 /// # Errors
-/// The document refused the change, or holds something else under the key.
+/// The document refused the change.
 pub fn root_map(doc: &mut Doc, key: &str) -> Result<ObjId, automerge::AutomergeError> {
-    use tilo_automerge::ApplyIncoming as _;
+    use automerge::transaction::Transactable as _;
     if let Some(map) = doc.obj_at(&ROOT, key, ObjType::Map) {
         return Ok(map);
     }
-    let mut made = collab_types::document::derived::root_map(key);
-    doc.merge_incoming(&mut made)?;
-    doc.obj_at(&ROOT, key, ObjType::Map)
-        .ok_or_else(|| automerge::AutomergeError::InvalidObjId(key.to_owned()))
+    doc.put_object(ROOT, key, ObjType::Map)
+}
+
+/// The kind the store declares `files.tree` by: the verbs its changes name, and the `chunks`
+/// and `nodes` maps a record of it keeps its content in.
+#[must_use]
+pub fn declared() -> tilo_resource::surface::Surface {
+    use tilo_actions::surface::{content_verb, map_field};
+    let mut surface = tilo_resource::surface::surface_of::<FilesTree>();
+    surface.fields = vec![
+        map_field(CHUNKS_KEY, "files-tree", "Chunks"),
+        map_field(NODES_KEY, "files-tree", "Nodes"),
+    ];
+    // A device's own edit of a record, named as no action of Files' (the mount's bookkeeping).
+    surface
+        .verbs
+        .push(content_verb(tilo_actions::stamp::Stamp::TYPE_VERB, "Edit"));
+    surface
+}
+
+/// The change that founds `record` of a workspace's tree, every copy of it alike: the maps the
+/// tree's own record and each chunk keep their content in, and nothing else.
+///
+/// # Errors
+/// A container cannot be made.
+pub fn founding(record: &str) -> Result<automerge::Change, automerge::AutomergeError> {
+    let containers = collab_types::document::founding::of_kind(&declared());
+    collab_types::document::founding::structure(TREE_KIND, record, &containers)
 }
 pub const ROOT_ID: &str = "ROOT";
 /// The parent a deleted node is moved under, so that a concurrent child of it
@@ -582,6 +600,12 @@ impl Resource for FilesTree {
     /// the same nodes, under the same ids.
     fn initialize(_doc: &mut Doc) -> Result<(), ModelError> {
         Ok(())
+    }
+
+    /// The kind its records are declared and founded by ([`declared`]): its verbs, and the
+    /// maps each record of it keeps its content in.
+    fn surface() -> tilo_resource::surface::Surface {
+        declared()
     }
 
     /// What anyone may do to a node already in the tree, by its key: what an agent or a

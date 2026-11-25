@@ -534,7 +534,6 @@ fn normalise(path: &Path) -> PathBuf {
     out
 }
 
-pub mod derived;
 pub mod fields;
 mod file_identity;
 /// A record's derived founding and version chain, as every holder makes them

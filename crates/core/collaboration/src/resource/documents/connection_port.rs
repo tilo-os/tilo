@@ -191,9 +191,8 @@ impl DocumentPort for ConnectionDocuments {
         app: &str,
         workspace: &str,
         id: &str,
+        _kind: &str,
         changes: Vec<u8>,
-        _founding: bool,
-        _readers: Option<&str>,
     ) -> Written {
         let (answered, receiver) = std::sync::mpsc::sync_channel(1);
         let (app, workspace, id) = (app.to_owned(), workspace.to_owned(), id.to_owned());

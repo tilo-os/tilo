@@ -471,13 +471,7 @@ impl Connection {
                     let _ = tell.send(Told::Read { id, reading });
                 });
             }
-            Ask::Write {
-                id,
-                chunk,
-                changes,
-                founding,
-                snapshot,
-            } => {
+            Ask::Write { id, chunk, changes } => {
                 self.name(chunk);
                 let writer = Arc::clone(&self.writer);
                 let (copy, named, told, tell) = (
@@ -489,14 +483,7 @@ impl Connection {
                 tokio::spawn(async move {
                     let written = {
                         let mut writer = writer.lock().await;
-                        tilo_fs::tree_sync::TreeWriter::write(
-                            &mut *writer,
-                            chunk,
-                            &changes,
-                            founding,
-                            snapshot,
-                        )
-                        .await
+                        tilo_fs::tree_sync::TreeWriter::write(&mut *writer, chunk, &changes).await
                     };
                     // The copy holds what it took before the write is answered.
                     tell_peer(&copy, &named, &told, &tell, true);

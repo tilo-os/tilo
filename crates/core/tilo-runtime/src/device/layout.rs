@@ -23,7 +23,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate, ResourceSpec};
 use tilo_desktop_model::WorkspaceId;
-use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND};
 use tilo_desktop_model::reading::{LayoutPlaceReading, LayoutReading, Naming, SHELL};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::workspace_documents::{
@@ -167,24 +167,19 @@ impl DeviceLayouts {
         }
     }
 
-    /// Write `changes` into `workspace`'s layout as this device: the whole document when
-    /// `founding`, a change of the one here otherwise.
-    fn write(&self, workspace: &str, changes: &[u8], founding: bool) -> Result<(), String> {
+    /// Write `changes` into `workspace`'s layout as this device: the record is founded from them
+    /// when the workspace holds none of it.
+    fn write(&self, workspace: &str, changes: &[u8]) -> Result<(), String> {
         let written = ServiceWrites::of(self.workspaces.copies().clone()).write(
             workspace,
             changes,
             DocumentWriting {
                 app: DESKTOP_APP,
-                document: DESKTOP_DOCUMENT,
-                readers: None,
-                founding,
-                snapshot: founding,
-                sealed: None,
+                kind: Some(DESKTOP_KIND),
+                record: DESKTOP_DOCUMENT,
             },
         );
-        block_on_owned(written)
-            .map(drop)
-            .map_err(|refusal| format!("the layout was not written: {refusal}"))
+        block_on_owned(written).map_err(|refusal| format!("the layout was not written: {refusal}"))
     }
 
     /// What `workspace` is called here, when it has a name.
@@ -216,8 +211,8 @@ impl DeviceLayouts {
                 let name = self
                     .name(workspace)
                     .unwrap_or_else(|| "Workspace".to_owned());
-                let founded = founded_layout(workspace, &name);
-                self.write(workspace, &founded.clone().save(), true)?;
+                let founded = founded_layout(workspace, &name, person)?;
+                self.write(workspace, &founded.clone().save())?;
                 founded
             }
             LayoutHere::Elsewhere => {
@@ -228,15 +223,20 @@ impl DeviceLayouts {
                     person: person.to_owned(),
                     opened_by,
                 };
-                let mut ask = automerge::AutoCommit::new();
+                let mut ask =
+                    tilo_desktop_model::record::founded().map_err(|error| error.to_string())?;
                 tilo_desktop_model::asked::ask(
                     &mut ask,
                     &format!("{person}:{app}:{document}"),
                     &view,
                 )
                 .map_err(|error| error.to_string())?;
-                ask.commit();
-                return self.write(workspace, &ask.save(), true);
+                ask.commit_with(
+                    automerge::transaction::CommitOptions::default().with_message(
+                        tilo_desktop_model::shared_resource::housekeeping_message(person),
+                    ),
+                );
+                return self.write(workspace, &ask.save());
             }
         };
         let view = tilo_desktop_model::place::View {
@@ -249,7 +249,7 @@ impl DeviceLayouts {
         let change = tilo_desktop_model::place::place_view(&layout, &opener, &view, now())
             .map_err(|why| format!("{title}'s window is not on the person's layout: {why}"))?;
         match change {
-            Some(change) => self.write(workspace, &change, false),
+            Some(change) => self.write(workspace, &change),
             None => Ok(()),
         }
     }
@@ -266,7 +266,7 @@ impl DeviceLayouts {
         match tilo_desktop_model::place::close_window(&layout, person, tab, now())
             .map_err(|why| why.to_string())?
         {
-            Some(change) => self.write(workspace, &change, false),
+            Some(change) => self.write(workspace, &change),
             None => Ok(()),
         }
     }
@@ -293,7 +293,7 @@ impl DeviceLayouts {
         match tilo_desktop_model::place::move_window(&layout, person, tab, x, y, now())
             .map_err(|why| why.to_string())?
         {
-            Some(change) => self.write(workspace, &change, false),
+            Some(change) => self.write(workspace, &change),
             None => Ok(()),
         }
     }
@@ -326,7 +326,7 @@ impl DeviceLayouts {
         )
         .map_err(|why| why.to_string())?
         {
-            Some(change) => self.write(workspace, &change, false),
+            Some(change) => self.write(workspace, &change),
             None => Ok(()),
         }
     }
@@ -344,7 +344,7 @@ impl DeviceLayouts {
         match tilo_desktop_model::place::activate_window(&layout, person, tab, now())
             .map_err(|why| why.to_string())?
         {
-            Some(change) => self.write(workspace, &change, false),
+            Some(change) => self.write(workspace, &change),
             None => Ok(()),
         }
     }
@@ -456,8 +456,13 @@ fn now() -> i64 {
 }
 
 /// The layout a workspace's first window is placed on: the workspace by its own id and one strip,
-/// in the shape a shared layout is kept in ([`tilo_desktop_model::desktop_doc`]).
-fn founded_layout(workspace: &str, name: &str) -> automerge::AutoCommit {
+/// in the shape a shared layout is kept in ([`tilo_desktop_model::desktop_doc`]), on the founding
+/// every copy of the record derives.
+fn founded_layout(
+    workspace: &str,
+    name: &str,
+    person: &str,
+) -> Result<automerge::AutoCommit, String> {
     use tilo_desktop_model::{Layout, Strip, StripId, Workspace};
     let id = WorkspaceId::parse(workspace).unwrap_or_else(|| WorkspaceId::from_u128(1));
     let mut shown = Workspace::new(id, name);
@@ -467,7 +472,7 @@ fn founded_layout(workspace: &str, name: &str) -> automerge::AutoCommit {
         workspaces: vec![shown],
         ..Layout::default()
     };
-    let mut doc = automerge::AutoCommit::new();
+    let mut doc = tilo_desktop_model::record::founded()?;
     tilo_desktop_model::desktop_doc::write_shared(
         &mut doc,
         &tree,
@@ -475,8 +480,12 @@ fn founded_layout(workspace: &str, name: &str) -> automerge::AutoCommit {
         &[],
         &std::collections::BTreeMap::default(),
     );
-    doc.commit();
-    doc
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default().with_message(
+            tilo_desktop_model::shared_resource::housekeeping_message(person),
+        ),
+    );
+    Ok(doc)
 }
 
 /// How an app is named by its id: what a window of it is titled.

@@ -195,12 +195,10 @@ impl DocumentPort for Process {
         app: &str,
         workspace: &str,
         id: &str,
+        kind: &str,
         changes: Vec<u8>,
-        founding: bool,
-        readers: Option<&str>,
     ) -> collaboration::resource::Written {
-        self.port
-            .write(app, workspace, id, changes, founding, readers)
+        self.port.write(app, workspace, id, kind, changes)
     }
 }
 

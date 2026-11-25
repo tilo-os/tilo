@@ -30,6 +30,7 @@ pub mod present;
 pub mod projection;
 pub mod reading;
 pub mod recents;
+pub mod record;
 pub mod serde_ids;
 pub mod shared_resource;
 pub mod shared_surfaces;

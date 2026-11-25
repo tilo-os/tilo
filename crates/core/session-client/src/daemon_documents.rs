@@ -11,11 +11,11 @@
 use std::sync::Arc;
 
 use runtime_collab::ShellClient;
-use runtime_collab::wire::shell::{DocumentWritten, ShellCall, ShellReply, ShellWrite};
+use runtime_collab::wire::shell::{DocumentWritten, ShellCall, ShellReply};
 use tilo_actions::remote::{
     InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, ResourceReadRequest,
 };
-use tilo_peer_state::owner::{AppWrite, WriteRefusal};
+use tilo_peer_state::owner::WriteRefusal;
 use tilo_peer_state::workspace_documents::{
     DeviceDocuments, DeviceWrites, DocumentRead, DocumentServing, DocumentWrite, DocumentWriting,
 };
@@ -858,22 +858,17 @@ impl DeviceWrites for DaemonWrites {
         changes: &[u8],
         writing: DocumentWriting<'_>,
     ) -> DocumentWrite {
-        // The daemon seals with the keys of the document's group itself: `writing.sealed` is
-        // what a service with the keys in this process would seal with, and the shell has
-        // none.
         let call = ShellCall::Write {
             workspace: workspace.to_owned(),
             app: writing.app.to_owned(),
-            document: writing.document.to_owned(),
-            readers: writing.readers.map(str::to_owned),
-            founding: writing.founding,
-            snapshot: writing.snapshot,
+            kind: writing.kind.map(str::to_owned),
+            record: writing.record.to_owned(),
             changes: changes.to_vec(),
         };
         let shell = self.0.clone();
         Box::pin(async move {
             match shell.ask(call).await.map_err(WriteRefusal::Refused)? {
-                ShellReply::Written(Ok(write)) => app_write(write).map_err(WriteRefusal::Refused),
+                ShellReply::Written(Ok(())) => Ok(()),
                 ShellReply::Written(Err(refusal)) => {
                     Err(serde_json::from_str(&refusal).unwrap_or(WriteRefusal::Refused(refusal)))
                 }
@@ -902,21 +897,6 @@ impl DeviceWrites for DaemonWrites {
             }
         }))
     }
-}
-
-/// The write the daemon answered, as the device's own writes answer.
-fn app_write(write: ShellWrite) -> Result<AppWrite, String> {
-    Ok(AppWrite {
-        peer: write.peer,
-        app_id: write.app_id,
-        cluster_id: write.cluster_id,
-        document_id: write.document_id,
-        author: serde_json::from_str(&write.author)
-            .map_err(|error| format!("a write's author does not read: {error}"))?,
-        replayed: write.replayed,
-        envelope: postcard::from_bytes(&write.envelope)
-            .map_err(|error| format!("a write does not read: {error}"))?,
-    })
 }
 
 /// The documents and writes of the device's daemon on the shell's `link`, carried on `runtime`.

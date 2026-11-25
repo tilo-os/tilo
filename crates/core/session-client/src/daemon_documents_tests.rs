@@ -15,6 +15,7 @@ use tilo_app_host::services::{
     Caller, ProcessServices, PublishedResources, Reading, ResourceWatch,
 };
 use tilo_app_host::shell::{ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND};
 use tilo_peer_state::owner::WriteRefusal;
 use tilo_peer_state::workspace_documents::{
     DeviceWrites, DocumentRead, DocumentServing, DocumentWrite, DocumentWriting,
@@ -26,8 +27,8 @@ use super::{DaemonShell, DaemonWritesFeed, NOT_STARTED_BY_THE_DAEMON, on_daemon}
 
 const WORKSPACE: &str = "0b9d3c34-4c2e-4d70-9a4e-6c0f2a3b1d77";
 
-/// A write the daemon took: its workspace, document, changes and whether it founds the document.
-type Written = (String, String, Vec<u8>, bool);
+/// A write the daemon took: its workspace, record, changes and the kind it named.
+type Written = (String, String, Vec<u8>, Option<String>);
 
 /// The device's writes as a test's daemon takes them: each one kept, and refused, as a daemon
 /// whose history is full refuses it.
@@ -44,13 +45,13 @@ impl DeviceWrites for Kept {
     ) -> DocumentWrite {
         self.written.lock().unwrap().push((
             workspace.to_owned(),
-            writing.document.to_owned(),
+            writing.record.to_owned(),
             changes.to_vec(),
-            writing.founding,
+            writing.kind.map(str::to_owned),
         ));
         Box::pin(std::future::ready(Err(WriteRefusal::HistoryFull {
             app: writing.app.to_owned(),
-            record: writing.document.to_owned(),
+            record: writing.record.to_owned(),
         })))
     }
 
@@ -141,11 +142,17 @@ impl Daemon {
     }
 }
 
-/// The desktop's layout as the daemon keeps it.
-fn layout() -> automerge::AutoCommit {
-    let mut layout = automerge::AutoCommit::new();
+/// The desktop's layout as the daemon keeps it, on the founding every copy of the record
+/// derives and naming `person`, whose device the daemon is.
+fn layout(person: &str) -> automerge::AutoCommit {
+    let mut layout = tilo_desktop_model::record::founded().expect("the layout founds");
     automerge::transaction::Transactable::put(&mut layout, automerge::ROOT, "front", "Writer")
         .unwrap();
+    layout.commit_with(
+        automerge::transaction::CommitOptions::default().with_message(
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person)),
+        ),
+    );
     layout
 }
 
@@ -159,6 +166,7 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
     let workspaces = host.workspaces().clone();
     // The daemon holds the person's workspace and keeps its desktop's layout there, written as
     // the device, as its daemon writes what its desktop changes.
+    let person = hex::encode(cert.user_public_key);
     workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
         cert,
         signer: Arc::new(key),
@@ -170,14 +178,11 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
     runtime
         .block_on(ServiceWrites::of(workspaces.clone()).write(
             WORKSPACE,
-            &layout().save(),
+            &layout(&person).save(),
             DocumentWriting {
-                app: "so.tilo.desktop",
-                document: "layout",
-                readers: None,
-                founding: true,
-                snapshot: true,
-                sealed: None,
+                app: DESKTOP_APP,
+                kind: Some(DESKTOP_KIND),
+                record: DESKTOP_DOCUMENT,
             },
         ))
         .unwrap();
@@ -245,11 +250,11 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
     // What the daemon keeps of the person's workspace reads as it is kept there: the layout whole,
     // at the heads it stands at, whatever the desktop holds of it already; a note it never kept
     // absent.
-    let read = documents
-        .read(WORKSPACE, "so.tilo.desktop", "layout", None)
-        .unwrap();
-    let DocumentRead::Whole { heads, bytes, .. } = read else {
-        panic!("the daemon reads the layout whole, not {read:?}");
+    let DocumentRead::Whole { heads, bytes, .. } = documents
+        .read(WORKSPACE, DESKTOP_APP, DESKTOP_DOCUMENT, None)
+        .unwrap()
+    else {
+        panic!("the daemon reads the layout whole");
     };
     let read = automerge::AutoCommit::load(&bytes).unwrap();
     assert_eq!(
@@ -260,7 +265,7 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
     );
     assert!(matches!(
         documents
-            .read(WORKSPACE, "so.tilo.desktop", "layout", Some(&heads))
+            .read(WORKSPACE, DESKTOP_APP, DESKTOP_DOCUMENT, Some(&heads))
             .unwrap(),
         DocumentRead::Whole { heads: again, .. } if again == heads
     ));
@@ -270,25 +275,23 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
             .unwrap(),
         DocumentRead::Absent
     );
-    assert!(documents.readable(WORKSPACE, "so.tilo.desktop", "layout"));
+    assert!(documents.readable(WORKSPACE, DESKTOP_APP, DESKTOP_DOCUMENT));
     assert!(!documents.readable(WORKSPACE, "so.tilo.notes", "today"));
-    assert!(documents.holds(WORKSPACE, "so.tilo.desktop", "layout"));
+    assert!(documents.holds(WORKSPACE, DESKTOP_APP, DESKTOP_DOCUMENT));
     assert!(!documents.holds(WORKSPACE, "so.tilo.notes", "today"));
     assert_eq!(documents.workspaces(), vec![WORKSPACE.to_owned()]);
     let listed = documents.listing(WORKSPACE).unwrap();
     assert!(
-        listed
-            .iter()
-            .any(|listed| listed.address.app == "so.tilo.desktop"
-                && listed.address.record == "layout"),
+        listed.iter().any(|listed| listed.address.app == DESKTOP_APP
+            && listed.address.record == DESKTOP_DOCUMENT),
         "{listed:?}"
     );
     // A workspace the daemon does not keep is refused as the daemon says it.
     let elsewhere = documents
         .read(
             "5d0c1f0e-2b7a-4f3e-9c1d-8a6b4e2f0a11",
-            "so.tilo.desktop",
-            "layout",
+            DESKTOP_APP,
+            DESKTOP_DOCUMENT,
             None,
         )
         .unwrap_err();
@@ -297,18 +300,16 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
         "{elsewhere}"
     );
 
-    // A write reaches the daemon, which signs it; its refusal comes back as the daemon's own.
+    // A write reaches the daemon, which keeps it as its device's; its refusal comes back as the
+    // daemon's own.
     let refused = runtime
         .block_on(writes.write(
             WORKSPACE,
             b"a moved window",
             DocumentWriting {
-                app: "so.tilo.desktop",
-                document: "layout",
-                readers: None,
-                founding: false,
-                snapshot: false,
-                sealed: None,
+                app: DESKTOP_APP,
+                kind: Some(DESKTOP_KIND),
+                record: DESKTOP_DOCUMENT,
             },
         ))
         .err()
@@ -316,23 +317,23 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
     assert_eq!(
         refused,
         WriteRefusal::HistoryFull {
-            app: "so.tilo.desktop".to_owned(),
-            record: "layout".to_owned(),
+            app: DESKTOP_APP.to_owned(),
+            record: DESKTOP_DOCUMENT.to_owned(),
         }
     );
     assert_eq!(
         *daemon.kept.written.lock().unwrap(),
         vec![(
             WORKSPACE.to_owned(),
-            "layout".to_owned(),
+            DESKTOP_DOCUMENT.to_owned(),
             b"a moved window".to_vec(),
-            false
+            Some(DESKTOP_KIND.to_owned())
         )]
     );
     let served = runtime
         .block_on(
             writes
-                .served(WORKSPACE, &[("so.tilo.desktop", "layout")])
+                .served(WORKSPACE, &[(DESKTOP_APP, DESKTOP_DOCUMENT)])
                 .unwrap(),
         )
         .unwrap_err();
@@ -358,8 +359,8 @@ fn the_desktop_hears_each_write_the_daemon_took() {
             .writes
             .send(ResourceWrite {
                 workspace: WORKSPACE.to_owned(),
-                app: "so.tilo.desktop".to_owned(),
-                record: "layout".to_owned(),
+                app: DESKTOP_APP.to_owned(),
+                record: DESKTOP_DOCUMENT.to_owned(),
             })
             .unwrap();
         let told = tokio::time::timeout(std::time::Duration::from_secs(10), followed.recv())
@@ -372,7 +373,7 @@ fn the_desktop_hears_each_write_the_daemon_took() {
                 told.app.as_str(),
                 told.record.as_str()
             ),
-            (WORKSPACE, "so.tilo.desktop", "layout")
+            (WORKSPACE, DESKTOP_APP, DESKTOP_DOCUMENT)
         );
     });
 }
@@ -385,7 +386,7 @@ fn a_desktop_the_daemon_did_not_start_says_so() {
         runtime.handle().clone(),
     );
     let refused = documents
-        .read(WORKSPACE, "so.tilo.desktop", "layout", None)
+        .read(WORKSPACE, DESKTOP_APP, DESKTOP_DOCUMENT, None)
         .unwrap_err();
     assert_eq!(refused, NOT_STARTED_BY_THE_DAEMON);
     assert!(documents.workspaces().is_empty());
@@ -526,7 +527,7 @@ fn a_read_asked_on_the_sessions_loop_stops_there_and_one_off_it_is_answered() {
     let daemon = daemon(&runtime);
     let link = runtime.block_on(daemon.link());
     let shell = DaemonShell::new(Ok(link), runtime.handle().clone());
-    let read = || super::whole(WORKSPACE, "so.tilo.desktop", "layout");
+    let read = || super::whole(WORKSPACE, DESKTOP_APP, DESKTOP_DOCUMENT);
 
     let on_the_loop = shell.clone();
     let asked = std::thread::spawn(move || {

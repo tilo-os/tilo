@@ -579,16 +579,8 @@ impl DocumentPort for Gated {
         self.0.read(app, workspace, reads)
     }
 
-    fn write(
-        &self,
-        app: &str,
-        workspace: &str,
-        id: &str,
-        changes: Vec<u8>,
-        founding: bool,
-        readers: Option<&str>,
-    ) -> Written {
-        let mut written = self.0.write(app, workspace, id, changes, founding, readers);
+    fn write(&self, app: &str, workspace: &str, id: &str, kind: &str, changes: Vec<u8>) -> Written {
+        let mut written = self.0.write(app, workspace, id, kind, changes);
         let open = Rc::clone(&self.1);
         Box::new(move |wait| if open.get() { written(wait) } else { None })
     }
@@ -1030,16 +1022,8 @@ impl DocumentPort for SwappedHints {
         Ok(read)
     }
 
-    fn write(
-        &self,
-        app: &str,
-        workspace: &str,
-        id: &str,
-        changes: Vec<u8>,
-        founding: bool,
-        readers: Option<&str>,
-    ) -> Written {
-        self.0.write(app, workspace, id, changes, founding, readers)
+    fn write(&self, app: &str, workspace: &str, id: &str, kind: &str, changes: Vec<u8>) -> Written {
+        self.0.write(app, workspace, id, kind, changes)
     }
 }
 
@@ -1187,17 +1171,9 @@ impl DocumentPort for Counted {
         self.0.read(app, workspace, reads)
     }
 
-    fn write(
-        &self,
-        app: &str,
-        workspace: &str,
-        id: &str,
-        changes: Vec<u8>,
-        founding: bool,
-        readers: Option<&str>,
-    ) -> Written {
+    fn write(&self, app: &str, workspace: &str, id: &str, kind: &str, changes: Vec<u8>) -> Written {
         self.1.set(self.1.get() + 1);
-        self.0.write(app, workspace, id, changes, founding, readers)
+        self.0.write(app, workspace, id, kind, changes)
     }
 }
 

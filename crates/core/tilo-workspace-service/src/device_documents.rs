@@ -210,11 +210,9 @@ impl DeviceWrites for ServiceWrites {
         let workspaces = self.0.copies();
         let workspace = workspace.to_owned();
         let app = writing.app.to_owned();
-        let document = writing.document.to_owned();
-        let readers = writing.readers.map(str::to_owned);
+        let kind = writing.kind.map(str::to_owned);
+        let record = writing.record.to_owned();
         let changes = changes.to_vec();
-        let sealed = writing.sealed.cloned();
-        let (founding, snapshot) = (writing.founding, writing.snapshot);
         Box::pin(async move {
             let workspaces = workspaces.ok_or_else(|| {
                 tilo_peer_state::owner::WriteRefusal::Refused(
@@ -222,15 +220,7 @@ impl DeviceWrites for ServiceWrites {
                 )
             })?;
             workspaces
-                .own_write(
-                    &workspace,
-                    (&app, &document),
-                    readers.as_deref(),
-                    &changes,
-                    founding,
-                    snapshot,
-                    sealed.as_ref(),
-                )
+                .own_record_write(&workspace, (&app, kind.as_deref(), &record), &changes)
                 .await
         })
     }

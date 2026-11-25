@@ -218,6 +218,15 @@ pub fn draft_local_write(
     Ok((envelopes, author))
 }
 
+/// The write as it was admitted, for a caller that keeps the frame it was carried as.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type AnsweredWrite = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<AppWrite, WriteRefusal>> + Send + 'static>,
+>;
+#[cfg(target_arch = "wasm32")]
+pub(crate) type AnsweredWrite =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<AppWrite, WriteRefusal>> + 'static>>;
+
 /// Draft `write` against `replica` as it stands, sign it as `device` by `signer`, and admit it
 /// into `replica` as that device's own write: the write a device holds, ready to be published as
 /// it was signed.
@@ -229,16 +238,16 @@ pub fn draft_local_write(
 /// replica held without an owner cannot compact, and answers [`WriteRefusal::HistoryFull`] for
 /// its caller to keep the write.
 ///
-/// The write is drafted against the replica as it stands and signed outside its lock: a page's
+/// The write is drafted against the copy as it stands and signed outside its lock: a page's
 /// signer answers through a promise, and no link admits in between the draft and the admission.
-pub fn admit_local_write(
+pub(crate) fn admit_local_write_answering(
     replica: Replica,
     owner: Option<DeviceWorkspaces>,
     device: [u8; 32],
     signer: Arc<dyn DeviceSigner>,
     workspace: &str,
     write: LocalWrite<'_>,
-) -> DocumentWrite {
+) -> AnsweredWrite {
     let write = write.owned(workspace);
     Box::pin(async move {
         let workspace_id = WorkspaceId::parse(&write.workspace).ok_or_else(|| {
@@ -279,6 +288,20 @@ pub fn admit_local_write(
     })
 }
 
+/// The write is drafted against the copy as it stands and signed outside its lock: a page's
+/// signer answers through a promise, and no link admits in between the draft and the admission.
+pub fn admit_local_write(
+    replica: Replica,
+    owner: Option<NativeWorkspaceOwner>,
+    device: [u8; 32],
+    signer: Arc<dyn DeviceSigner>,
+    workspace: &str,
+    write: LocalWrite<'_>,
+) -> DocumentWrite {
+    let answering = admit_local_write_answering(replica, owner, device, signer, workspace, write);
+    Box::pin(async move { answering.await.map(drop) })
+}
+
 /// The write `write` signed by `device` by `signer` and admitted into `replica`: the draft, the
 /// signature, and the admission, once.
 async fn signed_local_write(
@@ -290,7 +313,7 @@ async fn signed_local_write(
     let drafted = replica.read(StatePeer::clone);
     let (envelopes, author) =
         draft_local_write(&drafted, &write.workspace, &device, write.borrowed())?;
-    // The write is drafted against the replica as it stands and signed outside its lock: a page's
+    // The write is drafted against the copy as it stands and signed outside its lock: a page's
     // signer answers through a promise, and no link admits in between the draft and the admission.
     drop(drafted);
     let mut last = None;

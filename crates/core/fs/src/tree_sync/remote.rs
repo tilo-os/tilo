@@ -63,8 +63,6 @@ pub enum Ask {
         id: u64,
         chunk: TreeChunk,
         changes: Vec<u8>,
-        founding: bool,
-        snapshot: bool,
     },
     /// Answer once the serving device holds every earlier write to `chunks`.
     Served { id: u64, chunks: Vec<TreeChunk> },
@@ -614,19 +612,11 @@ impl crate::hydration::ContentSource for Remote {
 }
 
 impl TreeWriter for Remote {
-    fn write<'a>(
-        &'a mut self,
-        chunk: TreeChunk,
-        changes: &'a [u8],
-        founding: bool,
-        snapshot: bool,
-    ) -> WriteFuture<'a> {
+    fn write<'a>(&'a mut self, chunk: TreeChunk, changes: &'a [u8]) -> WriteFuture<'a> {
         let told = self.0.ask(|id| Ask::Write {
             id,
             chunk,
             changes: changes.to_vec(),
-            founding,
-            snapshot,
         });
         Box::pin(async move {
             match told {

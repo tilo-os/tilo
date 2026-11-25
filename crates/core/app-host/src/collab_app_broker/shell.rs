@@ -7,7 +7,6 @@ use std::sync::Arc;
 use runtime_collab::wire::Reply;
 use runtime_collab::wire::shell::{
     DocumentWritten, PROCESSES_MAGIC, SHELL_MAGIC, ShellCall, ShellMemberChange, ShellReply,
-    ShellWrite,
 };
 use tilo_actions::remote::{
     Caller, ReceiptStatus, RemoteActionMessage, ResourceReadRequest, resource_parts,
@@ -1064,16 +1063,13 @@ async fn write(services: &ShellServices, call: ShellCall) -> Result<ShellReply, 
     let ShellCall::Write {
         workspace,
         app,
-        document,
-        readers,
-        founding,
-        snapshot,
+        kind,
+        record,
         changes,
     } = call
     else {
         return Err("that is no write".to_owned());
     };
-    // The device seals with the keys of the document's group itself: the shell holds none.
     let written = services
         .writes
         .write(
@@ -1081,16 +1077,13 @@ async fn write(services: &ShellServices, call: ShellCall) -> Result<ShellReply, 
             &changes,
             DocumentWriting {
                 app: &app,
-                document: &document,
-                readers: readers.as_deref(),
-                founding,
-                snapshot,
-                sealed: None,
+                kind: kind.as_deref(),
+                record: &record,
             },
         )
         .await;
     Ok(ShellReply::Written(match written {
-        Ok(write) => Ok(write_on_wire(&write)?),
+        Ok(()) => Ok(()),
         Err(refusal) => Err(serde_json::to_string(&refusal)
             .map_err(|error| format!("a refusal does not encode: {error}"))?),
     }))
@@ -1298,21 +1291,6 @@ async fn vault(
             serde_json::to_string(&reply).map_err(|error| error.to_string())
         }
     }
-}
-
-/// `write` as the wire carries it.
-fn write_on_wire(write: &tilo_peer_state::owner::AppWrite) -> Result<ShellWrite, String> {
-    Ok(ShellWrite {
-        peer: write.peer,
-        app_id: write.app_id.clone(),
-        cluster_id: write.cluster_id.clone(),
-        document_id: write.document_id.clone(),
-        author: serde_json::to_string(&write.author)
-            .map_err(|error| format!("a write's author does not encode: {error}"))?,
-        replayed: write.replayed,
-        envelope: postcard::to_allocvec(&write.envelope)
-            .map_err(|error| format!("a write does not encode: {error}"))?,
-    })
 }
 
 #[cfg(test)]

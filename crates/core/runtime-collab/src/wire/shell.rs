@@ -154,18 +154,14 @@ pub enum ShellCall {
     },
     /// The workspaces the device holds, by their ids.
     Workspaces,
-    /// Write `changes` to `app`'s `document` of `workspace`, signed and sealed as the device.
+    /// Write `changes` to `app`'s record `record` of `workspace`, signed and sealed as the device:
+    /// founding the record from them when the workspace holds none of it. `kind` names the
+    /// record's kind, where the writer knows it.
     Write {
         workspace: String,
         app: String,
-        document: String,
-        /// The members who read it, where only some do.
-        readers: Option<String>,
-        /// The document's founding write: the whole document, which the workspace must not hold
-        /// yet.
-        founding: bool,
-        /// The whole document: a founding, or a checkpoint of one held already.
-        snapshot: bool,
+        kind: Option<String>,
+        record: String,
         changes: Vec<u8>,
     },
     /// Wait until the device serving `workspace` answered every write the device made to
@@ -531,9 +527,9 @@ pub enum ShellReply {
     Is(bool),
     /// A [`ShellCall::Workspaces`].
     Workspaces(Vec<String>),
-    /// A [`ShellCall::Write`]: the write as the workspace took it, or why it took none, as
+    /// A [`ShellCall::Write`]: the workspace holds it, or why it took nothing of it, as
     /// `tilo_peer_state::owner::WriteRefusal` JSON.
-    Written(Result<ShellWrite, String>),
+    Written(Result<(), String>),
     /// A [`ShellCall::Served`]: `Ok` once the serving device holds each write, `Err` with why it
     /// refused one. `None` when the workspace has no serving device to ask: one the device keeps
     /// itself.
@@ -592,18 +588,4 @@ pub struct DocumentWritten {
     pub app: String,
     /// The record's id on the wire, `""` for the app's primary.
     pub record: String,
-}
-
-/// A write the workspace took, as `tilo_peer_state::owner::AppWrite`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ShellWrite {
-    pub peer: u64,
-    pub app_id: String,
-    pub cluster_id: String,
-    pub document_id: String,
-    /// The author's access, as `tilo_action_policy::MemberAccess` JSON.
-    pub author: String,
-    pub replayed: bool,
-    /// The signed op, as the postcard bytes of its `collab_types::SignedOp`.
-    pub envelope: Vec<u8>,
 }

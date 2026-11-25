@@ -2076,9 +2076,8 @@ mod native_process_tests {
                 _: &str,
                 _: &str,
                 _: &str,
+                _: &str,
                 _: Vec<u8>,
-                _: bool,
-                _: Option<&str>,
             ) -> crate::resource::Written {
                 Box::new(|_| Some(Err("the workspace did not answer in time".into())))
             }

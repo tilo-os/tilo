@@ -256,6 +256,22 @@ pub fn is_derived_founding(doc: &AutoCommit, change: &automerge::Change) -> bool
         .is_some_and(|mut founded| founded.get_heads() == [change.hash()])
 }
 
+/// Whether `change` is the founding every copy of a record derives alike, naming no one: the
+/// first change of a document, at time zero, writing the identity its kind and id derive. A
+/// receiver takes such a change naming no one only when it is this one, never an edit dressed as
+/// it. `load` loads a change alone, as whoever received it may: a founding is read from what it
+/// writes.
+#[must_use]
+pub fn is_derived_change(
+    change: &automerge::Change,
+    load: impl FnOnce(&[u8]) -> Option<AutoCommit>,
+) -> bool {
+    change.deps().is_empty()
+        && change.seq() == 1
+        && change.timestamp() == 0
+        && load(change.raw_bytes()).is_some_and(|doc| is_derived_founding(&doc, change))
+}
+
 /// The key of the resource identity naming the surface its changes are
 /// decided against: the content hash of its app's surface in the form it is
 /// kept by.

@@ -3567,18 +3567,17 @@ impl Task {
         route: &DocumentRoute,
         mutation: &collab_types::DocumentMutation,
     ) -> Option<Result<(), String>> {
-        let keys = self.keys_of(route)?;
+        // The write waits until this device holds the record's keys: it seals as this device.
+        self.keys_of(route)?;
         if tilo_desktop_model::WorkspaceId::parse(&route.cluster_id).is_none() {
             const INVALID: &str = "A document names an invalid workspace.";
             self.fail("protocol-rejected", INVALID);
             return Some(Err(INVALID.to_owned()));
         }
-        let snapshot = matches!(mutation, collab_types::DocumentMutation::Snapshot(_));
         let changes = match mutation {
             collab_types::DocumentMutation::Snapshot(bytes)
             | collab_types::DocumentMutation::Incremental(bytes) => bytes,
         };
-        let founding = snapshot && self.holds_none_of(route);
         let written = self
             .engine
             .document_writes()
@@ -3587,16 +3586,13 @@ impl Task {
                 changes,
                 tilo_peer_state::workspace_documents::DocumentWriting {
                     app: &route.app_id,
-                    document: &route.document,
-                    readers: None,
-                    founding,
-                    snapshot,
-                    sealed: Some(&keys),
+                    kind: None,
+                    record: &route.document,
                 },
             )
             .await;
         match written {
-            Ok(_) => {
+            Ok(()) => {
                 self.owes(route);
                 self.landed(route, Some(self.config.cert.device_public_key));
                 self.count_ownership();

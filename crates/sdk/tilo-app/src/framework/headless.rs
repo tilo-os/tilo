@@ -218,15 +218,12 @@ impl DocumentPort for Kept {
         app: &str,
         workspace: &str,
         id: &str,
+        kind: &str,
         changes: Vec<u8>,
-        founding: bool,
-        readers: Option<&str>,
     ) -> ui_core::resource::Written {
         let mut written = match &self.workspace {
-            Some(port) => port.write(app, workspace, id, changes, founding, readers),
-            None => self
-                .records
-                .write(app, workspace, id, changes, founding, readers),
+            Some(port) => port.write(app, workspace, id, kind, changes),
+            None => self.records.write(app, workspace, id, kind, changes),
         };
         if !self.slow {
             return written;

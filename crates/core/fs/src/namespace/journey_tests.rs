@@ -315,9 +315,7 @@ fn signed_bindings_apply_once_and_never_rename_an_unsigned_node() {
 }
 
 #[test]
-fn trees_founded_before_reaching_the_workspace_merge_with_one_identity() {
-    use collab_types::document::DocumentId;
-
+fn trees_founded_before_reaching_the_workspace_merge_with_one_founding() {
     let names = |ns: &mut Namespace| -> Vec<String> {
         let mut names: Vec<String> = ns
             .live_node_ids()
@@ -328,11 +326,10 @@ fn trees_founded_before_reaching_the_workspace_merge_with_one_identity() {
         names.sort();
         names
     };
-    let workspace = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
-    let mount = |device: &str| MountAuthor::device(device).in_workspace(workspace);
+    let mount = |device: &str| MountAuthor::device(device);
 
     // Two devices wrote into the workspace's folder before either reached it: each founded the
-    // tree's documents, with the one identity every founder derives.
+    // tree's documents with the one change every copy of them derives.
     let mut laptop = Namespace::new(mount("laptop")).unwrap();
     laptop
         .create_file(ROOT_INO, "contract.txt", Some(&h(1)), 6, 1)
@@ -349,25 +346,29 @@ fn trees_founded_before_reaching_the_workspace_merge_with_one_identity() {
     }
     for ns in [&mut laptop, &mut desktop] {
         let index = ns.save_document(0).unwrap();
-        let doc = automerge::AutoCommit::load(&index).unwrap();
+        let mut doc = automerge::AutoCommit::load(&index).unwrap();
+        let founding = fs_protocol::tree::founding(&fs_protocol::tree::document_id()).unwrap();
         assert_eq!(
-            collab_types::document::identity::identity(&doc).map(|found| found.id),
-            Some(DocumentId::parse(&fs_protocol::tree::document_id()).unwrap()),
-            "the tree is one document with one identity, not two founders' metadata"
+            doc.get_changes(&[]).first().map(automerge::Change::hash),
+            Some(founding.hash()),
+            "the tree is founded by the one change every copy derives, not two maps of its own"
         );
         assert_eq!(names(ns), ["contract.txt", "handbook.md"]);
     }
     let held = laptop.save_document(1).expect("the laptop holds its chunk");
-    let doc = automerge::AutoCommit::load(&held).unwrap();
+    let mut doc = automerge::AutoCommit::load(&held).unwrap();
+    let founding = fs_protocol::tree::founding(&fs_protocol::tree::chunk_document_id(1)).unwrap();
     assert_eq!(
-        collab_types::document::identity::identity(&doc).map(|found| found.id),
-        Some(DocumentId::parse(&fs_protocol::tree::chunk_document_id(1)).unwrap()),
+        doc.get_changes(&[]).first().map(automerge::Change::hash),
+        Some(founding.hash()),
+        "a chunk too is founded by the change every copy of it derives"
     );
 
     // A page that put the first file into the workspace's empty record before any computer
-    // reached it: the page's placing makes the map.
+    // reached it founds the record as every copy does, so its placing is one change in the one
+    // map the founding stands up.
     let mut empty = Namespace::new(mount("laptop")).unwrap();
-    let mut record = automerge::AutoCommit::new();
+    let mut record = super::founding_document(1).expect("the chunk founds");
     let mut tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
     fs_protocol::tree::place(
         (&mut record, 1),
@@ -385,9 +386,9 @@ fn trees_founded_before_reaching_the_workspace_merge_with_one_identity() {
     empty.take_documents(vec![(1, record.save())]).unwrap();
     assert_eq!(names(&mut empty), ["notice.pdf"]);
 
-    // A tree an earlier build wrote named nothing; two computers take it in and each names it
-    // as it next writes, before either hears of the other's name.
-    let mut earlier = Namespace::new(MountAuthor::device("laptop")).unwrap();
+    // A tree one mount wrote, two other computers take in and each writes on: both changes land
+    // in the maps the founding stands up, so neither tree loses what the other wrote.
+    let mut earlier = Namespace::new(mount("laptop")).unwrap();
     earlier
         .create_file(ROOT_INO, "contract.txt", Some(&h(1)), 6, 1)
         .unwrap();
@@ -399,6 +400,12 @@ fn trees_founded_before_reaching_the_workspace_merge_with_one_identity() {
     assert_eq!(written.len(), 2, "the tree's own document and its chunk");
     let mut laptop = Namespace::from_records(mount("laptop"), written.clone()).unwrap();
     let mut desktop = Namespace::from_records(mount("desktop"), written).unwrap();
+    laptop
+        .create_file(ROOT_INO, "plan.md", Some(&h(2)), 6, 1)
+        .unwrap();
+    desktop
+        .create_file(ROOT_INO, "handbook.md", Some(&h(3)), 6, 1)
+        .unwrap();
     let from_laptop = laptop.document_writes(&BTreeMap::new());
     let from_desktop = desktop.document_writes(&BTreeMap::new());
     for (into, from) in [(&mut laptop, from_desktop), (&mut desktop, from_laptop)] {
@@ -406,18 +413,11 @@ fn trees_founded_before_reaching_the_workspace_merge_with_one_identity() {
             .unwrap();
     }
     for ns in [&mut laptop, &mut desktop] {
-        for chunk in [0, 1] {
-            let doc = automerge::AutoCommit::load(&ns.save_document(chunk).unwrap()).unwrap();
-            assert_eq!(
-                collab_types::document::identity::identity(&doc).map(|found| found.id),
-                Some(DocumentId::parse(&fs_protocol::tree::chunk_document_id(chunk)).unwrap()),
-                "document {chunk} names itself once"
-            );
-            assert_eq!(
-                collab_types::document::identity::workspace_scope(&doc).as_deref(),
-                Some(workspace)
-            );
-        }
+        assert_eq!(
+            names(ns),
+            ["contract.txt", "handbook.md", "plan.md"],
+            "each computer keeps what the other wrote into the founded tree"
+        );
     }
 }
 
@@ -676,7 +676,7 @@ fn a_write_names_its_file_actions_and_the_invoker_that_made_it() {
                 tilo_actions::ActionContext::from_change_message(message).is_some()
                     || tilo_actions::stamp::Label::of(message)
                         == Some(tilo_actions::stamp::Label::Framework(
-                            tilo_actions::FrameworkChange::Structure,
+                            tilo_actions::FrameworkChange::Genesis,
                         ))
             })
         });

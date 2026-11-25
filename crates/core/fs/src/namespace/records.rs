@@ -58,11 +58,7 @@ impl Namespace {
             }
         }
         let mount: super::MountAuthor = author.into();
-        let mut docs = Chunks::new(
-            index.unwrap_or_default(),
-            mount.workspace.clone(),
-            mount.person.clone(),
-        );
+        let mut docs = Chunks::new(index.unwrap_or_default(), mount.person.clone());
         for (chunk, doc) in chunks {
             docs.adopt_chunk(chunk, doc)?;
         }
@@ -338,7 +334,6 @@ impl Namespace {
         &mut self,
         known: &BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
     ) -> Vec<ResourceWrite> {
-        self.name_records();
         let mut writes = Vec::new();
         for (chunk, doc) in self.doc.each_mut() {
             let held = known.get(&chunk).map_or(&[][..], Vec::as_slice);
@@ -514,62 +509,17 @@ impl Namespace {
     pub fn holds_tree(&self) -> bool {
         self.doc.node_ids().next().is_some()
     }
-
-    /// Name every record of this mount's tree as what it is, when the mount holds a workspace's
-    /// tree: the id, kind, home and workspace a reader checks before it opens a record. A mount
-    /// that founds a tree names it before it publishes anything, so a page's Files opens what the
-    /// mount wrote; a record that already names itself is left as it is.
-    fn name_records(&mut self) {
-        let Some(workspace) = self.workspace.clone() else {
-            return;
-        };
-        let chunks: Vec<TreeChunk> = self.doc.records().collect();
-        for chunk in chunks {
-            self.name_record(chunk, &workspace);
-        }
-    }
-
-    /// Name the record `chunk` of `workspace`'s tree as what it is: the id, kind, home and
-    /// workspace every reader checks before it opens a record, stamped into the document this
-    /// mount publishes. A mount that founds a tree no page would open is one the page's Files
-    /// cannot show ("record identity does not match its binding"). Whether the document names
-    /// itself afterwards, already or by this stamp.
-    fn name_record(&mut self, chunk: TreeChunk, workspace: &str) -> bool {
-        let Some(id) = tree_document(chunk) else {
-            return false;
-        };
-        let Some(doc) = self.doc.doc_mut(chunk) else {
-            return false;
-        };
-        doc.commit_named();
-        collab_types::document::identity::init_scoped(
-            doc,
-            &id,
-            &tree_kind(),
-            workspace,
-            Some(workspace),
-        )
-    }
 }
 
-/// Document `chunk` of a workspace's tree, as the resource that holds it is named.
-fn tree_document(chunk: TreeChunk) -> Option<collab_types::document::DocumentId> {
-    collab_types::document::DocumentId::parse(&fs_protocol::tree::chunk_document_id(chunk))
-}
-
-/// The kind every document of a workspace's tree is: Files' tree.
-fn tree_kind() -> collab_types::document::ResourceType {
-    collab_types::document::ResourceType::new(fs_protocol::tree::TREE_KIND)
-}
-
-/// The document that founds `chunk` of `workspace`'s tree: the identity every founder of it
-/// derives alike, so a page's Files that started the tree and a mount that starts it as it writes
-/// the first file make one document. A founder with a genesis of its own writes the identity a
-/// second time, and the merged document holds none at all. `None` where the document cannot be
-/// named.
-pub(super) fn founding_document(workspace: &str, chunk: TreeChunk) -> Option<AutoCommit> {
-    let id = tree_document(chunk)?;
-    collab_types::document::identity::founding(&id, &tree_kind(), workspace, workspace)
+/// The document that founds `chunk` of the tree: the change every copy of the record derives
+/// alike, so a mount and a page that start the same record make one document.
+pub(super) fn founding_document(chunk: TreeChunk) -> Option<AutoCommit> {
+    use tilo_automerge::ApplyIncoming as _;
+    let record = fs_protocol::tree::chunk_document_id(chunk);
+    let founding = fs_protocol::tree::founding(&record).ok()?;
+    let mut doc = AutoCommit::new();
+    doc.apply_incoming([founding]).ok()?;
+    Some(doc)
 }
 
 /// The nodes of the map `nodes` that `patches` touched: those put or deleted in it, and those

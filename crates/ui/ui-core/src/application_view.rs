@@ -438,8 +438,38 @@ impl InstanceViewStore {
             return self.send(instance.instance_id, kept, true);
         }
         kept.doc.put(ROOT, VIEW, bytes).map_err(workspace_error)?;
-        kept.doc.commit();
+        self.commit_view(&mut kept.doc);
         self.send(instance.instance_id, kept, true)
+    }
+
+    /// The person whose windows these views are, by their root key, when their reader set names
+    /// one.
+    fn person_root(&self) -> Option<[u8; 32]> {
+        let people = match collab_types::Readers::parse(self.readers.as_deref()?) {
+            Some(collab_types::Readers::People(people)) => people,
+            _ => return None,
+        };
+        let mut roots = people.into_iter();
+        let root = roots.next()?;
+        roots.next().is_none().then_some(root)
+    }
+
+    /// Commit what `doc` holds as the view of the person whose window it is: a change the
+    /// workspace takes names someone, and a view of no person the workspace refuses anyway.
+    fn commit_view(&self, doc: &mut AutoCommit) {
+        if doc.pending_ops() == 0 {
+            return;
+        }
+        let Some(root) = self.person_root() else {
+            doc.commit();
+            return;
+        };
+        let acting =
+            tilo_action_policy::Acting::person(tilo_action_policy::PersonId::from_root(root));
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::ActionContext::whole_edit_by(&acting)),
+        );
     }
 
     /// Take the workspace's answer to `kept`'s write on its way, without waiting for it, and send
@@ -462,21 +492,21 @@ impl InstanceViewStore {
             }
             kept.writing = None;
         }
+        self.commit_view(&mut kept.doc);
         let heads = kept.doc.get_heads();
         if kept.stored.as_ref() == Some(&heads) {
             return Ok(());
         }
-        let (changes, founding) = match &kept.stored {
-            Some(stored) => (kept.doc.save_after(stored), false),
-            None => (kept.doc.save(), true),
+        let changes = match &kept.stored {
+            Some(stored) => kept.doc.save_after(stored),
+            None => kept.doc.save(),
         };
         let written = port.write(
             &self.app_id,
             &self.workspace_id,
             self.document_id(instance).route(),
+            tilo_desktop_model::record::WINDOW_VIEW_KIND,
             changes,
-            founding,
-            self.readers.as_deref(),
         );
         kept.writing = Some((written, heads));
         Ok(())

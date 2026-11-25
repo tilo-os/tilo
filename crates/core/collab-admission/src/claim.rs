@@ -11,7 +11,7 @@ pub enum Maker {
     /// Its history entry, its stamp or the gesture it continues names who made it.
     Named,
     /// It is a change every holder derives alike, byte for byte, and names no one
-    /// ([`collab_types::document::derived::is_derived`]).
+    /// ([`collab_types::document::identity::is_derived_change`]).
     Derived,
     /// A framework change that names no one: whoever signed it made it, the signing device's
     /// person or the agent its key is certified for, and it is decided and recorded as theirs.
@@ -37,18 +37,16 @@ pub fn maker_of(change: &automerge::Change) -> Maker {
     match collab_types::Stamp::read(message) {
         Some((Label::Entry | Label::Continuation, _)) => Maker::Named,
         Some((Label::Framework(named), _)) => match named {
-            FrameworkChange::Genesis | FrameworkChange::Structure
-                if collab_types::document::derived::is_derived(change, named, |bytes| {
+            FrameworkChange::Genesis
+                if collab_types::document::identity::is_derived_change(change, |bytes| {
                     tilo_automerge_isolate::load(bytes).ok()
                 }) =>
             {
                 Maker::Derived
             }
-            // A structure every holder derives is the one kind made apart that must not differ:
-            // one that is not the derived change is no structure at all. A window's direct edit
-            // of a record is nobody's unless it names who made it: a device's own commit names
-            // its person, and an agent's its agent
-            // ([`tilo_actions::ActionContext::whole_edit_by`]).
+            // A structure is no derived change, and a window's direct edit of a record is
+            // nobody's unless it names who made it: a device's own commit names its person, and
+            // an agent's its agent ([`tilo_actions::ActionContext::whole_edit_by`]).
             FrameworkChange::Structure | FrameworkChange::Native => Maker::Nobody,
             _ => Maker::Signer,
         },

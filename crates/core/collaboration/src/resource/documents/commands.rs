@@ -145,9 +145,8 @@ where
         app: &str,
         workspace: &str,
         id: &str,
+        _kind: &str,
         changes: Vec<u8>,
-        _founding: bool,
-        _readers: Option<&str>,
     ) -> Written {
         let mut answer = Some(write(
             &|command| (self.0)(app, workspace, command),

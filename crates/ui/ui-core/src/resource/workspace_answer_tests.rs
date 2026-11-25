@@ -73,26 +73,21 @@ impl DocumentPort for HostAnswers {
         Ok(answer)
     }
 
-    fn write(
-        &self,
-        app: &str,
-        workspace: &str,
-        id: &str,
-        changes: Vec<u8>,
-        founding: bool,
-        readers: Option<&str>,
-    ) -> Written {
-        self.inner
-            .write(app, workspace, id, changes, founding, readers)
+    fn write(&self, app: &str, workspace: &str, id: &str, kind: &str, changes: Vec<u8>) -> Written {
+        self.inner.write(app, workspace, id, kind, changes)
     }
 }
 
 /// What the page's replication does with a record the host sent and no window holds open: it
 /// keeps it in the page's storage and tells the store.
 fn arrives(host: &HostAnswers, store: &ResourceStore, want: &DocumentCheckout, bytes: Vec<u8>) {
-    let mut written = host
-        .inner
-        .write(PACKAGE, WORKSPACE, want.id.route(), bytes, true, None);
+    let mut written = host.inner.write(
+        PACKAGE,
+        WORKSPACE,
+        want.id.route(),
+        want.kind.as_str(),
+        bytes,
+    );
     let _ = written(std::time::Duration::ZERO);
     host.deliver(want.id.route());
     store.note_kept();
