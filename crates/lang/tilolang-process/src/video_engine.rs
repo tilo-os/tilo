@@ -265,7 +265,16 @@ fn measure_mix(
     let mut cache = sources
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut source = video_edit::audio::CachedSource::new(cut, &mut cache);
+    measure_blocks(cut, &mut cache)
+}
+
+/// The cut's mix measured block by block to its end, over `cache`: how far over full scale it
+/// went, where, and which tracks were over on their own.
+fn measure_blocks(
+    cut: &model::Project,
+    cache: &mut video_edit::audio::SourcePcm,
+) -> (f64, Vec<f64>, Vec<String>) {
+    let mut source = video_edit::audio::CachedSource::new(cut, cache);
     let meters = video_edit::audio::MixMeters::new();
     let block = video_edit::audio::MONITOR_BLOCK;
     let step = ui_core::num::f64_of_usize(block) / f64::from(video_edit::audio::SAMPLE_RATE);
