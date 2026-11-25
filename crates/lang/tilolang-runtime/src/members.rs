@@ -300,10 +300,15 @@ impl Core {
     /// grants say. The fields are noted as read by the running view, so it runs again when they
     /// change.
     pub(crate) fn readers_of(&self, target: &ResourceRef) -> Vec<Vec<Actor>> {
+        self.readers_made_by(target, None)
+    }
+
+    /// [`Self::readers_of`], `maker` the one making a record with no version yet: its author.
+    fn readers_made_by(&self, target: &ResourceRef, maker: Option<&Actor>) -> Vec<Vec<Actor>> {
         let mut out = Vec::new();
         let mut at = Some(target.clone());
         while let Some(here) = at {
-            if let Some(people) = self.readers_here(&here) {
+            if let Some(people) = self.readers_here(&here, maker) {
                 out.push(people);
             }
             at = self
@@ -320,14 +325,19 @@ impl Core {
     /// Who alone reads a change of the resources `touched` (as [`ResourceRef::id_string`] writes
     /// them): the members every record holding one of them names as its readers, when any does;
     /// `None` when none of them is held by a record that names its readers. What history lists the
-    /// change to (`tilo_actions::READERS_FACET`).
-    pub(crate) fn change_readers(&self, touched: &[String]) -> Option<Vec<MemberId>> {
+    /// change to (`tilo_actions::READERS_FACET`). `maker` makes the change: the author of a record
+    /// it makes, which has no version yet.
+    pub(crate) fn change_readers(
+        &self,
+        touched: &[String],
+        maker: Option<&Actor>,
+    ) -> Option<Vec<MemberId>> {
         let mut out: Option<Vec<MemberId>> = None;
         for at in touched
             .iter()
             .filter_map(|id| ResourceRef::parse_id(id, String::new()))
         {
-            for people in self.readers_of(&at) {
+            for people in self.readers_made_by(&at, maker) {
                 let named: Vec<MemberId> = people
                     .iter()
                     .filter_map(|who| who.member_id().cloned())
@@ -341,8 +351,10 @@ impl Core {
         out
     }
 
-    /// The people the resource `at` says read it, when its type names its readers.
-    fn readers_here(&self, at: &ResourceRef) -> Option<Vec<Actor>> {
+    /// The people the resource `at` says read it, when its type names its readers. A record whose
+    /// type names its author among its readers and that has no version yet is being made, by
+    /// `maker`; with no maker its author is not known, and nobody reads it, never everybody.
+    fn readers_here(&self, at: &ResourceRef, maker: Option<&Actor>) -> Option<Vec<Actor>> {
         let ty = if at.ty.is_empty() {
             self.stored_type(at)
         } else {
@@ -382,15 +394,13 @@ impl Core {
                         return None;
                     }
                 }
-                let created = self.store.borrow().version_end(at, false).ok().flatten()?;
-                Some(vec![self.whose(&created, at)])
+                Some(self.author_of(at, maker).into_iter().collect())
             }
             // `(readers: author and moderator)`: whoever made the record, and every member whose
             // role includes the one named, as the workspace has them now; the store seals it to
             // that role's group, which follows the same roles.
             ReaderRule::AuthorAnd { role } => {
-                let created = self.store.borrow().version_end(at, false).ok().flatten()?;
-                let mut readers = vec![self.whose(&created, at)];
+                let mut readers: Vec<Actor> = self.author_of(at, maker).into_iter().collect();
                 for member in self.read_members() {
                     let who = member.who();
                     if member.role.is_some_and(|held| held.includes(role))
@@ -401,6 +411,16 @@ impl Core {
                 }
                 Some(readers)
             }
+        }
+    }
+
+    /// Who made the record `at`: whoever its first version names, else `maker`, who is making it
+    /// now. `None` where neither is known.
+    fn author_of(&self, at: &ResourceRef, maker: Option<&Actor>) -> Option<Actor> {
+        let created = self.store.borrow().version_end(at, false).ok().flatten();
+        match created {
+            Some(created) => Some(self.whose(&created, at)),
+            None => maker.cloned(),
         }
     }
 

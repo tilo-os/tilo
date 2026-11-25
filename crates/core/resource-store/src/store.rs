@@ -580,7 +580,7 @@ impl Store {
     pub fn get(&self, kind: &str, id: &str, may_read: &dyn Fn(&str) -> bool) -> Option<&Indexed> {
         let held = self.index.get(kind, id)?;
         self.index
-            .readers(&held.doc)
+            .filed(kind, id)
             .is_some_and(may_read)
             .then_some(held)
     }
@@ -651,10 +651,10 @@ impl Store {
         may_read: &dyn Fn(&str) -> bool,
     ) -> Vec<String> {
         let readable = |key: &(String, String)| {
-            self.removed
-                .get(key)
-                .and_then(|removed| self.index.readers(&removed.doc))
-                .is_some_and(may_read)
+            self.removed.contains_key(key)
+                && self
+                    .readers_of(&key.0, &key.1)
+                    .is_some_and(|readers| may_read(&readers))
         };
         let mut ids: Vec<String> = match parent {
             Some(parent) => self
@@ -789,6 +789,11 @@ impl Store {
             }
         }
         self.index.committed(commit);
+        for change in commit.changes {
+            if let Change::Put { kind, id, .. } = change {
+                self.file_by_rule(kind, id);
+            }
+        }
         for change in commit.changes {
             let (Change::Put { kind, id, .. } | Change::Remove { kind, id }) = change;
             self.follow_live(kind, id);
@@ -2047,11 +2052,12 @@ impl Store {
             }
         }
         // A removed resource's history stays readable, by whoever could read it.
+        // (Its type's rule is judged below, once the documents' reading is let go.)
         for (kind, id) in self.removed.keys() {
             if !under(id)
                 || !self
-                    .readers_of(kind, id)
-                    .is_some_and(|readers| may_read(&readers))
+                    .placed(kind, id)
+                    .is_some_and(|(_, readers)| may_read(&readers))
             {
                 continue;
             }
@@ -2060,6 +2066,11 @@ impl Store {
             }
         }
         drop(touches);
+        // A record whose type names its readers is listed to them, wherever it is held.
+        newest.retain(|(kind, id, _)| {
+            !self.rules.contains_key(kind.as_str())
+                || self.readers_of(kind, id).is_some_and(|readers| may_read(&readers))
+        });
         newest.sort_by_key(|(_, _, version)| std::cmp::Reverse(order(version)));
         let more = newest.len() > limit;
         newest.truncate(limit);
@@ -2320,7 +2331,19 @@ impl Store {
 
     /// Takes the types `schema` declares into those a peer's change is checked against.
     pub fn declare(&mut self, schema: Schema) {
+        // What the store holds of a kind whose rule it takes now is read as that rule says.
+        let ruled: Vec<String> = schema
+            .readers
+            .keys()
+            .filter(|kind| !self.rules.contains_key(kind.as_str()))
+            .cloned()
+            .collect();
         self.rules.extend(schema.readers);
+        for kind in ruled {
+            for id in self.index.ids(&kind) {
+                self.file_by_rule(&kind, &id);
+            }
+        }
         let mut live_kinds = Vec::new();
         for ty in schema.types {
             let was = self.schema.get(&ty.name).and_then(|held| held.live.clone());
@@ -2628,7 +2651,17 @@ impl Store {
     /// history is admitted by.
     #[must_use]
     pub fn readers_of(&self, kind: &str, id: &str) -> Option<String> {
-        self.placed(kind, id).map(|(_, readers)| readers)
+        // A record whose type names its readers is read by them wherever it is held
+        // ([`Index::filed`]); a removed one held where every member read it, by those its rule
+        // gives a record of no fields.
+        if self.index.get(kind, id).is_some() {
+            return self.index.filed(kind, id).map(str::to_owned);
+        }
+        let (_, readers) = self.placed(kind, id)?;
+        if readers == collab_types::EVERY_MEMBER && self.rules.contains_key(kind) {
+            return Some(self.removed_readers(kind, id));
+        }
+        Some(readers)
     }
 
     /// What the index holds of `doc`, as bytes [`Self::restore`] takes back: what a start reads

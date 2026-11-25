@@ -3327,6 +3327,312 @@ mod store {
             "a write names no readers for a kind whose rule names them"
         );
     }
+
+    /// A store that declares a mailbox every member reads and a draft its author alone reads
+    /// until it is sent, the draft nested in the mailbox: what a workspace's store declares of a
+    /// mail app's surfaces.
+    fn mailboxes() -> Store {
+        let mut store = mailboxes_unruled();
+        store.declare(draft_rule());
+        store
+    }
+
+    /// The draft's rule alone: a draft is read by its author until it is sent.
+    fn draft_rule() -> Schema {
+        use tilo_actions::surface::ReaderRule;
+        Schema {
+            readers: BTreeMap::from([(
+                DRAFT.to_owned(),
+                ReaderRule::Author {
+                    until: Some("sent".to_owned()),
+                },
+            )]),
+            ..Schema::default()
+        }
+    }
+
+    /// [`mailboxes`] before the draft's type named its readers.
+    fn mailboxes_unruled() -> Store {
+        let field = |name: &str, kind: FieldKind| tilo_resource_store::Field {
+            name: name.to_owned(),
+            kind,
+            value: tilo_resource_store::Expected::Any,
+            optional: true,
+        };
+        let ty = |name: &str| tilo_resource_store::Type {
+            name: name.to_owned(),
+            fields: vec![
+                field("subject", FieldKind::Scalar),
+                field("sent", FieldKind::Scalar),
+            ],
+            nested: Vec::new(),
+            live: None,
+            founding: Vec::new(),
+        };
+        let mut store = Store::new();
+        store.declare(Schema {
+            types: vec![ty(MAILBOX), ty(DRAFT)],
+            ..Schema::default()
+        });
+        store
+    }
+
+    const MAILBOX: &str = "Mailbox";
+    const DRAFT: &str = "Draft";
+
+    fn draft(subject: &str, sent: bool) -> Resource {
+        Resource {
+            readers: String::new(),
+            parent: Some("box".to_owned()),
+            order: Some("a".to_owned()),
+            fields: BTreeMap::from([
+                ("subject".to_owned(), Cell::One(subject.into())),
+                ("sent".to_owned(), Cell::One(Value::Bool(sent))),
+            ]),
+        }
+    }
+
+    /// What `reader` is answered of `command`, through the one read rule every host answers by.
+    fn read_as(
+        store: &Store,
+        reader: &str,
+        command: &collab_types::store::wire::Command,
+    ) -> collab_types::store::wire::Reply {
+        tilo_resource_store::wire::read(store, command, &tilo_resource_store::wire::reads_as(reader))
+            .expect("a read is answered")
+    }
+
+    /// Every way a member reads the store, of the draft `id` with `subject`: whether any of them
+    /// tells `reader` the draft is there. A get, its content, a listing, a search of its subject,
+    /// a count, the subject's values, its history, and the newest changes.
+    fn sees_draft(store: &Store, reader: &str, id: &str, subject: &str) -> Vec<&'static str> {
+        use collab_types::store::wire::{Command, Reply};
+        let mut seen = Vec::new();
+        let get = Command::Get {
+            kind: DRAFT.to_owned(),
+            id: id.to_owned(),
+        };
+        if matches!(read_as(store, reader, &get), Reply::Resource(Some(_))) {
+            seen.push("get");
+        }
+        let listing = Command::Query(Query::of(DRAFT, 100));
+        if let Reply::Page(page) = read_as(store, reader, &listing)
+            && page.resources.iter().any(|(held, _)| held == id)
+        {
+            seen.push("listing");
+        }
+        let mut search = Query::of(DRAFT, 100);
+        search
+            .filters
+            .push(Filter::Contains("subject".to_owned(), subject.to_owned()));
+        if let Reply::Page(page) = read_as(store, reader, &Command::Query(search))
+            && !page.resources.is_empty()
+        {
+            seen.push("search");
+        }
+        let count = Command::Count {
+            kind: DRAFT.to_owned(),
+            filters: vec![Filter::Contains("subject".to_owned(), subject.to_owned())],
+        };
+        if !matches!(read_as(store, reader, &count), Reply::Count(0)) {
+            seen.push("count");
+        }
+        let values = Command::Values {
+            kind: DRAFT.to_owned(),
+            filters: Vec::new(),
+            field: "subject".to_owned(),
+        };
+        if let Reply::Values(values) = read_as(store, reader, &values)
+            && !values.is_empty()
+        {
+            seen.push("values");
+        }
+        let versions = Command::Versions {
+            kind: DRAFT.to_owned(),
+            id: id.to_owned(),
+        };
+        if let Reply::Versions(versions) = read_as(store, reader, &versions)
+            && !versions.is_empty()
+        {
+            seen.push("history");
+        }
+        let newest = Command::Newest {
+            within: id.to_owned(),
+            limit: 100,
+        };
+        if let Reply::Newest { versions, .. } = read_as(store, reader, &newest)
+            && versions.iter().any(|(_, held, _)| held == id)
+        {
+            seen.push("newest changes");
+        }
+        seen
+    }
+
+    /// A draft is its author's until it is sent: placed by its own rule though it is nested in a
+    /// mailbox every member reads, so another member finds it by no read at all (a get, a
+    /// listing, a search, a count, a field's values, its history or the newest changes), while
+    /// its author finds it by every one. Once sent, every member reads it, and it is not taken
+    /// back.
+    #[test]
+    fn a_draft_is_read_by_its_author_alone_until_it_is_sent() {
+        use collab_types::store::wire::Command;
+        let mut store = mailboxes();
+        let as_ = |who: &str| Stamp {
+            invoker: who.to_owned(),
+            ..Stamp::default()
+        };
+        tilo_resource_store::wire::write(
+            &mut store,
+            Command::Put {
+                kind: MAILBOX.to_owned(),
+                id: "box".to_owned(),
+                resource: Resource {
+                    readers: MEMBERS.to_owned(),
+                    parent: None,
+                    order: None,
+                    fields: BTreeMap::new(),
+                },
+                stamp: as_("ada"),
+            },
+        )
+        .unwrap();
+        let put = |store: &mut Store, subject: &str, sent: bool| {
+            tilo_resource_store::wire::write(
+                store,
+                Command::Put {
+                    kind: DRAFT.to_owned(),
+                    id: "d1".to_owned(),
+                    resource: draft(subject, sent),
+                    stamp: as_("ada"),
+                },
+            )
+        };
+        let written = put(&mut store, "Quarterly plan", false).unwrap();
+        assert!(
+            written.iter().all(|write| write.readers == "ada"),
+            "the draft is sealed to its author, not to the mailbox's readers: {:?}",
+            written.iter().map(|write| &write.readers).collect::<Vec<_>>()
+        );
+        let every = vec![
+            "get",
+            "listing",
+            "search",
+            "count",
+            "values",
+            "history",
+            "newest changes",
+        ];
+        assert_eq!(
+            sees_draft(&store, "bo", "d1", "Quarterly"),
+            Vec::<&str>::new(),
+            "another member reads nothing of an unsent draft"
+        );
+        assert_eq!(
+            sees_draft(&store, "ada", "d1", "Quarterly"),
+            every,
+            "its author reads it every way"
+        );
+
+        put(&mut store, "Quarterly plan", true).unwrap();
+        assert_eq!(
+            sees_draft(&store, "bo", "d1", "Quarterly"),
+            every,
+            "every member reads a sent draft"
+        );
+        assert_eq!(sees_draft(&store, "ada", "d1", "Quarterly"), every);
+        assert!(
+            put(&mut store, "Quarterly plan", false).is_err(),
+            "a sent draft is not taken back from the members who read it"
+        );
+    }
+
+    /// A draft written where every member reads it, before its type named its readers, is read
+    /// as the rule says once the store knows it: by its author alone while it is unsent, by no
+    /// read at all for another member, and its history stays its author's once it is removed.
+    #[test]
+    fn a_draft_held_where_everyone_reads_is_read_by_its_rule() {
+        use collab_types::store::wire::{Command, Reply};
+        let mut store = mailboxes_unruled();
+        let ada = Stamp {
+            invoker: "ada".to_owned(),
+            ..Stamp::default()
+        };
+        for (kind, id, resource) in [
+            (
+                MAILBOX,
+                "box",
+                Resource {
+                    readers: MEMBERS.to_owned(),
+                    parent: None,
+                    order: None,
+                    fields: BTreeMap::new(),
+                },
+            ),
+            (DRAFT, "d1", draft("Quarterly plan", false)),
+        ] {
+            tilo_resource_store::wire::write(
+                &mut store,
+                Command::Put {
+                    kind: kind.to_owned(),
+                    id: id.to_owned(),
+                    resource,
+                    stamp: ada.clone(),
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            store.readers_of(DRAFT, "d1").as_deref(),
+            Some(MEMBERS),
+            "with no rule, the draft is where its mailbox is"
+        );
+        store.declare(draft_rule());
+        assert!(store.misplaced(DRAFT, "d1"), "the draft is held where its rule does not place it");
+        assert_eq!(
+            sees_draft(&store, "bo", "d1", "Quarterly"),
+            Vec::<&str>::new(),
+            "another member reads nothing of it, though its document is every member's"
+        );
+        assert_eq!(
+            sees_draft(&store, "ada", "d1", "Quarterly"),
+            vec![
+                "get",
+                "listing",
+                "search",
+                "count",
+                "values",
+                "history",
+                "newest changes"
+            ],
+            "its author reads it every way"
+        );
+        tilo_resource_store::wire::write(
+            &mut store,
+            Command::Remove {
+                kind: DRAFT.to_owned(),
+                id: "d1".to_owned(),
+                stamp: ada,
+            },
+        )
+        .unwrap();
+        let removed = Command::Removed {
+            kind: DRAFT.to_owned(),
+            parent: Some("box".to_owned()),
+        };
+        assert!(
+            matches!(read_as(&store, "bo", &removed), Reply::Ids(ids) if ids.is_empty()),
+            "another member is not told it was removed"
+        );
+        assert_eq!(
+            sees_draft(&store, "bo", "d1", "Quarterly"),
+            Vec::<&str>::new(),
+            "nor reads its history once it is gone"
+        );
+        assert!(
+            sees_draft(&store, "ada", "d1", "Quarterly").contains(&"history"),
+            "its author still reads its history"
+        );
+    }
 }
 
 /// An app's records, as a window that runs with no workspace keeps and reads them: through the

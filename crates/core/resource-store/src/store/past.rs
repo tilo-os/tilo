@@ -100,6 +100,14 @@ impl Store {
                 if resource.parent.as_deref() != Some(parent) {
                     continue;
                 }
+                // A record whose type names its readers is shown to them, wherever it was held.
+                if self.rules.contains_key(kind.as_str())
+                    && !self
+                        .readers_of(&kind, id)
+                        .is_some_and(|readers| may_read(&readers))
+                {
+                    continue;
+                }
                 let content_doc = content_id(readers, &kind, id);
                 let content = self.docs.get(&content_doc).and_then(|content| {
                     let heads = heads_of

@@ -1509,6 +1509,41 @@ impl Index {
         }
     }
 
+    /// Files the resource `id` of `kind` under `readers` rather than its document's: what every
+    /// read of it is admitted by from now on, until a commit of it files it again.
+    pub(crate) fn refile(&mut self, kind: &str, id: &str, readers: &str) {
+        let Some(tables) = self.kinds.get_mut(kind) else {
+            return;
+        };
+        let Some((from, stored)) = tables.iter().find_map(|(filed, table)| {
+            table
+                .rows
+                .get(id)
+                .map(|stored| (filed.clone(), stored.clone()))
+        }) else {
+            return;
+        };
+        if from == readers {
+            return;
+        }
+        if let Some(table) = tables.get_mut(&from) {
+            table.remove(id);
+        }
+        tables
+            .entry(readers.to_owned())
+            .or_default()
+            .insert(id, stored);
+    }
+
+    /// The readers the resource `id` of `kind` is filed under: its document's, or those
+    /// [`Self::refile`] filed it under.
+    #[must_use]
+    pub fn filed(&self, kind: &str, id: &str) -> Option<&str> {
+        self.kinds.get(kind)?.iter().find_map(|(readers, table)| {
+            table.rows.contains_key(id).then_some(readers.as_str())
+        })
+    }
+
     fn take_out(&mut self, kind: &str, id: &str, doc: &str) {
         let Some(tables) = self.kinds.get_mut(kind) else {
             return;

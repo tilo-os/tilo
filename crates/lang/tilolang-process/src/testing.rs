@@ -36,6 +36,8 @@ pub struct Workspace {
     written: RefCell<Vec<tilo_resource_store::Stamp>>,
     /// The app's whole documents: what the connection's `#[resource]` documents open from.
     documents: tilo_resource_store::LocalPort,
+    /// How many surfaces this process had named when the store last declared them.
+    declared: std::cell::Cell<Option<u64>>,
 }
 
 impl Workspace {
@@ -45,6 +47,7 @@ impl Workspace {
     /// # Errors
     /// Why the store refused the write.
     pub fn command(&self, command: Command, reader: &str) -> Result<Reply, String> {
+        self.declare_surfaces();
         if let Command::Turn {
             address,
             inputs,
@@ -86,6 +89,31 @@ impl Workspace {
                 let reader = reader.to_ascii_lowercase();
                 wire::read(&self.store.borrow(), &command, &wire::reads_as(&reader))
                     .ok_or_else(|| "the store answered no read".to_owned())
+            }
+        }
+    }
+
+    /// Declares, in the workspace's store, every app surface this process names, as a device's
+    /// workspace service declares those it knows before it places a write: the types, verbs and
+    /// reader rules a write is placed and judged by. A loaded package names its surface before
+    /// its first write.
+    fn declare_surfaces(&self) {
+        let named = collab_types::app_surface::registered();
+        if self.declared.get() == Some(named) {
+            return;
+        }
+        self.declared.set(Some(named));
+        let mut store = self.store.borrow_mut();
+        if store
+            .schema()
+            .get(tilo_resource_store::reference::KIND)
+            .is_none()
+        {
+            store.declare(tilo_resource_store::reference::schema());
+        }
+        for file in collab_types::app_surface::every() {
+            for surface in &file.resources {
+                store.declare(tilo_resource_store::Schema::from_surface(surface));
             }
         }
     }

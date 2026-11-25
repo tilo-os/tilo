@@ -2153,7 +2153,7 @@ impl Runtime {
     /// readers, so whoever reads its document reads it.
     #[must_use]
     pub fn readers(&self, at: &ResourceRef) -> Option<Vec<tilo_actions::policy::MemberId>> {
-        self.core.change_readers(&[at.id_string()])
+        self.core.change_readers(&[at.id_string()], None)
     }
 
     /// Where settled outside effects go.

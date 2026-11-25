@@ -113,6 +113,61 @@ impl Store {
         Ok(())
     }
 
+    /// Files the resource `id` of `kind` under the readers its type's rule gives it where it is
+    /// held in a document every member reads: a record written there before its type named its
+    /// readers, or by a writer that did not know the rule, is read as the rule says, never by
+    /// the document's `*`. One whose rule names nobody it can tell is read by nobody.
+    pub(super) fn file_by_rule(&mut self, kind: &str, id: &str) {
+        let Some(rule) = self.rules.get(kind) else {
+            return;
+        };
+        let Some(held) = self.index.get(kind, id) else {
+            return;
+        };
+        if self.index.readers(&held.doc) != Some(collab_types::EVERY_MEMBER) {
+            return;
+        }
+        let readers = readers_by_rule(
+            rule,
+            &self.author(kind, id),
+            &held.fields,
+            kind,
+            id,
+            self.reader.as_deref(),
+        )
+        .unwrap_or_default();
+        self.index.refile(kind, id, &readers);
+    }
+
+    /// Whether the resource `id` of `kind` is held where its type's rule does not place it: in a
+    /// document every member reads while its rule names fewer.
+    #[must_use]
+    pub fn misplaced(&self, kind: &str, id: &str) -> bool {
+        self.rules.contains_key(kind)
+            && self.index.get(kind, id).is_some_and(|held| {
+                self.index.readers(&held.doc) == Some(collab_types::EVERY_MEMBER)
+                    && self.index.filed(kind, id) != Some(collab_types::EVERY_MEMBER)
+            })
+    }
+
+    /// Who reads the history of the removed resource `id` of `kind`, whose type names its
+    /// readers, when it was held where every member read it: those its rule gives a record of
+    /// no fields, its author for `readers: author`, and nobody where the rule names no one.
+    pub(super) fn removed_readers(&self, kind: &str, id: &str) -> String {
+        let Some(rule) = self.rules.get(kind) else {
+            return collab_types::EVERY_MEMBER.to_owned();
+        };
+        readers_by_rule(
+            rule,
+            &self.author(kind, id),
+            &BTreeMap::new(),
+            kind,
+            id,
+            self.reader.as_deref(),
+        )
+        .unwrap_or_default()
+    }
+
     /// The readers of the resource `id`, of whatever kind it is.
     fn readers_of_id(&self, id: &str) -> Option<String> {
         let kind = self.index.kind_anywhere(id)?;

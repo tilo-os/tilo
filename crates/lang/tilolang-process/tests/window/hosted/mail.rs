@@ -408,11 +408,9 @@ impl Session {
     /// [`Self::call`] of an action that makes a draft: the draft.
     fn made(&mut self, name: &str, on: &ResourceRef, arguments: &Json) -> ResourceRef {
         let answered = self.call(name, on, arguments);
-        let prefix = format!("tl:{APP}:");
         let made = answered
             .resources
             .first()
-            .and_then(|made| made.strip_prefix(&prefix))
             .unwrap_or_else(|| panic!("{name} answers what it made: {answered:?}"));
         ResourceRef::parse_id(made, self.type_id("Draft"))
             .unwrap_or_else(|| panic!("{name} answers what it made: {answered:?}"))
@@ -2540,8 +2538,8 @@ fn each_member_reads_only_their_own_drafts_in_the_drafts_place() {
     // Each writes a message: with no account they still wait in Drafts.
     let ada_root = ada.mail_root();
     let bo_root = bo.mail_root();
-    let _ada_draft = ada.made("new_draft", &ada_root, &json!({}));
-    let _bo_draft = bo.made("new_draft", &bo_root, &json!({}));
+    let ada_draft = ada.made("new_draft", &ada_root, &json!({}));
+    let bo_draft = bo.made("new_draft", &bo_root, &json!({}));
     // One draft each stands in the workspace, and each member's place lists the one they wrote.
     assert_eq!(
         drafts_count(&ada),
@@ -2552,6 +2550,52 @@ fn each_member_reads_only_their_own_drafts_in_the_drafts_place() {
         drafts_count(&bo),
         Some(1),
         "Bo's Drafts place lists only the draft he wrote"
+    );
+
+    // The workspace's store answers each member's read of a draft as its rule says: its author
+    // gets it, and the other member gets nothing of it.
+    let workspace = bus.workspace();
+    let gets = |draft: &ResourceRef, who: &str| {
+        let get = collab_types::store::wire::Command::Get {
+            kind: format!("tl.{APP}.Draft"),
+            id: draft.id_string(),
+        };
+        matches!(
+            workspace.command(get, who),
+            Ok(collab_types::store::wire::Reply::Resource(Some(_)))
+        )
+    };
+    assert!(gets(&ada_draft, "ada"), "Ada gets the draft she wrote");
+    assert!(!gets(&ada_draft, "bo"), "Bo gets nothing of Ada's draft");
+    assert!(gets(&bo_draft, "bo"), "Bo gets the draft he wrote");
+    assert!(!gets(&bo_draft, "ada"), "Ada gets nothing of Bo's draft");
+
+    // A draft Ada writes while Bo's Drafts place is open does not reach it: the place stays on
+    // the one he wrote as the workspace moves.
+    let root = bo.mail_root();
+    let mut watching = bo
+        .instance_host()
+        .open_resource(&root, None)
+        .expect("Bo's mail window opens");
+    let drafts = find_kind(watching.tree(), "ui.NavItem", "label", "Drafts")
+        .expect("the sidebar offers Drafts")
+        .key
+        .clone();
+    watching.fire(&drafts, "select").expect("Drafts opens");
+    watching.poll_patches().expect("the place shows");
+    assert_eq!(count_in(watching.tree(), "ui.NavShell"), Some(1));
+    let _second = ada.made("new_draft", &ada_root, &json!({}));
+    bo.settle();
+    watching.poll_patches().expect("the place follows the workspace");
+    assert_eq!(
+        count_in(watching.tree(), "ui.NavShell"),
+        Some(1),
+        "Bo's open Drafts place shows none of the draft Ada wrote while he looked"
+    );
+    assert_eq!(
+        drafts_count(&ada),
+        Some(2),
+        "Ada's Drafts place lists both drafts she wrote"
     );
 }
 
