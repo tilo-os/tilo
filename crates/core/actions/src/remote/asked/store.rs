@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use tilo_action_policy::Answer;
 use tilo_lock::MutexRecover as _;
 use zeroize::Zeroizing;
 
@@ -528,12 +529,37 @@ impl AskedStore {
                 }
                 Pending::ready(Err(refused(SECRET_GONE)))
             }
-            Ok(Admitted::Declined(caller, invocation, dispatch)) => {
-                Pending::ready(match self.dispatch(&dispatch).upgrade() {
+            Ok(Admitted::Declined(caller, invocation, dispatch, refusal)) => {
+                let dispatch = self.dispatch(&dispatch);
+                let declined = move || match dispatch.upgrade() {
                     Some(dispatch) => dispatch.declined(&caller, invocation),
                     // The call ended with the dispatch that kept it: nothing runs it.
                     None => Ok(()),
-                })
+                };
+                let Some((grant, person)) = refusal else {
+                    return Pending::ready(declined());
+                };
+                let Some(grants) = self.grants.get() else {
+                    self.reopen(at);
+                    return Pending::ready(Err(refused("No refusal can be written here")));
+                };
+                let written = grants.grant(&at.workspace, &person, grant);
+                let (done, answer) = pending();
+                let (store, at) = (Arc::clone(self), at.clone());
+                written.then(move |written| {
+                    done.complete(match written {
+                        Some(Ok(())) => declined(),
+                        Some(Err(why)) => {
+                            store.reopen(&at);
+                            Err(refused(&format!("The refusal was not written: {why}")))
+                        }
+                        None => {
+                            store.reopen(&at);
+                            Err(refused("The refusal was not written"))
+                        }
+                    });
+                });
+                answer
             }
             Ok(Admitted::Approved(caller, request, (dispatch, context))) => Pending::ready(
                 readmit(&self.dispatch(&dispatch), &caller, *request, &context),
@@ -570,6 +596,29 @@ impl AskedStore {
                 answer
             }
         }
+    }
+
+    /// The grant `resolution`, a person's answer to `record`, writes: an approve and grant's
+    /// lasting one. A call whose dispatch runs nothing on the answer is the asker's own to make
+    /// again, so their answer is the grant it is decided by then: approve gives it once, and
+    /// decline refuses it, where their app permissions show and change it.
+    fn grant_answered(
+        &self,
+        record: &Record,
+        resolution: Offer,
+    ) -> Result<Option<tilo_action_policy::Grant>, ActionCallError> {
+        let runs_nothing = self
+            .dispatch(&record.dispatch)
+            .upgrade()
+            .is_some_and(|dispatch| dispatch.runs_nothing());
+        Ok(match resolution {
+            Offer::ApproveAndGrant => Some(grant_of(record, Answer::Allow)?),
+            Offer::Approve if runs_nothing => Some(
+                grant_of(record, Answer::Allow)?.with_lifetime(tilo_action_policy::Lifetime::Once),
+            ),
+            Offer::Decline if runs_nothing => Some(grant_of(record, Answer::Deny)?),
+            Offer::Approve | Offer::Decline => None,
+        })
     }
 
     /// Check `answer` to the record `at` from `answering` and take the record out of asked.
@@ -627,10 +676,7 @@ impl AskedStore {
             }
             _ => {}
         }
-        let grant = match answer.resolution {
-            Offer::ApproveAndGrant => Some(grant_of(record)?),
-            Offer::Approve | Offer::Decline => None,
-        };
+        let grant = self.grant_answered(record, answer.resolution)?;
         let caller = record.caller.clone();
         let dispatch = record.dispatch.clone();
         let context = record.context.clone();
@@ -638,7 +684,12 @@ impl AskedStore {
         let admitted = if answer.resolution == Offer::Decline {
             record.status = Status::Declined;
             record.held = None;
-            Admitted::Declined(caller, record.invocation, dispatch)
+            Admitted::Declined(
+                caller,
+                record.invocation,
+                dispatch,
+                grant.map(|grant| (grant, person.to_owned())),
+            )
         } else if !record.sealed.is_empty() && held.is_none() {
             // Asked before this device started again: what it was asked with is gone, and it
             // never runs without it.
@@ -906,7 +957,13 @@ impl AskedStore {
 type KeptBy = (String, serde_json::Value);
 
 enum Admitted {
-    Declined(Caller, InvocationId, String),
+    /// Declined, with the refusal its person's answer writes, where it writes one.
+    Declined(
+        Caller,
+        InvocationId,
+        String,
+        Option<(tilo_action_policy::Grant, String)>,
+    ),
     /// Its sealed arguments are no longer held here ([`SECRET_GONE`]).
     Gone(Caller, InvocationId, String),
     Approved(Caller, Box<InvokeRequest>, KeptBy),
@@ -1029,44 +1086,64 @@ fn app_of(provider: &str) -> &str {
 }
 
 /// The grant an approve and grant of `record` gives: its asker the asked action on every
-/// resource of its type, at the action's own kind, until revoked, given by the person asked.
-fn grant_of(record: &Record) -> Result<tilo_action_policy::Grant, ActionCallError> {
+/// resource of its type, at the action's own kind, until revoked, given by the person asked,
+/// answering `answer`.
+fn grant_of(record: &Record, answer: Answer) -> Result<tilo_action_policy::Grant, ActionCallError> {
+    asked_grant(
+        &record.at.workspace,
+        &record.request,
+        &record.facts,
+        (answer, &record.person),
+    )
+}
+
+/// The grant a person's answer `answer` to an ask of `request` in `workspace`, showing `facts`,
+/// writes for its asker, given by `person`: what an approve and grant writes, and what a refusal
+/// of an app's own call writes with [`Answer::Deny`], under the same id.
+///
+/// # Errors
+/// A device's or a program's question, or an action that declares no kind or resource type.
+pub fn asked_grant(
+    workspace: &str,
+    request: &InvokeRequest,
+    facts: &AskedFacts,
+    (answer, person): (Answer, &str),
+) -> Result<tilo_action_policy::Grant, ActionCallError> {
     use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
-    let delegate = match &record.facts.by {
+    let delegate = match &facts.by {
         AskedBy::Agent(agent) => {
-            tilo_action_policy::Grantee::agent(agent.id.clone(), record.person.clone())
+            tilo_action_policy::Grantee::agent(agent.id.clone(), person.to_owned())
         }
         AskedBy::App { app, .. } => tilo_action_policy::Grantee::app(app.clone()),
         AskedBy::Device(_) | AskedBy::Program { .. } => {
             return Err(refused("A device's or a program's question grants nothing"));
         }
     };
-    let effect = record
-        .facts
+    let effect = facts
         .effect
         .ok_or_else(|| refused("This action declares no kind to grant"))?;
-    if record.facts.kind.is_empty() {
+    if facts.kind.is_empty() {
         return Err(refused("This action is on no resource type to grant"));
     }
     let (app, kind, action) = (
-        app_of(&record.request.target.provider),
-        record.facts.kind.clone(),
-        record.request.target.address.action.clone(),
+        app_of(&request.target.provider),
+        facts.kind.clone(),
+        request.target.address.action.clone(),
     );
     // The resource the call is on, where it names one other than its type's collection: one
     // site's "always" is not every site's.
-    let resource = &record.request.target.address.resource;
+    let resource = &request.target.address.resource;
     let scope = if resource.is_empty() || *resource == kind {
         AnswerScope::action(app, kind, action)
     } else {
         AnswerScope::resource(app, kind, resource.clone(), action)
     };
     Ok(answer_grant(
-        &record.at.workspace,
+        workspace,
         delegate,
         (&scope, effect),
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person(record.person.clone()),
+        answer,
+        tilo_action_policy::Grantee::person(person.to_owned()),
     ))
 }
 

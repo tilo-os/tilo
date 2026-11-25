@@ -1314,6 +1314,7 @@ impl Workspaces {
                     facts: &facts,
                 },
             )
+            .await
             .map_err(refused)?;
             return Err(refused(super::vault_release::call_asked_first(app)));
         }
@@ -1360,7 +1361,7 @@ impl Workspaces {
     /// Ask `app`'s person whether it may call the service `call` names with `item`, as an asked
     /// record whose "Approve and grant" writes the grant on that item at those places alone:
     /// unless one asks already.
-    fn ask_web_call(
+    async fn ask_web_call(
         &self,
         workspace: &str,
         app: &str,
@@ -1369,9 +1370,6 @@ impl Workspaces {
         target: &RemoteActionTarget,
         on: ItemIn<'_>,
     ) -> Result<(), String> {
-        let (store, records) = self
-            .vault_asks()
-            .ok_or("This device keeps no asked records, so nobody can be asked")?;
         let target = RemoteActionTarget {
             provider: target.provider.clone(),
             address: tilo_actions::ActionAddress::new(
@@ -1379,24 +1377,6 @@ impl Workspaces {
                 target.address.action.clone(),
             ),
         };
-        let waits = store.waiting_in(workspace).into_iter().any(|waiting| {
-            waiting
-                .caller
-                .acting()
-                .app()
-                .map(|app| app.to_string())
-                .as_deref()
-                == Some(app)
-                && store
-                    .kept_ask(&waiting.asked.record)
-                    .is_some_and(|kept| kept.request.target == target)
-        });
-        if waits {
-            return Ok(());
-        }
-        let caller = Caller::local_app(app)
-            .acting_for(hex::encode(self.device_cert().user_public_key))
-            .in_workspace(workspace);
         let title = if on.facts.title.trim().is_empty() {
             "a vault item".to_owned()
         } else {
@@ -1429,15 +1409,14 @@ impl Workspaces {
             plural: Some("this service".to_owned()),
             kind: person_vault::use_word(&person_vault::call_target()),
             effect: Some(ActionKind::Outside),
-            ..AskedFacts::by(super::asking::asked_by(&caller))
+            ..AskedFacts::default()
         };
         let request = InvokeRequest {
             target,
             ..request.clone()
         };
-        records
-            .write_asked(workspace, &caller, &request, &asked)
-            .map(drop)
+        self.ask_for_app(workspace, &self.app_asking(app, workspace), &request, asked)
+            .await
     }
 }
 

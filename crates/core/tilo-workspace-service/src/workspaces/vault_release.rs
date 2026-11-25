@@ -50,8 +50,9 @@ use zeroize::Zeroizing;
 use super::{WeakWorkspaces, Workspaces};
 use crate::work::Turn;
 
-/// The name the asks of an app's use of a vault item are kept under in the store of asked
-/// records: a release of the item, and a web call that carries its key.
+/// The name an app's asks are kept under in the store of asked records: a release of a vault
+/// item, a web call that carries its key, and any other use its own process asks for
+/// ([`Workspaces::ask_for_app`]).
 const VAULT_ASKS: &str = "vault-asks";
 
 /// What a release is written down as among the item's uses.
@@ -162,6 +163,15 @@ pub fn asked_first(app: &str) -> String {
     format!(
         "{app} may not read this vault item yet: your person is asked whether it may, once. Call \
          again once they allowed it."
+    )
+}
+
+/// What an app's call its person declined is refused with: it is not asked again.
+#[must_use]
+pub fn declined_by_person(app: &str) -> String {
+    format!(
+        "{app} may not do this: your person declined. They can allow it where the workspace's \
+         app permissions are."
     )
 }
 
@@ -667,6 +677,7 @@ impl Workspaces {
         }
         if !own && !self.app_reads(workspace, app, &item).await {
             self.ask_release(workspace, &caller, request, &item, &facts)
+                .await
                 .map_err(refused)?;
             return Err(refused(asked_first(app)));
         }
@@ -868,7 +879,7 @@ impl Workspaces {
 
     /// Ask the person `caller` acts for whether its app may read `item`, as an asked record
     /// whose "Approve and grant" writes the grant on that item alone: unless one asks already.
-    fn ask_release(
+    async fn ask_release(
         &self,
         workspace: &str,
         caller: &Caller,
@@ -876,27 +887,17 @@ impl Workspaces {
         item: &ItemRef,
         facts: &accounts::vault_items::ItemFacts,
     ) -> Result<(), String> {
-        let (store, records) = self
-            .vault_asks()
-            .ok_or("This device keeps no asked records, so nobody can be asked")?;
-        let app = caller.acting().app().map(|app| app.to_string());
-        let target = person_vault::release_target(item);
-        let waits = store.waiting_in(workspace).into_iter().any(|waiting| {
-            waiting.caller.acting().app().map(|app| app.to_string()) == app
-                && store
-                    .kept_ask(&waiting.asked.record)
-                    .is_some_and(|kept| kept.request.target == target)
-        });
-        if waits {
-            return Ok(());
-        }
-        let app = app.unwrap_or_default();
+        let app = caller
+            .acting()
+            .app()
+            .map(ToString::to_string)
+            .unwrap_or_default();
         let title = if facts.title.trim().is_empty() {
             "a vault item".to_owned()
         } else {
             facts.title.clone()
         };
-        let places: Vec<&str> = facts.places.iter().map(|place| place.as_str()).collect();
+        let places: Vec<&str> = facts.places.iter().map(Place::as_str).collect();
         let asked = AskedFacts {
             words: format!(
                 "{app} asks to read {title} in its own connection, for a protocol that needs \
@@ -912,15 +913,78 @@ impl Workspaces {
             plural: Some("this vault item".to_owned()),
             kind: person_vault::ITEM_KIND.to_owned(),
             effect: Some(tilo_actions::ActionKind::Read),
-            ..AskedFacts::by(super::asking::asked_by(caller))
+            ..AskedFacts::default()
         };
         let request = InvokeRequest {
-            target,
+            target: person_vault::release_target(item),
             ..request.clone()
         };
+        self.ask_for_app(workspace, caller, &request, asked).await
+    }
+
+    /// Ask the person `caller` acts for whether its app may make `request`, which the app's own
+    /// process made and the workspace grants it no use of yet, as an asked record shown as
+    /// `asked` says: unless the same app's ask of the same target waits already. Their answer
+    /// runs nothing. "Approve and grant" writes the grant on that action for the app alone, and
+    /// the app calls again on its own connection.
+    ///
+    /// # Errors
+    /// This device keeps no asked records, or the record was not written.
+    pub async fn ask_for_app(
+        &self,
+        workspace: &str,
+        caller: &Caller,
+        request: &InvokeRequest,
+        asked: AskedFacts,
+    ) -> Result<(), String> {
+        let asked = AskedFacts {
+            by: super::asking::asked_by(caller),
+            ..asked
+        };
+        let app = caller.acting().app().map(ToString::to_string);
+        // Their decline is the refusal it wrote, under the id an approve and grant writes: it
+        // stands, unasked, until they change it where the workspace's app permissions are.
+        let person = caller.acting_for_person().unwrap_or_default().to_owned();
+        let refusal = tilo_actions::remote::asked::asked_grant(
+            workspace,
+            request,
+            &asked,
+            (Answer::Deny, &person),
+        )
+        .map_err(|error| error.to_string())?;
+        let declined = self.policy_of(workspace).await.is_some_and(|policy| {
+            policy
+                .grants
+                .iter()
+                .any(|grant| grant.id == refusal.id && grant.answer == Answer::Deny)
+        });
+        if declined {
+            return Err(declined_by_person(app.as_deref().unwrap_or_default()));
+        }
+        let (store, records) = self
+            .vault_asks()
+            .ok_or("This device keeps no asked records, so nobody can be asked")?;
+        let waits = store.waiting_in(workspace).into_iter().any(|waiting| {
+            waiting.caller.acting().app().map(ToString::to_string) == app
+                && store
+                    .kept_ask(&waiting.asked.record)
+                    .is_some_and(|kept| kept.request.target == request.target)
+        });
+        if waits {
+            return Ok(());
+        }
         records
-            .write_asked(workspace, caller, &request, &asked)
+            .write_asked(workspace, caller, request, &asked)
             .map(drop)
+    }
+
+    /// The caller an app's own process acts as when it asks its person: the app, acting for this
+    /// device's person, in `workspace`.
+    #[must_use]
+    pub fn app_asking(&self, app: &str, workspace: &str) -> Caller {
+        Caller::local_app(app)
+            .acting_for(hex::encode(self.device_cert().user_public_key))
+            .in_workspace(workspace)
     }
 
     /// The store an app's asks are kept in, and the records they are written through: once the
@@ -978,9 +1042,10 @@ impl ActionProvider for Ended {
     }
 }
 
-/// The dispatch an app's asked use of a vault item is kept under. Its person's answer runs
-/// nothing: the secret never goes to a record, so their "Approve and grant" is the whole of it,
-/// written before this hears of it, and the app calls again on its own connection.
+/// The dispatch an app's asked use is kept under ([`Workspaces::ask_for_app`]). Its person's
+/// answer runs nothing: a secret never goes to a record, and a join is the app's own to make, so
+/// their "Approve and grant" is the whole of it, written before this hears of it, and the app
+/// calls again on its own connection.
 struct VaultAsks(WeakWorkspaces);
 
 impl VaultAsks {
@@ -997,6 +1062,10 @@ impl VaultAsks {
 impl AskedDispatch for VaultAsks {
     fn context(&self, _: InvocationId) -> Value {
         Value::Null
+    }
+
+    fn runs_nothing(&self) -> bool {
+        true
     }
 
     fn readmit(

@@ -26,6 +26,14 @@ import { nickname, voiceStatus } from "./rest.js";
 
 /// How often the workspace's frames are taken: one Opus frame.
 const PUMP_MS = 20;
+/// How many seconds a call the workspace refused waits before it is carried again: a join its
+/// person is being asked about is taken soon after they allow it, with nobody pressing anything
+/// again. Any other refusal, such as their decline, stands until they change it where the
+/// workspace's app permissions are, so it is tried again rarely, never spun against.
+export const CARRY_AGAIN_S = 3;
+export const CARRY_AFTER_NO_S = 120;
+/// What the daemon's refusal says while the person is being asked.
+const BEING_ASKED = "is asked whether it may";
 
 /// The account record's own path, where the bridge's state is.
 export const ACCOUNTS = `${SELF}/accounts`;
@@ -144,6 +152,12 @@ export class Carried {
     if (this.closed) return;
     for (const carried of this.carried.values()) {
       if (carried.ended) continue;
+      if (carried.refused) {
+        carried.waited = (carried.waited ?? 0) + 1;
+        const wait = carried.problem.includes(BEING_ASKED) ? CARRY_AGAIN_S : CARRY_AFTER_NO_S;
+        if (carried.waited >= wait && !carried.trying) this.#carryAgain(carried);
+        continue;
+      }
       // A call the bot lacked a permission for is joined once someone gives it.
       if (carried.lacking && carried.asked !== null && this.#missing(carried).length === 0) {
         carried.lacking = false;
@@ -151,6 +165,27 @@ export class Carried {
         continue;
       }
       this.#reportState(carried.guild, carried.pair.discord);
+    }
+  }
+
+  /// Carry `carried`'s pair again, which the workspace refused: once it takes it, the daemon asks
+  /// the bot in as for any carried call.
+  async #carryAgain(carried) {
+    carried.trying = true;
+    carried.waited = 0;
+    try {
+      await this.lane.carry({ outside: carried.pair.discord, tilo: carried.pair.tilo });
+      carried.refused = false;
+      carried.problem = "";
+      await this.#reportState(carried.guild, carried.pair.discord);
+    } catch (error) {
+      const problem = `${error?.message ?? error}`;
+      if (problem !== carried.problem) {
+        carried.problem = problem;
+        await this.#reportProblem(problem);
+      }
+    } finally {
+      carried.trying = false;
     }
   }
 

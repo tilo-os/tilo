@@ -266,12 +266,30 @@ impl Daemon {
             let until = tilo_clock::now()
                 .checked_add(JOIN_WAIT)
                 .ok_or("the join's wait reaches past what this clock holds")?;
-            let receipt = tilo_actions::remote::ActionProvider::invoke(&tree, &caller, request)
-                .wait_timeout(JOIN_WAIT)
-                .ok()
-                .flatten()
-                .ok_or("the device did not answer the join in time")?
-                .map_err(|error| error.to_string())?;
+            let joining = request.target.address.action == super::live_speaking::JOIN;
+            let receipt =
+                match tilo_actions::remote::ActionProvider::invoke(&tree, &caller, request.clone())
+                    .wait_timeout(JOIN_WAIT)
+                    .ok()
+                    .flatten()
+                    .ok_or("the device did not answer the join in time")?
+                {
+                    Ok(receipt) => receipt,
+                    // The workspace grants the app no join yet: its person is asked once, and the
+                    // app joins when it carries the call again after they allowed it.
+                    Err(tilo_actions::remote::ActionCallError::NotPermitted) if joining => {
+                        let workspaces = daemon.workspaces.copies().clone();
+                        let (asking, named) = (workspaces.app_asking(&app, &named), named.clone());
+                        let facts = super::live_speaking::asked_to_join(&app);
+                        block_on_owned(async move {
+                            workspaces
+                                .ask_for_app(&named, &asking, &request, facts)
+                                .await
+                        })?;
+                        return Err(super::live_speaking::join_asked_first(&app));
+                    }
+                    Err(error) => return Err(error.to_string()),
+                };
             // An admitted join runs on: it is answered once the device is in the call.
             let receipt = match receipt.status {
                 tilo_actions::remote::ReceiptStatus::Accepted => tilo_actions::remote::settle_with(

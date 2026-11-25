@@ -254,3 +254,48 @@ test("a server with no paired voice channel opens no call", async () => {
     host.carried.close();
   }
 });
+
+test("a call the workspace refused is carried again, and joined once it is taken", async () => {
+  const host = harness();
+  let refusals = 1;
+  const carry = host.lane.carry.bind(host.lane);
+  host.lane.carry = (pair) => {
+    if (refusals-- > 0) {
+      return Promise.reject(
+        new Error(
+          "so.tilo.discord may not join this workspace's calls yet: your person is asked " +
+            "whether it may, once. It joins once they allowed it.",
+        ),
+      );
+    }
+    return carry(pair);
+  };
+  try {
+    await host.carried.start();
+    expect(host.lane.carried).toEqual([]);
+    expect(host.lane.reports.at(-1).link).toMatchObject({ link: "refused", call: "458" });
+
+    // The person allowed it meanwhile: the next carry is taken, and the daemon's ask joins.
+    await until(() => host.lane.carried.length === 1, "the call carried again", 6_000);
+    host.lane.asks.push({ call: "458", status: "On Tilo: Grace" });
+    await until(() => host.voices.length === 1, "the voice connection");
+  } finally {
+    host.carried.close();
+  }
+});
+
+test("a call its person declined is not carried again at once", async () => {
+  const host = harness();
+  let tries = 0;
+  host.lane.carry = () => {
+    tries += 1;
+    return Promise.reject(new Error("so.tilo.discord may not do this: your person declined."));
+  };
+  try {
+    await host.carried.start();
+    await new Promise((resolve) => setTimeout(resolve, 4_500));
+    expect(tries).toBe(1);
+  } finally {
+    host.carried.close();
+  }
+});

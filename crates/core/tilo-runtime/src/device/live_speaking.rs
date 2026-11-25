@@ -86,6 +86,33 @@ pub(crate) fn request(action: &str, argument: serde_json::Value) -> InvokeReques
     }
 }
 
+/// What the person is shown when `app`, which carries an outside service's call, asks to join
+/// the workspace's calls with no grant there yet: their "Approve and grant" lets it join them from
+/// then on, as the app acting by itself, and nothing else.
+pub(crate) fn asked_to_join(app: &str) -> tilo_actions::remote::asked::AskedFacts {
+    tilo_actions::remote::asked::AskedFacts {
+        words: format!(
+            "{app} asks to join this workspace's calls, to carry the people of an outside \
+             service's call into them and what is said here back out. Approve and grant, and it \
+             joins a call paired with one it carries whenever someone is in it."
+        ),
+        on: Some("this workspace's calls".to_owned()),
+        verb: "join".to_owned(),
+        plural: Some("this workspace's calls".to_owned()),
+        kind: tilo_live::link::SESSIONS.to_owned(),
+        effect: Some(ActionKind::Outside),
+        ..tilo_actions::remote::asked::AskedFacts::default()
+    }
+}
+
+/// What an app's join waits on while its person is asked whether it may join calls.
+pub(crate) fn join_asked_first(app: &str) -> String {
+    format!(
+        "{app} may not join this workspace's calls yet: your person is asked whether it may, \
+         once. It joins once they allowed it."
+    )
+}
+
 /// What one app said of the person under one key: its app, the key, and the word.
 type AppWord = (String, PresenceKey, Payload);
 

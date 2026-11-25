@@ -27,7 +27,7 @@ use super::RemoteActionTarget;
 mod store;
 pub use store::{
     ANSWERED, ANSWERED_THERE, AskedStore, MOST_WAITING, NOT_YOURS, NOTHING_ASKED, ON_YOUR_DEVICE,
-    SECRET_GONE, TOO_MANY_WAIT, Waiting,
+    SECRET_GONE, TOO_MANY_WAIT, Waiting, asked_grant,
 };
 
 /// What a frame carrying an approve no resolve handed back is refused with
@@ -729,6 +729,14 @@ pub trait AskedDispatch: Send + Sync {
         caller: &super::Caller,
         invocation: super::InvocationId,
     ) -> Result<(), super::ActionCallError>;
+
+    /// Whether this dispatch runs nothing on its person's answer: the asker makes the call again
+    /// itself (an app's own process), so the answer is the grant that call is decided by. Its
+    /// person's approve then writes a grant for one use, and their decline a refusal, both where
+    /// their app permissions show and change them.
+    fn runs_nothing(&self) -> bool {
+        false
+    }
 
     /// End `invocation`, which `caller` asked for, withdrawn by whoever asked it before its
     /// person answered ([`AskedStore::withdraw`]): it ends cancelled, saying `message`.
