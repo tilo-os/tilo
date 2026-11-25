@@ -175,10 +175,12 @@ export class Carried {
     carried.waited = 0;
     try {
       await this.lane.carry({ outside: carried.pair.discord, tilo: carried.pair.tilo });
+      if (this.closed) return;
       carried.refused = false;
       carried.problem = "";
       await this.#reportState(carried.guild, carried.pair.discord);
     } catch (error) {
+      if (this.closed) return;
       const problem = `${error?.message ?? error}`;
       if (problem !== carried.problem) {
         carried.problem = problem;
@@ -260,9 +262,9 @@ export class Carried {
     await this.#reportState(carried.guild, carried.pair.discord);
     try {
       const server = await this.gateway.joinVoice(carried.guild, carried.pair.discord);
-      if (carried.wanted) await this.#open(carried, server);
+      if (carried.wanted && !this.closed) await this.#open(carried, server);
     } catch (error) {
-      if (!carried.wanted) return;
+      if (!carried.wanted || this.closed) return;
       carried.failed = true;
       carried.problem = `${error?.message ?? error}`;
       await this.#reportProblem(carried.problem);
@@ -343,7 +345,7 @@ export class Carried {
   }
 
   async #open(carried, server) {
-    if (carried.voice || carried.failed) return;
+    if (carried.voice || carried.failed || this.closed) return;
     carried.joining = true;
     try {
       const voice = await this.makeVoice({
@@ -364,11 +366,17 @@ export class Carried {
         },
         log: this.log,
       });
+      // A bridge that stopped, or a call left, while the connection opened keeps nothing open.
+      if (this.closed || !carried.wanted) {
+        voice.close();
+        return;
+      }
       carried.voice = voice;
       carried.opened = true;
       carried.problem = "";
       await this.#reportProblem("");
     } catch (error) {
+      if (this.closed) return;
       carried.failed = true;
       carried.problem = `${error?.message ?? error}`;
       await this.#reportProblem(carried.problem);
@@ -483,7 +491,14 @@ export class Carried {
     this.closed = true;
     if (this.pump) clearInterval(this.pump);
     if (this.timer) clearInterval(this.timer);
-    for (const carried of this.carried.values()) carried.voice?.close();
+    this.pump = null;
+    this.timer = null;
+    // Nothing it was opening or trying again goes on once it stopped.
+    for (const carried of this.carried.values()) {
+      carried.wanted = false;
+      carried.ended = true;
+      carried.voice?.close();
+    }
     this.carried.clear();
   }
 }

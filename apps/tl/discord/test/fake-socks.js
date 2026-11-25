@@ -42,7 +42,12 @@ export async function fakeProxy() {
     relay.send(wrap(at, packet), client.port, client.address);
   });
 
+  let stopped = false;
+  const sockets = new Set();
   const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => {});
     let buffer = Buffer.alloc(0);
     let stage = 0;
     socket.on("data", (chunk) => {
@@ -62,6 +67,11 @@ export async function fakeProxy() {
           const head = buffer.subarray(0, 10);
           buffer = buffer.subarray(10);
           requests.push({ command: head[1] });
+          if (stopped) {
+            // A proxy that stopped carries nothing: "general failure", as SOCKS says it.
+            socket.end(Buffer.from([0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]));
+            return;
+          }
           const at = relay.address();
           socket.write(
             Buffer.concat([
@@ -89,8 +99,10 @@ export async function fakeProxy() {
     /// Where the client sent from, once it has sent anything.
     clientAddress: () => client,
     stop() {
+      stopped = true;
       relay.close();
       server.close();
+      for (const socket of sockets) socket.destroy();
     },
   };
 }

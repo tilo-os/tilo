@@ -299,3 +299,35 @@ test("a call its person declined is not carried again at once", async () => {
     host.carried.close();
   }
 });
+
+test("a bridge that stops tries its refused call no more", async () => {
+  const host = harness();
+  let tries = 0;
+  host.lane.carry = () => {
+    tries += 1;
+    return Promise.reject(
+      new Error("so.tilo.discord may not join this workspace's calls yet: your person is asked"),
+    );
+  };
+  await host.carried.start();
+  expect(tries).toBe(1);
+  host.carried.close();
+  await new Promise((resolve) => setTimeout(resolve, 3_500));
+  expect(tries).toBe(1);
+});
+
+test("a bridge that stops while it joins a call opens no voice connection", async () => {
+  let joined;
+  const host = harness();
+  host.gateway.joinVoice = () =>
+    new Promise((resolve) => {
+      joined = resolve;
+    });
+  await host.carried.start();
+  host.lane.asks.push({ call: "458", status: "On Tilo: Grace" });
+  await until(() => joined, "the bot asked into Discord's call");
+  host.carried.close();
+  joined({ endpoint: "c-sjc01.discord.media", token: "token-1", session: "session-1" });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(host.voices).toEqual([]);
+});
