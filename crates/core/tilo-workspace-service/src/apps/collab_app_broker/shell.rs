@@ -346,7 +346,7 @@ pub(super) fn answer(shell: Option<Shell>, call: ShellCall) -> ShellAnswer {
             | ShellCall::Vault(_)
             | ShellCall::Receipt { .. }
             | ShellCall::KeepsReceipts { .. }
-            | ShellCall::Authorizes { .. }) => kept(&services.workspaces, call).await,
+            | ShellCall::Authorizes { .. }) => Box::pin(kept(&services.workspaces, call)).await,
             ShellCall::Vouch(vouch) => vouch_for(&shell, vouch)?,
             ShellCall::Processes => {
                 if services.processes.is_none() {
@@ -934,7 +934,7 @@ async fn kept(workspaces: &crate::workspaces::Workspaces, call: ShellCall) -> Sh
             command,
         } => ShellReply::Resources(resources(workspaces, &workspace, &app, &command).await),
         ShellCall::Vault(call) => ShellReply::Vault(
-            vault(workspaces, call)
+            Box::pin(vault(workspaces, call))
                 .await
                 .map(runtime_collab::wire::shell::VaultAnswer),
         ),
@@ -1052,15 +1052,14 @@ async fn vault(
             let health = accounts::SyncHealth::from_word(&health)
                 .ok_or_else(|| format!("{health} is no account's sync health"))?;
             let by = Caller::authenticated(person, device).in_workspace(workspace.clone());
-            workspaces
-                .report_account_sync(
-                    (&workspace, by.acting(), None),
-                    &account,
-                    health,
-                    signed_in,
-                    &message,
-                )
-                .await?;
+            Box::pin(workspaces.report_account_sync(
+                (&workspace, by.acting(), None),
+                &account,
+                health,
+                signed_in,
+                &message,
+            ))
+            .await?;
             Ok(account)
         }
         VaultCall::WebsiteSession {
@@ -1068,8 +1067,7 @@ async fn vault(
             person,
             command,
         } => {
-            let reply = workspaces
-                .website_session_ask(&workspace, person, command)
+            let reply = Box::pin(workspaces.website_session_ask(&workspace, person, command))
                 .await?;
             serde_json::to_string(&reply).map_err(|error| error.to_string())
         }

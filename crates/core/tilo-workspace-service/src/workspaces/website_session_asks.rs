@@ -41,20 +41,19 @@ impl Workspaces {
             tracing::warn!(%why, "a website session was not answered");
             UNAVAILABLE.to_owned()
         };
-        let kept = self
-            .website_sessions(workspace, SERVICE_SESSION_TYPE)
+        let kept = Box::pin(self.website_sessions(workspace, SERVICE_SESSION_TYPE))
             .await
             .map_err(unavailable)?;
         let reply = match decide(identity, kept, command)? {
             Decided::Answered(reply) => reply,
             Decided::Open(account, session) => {
-                self.website_session_opened(workspace, &account, BROWSER)
+                Box::pin(self.website_session_opened(workspace, &account, BROWSER))
                     .await
                     .map_err(unavailable)?;
                 Reply::Resolved { session }
             }
             Decided::Forget(account, forgotten) => {
-                self.forget_website_session(workspace, &account)
+                Box::pin(self.forget_website_session(workspace, &account))
                     .await
                     .map_err(unavailable)?;
                 forgotten

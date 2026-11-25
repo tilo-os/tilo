@@ -239,18 +239,17 @@ impl Host {
 
     /// This device founds `record` of Notes in `workspace`.
     async fn write(&self, workspace: &str, record: &str) {
-        self.workspaces()
-            .own_write(
-                workspace,
-                (NOTES, record),
-                None,
-                &snapshot("text", "milk"),
-                true,
-                true,
-                None,
-            )
-            .await
-            .expect("the device writes its record");
+        Box::pin(self.workspaces().own_write(
+            workspace,
+            (NOTES, record),
+            None,
+            &snapshot("text", "milk"),
+            true,
+            true,
+            None,
+        ))
+        .await
+        .expect("the device writes its record");
     }
 
     /// `workspace` keeps `grants`, as its person decided.

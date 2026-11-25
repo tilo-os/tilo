@@ -401,11 +401,11 @@ impl Workspaces {
         (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
         account: &accounts::Account,
     ) -> Result<(), String> {
-        self.change_workspace_accounts((workspace, by, call), |held| {
+        Box::pin(self.change_workspace_accounts((workspace, by, call), |held| {
             let edit = (held.account(account.id.as_str()).as_ref() != Some(account))
                 .then(|| AccountList::saving(account));
             Ok((edit.into_iter().collect(), ()))
-        })
+        }))
         .await
     }
 
@@ -421,7 +421,7 @@ impl Workspaces {
         keep: &[accounts::Account],
         remove: &[&str],
     ) -> Result<(), String> {
-        self.change_workspace_accounts((workspace, by, call), |held| {
+        Box::pin(self.change_workspace_accounts((workspace, by, call), |held| {
             let mut edits: Vec<tilo_resource::Invoke<AccountList>> = Vec::new();
             for id in remove {
                 if held.account(id).is_some() {
@@ -437,7 +437,7 @@ impl Workspaces {
                 }
             }
             Ok((edits, ()))
-        })
+        }))
         .await
     }
 
