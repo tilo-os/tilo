@@ -306,8 +306,8 @@ impl AppBrokerState {
 /// The descriptor Files' `verb` on the workspace's own folder is admitted under.
 fn change_descriptor(verb: &str) -> ActionDescriptor {
     let mut descriptor = open_descriptor();
-    descriptor.address.action = verb.to_owned();
-    descriptor.action_label = verb.to_owned();
+    verb.clone_into(&mut descriptor.address.action);
+    verb.clone_into(&mut descriptor.action_label);
     descriptor.description =
         Some("Change the workspace's own folder by paths in it; `undo` takes a call back".into());
     descriptor.contract.result = tilo_actions::ResultSpec::Json {

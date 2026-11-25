@@ -24,6 +24,9 @@ use ui::history_source::verbs::HistoryEdit;
 use super::{OpenedFiles, Putting, put_scope};
 use crate::apps::services::FilesPutCall;
 
+/// One verb's change of the tree, answered with what the verb answers.
+type TreeChange<'a> = Box<dyn FnMut(&mut Namespace) -> Result<Value, String> + 'a>;
+
 /// The most text one `write-file` takes, as Files on a device does: a longer file is put into
 /// the workspace and named by its `content`.
 const MOST_TEXT_BYTES: usize = 256 * 1024;
@@ -367,7 +370,7 @@ impl OpenedFiles {
             .and_then(|context| context.source_invocation);
         let context = acting.clone().unwrap_or_default();
         let now = tilo_clock::unix_now_ms();
-        let mut change: Box<dyn FnMut(&mut Namespace) -> Result<Value, String> + '_> = match verb {
+        let mut change: TreeChange<'_> = match verb {
             WRITE_FILE => {
                 let writing = Writing::named(self, workspace, arguments)?;
                 let sealing = self.sealing(workspace)?;
@@ -388,15 +391,14 @@ impl OpenedFiles {
                 })
             }
             UNDO => Box::new(|tree| {
-                let taken = match arguments.get("step").and_then(Value::as_str) {
-                    Some(step) => undo_step(tree, step.trim(), &context)?,
-                    None => {
-                        let id = word(arguments, "invocation")?;
-                        let undone = uuid::Uuid::parse_str(&id)
-                            .map(InvocationId)
-                            .map_err(|_| format!("`{id}` names no call"))?;
-                        undo_call(tree, undone, &context)?
-                    }
+                let taken = if let Some(step) = arguments.get("step").and_then(Value::as_str) {
+                    undo_step(tree, step.trim(), &context)?
+                } else {
+                    let id = word(arguments, "invocation")?;
+                    let undone = uuid::Uuid::parse_str(&id)
+                        .map(InvocationId)
+                        .map_err(|_| format!("`{id}` names no call"))?;
+                    undo_call(tree, undone, &context)?
                 };
                 Ok(json!({
                     "action": UNDO,

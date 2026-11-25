@@ -299,7 +299,11 @@ impl Put {
         arguments: &Value,
         keys: (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
     ) -> tilo_actions::remote::InvokeRequest {
-        self.call_signed_by(tilo_actions::remote::APPLICATION_OPEN_ACTION, arguments, keys)
+        self.call_signed_by(
+            tilo_actions::remote::APPLICATION_OPEN_ACTION,
+            arguments,
+            keys,
+        )
     }
 
     /// Files' `action` of `arguments`, signed by the workspace's owner on their device.
@@ -811,7 +815,7 @@ fn names(listed: &Value) -> Vec<String> {
 /// With no folder mounted, a caller keeps a folder for a task by paths in the workspace: a folder
 /// made with the one on the way, a file written from text that writes over nothing unless asked,
 /// a folder renamed, moved and copied, the trash taking one, and each call taken back by the
-/// invocation it answered. A device or a path out of the workspace changes nothing.
+/// invocation it answered.
 #[tokio::test]
 async fn a_folder_is_kept_by_paths_and_each_call_taken_back() {
     let put = fixture().await;
@@ -904,7 +908,16 @@ async fn a_folder_is_kept_by_paths_and_each_call_taken_back() {
     put.change("undo", &json!({"invocation": gone["invocation"]}))
         .unwrap();
     assert_eq!(listed("Tasks/12 Plan"), ["Drafts", "report.md", "sources"]);
+}
 
+/// A call naming a device, a path out of the workspace, a write with nothing to write or a call
+/// that changed nothing is refused, and changes nothing.
+#[tokio::test]
+async fn a_call_out_of_the_workspace_changes_nothing() {
+    let put = fixture().await;
+    put.change("new-folder", &json!({"parent": "Tasks", "name": "12 Plan"}))
+        .unwrap();
+    let listed = |folder: &str| names(&read(&put, tree::LIST, &json!({"folder": folder})).unwrap());
     for (verb, arguments, why) in [
         (
             "new-folder",
@@ -930,9 +943,5 @@ async fn a_folder_is_kept_by_paths_and_each_call_taken_back() {
         let said = put.change(verb, &arguments).unwrap_err();
         assert!(said.contains(why), "{verb} {arguments}: {said}");
     }
-    assert_eq!(
-        listed(""),
-        ["Archive", "Inbox", "Tasks"],
-        "a refused call changed nothing"
-    );
+    assert_eq!(listed(""), ["Tasks"], "a refused call changed nothing");
 }
