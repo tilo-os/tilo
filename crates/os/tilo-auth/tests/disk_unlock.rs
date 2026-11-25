@@ -1,4 +1,4 @@
-//! A machine enrols its volume's sibling unlock through its daemon, as `tilo-auth sibling enrol`
+//! A machine sets up its volume's unlock through its daemon, as `tilo-auth sibling enrol`
 //! does: the daemon has the person's root certify the boot key, seals the sibling half to their
 //! secret-sync key and publishes the enrolment in this device's entry of their devices. At boot,
 //! the half the person's devices carry opens the volume.
@@ -341,7 +341,7 @@ fn carried_half(daemon: &DaemonPlace, root: &SigningIdentity, cert: &DeviceCert,
         .expose()
 }
 
-/// A machine enrols its volume's sibling unlock through its daemon, which keeps the person's root
+/// A machine sets up its volume's unlock through its daemon, which keeps the person's root
 /// here, and at boot the half their devices carry opens the volume, answering its passphrase
 /// prompt; every way the enrolment, the header or the answer can be wrong is refused, and with
 /// no daemon running the enrolment says so.
@@ -411,7 +411,7 @@ fn sets_up_and_opens(profile: &Path, root: SigningIdentity) {
         Sealing::Cleartext,
         false,
     )
-    .expect_err("no daemon enrols the boot");
+    .expect_err("no daemon sets up the boot");
     assert!(
         format!("{refused:#}").contains("the device service isn't running on this computer"),
         "{refused:#}"
@@ -451,7 +451,7 @@ fn sets_up_and_opens(profile: &Path, root: SigningIdentity) {
     // The comforts token is there first, so the sibling token is found among
     // others.
     luks::write_comforts(&runner, &ws, &device, &SignInComforts::default()).unwrap();
-    run(&args(), machine).expect("the daemon enrols the volume");
+    run(&args(), machine).expect("the daemon sets up the volume");
     assert_eq!(slots(&device), ["0", "1"]);
     assert!(sibling::enrolled(&runner, &device));
     assert!(
@@ -643,7 +643,7 @@ fn sets_up_and_opens(profile: &Path, root: SigningIdentity) {
     assert!(!sibling::enrolled(&runner, &device));
     assert!(luks::comforts(&runner, &device).unwrap().is_some());
 
-    // A machine with a TPM that requires one enrols with it: the material is
+    // A machine with a TPM that requires one sets up with it: the material is
     // sealed to the TPM, and the key that attests its boot goes along.
     let swtpm = match Swtpm::start() {
         Ok(swtpm) => swtpm,

@@ -86,7 +86,7 @@ pub(crate) type Calls = Arc<std::sync::Mutex<HashMap<InvocationId, InvocationSta
 pub(crate) struct Founding {
     /// The person's services, and the person they serve, once they run.
     serving: std::sync::Mutex<Option<([u8; 32], Arc<super::ticket::Tickets>)>>,
-    /// What enrols this device's boot key, once the person's services run.
+    /// What sets up this device's boot key, once the person's services run.
     enrolling: std::sync::Mutex<Option<Arc<super::boot_unlock::BootUnlock>>>,
     /// Told when they do.
     announced: tokio::sync::Notify,

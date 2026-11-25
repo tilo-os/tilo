@@ -32,7 +32,7 @@
 //!
 //! # Enrolment
 //!
-//! A device enrols its boot key with the `certifyKey` device action and an
+//! A device sets up its boot key with the `certifyKey` device action and an
 //! [`EnrolRequest`]: run under the person's root where the device keeps it,
 //! and otherwise asked of a device of theirs that does, where the person
 //! answers it. The enrolling device seals its sibling half to the person's

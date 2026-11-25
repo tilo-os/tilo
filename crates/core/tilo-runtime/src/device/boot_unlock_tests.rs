@@ -1,4 +1,4 @@
-//! A computer that does not keep its person's root enrols its boot key for disk unlock through one
+//! A computer that does not keep its person's root sets up its boot key for disk unlock through one
 //! of theirs that does: the root device asks the person which computer and which key, their yes
 //! certifies the boot key and the computer's disk unlocks with the half it published, their no
 //! leaves it locked and says so, and with no root device reachable the computer is told so before
@@ -6,8 +6,8 @@
 //!
 //! The two devices are the person's laptop, which keeps their root in this account's identity
 //! store, and their desk, on its own endpoint, which keeps none. Both run the daemon's own
-//! dispatch of the person's device actions over the person's workspace, and the desk enrols
-//! through the daemon's `setUpUnlock`.
+//! dispatch of the person's device actions over the person's workspace, and the desk sets up its
+//! unlock through the daemon's `setUpUnlock`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -314,7 +314,7 @@ async fn a_computer_without_the_root_sets_up_its_disk_unlock_through_one_that_ke
     std::fs::create_dir_all(&desk_store).unwrap();
     let person_on_laptop = Caller::authenticated(person, laptop_cert.device_public_key);
 
-    // The desk enrols a boot. The laptop asks the person, naming the desk and the boot key, and
+    // The desk sets up a boot. The laptop asks the person, naming the desk and the boot key, and
     // their yes there certifies it.
     home.env().set("XDG_CONFIG_HOME", &desk_store);
     let boot = a_boot(1);

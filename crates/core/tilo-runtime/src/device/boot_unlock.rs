@@ -43,7 +43,7 @@ use super::workspaces::ServiceWorkspaces;
 /// The fact a device publishes about disk unlock under, in its own entry of the person's devices.
 pub(crate) const UNLOCK_FACT: &str = "unlock";
 
-/// What enrols a boot here: the device's certificate, its dispatch of its person's device
+/// What sets up a boot's unlock here: the device's certificate, its dispatch of its person's device
 /// actions, and the workspaces it publishes the enrolment in. Installed once the person's services
 /// run.
 pub(crate) struct BootUnlock {

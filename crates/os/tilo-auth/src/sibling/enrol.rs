@@ -62,12 +62,12 @@ pub struct Args {
     /// anyone holding the disk.
     #[arg(long = "network")]
     pub networks: Vec<String>,
-    /// Keep the volume's sibling unlock and only choose its unlock networks
+    /// Keep the volume's unlock and only choose its unlock networks
     /// again: the `--network` list replaces the earlier one, and none leaves
     /// wired links only. Needs no passphrase and no signed-in session.
     #[arg(long)]
     pub replace_networks: bool,
-    /// The account whose daemon enrols the boot key, on a machine whose
+    /// The account whose daemon sets up the boot key, on a machine whose
     /// daemon runs as that person's own service. Without it this process's
     /// own account's daemon is asked.
     #[arg(long)]
@@ -174,7 +174,7 @@ impl Registrar for DaemonRegistrar {
 /// Where a login account keeps its identity records, relative to its home.
 const IDENTITY_DIR_IN_HOME: &str = ".config/tilo/identity";
 
-/// The daemon that enrols the boot: this account's, or the one `session_uid` names on
+/// The daemon that sets up the boot: this account's, or the one `session_uid` names on
 /// a machine whose daemon runs as the system unit.
 fn local_daemon(session_uid: Option<u32>) -> Result<DaemonPlace> {
     let ours = rustix::process::geteuid().as_raw();
