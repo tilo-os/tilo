@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one range for all of them: the image serves
 # every version from `oldest` to `version`.
 name = "runtime"
-version = 51
+version = 52
 version_const = "crates/core/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 oldest_const = "crates/core/runtime-portal/src/lib.rs:OLDEST_RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
@@ -585,12 +585,10 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "IMPORTS::engine_call" = "iii -> i"
 "IMPORTS::engine_cancel" = "i -> i"
 "IMPORTS::engine_check" = "ii -> i"
+"IMPORTS::engine_job" = "i -> i"
 "IMPORTS::engine_picture" = "iii -> i"
-"IMPORTS::engine_run" = "iii -> i"
-"IMPORTS::engine_start" = "iii -> i"
-"IMPORTS::engine_start_done" = "iiii -> i"
+"IMPORTS::engine_start" = "iiiii -> i"
 "IMPORTS::engine_state" = "i -> i"
-"IMPORTS::engine_status" = "i -> i"
 "IMPORTS::engine_stream" = "iii -> i"
 "IMPORTS::entry_parts" = "ii -> i"
 "IMPORTS::enum_get_f" = "ii -> f"
@@ -688,6 +686,10 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "IMPORTS::foreign_ref" = "iii -> i"
 "IMPORTS::grep" = "iii -> i"
 "IMPORTS::group_by" = "ii -> i"
+"IMPORTS::held_close" = "i -> i"
+"IMPORTS::held_open" = "iiii -> i"
+"IMPORTS::held_said" = "i -> i"
+"IMPORTS::held_send" = "ii -> i"
 "IMPORTS::ident_part" = "ii -> i"
 "IMPORTS::int_abs" = "l -> l"
 "IMPORTS::int_clamp" = "lll -> l"

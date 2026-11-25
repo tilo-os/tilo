@@ -67,7 +67,7 @@ hosts = [
 secrets = "via-host"
 
 [sandbox.services]
-collab = "optional@51"
+collab = "optional@52"
 
 [entrypoint]
 bin             = "bin/discord"
