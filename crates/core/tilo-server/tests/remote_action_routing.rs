@@ -194,7 +194,13 @@ async fn a_request_addressed_to_another_device_is_passed_on() {
     .expect("the page runs the invocation");
     assert_eq!(receipt.invocation, id);
     assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
-    let seen: Vec<_> = held.callers.lock().unwrap().iter().map(Caller::kept).collect();
+    let seen: Vec<_> = held
+        .callers
+        .lock()
+        .unwrap()
+        .iter()
+        .map(Caller::kept)
+        .collect();
     assert_eq!(
         seen,
         [Caller::authenticated(user.user_pk, a.device_pubkey())

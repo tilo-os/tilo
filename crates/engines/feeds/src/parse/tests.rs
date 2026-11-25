@@ -19,7 +19,11 @@ fn a_feed_gives_its_title_and_its_items_facts_and_body() {
     assert_eq!(article.title, "First");
     assert_eq!(article.url, "https://x.com/1");
     assert!(article.published > 0, "it was published");
-    assert!(article.summary.contains("Hello & welcome"), "{}", article.summary);
+    assert!(
+        article.summary.contains("Hello & welcome"),
+        "{}",
+        article.summary
+    );
     assert_eq!(article.body, "Hello & welcome");
 }
 

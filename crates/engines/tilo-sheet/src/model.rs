@@ -586,7 +586,10 @@ impl LanguageWords {
 }
 
 impl tilo_formats::Words for LanguageWords {
-    #[allow(clippy::arithmetic_side_effects, reason = "a month index is clamped to 1..=12")]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a month index is clamped to 1..=12"
+    )]
     fn word(&self, key: &str, args: &[(&str, tilo_formats::Word)]) -> String {
         let arg = |name: &str| {
             args.iter()
@@ -667,7 +670,10 @@ pub fn weekday_from_serial(serial: f64) -> u32 {
 }
 
 /// `days_from_civil` inverted, bounded to the range a serial date can mean.
-#[allow(clippy::arithmetic_side_effects, reason = "the conversion stays inside i64 for the clamped years")]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "the conversion stays inside i64 for the clamped years"
+)]
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     // Proleptic Gregorian days to a civil date, bounded first so the arithmetic cannot overflow.
     let z = z.clamp(-4_000_000, 4_000_000).saturating_add(719_468);
@@ -687,7 +693,10 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 /// Days since the Unix epoch for a civil date, with the year bounded first.
-#[allow(clippy::arithmetic_side_effects, reason = "the conversion stays inside i64 for the clamped years")]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "the conversion stays inside i64 for the clamped years"
+)]
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     // Proleptic Gregorian civil date to days since 1970-01-01, the year bounded first.
     let month = i64::from(m.clamp(1, 12));
@@ -798,7 +807,10 @@ mod tests {
         {
             assert_eq!(format_currency(1234.5, Currency::USD), "$1,234.50");
             assert_eq!(format_currency(-1200.0, Currency::USD), "-$1,200.00");
-            assert_eq!(format_currency(1234.5, Currency::EUR), "1.234,50\u{00A0}\u{20AC}");
+            assert_eq!(
+                format_currency(1234.5, Currency::EUR),
+                "1.234,50\u{00A0}\u{20AC}"
+            );
             assert_eq!(format_currency(99.9, Currency::GBP), "\u{00A3}99.90");
             assert_eq!(format_currency(1234.5, Currency::JPY), "\u{00A5}1,235");
             assert_eq!(format_currency(50.0, Currency::CHF), "50.00\u{00A0}CHF");

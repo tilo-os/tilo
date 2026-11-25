@@ -24,7 +24,6 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC};
 use serde::Deserialize;
 use tilo_secrets::{PutOptions, SecretStore};
 
-
 /// The longest one request may take. A server that never answers is a failure with a reason,
 /// not a job that waits forever.
 pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -714,7 +713,11 @@ mod tests {
         ] {
             let mut ask = ask("GET", base);
             ask.params = vec![("q".into(), "rust lang".into())];
-            assert_eq!(build_outgoing(APP, &ask).unwrap().url, expected, "base: {base}");
+            assert_eq!(
+                build_outgoing(APP, &ask).unwrap().url,
+                expected,
+                "base: {base}"
+            );
 
             ask.params.clear();
             assert_eq!(build_outgoing(APP, &ask).unwrap().url, base);
@@ -818,7 +821,10 @@ mod tests {
     fn a_credential_is_kept_and_forgotten_on_this_device() {
         tilo_secrets::keep_in_memory_for_process();
         let reference = keep_credential(APP, "private-token").unwrap();
-        assert_eq!(credential(APP, &reference).as_deref(), Some("private-token"));
+        assert_eq!(
+            credential(APP, &reference).as_deref(),
+            Some("private-token")
+        );
         forget_credential(APP, &reference).unwrap();
         assert_eq!(credential(APP, &reference), None);
 
@@ -1009,6 +1015,9 @@ mod fetch_tests {
             std::time::Duration::from_millis(200),
         );
         let reason = answer.expect_err("no answer");
-        assert!(reason.contains("no answer") || reason.contains("could not reach"), "{reason}");
+        assert!(
+            reason.contains("no answer") || reason.contains("could not reach"),
+            "{reason}"
+        );
     }
 }

@@ -16,7 +16,6 @@
 //! is identity — see the test at the bottom). A foreign `.odp` that lacks the
 //! `qslides:` attributes still imports structurally via the native geometry.
 
-
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::assigning_clones,
@@ -36,14 +35,14 @@ use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::path::Path;
 
-use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
 use crate::Pictures;
 use crate::colour::{Palette, Rgb as Color};
 use crate::model::Block;
+use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
 
 use crate::model::{
-    Background, Deck, DeckLook, Element, ElementKind, Layout, PaletteKind, SLIDE_H, SLIDE_W,
-    Slide, TextAlign,
+    Background, Deck, DeckLook, Element, ElementKind, Layout, PaletteKind, SLIDE_H, SLIDE_W, Slide,
+    TextAlign,
 };
 
 /// Physical page size we map the 1280×720 slide space onto (16:9, 25.4 cm
@@ -217,7 +216,11 @@ impl AutoStyles {
         match fill {
             Some(fill) => {
                 push_attr(&mut properties, "draw:fill", "solid");
-                push_attr(&mut properties, "draw:fill-color", &crate::colour::to_hex(fill));
+                push_attr(
+                    &mut properties,
+                    "draw:fill-color",
+                    &crate::colour::to_hex(fill),
+                );
                 let alpha = 255_u8;
                 if alpha < u8::MAX {
                     let percent = f64::from(alpha) * 100.0 / 255.0;
@@ -557,9 +560,7 @@ fn package_error(error: ZipError) -> std::io::Error {
 }
 
 pub(crate) fn validate_imported_deck(deck: &Deck) -> std::io::Result<()> {
-    if !crate::within_limits(deck)
-        || deck.title.chars().count() > MAX_IMPORTED_TEXT_CHARS
-    {
+    if !crate::within_limits(deck) || deck.title.chars().count() > MAX_IMPORTED_TEXT_CHARS {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "presentation is too large",
@@ -568,7 +569,8 @@ pub(crate) fn validate_imported_deck(deck: &Deck) -> std::io::Result<()> {
     if deck.slides.iter().any(|slide| {
         slide.notes.chars().count() > MAX_IMPORTED_TEXT_CHARS
             || slide.elements.iter().any(|element| {
-                element.plain_text().chars().count() > MAX_IMPORTED_TEXT_CHARS || element.src.len() > 4_096
+                element.plain_text().chars().count() > MAX_IMPORTED_TEXT_CHARS
+                    || element.src.len() > 4_096
             })
     }) {
         return Err(std::io::Error::new(
@@ -667,10 +669,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
                             p_block.level = Some(i64::from(indent));
                             p_block.ordered = Some(numbered);
                         }
-                        cur_blocks.push(std::mem::replace(
-                            &mut p_block,
-                            Block::paragraph(""),
-                        ));
+                        cur_blocks.push(std::mem::replace(&mut p_block, Block::paragraph("")));
                     }
                     b"text:span" => {
                         spans.pop();
@@ -775,7 +774,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
                         // image reference instead of opening an empty deck.
                         b"draw:frame" if is_container => {
                             cur_text_el = Some(native_frame(&e));
-    
+
                             cur_blocks.clear();
                         }
                         b"draw:image" => {
@@ -917,8 +916,16 @@ mod foreign_tests {
         let text = &deck.slides[0].elements[0];
         assert_eq!(text.kind, ElementKind::Text);
         assert_eq!(text.text, "Hello from LibreOffice\nSecond line");
-        assert!((text.x - 128.0).abs() < 0.1, "x reads in slide units: {}", text.x);
-        assert!((text.w - 1024.0).abs() < 0.1, "w reads in slide units: {}", text.w);
+        assert!(
+            (text.x - 128.0).abs() < 0.1,
+            "x reads in slide units: {}",
+            text.x
+        );
+        assert!(
+            (text.w - 1024.0).abs() < 0.1,
+            "w reads in slide units: {}",
+            text.w
+        );
         assert_eq!(deck.slides[0].elements[1].kind, ElementKind::Rect);
         let code = &deck.slides[0].elements[2];
         assert_eq!(code.kind, ElementKind::Text);

@@ -152,7 +152,9 @@ fn software_parties<'a>(
         }
         member => vec![policy.party_of(granted_to(member))],
     };
-    parties.into_iter().map(move |party| party.with_grants(granted))
+    parties
+        .into_iter()
+        .map(move |party| party.with_grants(granted))
 }
 
 /// One invocation, as admission weighs it.

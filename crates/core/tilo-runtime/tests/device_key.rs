@@ -16,7 +16,12 @@ use crate::host;
 
 /// The bytes the hex field `name` of `answer` names.
 fn field(answer: &Value, name: &str) -> Vec<u8> {
-    hex::decode(answer[name].as_str().unwrap_or_else(|| panic!("{name} in {answer}"))).unwrap()
+    hex::decode(
+        answer[name]
+            .as_str()
+            .unwrap_or_else(|| panic!("{name} in {answer}")),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -44,7 +49,9 @@ fn the_daemon_seals_proves_and_signs_with_the_key_it_alone_takes() {
         .expect("the daemon seals the vault");
         let sealed = field(&sealed, "sealed");
         assert!(
-            !sealed.windows(vault.len()).any(|window| window == vault.as_slice()),
+            !sealed
+                .windows(vault.len())
+                .any(|window| window == vault.as_slice()),
             "what is sealed does not show the vault"
         );
         let opened = ask(
@@ -61,8 +68,8 @@ fn the_daemon_seals_proves_and_signs_with_the_key_it_alone_takes() {
         )
         .expect_err("another account's store key opens nothing");
         assert_eq!(refused.code, SEALED_BY_ANOTHER_KEY, "{refused:?}");
-        let elsewhere = tilo_seal::secret_service::seal_vault(&[9_u8; 32], &[5; 32], b"1000", &vault)
-            .unwrap();
+        let elsewhere =
+            tilo_seal::secret_service::seal_vault(&[9_u8; 32], &[5; 32], b"1000", &vault).unwrap();
         let refused = ask(
             OPEN_VAULT,
             json!({ "salt": salt, "account": "1000", "sealed": hex::encode(elsewhere) }),
@@ -118,7 +125,8 @@ fn the_daemon_seals_proves_and_signs_with_the_key_it_alone_takes() {
             json!({ "endorsement": hex::encode(canonical_bytes(&unsigned).unwrap()) }),
         )
         .expect("the device endorses the image");
-        let signed: ImageEndorsement = from_canonical_bytes(&field(&signed, "endorsement")).unwrap();
+        let signed: ImageEndorsement =
+            from_canonical_bytes(&field(&signed, "endorsement")).unwrap();
         tilo_user_identity::verify_image_endorsement_at(&signed, &cert.user_public_key, now)
             .expect("the endorsement verifies under the person's root");
 

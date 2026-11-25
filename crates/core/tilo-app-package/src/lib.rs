@@ -33,8 +33,8 @@ pub use image::{
 pub use manifest::{
     Capabilities, Cli, DEFAULT_PLATFORMS, DevBuild, Entrypoint, EntrypointType, Image, Manifest,
     ManifestParseError, NetMode, Package, Platform, Providers, Publisher, Requirement, Sandbox,
-    SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment,
-    SplashSegmentError, Target, Trust, TrustAttestation, WindowKind, dev_app_id,
+    SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment, SplashSegmentError, Target, Trust,
+    TrustAttestation, WindowKind, dev_app_id,
 };
 pub use pack::{PackError, Packed, SigningIdentity, pack, pack_dev, sign_placeholder_root};
 pub use package::{MetaError, PackageMeta, is_safe_path};

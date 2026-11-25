@@ -9,9 +9,9 @@ use russh::client;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, load_secret_key};
 use russh::{ChannelMsg, Disconnect};
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
+use ui::tilo_resource;
 
 use crate::session::SessionStatus;
 use crate::vt::VtGrid;
@@ -46,15 +46,7 @@ pub struct SshConfig {
     pub known_hosts: KnownHostStore,
 }
 
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    ui::tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::JsonSchema)]
 pub struct HostKeyIdentity {
     pub algorithm: String,
     pub fingerprint: String,

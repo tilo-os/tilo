@@ -94,7 +94,11 @@ fn seed(replica: &Replica, meta: &Meta, name: &str) {
         .clone();
     // The client's first scenario is its seed: what YouTube holds comes in through the YouTube
     // origin, from the sample YouTube, before the scenario follows, likes and watches it.
-    if meta.scenarios.first().is_some_and(|first| first.name == name) {
+    if meta
+        .scenarios
+        .first()
+        .is_some_and(|first| first.name == name)
+    {
         replica.host.root_of(TUBE).unwrap();
         tilolang_youtube::sample::take_in(&replica.host, TUBE, "2026-11-22T12:00:00Z").unwrap();
     }
@@ -552,18 +556,27 @@ fn playing_a_video_is_the_shared_session_and_the_player_moves_it() {
     call(&ada, &meta, "play", vec![Value::resource(&magnet)]);
     ada.commit();
     let session = session_of(&ada, &meta, &root);
-    assert_eq!(played(&ada, &playback, &session, "track"), Value::text("v-magnet"));
+    assert_eq!(
+        played(&ada, &playback, &session, "track"),
+        Value::text("v-magnet")
+    );
     assert_eq!(
         played(&ada, &playback, &session, "title"),
         Value::text("Why every magnet you own is lying to you")
     );
-    assert_eq!(played(&ada, &playback, &session, "artist"), Value::text("Veritasium"));
+    assert_eq!(
+        played(&ada, &playback, &session, "artist"),
+        Value::text("Veritasium")
+    );
     assert_eq!(
         played(&ada, &playback, &session, "source"),
         Value::text("https://media.example/v-magnet.mp4"),
         "the address the player opens is the session's, so every device plays the same bytes"
     );
-    assert_eq!(played(&ada, &playback, &session, "length"), Value::Float(1342.0));
+    assert_eq!(
+        played(&ada, &playback, &session, "length"),
+        Value::Float(1342.0)
+    );
     // The session's state is the player's own kind of playback, kept as the package declares it:
     // the record reads as the case `playing`, beside the session it stands in.
     let playing = playback
@@ -654,14 +667,22 @@ fn autoplay_moves_the_session_to_the_next_video() {
         "the queue's oldest video plays first"
     );
     let queue = field_id(meta, "YouTube", "queue");
-    assert_eq!(items(ada, root, &queue).len(), 2, "two videos wait on the queue");
+    assert_eq!(
+        items(ada, root, &queue).len(),
+        2,
+        "two videos wait on the queue"
+    );
 
     // The player reports the end of the video: what follows plays.
     call(
         ada,
         meta,
         "autoplay_next",
-        vec![Value::resource(root), Value::resource(&session), Value::Float(1.0)],
+        vec![
+            Value::resource(root),
+            Value::resource(&session),
+            Value::Float(1.0),
+        ],
     );
     ada.commit();
     assert_eq!(

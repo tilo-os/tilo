@@ -228,7 +228,8 @@ impl SessionPower {
                 tilo_power_mgmt::load_battery_history().into(),
             ));
         }
-        kept.as_ref().map_or_else(crate::History::default, |(_, history)| history.clone())
+        kept.as_ref()
+            .map_or_else(crate::History::default, |(_, history)| history.clone())
     }
 
     /// Whether the history is old enough to read again.

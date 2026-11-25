@@ -34,7 +34,9 @@ fn an_opml_file_is_read_and_written_through_the_engine() {
         .as_array()
         .expect("outlines")
         .iter()
-        .map(|said| serde_json::from_str(said.as_str().expect("an outline's JSON text")).expect("json"))
+        .map(|said| {
+            serde_json::from_str(said.as_str().expect("an outline's JSON text")).expect("json")
+        })
         .collect();
     assert_eq!(outlines.len(), 2);
     assert_eq!(outlines[0]["title"], "LWN");

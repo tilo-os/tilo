@@ -266,8 +266,9 @@ pub type Asked<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>;
 
 /// What a [`Here`] answers for its person's account: `None` when it reaches no server.
-pub type FoundAccount<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Arc<dyn AccountServer>>> + Send + 'a>>;
+pub type FoundAccount<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Option<Arc<dyn AccountServer>>> + Send + 'a>,
+>;
 
 /// The person's account at their server, as a host asks it for itself, signed as its device.
 pub trait AccountServer: Send + Sync {

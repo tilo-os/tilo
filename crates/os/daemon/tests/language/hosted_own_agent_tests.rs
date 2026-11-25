@@ -445,10 +445,9 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
     // that copy changes; this one arms once, so wait for the trigger to be there first.
     let arming = std::time::Instant::now() + tilo_test_env::hang_bound();
     while !adas.described().await.iter().any(|workspace| {
-        workspace
-            .shortcuts
-            .iter()
-            .any(|saved| saved.id() == tilo_workspace_service::agents::triggered::shortcut_id(SCOUT))
+        workspace.shortcuts.iter().any(|saved| {
+            saved.id() == tilo_workspace_service::agents::triggered::shortcut_id(SCOUT)
+        })
     }) {
         assert!(
             std::time::Instant::now() < arming,

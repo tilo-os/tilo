@@ -503,11 +503,7 @@ impl ActionOffload for TurnOffload {
         request: OffloadRequest,
         invocation: InvokeRequest,
     ) -> OffloadFuture<'_> {
-        Box::pin(self.place(
-            request,
-            invocation.invocation,
-            invocation.argument,
-        ))
+        Box::pin(self.place(request, invocation.invocation, invocation.argument))
     }
 }
 

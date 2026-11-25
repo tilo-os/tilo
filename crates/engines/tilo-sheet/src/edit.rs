@@ -383,7 +383,10 @@ fn shift_reference(reference: &str, edit: GridEdit) -> Option<String> {
 }
 
 /// Sort the rows of `(start, end)` by the shown values of column `by`.
-#[allow(clippy::arithmetic_side_effects, reason = "row numbers stay inside the sheet's u32 range")]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "row numbers stay inside the sheet's u32 range"
+)]
 fn sort(
     sheets: &mut [Sheet],
     name: &str,
@@ -457,7 +460,10 @@ fn sort(
 }
 
 /// Extend the cells of `source` over `target`, as the fill handle does.
-#[allow(clippy::arithmetic_side_effects, reason = "column and row deltas stay inside the sheet's u32 range")]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "column and row deltas stay inside the sheet's u32 range"
+)]
 fn fill_range(sheets: &mut [Sheet], name: &str, source: &str, target: &str) -> Result<(), String> {
     let (from, to) = range_of(source)?;
     let (_, end) = range_of(target)?;

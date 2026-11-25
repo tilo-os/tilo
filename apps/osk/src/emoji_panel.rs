@@ -534,14 +534,18 @@ impl EmojiPanel {
         reason = "one paint pass keeps the panel's layer order visible: field, tabs, grid, bottom row, tone row"
     )]
     pub fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let colors = &theme.tokens.colors;
         match self.mode {
             PanelMode::Closed => return,
             PanelMode::Browse => {
                 self.search
-                    .draw_child(scene, transform, text_renderer, theme,&env);
+                    .draw_child(scene, transform, text_renderer, theme, &env);
                 self.draw_tabs(scene, transform, text_renderer, theme);
                 scene.push_layer(
                     Fill::NonZero,
@@ -594,7 +598,7 @@ impl EmojiPanel {
             }
             PanelMode::Search => {
                 self.search
-                    .draw_child(scene, transform, text_renderer, theme,&env);
+                    .draw_child(scene, transform, text_renderer, theme, &env);
                 let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
                 crate::presentation::draw_cell(
                     &mut ctx,

@@ -36,11 +36,8 @@ where
                 .spawn(move || {
                     let answered = match tilo_rt::try_app() {
                         Ok(runtime) => {
-                            match runtime.block_on(api.task_program(
-                                &program,
-                                go,
-                                this.as_deref(),
-                            )) {
+                            match runtime.block_on(api.task_program(&program, go, this.as_deref()))
+                            {
                                 Ok(ran) => Ok(outcome(ran)),
                                 Err(error) => unavailable(error.to_string()),
                             }

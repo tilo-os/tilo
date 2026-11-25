@@ -5,7 +5,10 @@ use super::{Error, colour_of, import, parse_colour, parse_pdf_date, pdf_date};
 #[test]
 fn a_colour_round_trips_between_its_text_and_its_channels() {
     let colour = parse_colour("#12c863");
-    assert_eq!((colour.r, colour.g, colour.b, colour.a), (0x12, 0xc8, 0x63, 255));
+    assert_eq!(
+        (colour.r, colour.g, colour.b, colour.a),
+        (0x12, 0xc8, 0x63, 255)
+    );
     assert_eq!(colour_of(colour), "#12c863");
     let faded = parse_colour("#12c86340");
     assert_eq!(faded.a, 0x40);

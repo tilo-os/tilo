@@ -297,10 +297,10 @@ impl BlockEditor {
         if self.read_only {
             return false;
         }
-        let Some(index) = self
-            .focused
-            .or_else(|| self.document_selection.map(|selection| selection.ordered().0.block))
-        else {
+        let Some(index) = self.focused.or_else(|| {
+            self.document_selection
+                .map(|selection| selection.ordered().0.block)
+        }) else {
             return false;
         };
         let Some(block) = self.blocks.get(index) else {

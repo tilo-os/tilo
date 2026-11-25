@@ -15,8 +15,8 @@
 //! The action is run again only before its recorded inverse is used for
 //! undo ([`tilo_actions::verify_change`]).
 
-use tilo_actions::stamp::Label;
 use std::collections::{BTreeMap, BTreeSet};
+use tilo_actions::stamp::Label;
 
 use tilo_action_policy::{Acting, ActionKind, Answer, Context, Level, MemberAccess, TreePath};
 use tilo_actions::{HistoryOp, PathStep};

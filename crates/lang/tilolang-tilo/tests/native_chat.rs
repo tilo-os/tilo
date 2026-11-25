@@ -323,11 +323,7 @@ fn a_chat_whose_messages_are_still_arriving_is_carried_once_they_are_here() {
     let mut all_here = record;
     all_here.push(part.clone());
     ada.host.runtime().set_earlier(CHAT_APP, &all_here);
-    assert_eq!(
-        ada.host.migrate(),
-        1,
-        "every message is carried, once"
-    );
+    assert_eq!(ada.host.migrate(), 1, "every message is carried, once");
     assert_eq!(ada.commit(), 1);
     assert_carried(&ada, &all);
     assert_eq!(ada.host.migrate(), 0);

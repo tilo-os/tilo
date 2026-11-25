@@ -187,11 +187,7 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     // The host asks for the address the store keys the ciphertext under, and
     // Bob's page answers it as a page does.
     let ask = asked_for(&mut bob_link, &address).await;
-    let server_device = server
-        .workspaces()
-        .unwrap()
-        .device_cert()
-        .device_public_key;
+    let server_device = server.workspaces().unwrap().device_cert().device_public_key;
     match postcard::from_bytes::<NeighbourMsg>(&ask).unwrap() {
         NeighbourMsg::DocumentContentWant {
             app_id,

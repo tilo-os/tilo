@@ -157,9 +157,7 @@ fn invoked(asked: &Asked) -> Vec<(String, String)> {
         .map(|invocation| match invocation {
             // By the declaration's name: the session's surface names its actions by its own
             // types (`Window/focus`), and the name a person reads is what the shell calls.
-            Invocation::Action { app, name, .. } => {
-                (app.as_str().to_owned(), name.clone())
-            }
+            Invocation::Action { app, name, .. } => (app.as_str().to_owned(), name.clone()),
             other => panic!("an action invocation: {other:?}"),
         })
         .collect()
@@ -170,10 +168,7 @@ fn window_reporting(asked: &Asked) -> Option<String> {
     let invocations = asked.0.borrow();
     invocations.iter().find_map(|invocation| match invocation {
         Invocation::Action {
-            name,
-            args,
-            target,
-            ..
+            name, args, target, ..
         } if name.as_str() == "focus" => args
             .iter()
             .find_map(|(_, value)| match value {

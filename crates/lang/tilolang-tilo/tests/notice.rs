@@ -205,7 +205,11 @@ fn what_an_action_says_in_passing_is_the_windows_notice_with_its_kind_and_undo()
     instance.flush();
     assert_eq!(
         said(&mut window),
-        [("Cleared Take the bins out".to_owned(), NoticeKind::Warning, true)],
+        [(
+            "Cleared Take the bins out".to_owned(),
+            NoticeKind::Warning,
+            true
+        )],
         "and the undo it offers beside them"
     );
 

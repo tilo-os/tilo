@@ -47,7 +47,8 @@ pub fn installed(name: &str) -> &'static ApplicationDefinition {
         } else {
             root.join("tests/window").join(name)
         };
-        let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+        let platform =
+            tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
         let provided = tilolang::source::apps_of(&platform);
         let dirs = tilolang::source::dependency_order_with(&dir, &[], &provided)
             .expect("the packages resolve");

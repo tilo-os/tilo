@@ -14,7 +14,11 @@ use automerge::{AutoCommit, ObjType, ROOT};
 /// The derived founding of the record `id` of `kind`, whose fields keep their items in the
 /// `containers` named at its root: `None` for a kind that keeps none.
 #[must_use]
-pub fn structure(kind: &str, id: &str, containers: &[(String, ObjType)]) -> Option<automerge::Change> {
+pub fn structure(
+    kind: &str,
+    id: &str,
+    containers: &[(String, ObjType)],
+) -> Option<automerge::Change> {
     if containers.is_empty() {
         return None;
     }

@@ -46,7 +46,6 @@ pub enum ProbeError {
     Unrecognised,
 }
 
-
 /// The whole file for a small clip, a prefix for a large one, dispatched on the
 /// magic bytes.
 ///

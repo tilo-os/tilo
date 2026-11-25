@@ -3,7 +3,7 @@
 //! one change, once on this device and never twice on another, and the native app's documents
 //! left as they were.
 
-use crate::fixtures::{native_documents, Replica, Workspace};
+use crate::fixtures::{Replica, Workspace, native_documents};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 
@@ -88,7 +88,12 @@ fn variant(host: &tilolang_tilo::host::Host, at: &ResourceRef, field: &str) -> S
         .enums
         .iter()
         .find(|declared| declared.id == value.ty)
-        .and_then(|declared| declared.variants.iter().find(|held| held.id == value.variant))
+        .and_then(|declared| {
+            declared
+                .variants
+                .iter()
+                .find(|held| held.id == value.variant)
+        })
         .map_or_else(
             || panic!("{field} holds a case the app declares"),
             |held| held.name.clone(),
@@ -172,7 +177,10 @@ fn the_lounges_server_is_carried_whole_and_a_second_carry_adds_nothing() {
     assert_eq!(text(&replica.host, link, "discord_user"), "3001");
     assert_eq!(text(&replica.host, link, "person"), "ada");
     assert_eq!(text(&replica.host, link, "display_name"), "Ada");
-    assert_eq!(text(&replica.host, link, "linked_at"), "2023-11-14T22:13:20Z");
+    assert_eq!(
+        text(&replica.host, link, "linked_at"),
+        "2023-11-14T22:13:20Z"
+    );
 
     let channels = items(&replica.host, &held, "channels");
     assert_eq!(channels.len(), 2, "the channels it observed");
@@ -202,7 +210,11 @@ fn the_lounges_server_is_carried_whole_and_a_second_carry_adds_nothing() {
     assert_eq!(replica.host.migrate(), 0, "it runs once");
     assert_eq!(replica.commit(), 0, "and changes nothing again");
     assert_eq!(heads(&documents), before, "the native documents stand");
-    assert_eq!(account(&replica).id_string(), held.id_string(), "one account");
+    assert_eq!(
+        account(&replica).id_string(),
+        held.id_string(),
+        "one account"
+    );
     assert_eq!(items(&replica.host, &held, "map").len(), 4);
     assert_eq!(items(&replica.host, &held, "links").len(), 1);
     assert_eq!(items(&replica.host, &held, "channels").len(), 2);
@@ -372,4 +384,3 @@ fn only_the_discord_apps_own_process_carries_the_bridge() {
         );
     }
 }
-

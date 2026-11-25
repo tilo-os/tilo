@@ -21,12 +21,12 @@ use std::rc::Rc;
 
 use tilo_app_launch::SessionEnvironment;
 use tilo_desktop_policy::Window;
-use tilo_session_core::desktop::state::banners::BannerAsk;
-use tilo_session_core::desktop::state::banners::Banners as _;
 use tilo_session::Session;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options};
 use tilo_session_core::desktop::notifications::Notification;
+use tilo_session_core::desktop::state::banners::BannerAsk;
+use tilo_session_core::desktop::state::banners::Banners as _;
 
 use crate::common::{
     CANVAS, FRAMES, PERSON, canvas_shown, device_in, headless, number, on_screen, places,

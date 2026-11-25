@@ -2652,7 +2652,9 @@ async fn entering(
     server: &Server,
     device: &TestDevice,
 ) -> Result<tilo_actions::InvocationUpdate, ActionCallError> {
-    use tilo_server::workspaces::{ENTER_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE};
+    use tilo_server::workspaces::{
+        ENTER_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
+    };
     let endpoint = crate::common::device_endpoint(device).await;
     let remote = Arc::new(
         ActionService::new(

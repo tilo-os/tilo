@@ -2,10 +2,10 @@
 
 use std::fmt::Write as _;
 
-use discord::guild::guild;
 use discord::guild::Guild;
+use discord::guild::guild;
 use discord::{MappedKind, Origin};
-use discord_wire::event::{link_check, link_proof, ChannelInfo};
+use discord_wire::event::{ChannelInfo, link_check, link_proof};
 use discord_wire::op::ChannelKind;
 use ui::tilo_resource::Replica;
 
@@ -56,9 +56,27 @@ fn native_discord_fixture() {
     }))
     .unwrap();
     for (kind, tilo, discord, origin, persona) in [
-        (MappedKind::Channel, "tl:so.tilo.chat:c1", "456", Origin::Tilo, None),
-        (MappedKind::Channel, "tl:so.tilo.chat:c2", "789", Origin::Tilo, None),
-        (MappedKind::Webhook, "tl:so.tilo.chat:c1", "555", Origin::Tilo, None),
+        (
+            MappedKind::Channel,
+            "tl:so.tilo.chat:c1",
+            "456",
+            Origin::Tilo,
+            None,
+        ),
+        (
+            MappedKind::Channel,
+            "tl:so.tilo.chat:c2",
+            "789",
+            Origin::Tilo,
+            None,
+        ),
+        (
+            MappedKind::Webhook,
+            "tl:so.tilo.chat:c1",
+            "555",
+            Origin::Tilo,
+            None,
+        ),
         (
             MappedKind::Message,
             "tl:so.tilo.chat:m1",

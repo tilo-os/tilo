@@ -343,7 +343,10 @@ async fn a_member_device_makes_its_workspaces_built_in_records_offline_and_membe
     let (carol, _) = UserIdentity::generate("Carol", 1);
     let (carol_key, carol_cert) = enrol(&carol, "carol-laptop", DeviceCapabilities::primary());
     assert!(
-        hosted.enter(&workspace, (&carol_cert, &carol_key)).await.is_err(),
+        hosted
+            .enter(&workspace, (&carol_cert, &carol_key))
+            .await
+            .is_err(),
         "the host lets no one in who is no member"
     );
     let carol_login = login_to(&server, &workspace, (&carol_cert, &server_cert));

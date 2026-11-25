@@ -943,8 +943,7 @@ mod tests {
             "group": "agent-session:9",
             "group_kind": "agent-session",
         });
-        let event =
-            change_event("notes/Todo/body", Some("notes"), None, &entry).expect("a change");
+        let event = change_event("notes/Todo/body", Some("notes"), None, &entry).expect("a change");
         assert_eq!(
             event["actor"],
             json!({"kind": "agent", "name": "Jane Doe's agent"})
@@ -952,8 +951,7 @@ mod tests {
 
         // A change of a person's own names no group, and is a person's.
         let entry = json!({"change": "c1", "happened": "edited", "sentence": "Typed", "by": "Ada"});
-        let event =
-            change_event("notes/Todo/body", Some("notes"), None, &entry).expect("a change");
+        let event = change_event("notes/Todo/body", Some("notes"), None, &entry).expect("a change");
         assert!(event.get("group").is_none());
         assert_eq!(event["actor"], json!({"kind": "person", "name": "Ada"}));
     }

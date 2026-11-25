@@ -378,8 +378,16 @@ impl Table {
             })
     }
 
-    pub(super) fn draw_projected_focus(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, suppress_caret: bool) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    pub(super) fn draw_projected_focus(
+        &mut self,
+        ctx: &mut tilo_ui::DrawCtx<'_>,
+        suppress_caret: bool,
+    ) {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         for input in self.cells.iter_mut().filter(|input| input.is_focused()) {
             let rect = input.get_rect();
@@ -398,7 +406,7 @@ impl Table {
                 &rect,
             );
             input.suppress_caret_paint(suppress_caret);
-            input.draw_child(scene, transform, tr, theme,&env);
+            input.draw_child(scene, transform, tr, theme, &env);
             input.suppress_caret_paint(false);
         }
     }
@@ -1105,7 +1113,11 @@ impl Widget for Table {
     }
 
     fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let tk = &theme.tokens;
         let radius = f64::from(tk.radii.item);
@@ -1151,7 +1163,7 @@ impl Widget for Table {
         }
 
         for cell in &mut self.cells {
-            cell.draw_child(scene, transform, text_renderer, theme,&env);
+            cell.draw_child(scene, transform, text_renderer, theme, &env);
         }
 
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);

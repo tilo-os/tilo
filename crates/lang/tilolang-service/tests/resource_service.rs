@@ -150,7 +150,8 @@ fn a_versions_history_says_what_it_did_to_its_resource() {
 }
 
 /// Every text a tree shows, in its props.
-fn texts(node: &UiNode) -> Vec<String> {    crate::fixtures::nodes(node)
+fn texts(node: &UiNode) -> Vec<String> {
+    crate::fixtures::nodes(node)
         .into_iter()
         .flat_map(|node| node.props.values())
         .filter_map(|value| match value {

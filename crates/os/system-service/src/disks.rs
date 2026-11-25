@@ -96,11 +96,7 @@ pub fn reading() -> Disks {
 }
 
 fn drive_of(device: &StorageDevice) -> Drive {
-    let partitions = device
-        .children
-        .iter()
-        .map(partition_of)
-        .collect();
+    let partitions = device.children.iter().map(partition_of).collect();
     Drive {
         name: device.name.clone(),
         model: device.model.clone(),

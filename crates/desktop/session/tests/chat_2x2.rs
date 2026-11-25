@@ -17,9 +17,7 @@
               until their sessions end"
 )]
 
-use crate::common::people::{
-    Device, Person, Site, at, join_together, start_together, target,
-};
+use crate::common::people::{Device, Person, Site, at, join_together, start_together, target};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use tilo_actions::remote::RemoteActionTarget;

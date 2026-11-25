@@ -13,8 +13,7 @@ pub const PRINTERS: &str = "printers";
 
 /// How a queue stands.
 #[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
-    tilo_resource::JsonSchema,
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum QueueState {
@@ -30,9 +29,7 @@ pub enum QueueState {
 }
 
 /// What a queue's device says its consumables hold: a toner or ink cartridge, the paper.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct PrinterSupply {
     /// What the supply is, as the device names it: "Black cartridge", "Paper".
     pub name: String,
@@ -43,9 +40,7 @@ pub struct PrinterSupply {
 }
 
 /// A queue: one printer this computer sends jobs to.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct PrinterQueue {
     pub name: String,
     pub state: QueueState,
@@ -68,8 +63,7 @@ pub struct PrinterQueue {
 
 /// How a job stands.
 #[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
-    tilo_resource::JsonSchema,
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum JobState {
@@ -89,9 +83,7 @@ pub enum JobState {
 }
 
 /// A job: one document in a queue.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct PrintJob {
     /// The job's number, as CUPS names it.
     pub id: String,
@@ -109,9 +101,7 @@ pub struct PrintJob {
 }
 
 /// A printer found on the network that this computer does not print to yet.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct DiscoveredPrinter {
     /// Its address, which adding it takes.
     pub uri: String,
@@ -197,8 +187,10 @@ pub enum PrintAction {
         keywords = "paper size, media, page size, papierformat"
     )]
     SetMedia {
-        #[param("The queue's name")] printer: String,
-        #[param("The paper size's key, as the printer names it")] media: String,
+        #[param("The queue's name")]
+        printer: String,
+        #[param("The paper size's key, as the printer names it")]
+        media: String,
     },
     /// Hold a queue's work, or let it print again.
     #[effect(kind = "outside")]

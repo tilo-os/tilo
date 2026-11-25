@@ -10,14 +10,6 @@
     reason = "the client's complete surface, which the app asks for one part at a time"
 )]
 
-use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
-use std::sync::{Arc, Mutex};
-#[cfg(test)]
-use tilo_test_env::SpawnUnderEnvLock;
 use lsp_types::notification::{
     DidChangeTextDocument, DidOpenTextDocument, DidSaveTextDocument, Initialized, Notification,
     Progress as ProgressNotification, PublishDiagnostics,
@@ -43,6 +35,14 @@ use lsp_types::{
 pub use lsp_types::{Position, Range, TextEdit};
 use serde::Deserialize as _;
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use tilo_test_env::SpawnUnderEnvLock;
 
 use crate::lang::{Language, Severity};
 
@@ -456,8 +456,8 @@ pub fn uri_to_path(uri: &str) -> String {
     };
     // Windows: `file:///c:/a` is `c:/a`; elsewhere `file:///a` is `/a`.
     let bytes = rest.as_bytes();
-    let drive = bytes.first().is_some_and(|b| b.is_ascii_alphabetic())
-        && bytes.get(1) == Some(&b':');
+    let drive =
+        bytes.first().is_some_and(|b| b.is_ascii_alphabetic()) && bytes.get(1) == Some(&b':');
     let rest = if drive && rest.len() > 3 {
         rest.get(1..).unwrap_or(rest)
     } else {

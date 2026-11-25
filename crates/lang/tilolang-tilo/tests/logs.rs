@@ -420,7 +420,10 @@ fn a_computer_without_a_readable_journal_says_so() {
 
 /// How many times `wanted` is shown.
 fn count(view: &ViewInstance, wanted: &str) -> usize {
-    shown(view).iter().filter(|text| text.as_str() == wanted).count()
+    shown(view)
+        .iter()
+        .filter(|text| text.as_str() == wanted)
+        .count()
 }
 
 /// The nodes of `kind`, in order.
@@ -468,7 +471,9 @@ fn selection_auto_lands_on_errors_and_moves_through_the_document() {
         .iter()
         .find_map(|node| button(node, &|text| text == "Show this record"))
         .expect("a row's way into its detail");
-    window.fire(&chosen.key, "press").expect("the record is chosen");
+    window
+        .fire(&chosen.key, "press")
+        .expect("the record is chosen");
     let selected = app
         .host
         .runtime()

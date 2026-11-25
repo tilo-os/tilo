@@ -143,13 +143,22 @@ mod tests {
     async fn a_refusal_says_why_behind_an_empty_frame() {
         let mut wire = Vec::new();
         write_refusal(&mut wire, b"removed").await.unwrap();
-        assert_eq!(read_answer(&mut std::io::Cursor::new(wire), 64).await.unwrap(), Some(Answer::Refusal(b"removed".to_vec())));
+        assert_eq!(
+            read_answer(&mut std::io::Cursor::new(wire), 64)
+                .await
+                .unwrap(),
+            Some(Answer::Refusal(b"removed".to_vec()))
+        );
     }
 
     #[tokio::test]
     async fn an_oversized_frame_is_refused_before_its_payload_is_read() {
         let mut wire = Vec::new();
         wire.write_all(&1_000u32.to_le_bytes()).await.unwrap();
-        assert!(read_frame(&mut std::io::Cursor::new(wire), 64).await.is_err());
+        assert!(
+            read_frame(&mut std::io::Cursor::new(wire), 64)
+                .await
+                .is_err()
+        );
     }
 }

@@ -5,7 +5,6 @@
 //! concrete colours the interchange writes for a palette and look, and the readable ink each
 //! slide background gets.
 
-
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::assigning_clones,
@@ -123,7 +122,11 @@ impl Palette {
             .iter()
             .position(|candidate| *candidate == bg)
             .unwrap_or(0);
-        let (text, text_dim) = self.inks.get(index).copied().unwrap_or((self.text, self.text_dim));
+        let (text, text_dim) = self
+            .inks
+            .get(index)
+            .copied()
+            .unwrap_or((self.text, self.text_dim));
         Self {
             text,
             text_dim,
@@ -176,7 +179,11 @@ impl Palette {
             "text-dim" => {
                 let text = readable_on(ground, self.text, self.text_dim);
                 let soft = mix(text, ground, 0.3);
-                if contrast(soft, ground) >= 4.5 { soft } else { text }
+                if contrast(soft, ground) >= 4.5 {
+                    soft
+                } else {
+                    text
+                }
             }
             other => self.resolve_role(other).unwrap_or(self.text),
         }

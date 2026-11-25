@@ -210,30 +210,57 @@ pub struct Processes {
 pub enum ProcessAction {
     /// Read the machine and its processes again.
     #[effect(kind = "read")]
-    #[effect(own_device, icon = "rotate-cw", keywords = "refresh processes, prozesse neu lesen")]
+    #[effect(
+        own_device,
+        icon = "rotate-cw",
+        keywords = "refresh processes, prozesse neu lesen"
+    )]
     Refresh,
     /// Ask a process to close, as quitting it would.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "square", keywords = "end process, prozess beenden")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "square",
+        keywords = "end process, prozess beenden"
+    )]
     End {
-        #[param("The process's row id, `pid:started_at`")] process: String,
+        #[param("The process's row id, `pid:started_at`")]
+        process: String,
     },
     /// End a process at once.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "x", keywords = "kill process, prozess töten")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "x",
+        keywords = "kill process, prozess töten"
+    )]
     Kill {
-        #[param("The process's row id, `pid:started_at`")] process: String,
+        #[param("The process's row id, `pid:started_at`")]
+        process: String,
     },
     /// Ask every process of an app to close.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "square", keywords = "end app, app beenden")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "square",
+        keywords = "end app, app beenden"
+    )]
     EndApp {
-        #[param("The app's id")] application: String,
+        #[param("The app's id")]
+        application: String,
     },
     /// Read the machine every `ms` milliseconds, or stop reading while 0.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "clock", keywords = "update interval, aktualisierungsintervall")]
+    #[effect(
+        own_device,
+        icon = "clock",
+        keywords = "update interval, aktualisierungsintervall"
+    )]
     SetInterval {
-        #[param("The interval in milliseconds, or 0 to pause")] ms: u32,
+        #[param("The interval in milliseconds, or 0 to pause")]
+        ms: u32,
     },
 }

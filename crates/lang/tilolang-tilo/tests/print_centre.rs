@@ -237,12 +237,12 @@ impl Installed {
         device.holding(
             "page1",
             &[
-                0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49,
-                0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06,
-                0x00, 0x00, 0x00, 0x72, 0xb6, 0x0d, 0x24, 0x00, 0x00, 0x00, 0x11, 0x49, 0x44,
-                0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0x84, 0x19, 0x60,
-                0x0c, 0x00, 0x47, 0xca, 0x07, 0xf9, 0x67, 0x59, 0x6e, 0xb7, 0x00, 0x00, 0x00,
-                0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+                0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+                0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06, 0x00, 0x00,
+                0x00, 0x72, 0xb6, 0x0d, 0x24, 0x00, 0x00, 0x00, 0x11, 0x49, 0x44, 0x41, 0x54, 0x78,
+                0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0x84, 0x19, 0x60, 0x0c, 0x00, 0x47, 0xca,
+                0x07, 0xf9, 0x67, 0x59, 0x6e, 0xb7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+                0xae, 0x42, 0x60, 0x82,
             ],
         );
         device.holding("pdf1", b"%PDF-1.4\n% the scanned document\n");
@@ -571,8 +571,14 @@ fn the_scanned_document_is_written_as_one_pdf() {
 
 /// The first scanned page of the person's document.
 fn first_page(app: &Installed) -> ResourceRef {
-    let scans = app.host.runtime().read(&app.root, "scans").expect("the scans read");
-    let Value::List(scans) = scans else { panic!("scans are a list: {scans:?}") };
+    let scans = app
+        .host
+        .runtime()
+        .read(&app.root, "scans")
+        .expect("the scans read");
+    let Value::List(scans) = scans else {
+        panic!("scans are a list: {scans:?}")
+    };
     let scan = scans
         .first()
         .and_then(|scan| match scan {
@@ -580,8 +586,14 @@ fn first_page(app: &Installed) -> ResourceRef {
             _ => None,
         })
         .expect("the scanned document");
-    let pages = app.host.runtime().read(&scan, "pages").expect("the pages read");
-    let Value::List(pages) = pages else { panic!("pages are a list: {pages:?}") };
+    let pages = app
+        .host
+        .runtime()
+        .read(&scan, "pages")
+        .expect("the pages read");
+    let Value::List(pages) = pages else {
+        panic!("pages are a list: {pages:?}")
+    };
     pages
         .first()
         .and_then(|page| match page {
@@ -616,7 +628,11 @@ fn a_scanned_page_is_cropped_to_the_part_kept_and_its_text_is_stale() {
     app.call("recognize", vec![Value::resource(&page)]);
     let mut window = app.window();
     pick(&mut window, "place", Value::text("scan"));
-    assert!(contains(&window, "Hello from the page"), "{:?}", shown(&window));
+    assert!(
+        contains(&window, "Hello from the page"),
+        "{:?}",
+        shown(&window)
+    );
     let before = pictures(window.tree())
         .first()
         .and_then(|node| node.props.get("src").cloned())
@@ -667,7 +683,10 @@ fn a_new_scanned_document_clears_the_pages_and_is_refused_while_scanning() {
     // A page being scanned is never thrown away.
     app.call("scan_page", vec![app.root_value()]);
     let refused = app.try_call("new_scanned_document", vec![app.root_value()]);
-    assert!(refused.is_err(), "a scan in flight refuses the reset: {refused:?}");
+    assert!(
+        refused.is_err(),
+        "a scan in flight refuses the reset: {refused:?}"
+    );
     let mut window = app.window();
     pick(&mut window, "place", Value::text("scan"));
     assert!(contains(&window, "Save this page"), "{:?}", shown(&window));

@@ -6,8 +6,8 @@
 
 pub mod bridge;
 pub mod emoji;
-pub mod format;
 pub mod emoji_sync;
+pub mod format;
 pub mod guild;
 pub mod import;
 pub mod inbound;

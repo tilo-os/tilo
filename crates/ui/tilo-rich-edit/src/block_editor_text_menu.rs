@@ -18,7 +18,9 @@ const TEXT_MENU_TARGET: &str = "editor.text-menu:";
 enum TextMenuAction {
     Clipboard(EditingCommand),
     Mark(Mark),
-    List { ordered: bool },
+    List {
+        ordered: bool,
+    },
     Heading(Option<u8>),
     /// Correct the misspelled word the menu was opened on.
     Spelling {

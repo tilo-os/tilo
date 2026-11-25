@@ -414,17 +414,16 @@ fn smoothed_run(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
             WetPoint::new(f32_of_f64(x), f32_of_f64(y), f32_of_f64(pressure))
         })
         .collect();
-    let mut points: Vec<(f64, f64, f64)> =
-        crate::brush::smooth(&curve, f32_of_f64(spacing))
-            .iter()
-            .map(|sample| {
-                (
-                    f64::from(sample.x),
-                    f64::from(sample.y),
-                    f64::from(sample.pressure),
-                )
-            })
-            .collect();
+    let mut points: Vec<(f64, f64, f64)> = crate::brush::smooth(&curve, f32_of_f64(spacing))
+        .iter()
+        .map(|sample| {
+            (
+                f64::from(sample.x),
+                f64::from(sample.y),
+                f64::from(sample.pressure),
+            )
+        })
+        .collect();
     if let (Some(last), Some(end)) = (points.last_mut(), curve.last()) {
         // The curve ends where the stroke does, not a step short of it.
         *last = (f64::from(end.x), f64::from(end.y), f64::from(end.pressure));

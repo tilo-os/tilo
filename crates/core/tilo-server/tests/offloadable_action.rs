@@ -34,8 +34,8 @@ use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::IssueInvitationRequest;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
-use tilo_workspace_service::workspaces::providers::Reach;
 use tilo_workspace_service::work::{Job, KeepsContent};
+use tilo_workspace_service::workspaces::providers::Reach;
 
 use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, serve_on};
 
@@ -133,7 +133,9 @@ impl thumbnail::action::Content for Media {
 /// actions read is the workspace's, which every device of it reaches.
 impl KeepsContent for Media {
     fn holds(&self, _workspace: &str, job: &Job) -> bool {
-        job.inputs.iter().all(|digest| self.bytes_of(*digest).is_some())
+        job.inputs
+            .iter()
+            .all(|digest| self.bytes_of(*digest).is_some())
     }
 }
 
@@ -146,7 +148,9 @@ fn serve_jobs(hosted: &Hosted, content: &Media) {
         thumbnail::action::PROVIDER,
         thumbnail::action::APP,
         Reach::Devices,
-        Arc::new(thumbnail::action::Thumbnails::new(Arc::new(content.clone()))),
+        Arc::new(thumbnail::action::Thumbnails::new(Arc::new(
+            content.clone(),
+        ))),
     );
 }
 

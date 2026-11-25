@@ -160,7 +160,10 @@ impl Database {
         thread: &str,
         work: impl FnOnce(Database, String) + Send + 'static,
     ) -> Result<String, String> {
-        let job = format!("db-job-{}", self.0.next_job.fetch_add(1, Ordering::Relaxed) + 1);
+        let job = format!(
+            "db-job-{}",
+            self.0.next_job.fetch_add(1, Ordering::Relaxed) + 1
+        );
         {
             let mut live = self.live();
             live.jobs.insert(
@@ -403,7 +406,13 @@ fn run_job(database: &Database, job: &str, engine: &Arc<Mutex<LiveEngine>>, sql:
     }
     let stopped = stopped.unwrap_or_default();
     if stopped.load(Ordering::Relaxed) {
-        finish(database, job, JobState::Cancelled, String::new(), String::new());
+        finish(
+            database,
+            job,
+            JobState::Cancelled,
+            String::new(),
+            String::new(),
+        );
         return;
     }
     match engine.run(sql) {
@@ -529,8 +538,6 @@ mod tests {
         assert!(opened.contains("\"connection\""), "{opened}");
         database
     }
-
-
 
     tilo_test_env::scenario! {
         fn the_database_engine_opens_a_catalog_and_runs_a_statement;

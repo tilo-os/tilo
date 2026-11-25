@@ -197,12 +197,12 @@ impl HeadlessCompositor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::preview::{Rgb, palette_rgb};
+    use uuid::Uuid;
     use video_edit::model::{
         ClipEffect, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind,
         Transform, Transition,
     };
-    use crate::preview::{Rgb, palette_rgb};
-    use uuid::Uuid;
 
     #[cfg(feature = "decode")]
     mod generated_clip {
@@ -1591,8 +1591,8 @@ mod tests {
         // carried it.
         #[cfg(feature = "decode")]
         'case: {
-            use video_edit::model::{MediaItem, MediaKind, Track, TrackKind};
             use media::{FramePayload, SessionPool};
+            use video_edit::model::{MediaItem, MediaKind, Track, TrackKind};
             if !generated_clip::media_stack() {
                 break 'case;
             }

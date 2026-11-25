@@ -126,7 +126,12 @@ fn contacts(locale: &str) -> (Host, Package) {
 
 /// The contacts package's book, as it publishes it to the workspace's search.
 fn published_book(host: &Host, package: &Package) -> tilo_actions::ResourceSpec {
-    publish_resource(&types_of(host, package), "Book", "so.tilo.contacts/root", "Contacts")
+    publish_resource(
+        &types_of(host, package),
+        "Book",
+        "so.tilo.contacts/root",
+        "Contacts",
+    )
 }
 
 fn types_of(host: &Host, package: &Package) -> ActionTypes {

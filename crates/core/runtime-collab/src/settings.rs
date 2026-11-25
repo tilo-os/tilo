@@ -126,8 +126,8 @@ impl AppSettingsHandle {
 pub mod host {
     //! An app's settings calls answered from a settings source.
 
-    use std::sync::Mutex;
     use std::sync::Arc;
+    use std::sync::Mutex;
 
     use serde_json::{Map, Value};
     use settings_store::SettingsSource;

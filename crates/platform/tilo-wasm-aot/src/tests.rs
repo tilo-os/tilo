@@ -103,7 +103,8 @@ fn the_cache_compiles_parts_side_by_side_and_reports_a_bad_one() {
 
 #[cfg(feature = "compile")]
 #[test]
-fn a_damaged_entry_is_compiled_again() {    let dir = tempfile::tempdir().unwrap();
+fn a_damaged_entry_is_compiled_again() {
+    let dir = tempfile::tempdir().unwrap();
     let cache = Cache::at(dir.path()).unwrap();
     let wasm = module();
     let entry = cache.ensure(&wasm).unwrap();

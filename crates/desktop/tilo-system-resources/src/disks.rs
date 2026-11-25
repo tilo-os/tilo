@@ -47,7 +47,9 @@ pub struct DiskHealth {
 }
 
 /// What a partition's own encryption is, where it is one.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct Encryption {
     /// How it is encrypted: `LUKS2`, `BitLocker`.
     pub scheme: String,

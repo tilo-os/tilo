@@ -30,11 +30,7 @@ const APP_LABEL: &str = "so.tilo.runtime";
 /// The environment the service carries over from the login that installed it: where the device
 /// is kept, and where its data and state live.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-const CARRIED: &[&str] = &[
-    "TILO_IDENTITY_ROOT",
-    "XDG_DATA_HOME",
-    "XDG_STATE_HOME",
-];
+const CARRIED: &[&str] = &["TILO_IDENTITY_ROOT", "XDG_DATA_HOME", "XDG_STATE_HOME"];
 
 /// Start this computer's daemon: on Tilo OS nothing, the system unit runs it from boot;
 /// elsewhere install the person's own service when it is missing or changed, and start it. A

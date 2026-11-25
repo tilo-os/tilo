@@ -2,8 +2,8 @@
 //! secret-free profile it may carry.
 
 use serde::{Deserialize, Serialize};
-pub use staging_handoff_model::{HANDOFF_FILE, pad_json};
 use staging_handoff_model::StagedIdentity;
+pub use staging_handoff_model::{HANDOFF_FILE, pad_json};
 
 use super::plan::Plan;
 

@@ -35,17 +35,13 @@ impl DeviceRows {
     /// arguments the row carries, else the app that shows it, opened at the item's page.
     fn target(&self, resource: &str, row: &ReadingRow) -> Target {
         if let Some(action) = &row.action {
-            let mut target = InvokeTarget::action(
-                crate::model::DESKTOP_APP,
-                &self.workspace,
-                resource,
-                action,
+            let mut target =
+                InvokeTarget::action(crate::model::DESKTOP_APP, &self.workspace, resource, action);
+            target.arguments.extend(
+                row.arguments
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
             );
-            target
-                .arguments
-                .extend(row.arguments.iter().map(|(name, value)| {
-                    (name.clone(), value.clone())
-                }));
             return Target::Invoke(Box::new(target));
         }
         let Some(app) = row.app.clone() else {
@@ -81,29 +77,28 @@ impl Source for DeviceRows {
             .rows
             .iter()
             .filter_map(|(resource, row)| {
-                let fields: Vec<(&str, FieldWeight)> = std::iter::once((
-                    row.title.as_str(),
-                    FieldWeight::TITLE,
-                ))
-                .chain(
-                    row.subtitle
-                        .as_deref()
-                        .map(|subtitle| (subtitle, FieldWeight::SUBTITLE)),
-                )
-                .chain(row.fields.iter().map(|field| (field.as_str(), FieldWeight::BODY)))
-                .collect();
+                let fields: Vec<(&str, FieldWeight)> =
+                    std::iter::once((row.title.as_str(), FieldWeight::TITLE))
+                        .chain(
+                            row.subtitle
+                                .as_deref()
+                                .map(|subtitle| (subtitle, FieldWeight::SUBTITLE)),
+                        )
+                        .chain(
+                            row.fields
+                                .iter()
+                                .map(|field| (field.as_str(), FieldWeight::BODY)),
+                        )
+                        .collect();
                 let score = rank_fields(needle, &fields)?;
                 Some(Hit {
                     row: None,
                     preview: None,
                     faces: Vec::new(),
                     outcome: None,
-                    kind: row
-                        .group
-                        .as_deref()
-                        .map_or(ResourceKind::Record, |group| {
-                            ResourceKind::Custom(group.to_owned())
-                        }),
+                    kind: row.group.as_deref().map_or(ResourceKind::Record, |group| {
+                        ResourceKind::Custom(group.to_owned())
+                    }),
                     provider: self.id().into(),
                     id: format!("{resource}/{}", row.id),
                     title: row.title.clone(),

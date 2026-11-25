@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use vello::wgpu;
 
-use video_edit::model::Project;
 use crate::preview::{self, Layer};
+use video_edit::model::Project;
 
 use super::{FrameSource, SourceTexture};
 

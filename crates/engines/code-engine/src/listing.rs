@@ -58,10 +58,7 @@ pub fn read_folder(path: &Path) -> std::io::Result<Listing> {
 /// Every folder from `root` down to the one holding `path`: what revealing a file in a tree
 /// that was never expanded reads.
 #[must_use]
-pub fn read_folders_along(
-    root: &Path,
-    path: &Path,
-) -> Vec<(PathBuf, std::io::Result<Listing>)> {
+pub fn read_folders_along(root: &Path, path: &Path) -> Vec<(PathBuf, std::io::Result<Listing>)> {
     let Some(parent) = path.parent() else {
         return Vec::new();
     };

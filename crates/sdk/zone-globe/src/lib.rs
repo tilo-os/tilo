@@ -791,7 +791,11 @@ impl Widget for TimeZoneGlobe {
         reason = "the shade's radius is pixels, which an f32 holds"
     )]
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _text_renderer, theme, mut env) = ctx.parts();
         ui::outside_paint::note();
         let colors = &theme.tokens.colors;

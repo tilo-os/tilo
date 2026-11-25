@@ -410,7 +410,9 @@ fn a_locked_partition_is_encrypted_and_shows_nothing_inside() {
     );
     // The unlocked mapping shows what it holds and is offered its ways on.
     assert!(
-        words.iter().any(|text| text.contains("LUKS2") && text.contains("home")),
+        words
+            .iter()
+            .any(|text| text.contains("LUKS2") && text.contains("home")),
         "the unlocked mapping shows its filesystem: {words:?}"
     );
 }
@@ -427,7 +429,12 @@ fn blocks_tile_the_track_and_slivers_stay_clickable() {
             said.iter().any(|text| text.contains("nvme0n1p"))
         })
         .collect();
-    assert_eq!(blocks.len(), 4, "one block per partition: {:?}", shown(&window));
+    assert_eq!(
+        blocks.len(),
+        4,
+        "one block per partition: {:?}",
+        shown(&window)
+    );
     for block in &blocks {
         assert!(
             block.events.contains_key("press"),
@@ -447,7 +454,9 @@ fn blocks_tile_the_track_and_slivers_stay_clickable() {
             matches!(label, Some(Value::Text(text)) if text.starts_with("nvme0n1p2"))
         })
         .expect("the root partition's block");
-    window.fire(&second.key, "press").expect("the block is pressed");
+    window
+        .fire(&second.key, "press")
+        .expect("the block is pressed");
     assert_eq!(
         window.view_state("chosen_part"),
         Some(Value::text("nvme0n1p2")),
@@ -461,7 +470,9 @@ fn blocks_legend_entries_and_the_chip_report_the_choice() {
     let window = app.window_showing(&[("chosen", "nvme0n1"), ("tab", "overview")]);
     let chip = find(window.tree(), &|text| text.starts_with("nvme0n1p4 · "))
         .expect("the legend names each piece");
-    window.fire(&chip.key, "press").expect("the legend entry is pressed");
+    window
+        .fire(&chip.key, "press")
+        .expect("the legend entry is pressed");
     assert_eq!(
         window.view_state("chosen_part"),
         Some(Value::text("nvme0n1p4"))

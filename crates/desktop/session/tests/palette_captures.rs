@@ -28,9 +28,9 @@ use std::time::Duration;
 use runtime_collab::{CollabClient, Invocation};
 use tilo_actions::ResourceSpec;
 use tilo_actions::remote::InvokeArgument;
-use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
+use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 
 use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, opened};
 
@@ -120,17 +120,15 @@ fn surface() -> Vec<runtime_collab::ExportedAction> {
 
 /// The app's side: join the workspace as Tasks, publish its capture, and hand back the first
 /// invocation the session addresses to it.
-fn tasks(
-    socket: &Path,
-    seen: &std::sync::mpsc::Sender<Invocation>,
-) {
+fn tasks(socket: &Path, seen: &std::sync::mpsc::Sender<Invocation>) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a runtime for the app");
     runtime.block_on(async {
         let client = connect(socket);
-        let mine = opened(&client, &channel()).await
+        let mine = opened(&client, &channel())
+            .await
             .expect("the app the session launched joins the workspace's channel");
         let invocations = mine
             .subscribe_stable_invocations()

@@ -29,8 +29,7 @@ pub fn runs_in_process(app: &str) -> bool {
         .ok()
         .flatten()
         .and_then(|installed| {
-            let manifest =
-                launcher::manifest::read_manifest(&installed.manifest_path).ok()?;
+            let manifest = launcher::manifest::read_manifest(&installed.manifest_path).ok()?;
             launcher::manifest::code_runtime(&manifest, &installed.payload_root).map(|_| ())
         })
         .is_some()
@@ -203,10 +202,7 @@ pub fn verified_payload(app: &str) -> Result<std::path::PathBuf, String> {
             if runtime_bundle::carried_builds().is_empty() {
                 "does not have it".to_owned()
             } else {
-                format!(
-                    "carries {}",
-                    runtime_bundle::carried_builds().join(", ")
-                )
+                format!("carries {}", runtime_bundle::carried_builds().join(", "))
             }
         ));
     }

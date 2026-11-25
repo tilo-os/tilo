@@ -954,7 +954,9 @@ impl Track {
             )));
         }
         if !(-1.0..=1.0).contains(&self.pan) {
-            return Err(tilo_resource::Refusal::new("a track's pan is between -1 and 1"));
+            return Err(tilo_resource::Refusal::new(
+                "a track's pan is between -1 and 1",
+            ));
         }
         Ok(())
     }

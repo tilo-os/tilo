@@ -176,7 +176,6 @@ impl Core {
         tilo_image_codec::decode_upright_now(&bytes, None)
             .map_err(|why| format!("`{}` did not decode: {why}", file.name))
     }
-
 }
 
 /// What a program asks a file's pixels: the arguments read where a trap is still the answer,

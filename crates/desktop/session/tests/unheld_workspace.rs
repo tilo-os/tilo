@@ -10,8 +10,8 @@
 
 use std::time::Duration;
 
-use tilo_session::platform::records::Changes;
 use tilo_session::Options;
+use tilo_session::platform::records::Changes;
 
 use crate::common::private_home;
 

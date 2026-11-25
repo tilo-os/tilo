@@ -6,10 +6,10 @@
 //! permissions, so what Viewer and Commenter may not do is denied through an
 //! overwrite for that bridge role on every bridged channel.
 
+use crate::guild::{Id, Settled};
 use discord_wire::op::{MemberRolesOp, OverwriteKind, OverwriteOp, RoleSpec};
 use discord_wire::perm;
 use serde::{Deserialize, Serialize};
-use crate::guild::{Id, Settled};
 
 use crate::guild::{Guild, MappedKind};
 

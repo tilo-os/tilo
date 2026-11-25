@@ -520,7 +520,10 @@ impl Guild {
             .filter(|(_, entry)| entry.settled.as_ref().is_some_and(Settled::is_done))
             .filter_map(|(id, entry)| entry.op.get("set-overwrite").map(|op| (id, op)))
             .filter(|(_, op)| {
-                let channel = op.get("channel").and_then(Value::as_str).unwrap_or_default();
+                let channel = op
+                    .get("channel")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 let target = op.get("target").and_then(Value::as_str).unwrap_or_default();
                 let before = self
                     .channels

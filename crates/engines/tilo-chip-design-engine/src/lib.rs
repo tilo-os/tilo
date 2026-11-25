@@ -18,7 +18,9 @@ pub mod operator;
 mod ops;
 pub mod verification;
 
-pub use model::{AttentionCache, Assumptions, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport, report_id};
+pub use model::{
+    Assumptions, AttentionCache, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport, report_id,
+};
 pub use operator::{Connection, OperatorKind, OperatorNode, OperatorState};
 pub use verification::{CheckStatus, ReceiptStatus, VerificationReceipt, VerificationRecord};
 

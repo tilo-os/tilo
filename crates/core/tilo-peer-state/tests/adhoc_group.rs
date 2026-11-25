@@ -632,11 +632,7 @@ async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
             .workspaces()
             .attach_server(
                 WORKSPACE,
-                holder
-                    .service
-                    .workspaces()
-                    .device_cert()
-                    .device_public_key,
+                holder.service.workspaces().device_cert().device_public_key,
                 holder.service.node_addr(),
                 CopyRole::KeyHolder,
             )
@@ -650,10 +646,7 @@ async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
             .workspaces()
             .attach_server(
                 WORKSPACE,
-                b1.service
-                    .workspaces()
-                    .device_cert()
-                    .device_public_key,
+                b1.service.workspaces().device_cert().device_public_key,
                 b1.service.node_addr(),
                 CopyRole::KeyHolder,
             )
@@ -752,10 +745,7 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
         .workspaces()
         .attach_server(
             WORKSPACE,
-            a2.service
-                .workspaces()
-                .device_cert()
-                .device_public_key,
+            a2.service.workspaces().device_cert().device_public_key,
             a2.service.node_addr(),
             CopyRole::KeyHolder,
         )

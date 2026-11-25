@@ -70,9 +70,8 @@ impl Daemon {
         workspace: Option<String>,
         args: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let arguments: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(args)
-                .map_err(|error| PyValueError::new_err(format!("the arguments: {error}")))?;
+        let arguments: serde_json::Map<String, serde_json::Value> = serde_json::from_str(args)
+            .map_err(|error| PyValueError::new_err(format!("the arguments: {error}")))?;
         let calls = Arc::clone(&self.calls);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let answer = match calls.web_call(workspace.as_deref(), arguments).await {

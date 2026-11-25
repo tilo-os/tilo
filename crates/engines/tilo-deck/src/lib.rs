@@ -54,8 +54,8 @@ impl Format {
 /// # Errors
 /// The file is not a readable presentation package, or holds more than a deck can.
 pub fn import(bytes: &[u8], name: &str, pictures: &dyn Pictures) -> Result<Deck, String> {
-    let format = Format::of_name(name)
-        .ok_or_else(|| format!("`{name}` is not a presentation file"))?;
+    let format =
+        Format::of_name(name).ok_or_else(|| format!("`{name}` is not a presentation file"))?;
     let read = match format {
         Format::Odp => odp::read_odp(bytes, pictures),
         Format::Pptx => pptx::read_pptx(bytes, pictures),
@@ -95,7 +95,11 @@ pub fn text_heights(deck: &Deck) -> HashMap<String, f64> {
     reason = "a text length in characters, far inside f64's exact range"
 )]
 fn estimated_height(element: &Element) -> f64 {
-    let size = if element.font_size > 0.0 { element.font_size } else { 24.0 };
+    let size = if element.font_size > 0.0 {
+        element.font_size
+    } else {
+        24.0
+    };
     let per_line = (element.w / (size * 0.55)).max(1.0);
     let lines: f64 = element
         .rich_blocks()
@@ -197,10 +201,14 @@ mod tests {
         };
         for format in [Format::Odp, Format::Pptx] {
             let bytes = export(&deck, &pictures, format).expect("exported");
-            let read = import(&bytes, match format {
-                Format::Odp => "review.odp",
-                Format::Pptx => "review.pptx",
-            }, &pictures)
+            let read = import(
+                &bytes,
+                match format {
+                    Format::Odp => "review.odp",
+                    Format::Pptx => "review.pptx",
+                },
+                &pictures,
+            )
             .expect("imported");
             assert_eq!(read.title, deck.title);
             assert_eq!(read.look, deck.look);

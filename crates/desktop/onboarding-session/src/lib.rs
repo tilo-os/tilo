@@ -22,4 +22,3 @@ pub mod identity_provisioning;
 pub mod nearby;
 pub mod services;
 pub mod view;
-

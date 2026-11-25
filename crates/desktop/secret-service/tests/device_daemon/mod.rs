@@ -125,7 +125,10 @@ fn act(seed: &[u8; 32], action: &str, args: &Value) -> Result<Value, (&'static s
                     SEALED_BY_ANOTHER_KEY,
                     "the vault was sealed under another device's key".to_owned(),
                 )),
-                Err(error) => Err((tilo_device_identity::login::MALFORMED_ASK, error.to_string())),
+                Err(error) => Err((
+                    tilo_device_identity::login::MALFORMED_ASK,
+                    error.to_string(),
+                )),
             }
         }
         CHECK_CALLER_PROOF => {

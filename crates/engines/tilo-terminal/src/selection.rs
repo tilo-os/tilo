@@ -115,7 +115,9 @@ pub fn char_at(line: &str, column: usize) -> Option<char> {
 #[must_use]
 pub fn nearest(rows: usize, columns: usize, row: isize, column: isize) -> GridPos {
     GridPos::new(
-        usize::try_from(row).unwrap_or(0).min(rows.saturating_sub(1)),
+        usize::try_from(row)
+            .unwrap_or(0)
+            .min(rows.saturating_sub(1)),
         usize::try_from(column)
             .unwrap_or(0)
             .min(columns.saturating_sub(1)),
@@ -192,7 +194,11 @@ mod tests {
             anchor: GridPos::new(1, 2),
             cursor: GridPos::new(1, 2),
         };
-        assert_eq!(text(&grid, &nothing, 12), None, "a collapsed selection copies nothing");
+        assert_eq!(
+            text(&grid, &nothing, 12),
+            None,
+            "a collapsed selection copies nothing"
+        );
     }
 
     /// A hit test clamps to the grid so a drag past its edge still selects its edge.

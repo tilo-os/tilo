@@ -31,10 +31,8 @@ fn options() -> Options {
 /// A session as the shell of a device daemon of the test's own: the styles it lists are the ones
 /// the daemon publishes from the device's store.
 fn session() -> Session {
-    let mut session = crate::common::on_its_daemon(
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        options(),
-    );
+    let mut session =
+        crate::common::on_its_daemon(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], options());
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(1),
         rate: 0,

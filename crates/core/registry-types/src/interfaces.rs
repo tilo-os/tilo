@@ -403,12 +403,19 @@ mod tests {
             .with_runtime_oldest(3);
         assert_eq!(os.served("collab"), Some((3, 4)));
         assert_eq!(os.served("system"), Some((2, 2)));
-        assert_eq!(os.version("collab"), Some(4), "the current version is the one");
+        assert_eq!(
+            os.version("collab"),
+            Some(4),
+            "the current version is the one"
+        );
         for version in [3, 4] {
             assert!(os.provides(&req(&format!("collab@{version}"))), "{version}");
         }
         for version in [1, 2, 5] {
-            assert!(!os.provides(&req(&format!("collab@{version}"))), "{version}");
+            assert!(
+                !os.provides(&req(&format!("collab@{version}"))),
+                "{version}"
+            );
         }
         assert!(
             !os.provides(&req("system@3")),

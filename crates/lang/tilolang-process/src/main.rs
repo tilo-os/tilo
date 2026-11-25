@@ -119,4 +119,3 @@ fn connector_of(library: &str, origin: &str) -> Result<(), String> {
     }
     (connector.run)()
 }
-

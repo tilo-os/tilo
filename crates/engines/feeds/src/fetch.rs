@@ -35,7 +35,11 @@ pub fn read(url: &str, pin: &str) -> Result<Found, Failure> {
 /// Read `url` over HTTP.
 fn http(url: &str) -> Result<Found, Failure> {
     let client = tilo_net::http::blocking_client()
-        .user_agent(concat!("Tilo-Feeds/", env!("CARGO_PKG_VERSION"), " (+https://tilo.so)"))
+        .user_agent(concat!(
+            "Tilo-Feeds/",
+            env!("CARGO_PKG_VERSION"),
+            " (+https://tilo.so)"
+        ))
         .timeout(TIMEOUT)
         .build()
         .map_err(|e| Failure::unavailable(format!("no http client: {e}")))?;
@@ -135,7 +139,10 @@ mod tests {
     fn a_pin_is_the_certificate_it_was_hashed_from() {
         let der = rustls::pki_types::CertificateDer::from(b"cert".to_vec());
         let chain = [der];
-        assert_eq!(pin_of(Some(&chain)), blake3::hash(b"cert").to_hex().as_str());
+        assert_eq!(
+            pin_of(Some(&chain)),
+            blake3::hash(b"cert").to_hex().as_str()
+        );
         assert_eq!(pin_of(None), "");
     }
 }

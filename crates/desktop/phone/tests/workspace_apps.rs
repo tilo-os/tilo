@@ -63,16 +63,15 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
     // What the phone's view lists under the workspace (`device.apps`): the apps the workspace's
     // host installed into it, which its device reads from the record its follower reads too.
     let apps = support::until("the phone lists Notes, which the workspace runs", || {
-            let apps = phone
-                .apps(&server.workspace)
-                .map_err(|error| format!("{error:#}"))?;
-            if apps.iter().any(|app| app.key == server::NOTES) {
-                Ok(apps)
-            } else {
-                Err(format!("the phone lists {apps:?}"))
-            }
-        },
-    );
+        let apps = phone
+            .apps(&server.workspace)
+            .map_err(|error| format!("{error:#}"))?;
+        if apps.iter().any(|app| app.key == server::NOTES) {
+            Ok(apps)
+        } else {
+            Err(format!("the phone lists {apps:?}"))
+        }
+    });
     assert!(
         apps.iter().any(|app| app.name == "Notes"),
         "Notes is listed by its name: {apps:?}"

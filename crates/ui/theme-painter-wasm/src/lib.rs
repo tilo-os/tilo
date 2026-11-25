@@ -164,7 +164,8 @@ pub fn load(bytes: &[u8]) -> Result<WasmPainter, Refusal> {
 /// # Errors
 ///
 /// As [`load`].
-pub fn load_with(bytes: &[u8], compiled: Option<&[u8]>) -> Result<WasmPainter, Refusal> {    #[cfg(target_arch = "wasm32")]
+pub fn load_with(bytes: &[u8], compiled: Option<&[u8]>) -> Result<WasmPainter, Refusal> {
+    #[cfg(target_arch = "wasm32")]
     let _ = compiled;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(entry) = compiled {

@@ -115,7 +115,9 @@ pub struct SpeakerMember {
 }
 
 /// What plays on a group right now, most urgent state.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum SpeakerPlayback {
     #[default]
@@ -125,9 +127,7 @@ pub enum SpeakerPlayback {
     /// A member does not have the playing device's clock yet.
     SyncingClocks,
     /// A member could not get the playing device's clock in time.
-    ClockFailed {
-        reason: String,
-    },
+    ClockFailed { reason: String },
 }
 
 /// Whether one device's microphone can listen while a group is calibrated.

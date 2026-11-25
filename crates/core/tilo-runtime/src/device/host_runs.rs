@@ -188,7 +188,10 @@ fn key_run(
     provider: &RuntimeActionProvider,
     workspace: &str,
     (key, whose): (&DeviceCert, Whose),
-    (actor, policy_time): (&str, &tilo_workspace_service::apps::policy_clock::PolicyTime),
+    (actor, policy_time): (
+        &str,
+        &tilo_workspace_service::apps::policy_clock::PolicyTime,
+    ),
 ) -> Result<(crate::key_sessions::SessionHost, Caller), String> {
     let (run, caller) = match whose {
         Whose::Own => provider.agent_session(workspace, actor, policy_time, |_| {

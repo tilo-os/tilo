@@ -79,8 +79,7 @@ pub(crate) fn payload_modules(payload: &Path) -> Vec<Vec<u8>> {
             .filter_map(Result::ok)
             .map(|entry| entry.path())
             .filter(|path| {
-                path
-                    .extension()
+                path.extension()
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("wasm"))
                     && path.file_name().is_none_or(|name| name != "app.wasm")
             })
@@ -90,4 +89,3 @@ pub(crate) fn payload_modules(payload: &Path) -> Vec<Vec<u8>> {
     }
     modules
 }
-

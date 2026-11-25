@@ -185,7 +185,10 @@ fn a_bundle_on_disk_draws_on_the_store_the_daemon_compiled() {
     let store = tempfile::tempdir().unwrap();
     let theme = theme_bundle::load_from(bundle.path(), Some(store.path())).unwrap();
     assert_eq!(theme.finish(SurfaceRole::Control).painter(), SET);
-    assert!(!frame(&theme).encoding().is_empty(), "the frame drew nothing");
+    assert!(
+        !frame(&theme).encoding().is_empty(),
+        "the frame drew nothing"
+    );
 
     // The daemon compiled it into the store the launcher grants read-only: the same bundle now
     // starts the set on that machine code.
@@ -195,7 +198,10 @@ fn a_bundle_on_disk_draws_on_the_store_the_daemon_compiled() {
         .unwrap();
     let theme = theme_bundle::load_from(bundle.path(), Some(store.path())).unwrap();
     assert_eq!(theme.finish(SurfaceRole::Control).painter(), SET);
-    assert!(!frame(&theme).encoding().is_empty(), "the frame drew nothing");
+    assert!(
+        !frame(&theme).encoding().is_empty(),
+        "the frame drew nothing"
+    );
 
     // A directory with no document is refused with what it read.
     assert!(matches!(

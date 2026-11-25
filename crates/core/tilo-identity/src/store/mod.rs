@@ -25,5 +25,3 @@ pub use registry::{
 /// the identity, said as a person reads it.
 pub const CANNOT_SIGN_ALONE: &str = "this device holds only part of your identity's key, so it \
      signs nothing as your identity: use the device you set up first";
-
-

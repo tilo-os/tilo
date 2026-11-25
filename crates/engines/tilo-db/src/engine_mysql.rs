@@ -319,12 +319,10 @@ pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
     match v {
         Value::NULL => Cell::Null,
         Value::Int(i) => Cell::Integer(i),
-        Value::UInt(u) => {
-            match i64::try_from(u) {
-                Ok(n) => Cell::Integer(n),
-                Err(_) => Cell::bounded_text(u.to_string()),
-            }
-        }
+        Value::UInt(u) => match i64::try_from(u) {
+            Ok(n) => Cell::Integer(n),
+            Err(_) => Cell::bounded_text(u.to_string()),
+        },
         Value::Float(f) => Cell::Real(f64::from(f)),
         Value::Double(d) => Cell::Real(d),
         Value::Bytes(b) => match String::from_utf8(b) {

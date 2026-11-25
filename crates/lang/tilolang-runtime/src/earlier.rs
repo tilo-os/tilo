@@ -862,7 +862,12 @@ mod tests {
         doc.put(&link, "person", "ada").unwrap();
 
         let items = super::items("guild", &doc);
-        let of = |name: &str| items.iter().filter(|item| item.of == name).collect::<Vec<_>>();
+        let of = |name: &str| {
+            items
+                .iter()
+                .filter(|item| item.of == name)
+                .collect::<Vec<_>>()
+        };
         let channels = of("channels");
         assert_eq!(channels.len(), 2, "each channel is an item: {channels:?}");
         assert_eq!(channels[0].id, "456");

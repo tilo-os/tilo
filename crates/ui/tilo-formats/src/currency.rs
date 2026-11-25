@@ -7,7 +7,9 @@
 /// placement, and conventional number of decimals — `$1,234.50` vs
 /// `1.234,50 €` vs `¥1,235` (yen has no minor unit). The serde repr is the
 /// bare variant name, which equals the ISO code.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::Model)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::Model,
+)]
 pub enum Currency {
     #[model(rename = "USD")]
     USD,

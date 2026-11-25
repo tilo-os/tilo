@@ -31,8 +31,7 @@ pub(crate) fn ada() -> Actor {
 /// The shell's package and the packages it uses, built once from `apps/tl/shell`, with the
 /// platform's and the native apps' descriptions they compile against.
 fn built() -> &'static (Vec<tilolang::Compiled>, Vec<tilolang::PackageMeta>) {
-    static BUILT: OnceLock<(Vec<tilolang::Compiled>, Vec<tilolang::PackageMeta>)> =
-        OnceLock::new();
+    static BUILT: OnceLock<(Vec<tilolang::Compiled>, Vec<tilolang::PackageMeta>)> = OnceLock::new();
     BUILT.get_or_init(|| {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
         let (built, published) =

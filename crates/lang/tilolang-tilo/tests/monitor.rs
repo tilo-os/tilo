@@ -392,9 +392,10 @@ fn a_chosen_process_shows_its_facts_and_the_verbs_that_end_it() {
 fn a_persons_cadence_is_their_window_state_and_reaches_the_device() {
     let app = Installed::new(READING);
     let mut window = app.window();
-    let item = find(&window.tree(), &|text| text == "Every 3 seconds")
-        .expect("the cadence menu");
-    window.fire(&item.key, "choose").expect("the cadence is chosen");
+    let item = find(&window.tree(), &|text| text == "Every 3 seconds").expect("the cadence menu");
+    window
+        .fire(&item.key, "choose")
+        .expect("the cadence is chosen");
     window.poll_patches().expect("the window runs again");
     assert_eq!(
         window.view_state("interval_ms"),
@@ -403,7 +404,9 @@ fn a_persons_cadence_is_their_window_state_and_reaches_the_device() {
     );
     let timers = of_kind(window.tree(), "ui.Timer");
     assert_eq!(timers.len(), 1, "the window carries the cadence's clock");
-    window.fire(&timers[0].key, "tick").expect("the clock strikes");
+    window
+        .fire(&timers[0].key, "tick")
+        .expect("the clock strikes");
     let asked = app.sent.asked("set-interval");
     assert_eq!(asked[1], Value::Int(3000), "the device follows the person");
 }
@@ -471,7 +474,11 @@ fn a_computer_with_no_system_information_service_says_so_and_offers_to_try_again
 fn a_process_uses_what_stands_under_it_when_the_person_asks() {
     let app = Installed::new(READING);
     let window = app.window();
-    assert!(has(&window, "2%"), "the parent's own use: {:?}", shown(&window));
+    assert!(
+        has(&window, "2%"),
+        "the parent's own use: {:?}",
+        shown(&window)
+    );
     let mut window = app.window();
     pick(&mut window, "with_children", Value::Bool(true));
     assert!(

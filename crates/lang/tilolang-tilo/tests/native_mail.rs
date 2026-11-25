@@ -171,7 +171,11 @@ fn leos() -> Vec<Row> {
 }
 
 /// `name`'s mailbox with the native app's `documents` beside it.
-fn opened(name: &str, doc: Workspace, documents: &[(String, AutoCommit)]) -> (Replica, ResourceRef) {
+fn opened(
+    name: &str,
+    doc: Workspace,
+    documents: &[(String, AutoCommit)],
+) -> (Replica, ResourceRef) {
     let (r, _) = Replica::new(name, doc, MAIL_SET);
     r.host.runtime().set_earlier(MAIL_APP, documents);
     let mail = r.host.root_of(MAIL_APP).expect("the mailbox");

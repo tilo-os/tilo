@@ -20,12 +20,11 @@
 use discord_wire::op::ChannelKind;
 use serde::{Deserialize, Serialize};
 
-
+use crate::guild::Settled;
 use crate::guild::{DChannel, Guild, MappedKind, Ownership};
 use crate::slug;
 use crate::tilo::{Channel, WorkspaceChat};
 use std::collections::HashSet;
-use crate::guild::Settled;
 
 /// Chat `create-category`, then `map` (category, origin Discord).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,10 +102,14 @@ fn ordered<'g>(guild: &'g Guild, kinds: &[ChannelKind]) -> Vec<&'g DChannel> {
 /// in yet: never imported back.
 fn made_by_bridge(guild: &Guild, discord: &str) -> bool {
     guild.outbox.entries().any(|(_, entry)| {
-        entry.settled.as_ref().and_then(Settled::done_result).is_some_and(|result| {
-            result.get("result").and_then(serde_json::Value::as_str) == Some("channel")
-                && result.get("channel_id").and_then(serde_json::Value::as_str) == Some(discord)
-        })
+        entry
+            .settled
+            .as_ref()
+            .and_then(Settled::done_result)
+            .is_some_and(|result| {
+                result.get("result").and_then(serde_json::Value::as_str) == Some("channel")
+                    && result.get("channel_id").and_then(serde_json::Value::as_str) == Some(discord)
+            })
     })
 }
 
@@ -114,9 +117,10 @@ fn made_by_bridge(guild: &Guild, discord: &str) -> bool {
 fn making(guild: &Guild) -> bool {
     guild.outbox.entries().any(|(_, entry)| {
         entry.settled.is_none()
-            && entry.op.get("apply-channel").is_some_and(|op| {
-                op.get("id").is_none_or(serde_json::Value::is_null)
-            })
+            && entry
+                .op
+                .get("apply-channel")
+                .is_some_and(|op| op.get("id").is_none_or(serde_json::Value::is_null))
     })
 }
 

@@ -124,9 +124,8 @@ pub fn load_from(
     dir: &std::path::Path,
     compiled: Option<&std::path::Path>,
 ) -> Result<Theme, BundleError> {
-    let document = std::fs::read_to_string(dir.join(DOCUMENT)).map_err(|error| {
-        BundleError::Read(format!("{}: {error}", dir.join(DOCUMENT).display()))
-    })?;
+    let document = std::fs::read_to_string(dir.join(DOCUMENT))
+        .map_err(|error| BundleError::Read(format!("{}: {error}", dir.join(DOCUMENT).display())))?;
     load_with(
         &document,
         |set| {

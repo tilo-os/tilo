@@ -899,9 +899,13 @@ mod tests {
         }
     }
 
-    fn stacked_project() -> (Project, video_edit::model::TrackId, video_edit::model::TrackId) {
-        use video_edit::model::{MediaKind, Project, Track, TrackKind};
+    fn stacked_project() -> (
+        Project,
+        video_edit::model::TrackId,
+        video_edit::model::TrackId,
+    ) {
         use uuid::Uuid;
+        use video_edit::model::{MediaKind, Project, Track, TrackKind};
         let mut p = Project::new("t");
         let push_media = |p: &mut Project, palette: u8| {
             let id = Uuid::new_v4();

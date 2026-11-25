@@ -482,7 +482,10 @@ pub fn connect_mail(adding: Value, lander: &mut Lander<'_>) -> Result<()> {
 /// they said no, so the account stays unconnected while the rest of the run goes on.
 fn is_unanswered(error: &anyhow::Error) -> bool {
     super::writer::Refused::of(error).is_some_and(|refused| {
-        matches!(refused.code(), super::mcp::UNANSWERED | "cancelled" | "declined")
+        matches!(
+            refused.code(),
+            super::mcp::UNANSWERED | "cancelled" | "declined"
+        )
     })
 }
 

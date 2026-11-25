@@ -280,8 +280,9 @@ impl SqliteEngine {
             let affected = self.conn.execute(trimmed, []).map_err(|e| e.to_string())?;
             // A statement cannot change more rows than a count of them can name, and the number
             // the window shows is the driver's: one that does not fit is refused, never wrapped.
-            let changed = i64::try_from(affected)
-                .map_err(|_| format!("a statement changed {affected} rows, more than a count names"))?;
+            let changed = i64::try_from(affected).map_err(|_| {
+                format!("a statement changed {affected} rows, more than a count names")
+            })?;
             return Ok(QueryResult {
                 columns: Vec::new(),
                 rows: Vec::new(),
@@ -453,7 +454,9 @@ pub fn open_engine(profile: &Profile) -> Result<LiveEngine, String> {
         Engine::Sqlite if profile.file_path.is_empty() => {
             Err("SQLite connection has no file path".to_string())
         }
-        Engine::Sqlite => SqliteEngine::open_file(&home_path(&profile.file_path)).map(LiveEngine::Sqlite),
+        Engine::Sqlite => {
+            SqliteEngine::open_file(&home_path(&profile.file_path)).map(LiveEngine::Sqlite)
+        }
         Engine::Postgres => crate::engine_pg::PostgresEngine::connect(profile)
             .map(|engine| LiveEngine::Postgres(Box::new(engine))),
         Engine::MySql => crate::engine_mysql::MySqlEngine::connect(profile)

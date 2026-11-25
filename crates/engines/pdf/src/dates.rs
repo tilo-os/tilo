@@ -78,6 +78,9 @@ mod tests {
         assert_eq!(pdf_date(0), "");
         assert_eq!(parse_pdf_date(""), None);
         // A date that names only its day fills the rest.
-        assert_eq!(parse_pdf_date("D:20260317"), Some(ms - (12 * 3_600 + 30 * 60) * 1_000));
+        assert_eq!(
+            parse_pdf_date("D:20260317"),
+            Some(ms - (12 * 3_600 + 30 * 60) * 1_000)
+        );
     }
 }

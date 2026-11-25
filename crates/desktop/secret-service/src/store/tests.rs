@@ -58,12 +58,12 @@ impl KeySource for TestDaemon {
 
     fn open(&self, sealed: &[u8]) -> std::result::Result<Zeroizing<Vec<u8>>, Locked> {
         let seed = self.seed()?;
-        open_vault(seed.as_ref(), &self.salt(), self.account.as_bytes(), sealed).map_err(
-            |error| match error {
+        open_vault(seed.as_ref(), &self.salt(), self.account.as_bytes(), sealed).map_err(|error| {
+            match error {
                 tilo_seal::Error::WrongKey => Locked::KeyChanged,
                 _ => Locked::Corrupt,
-            },
-        )
+            }
+        })
     }
 
     fn check_caller(

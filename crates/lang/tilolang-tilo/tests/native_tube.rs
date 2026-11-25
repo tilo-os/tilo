@@ -25,7 +25,11 @@ fn native_documents() -> Vec<(String, AutoCommit)> {
 
 /// `name`'s replica of `doc` with the client, the native app's `documents` beside it, and its
 /// root as the window opens it.
-fn opened(name: &str, doc: Workspace, documents: &[(String, AutoCommit)]) -> (Replica, ResourceRef) {
+fn opened(
+    name: &str,
+    doc: Workspace,
+    documents: &[(String, AutoCommit)],
+) -> (Replica, ResourceRef) {
     // The shared player comes first: a package compiles against the ones loaded before it.
     let (replica, _) = Replica::new(name, doc, &[(PLAYBACK_SOURCE, PLAYBACK_IDS), (SOURCE, IDS)]);
     replica.host.runtime().set_earlier(TUBE, documents);
@@ -118,12 +122,28 @@ fn expected() -> Kept {
         liked: strings(&["v_cells", "v_rockets"]),
         queue: strings(&["v_bridges", "v_cells"]),
         history: vec![
-            ("v_bridges".into(), "2026-06-29T07:12:00Z".into(), nobody.clone()),
-            ("v_cells".into(), "2026-06-29T07:07:00Z".into(), nobody.clone()),
-            ("v_rockets".into(), "2026-06-29T07:02:00Z".into(), nobody.clone()),
+            (
+                "v_bridges".into(),
+                "2026-06-29T07:12:00Z".into(),
+                nobody.clone(),
+            ),
+            (
+                "v_cells".into(),
+                "2026-06-29T07:07:00Z".into(),
+                nobody.clone(),
+            ),
+            (
+                "v_rockets".into(),
+                "2026-06-29T07:02:00Z".into(),
+                nobody.clone(),
+            ),
         ],
         replies: vec![
-            ("Ugx_cells_9".into(), "Mitochondria, of course.".into(), nobody.clone()),
+            (
+                "Ugx_cells_9".into(),
+                "Mitochondria, of course.".into(),
+                nobody.clone(),
+            ),
             (
                 "Ugx_rockets_1".into(),
                 "The second stage lands too now.".into(),
@@ -141,7 +161,10 @@ fn a_native_tube_library_and_history_are_carried_over_once_as_one_change() {
         .map(|(_, doc)| doc.clone().get_heads())
         .collect();
     let (ada, root) = opened("ada", Workspace::new(), &documents);
-    assert!(listed(&ada, &root, "subscriptions").is_empty(), "nothing before the migration");
+    assert!(
+        listed(&ada, &root, "subscriptions").is_empty(),
+        "nothing before the migration"
+    );
 
     assert_eq!(ada.host.migrate(), 1, "the client's carrying runs");
     assert_eq!(ada.commit(), 1, "as one change");
@@ -170,7 +193,10 @@ fn a_native_tube_library_and_history_are_carried_over_once_as_one_change() {
     assert_eq!(before, after, "the native app's documents are not written");
 
     assert!(ada.undo_last(), "one step takes the carrying back");
-    assert!(listed(&ada, &root, "subscriptions").is_empty(), "undone at once");
+    assert!(
+        listed(&ada, &root, "subscriptions").is_empty(),
+        "undone at once"
+    );
     assert!(ada.redo_last());
     assert_eq!(kept(&ada, &root), expected());
 }

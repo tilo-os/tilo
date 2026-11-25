@@ -416,11 +416,15 @@ fn the_pointer_and_the_keyboard_cross_to_the_device_beside_this_one_and_come_bac
     // The person turns Display & input off on the phone: the hand-over it let in ends there at
     // once, and what the laptop still sends under it is not taken, before the laptop hears so.
     set_setting(&phone, "continuity", "display_input", &json!(false));
-    waited("the phone letting nobody drive it", &[&laptop, &phone], || {
-        shared(&phone)["let_in"]
-            .as_array()
-            .is_some_and(Vec::is_empty)
-    });
+    waited(
+        "the phone letting nobody drive it",
+        &[&laptop, &phone],
+        || {
+            shared(&phone)["let_in"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        },
+    );
     let taken = injected(&phone);
     let phone_now = pointer(&phone);
     for step in 1..=6 {

@@ -148,7 +148,9 @@ fn jobs() -> &'static Mutex<BTreeMap<String, Arc<Job>>> {
 }
 
 fn held() -> MutexGuard<'static, BTreeMap<String, Arc<Job>>> {
-    jobs().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    jobs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// One `engine.call` for this app: read now, or take what a job fetched.

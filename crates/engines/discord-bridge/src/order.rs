@@ -30,9 +30,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::guild::{Id, Keyed};
 use discord_wire::op::{ArrangeOp, CategoryPlace, ChannelKind, ChannelPlace};
 use serde::{Deserialize, Serialize};
-use crate::guild::{Id, Keyed};
 
 use crate::guild::{DChannel, Guild, MappedKind};
 use crate::tilo::WorkspaceChat;
@@ -175,7 +175,8 @@ pub fn in_flight(guild: &Guild) -> Vec<ArrangeOp> {
         .outbox
         .entries()
         .filter_map(|(_, entry)| {
-            let op: ArrangeOp = serde_json::from_value(entry.op.get("arrange-channels")?.clone()).ok()?;
+            let op: ArrangeOp =
+                serde_json::from_value(entry.op.get("arrange-channels")?.clone()).ok()?;
             match &entry.settled {
                 None => Some(op),
                 Some(settled) if settled.is_done() && !shown(guild, &op, &guild.channels) => {
@@ -222,7 +223,8 @@ pub fn finished(guild: &Guild, after: &Keyed<DChannel>) -> Vec<Id> {
         .outbox
         .entries()
         .filter_map(|(id, entry)| {
-            let op: ArrangeOp = serde_json::from_value(entry.op.get("arrange-channels")?.clone()).ok()?;
+            let op: ArrangeOp =
+                serde_json::from_value(entry.op.get("arrange-channels")?.clone()).ok()?;
             match &entry.settled {
                 Some(settled)
                     if !settled.is_done()

@@ -43,8 +43,9 @@ fn mail() -> Bundle {
     let provided = tilolang::source::apps_of(&platform);
     let dirs = tilolang::source::dependency_order_with(&dir, &[], &provided)
         .expect("the packages resolve");
-    let built = tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
-        .expect("the packages compile");
+    let built =
+        tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
+            .expect("the packages compile");
     let (package, used) = built.split_last().expect("the package is built last");
     Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
 }

@@ -31,8 +31,8 @@ use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::{DeviceCapabilities, RevocationEntry, RevocationReason, UserIdentity};
 
 use crate::support::{
-    Device, TestHost as Server, WORKSPACE, commit_change, durable, enrol, entry_grant, in_workspace,
-    ready, redeem, refused, resource_of, said, start_host_admitting as start_server,
+    Device, TestHost as Server, WORKSPACE, commit_change, durable, enrol, entry_grant,
+    in_workspace, ready, redeem, refused, resource_of, said, start_host_admitting as start_server,
     start_peer_with_store, wait_for, wait_keyed, workspace,
 };
 

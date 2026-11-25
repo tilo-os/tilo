@@ -157,11 +157,13 @@ impl Thumbnails {
                         .map_err(|reason| ActionCallError::Unavailable {
                             reason: format!("a thumbnail was not kept: {reason}"),
                         })?;
-                    resources.push(tilo_actions::content_resource(&hex::encode(hash)).ok_or_else(
-                        || ActionCallError::Unavailable {
-                            reason: "the content provider returned an invalid address".into(),
-                        },
-                    )?);
+                    resources.push(
+                        tilo_actions::content_resource(&hex::encode(hash)).ok_or_else(|| {
+                            ActionCallError::Unavailable {
+                                reason: "the content provider returned an invalid address".into(),
+                            }
+                        })?,
+                    );
                 }
                 Err(_) => {
                     failed.push(serde_json::json!({
@@ -238,11 +240,7 @@ impl ActionProvider for Thumbnails {
         None
     }
 
-    fn cancel(
-        &self,
-        _caller: &Caller,
-        _id: &InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Err(ActionCallError::NotCancellable {
             reason: "make-thumbnails answers at once".into(),
         }))
@@ -314,12 +312,7 @@ mod tests {
         let caller = Caller::local_person("ada").in_workspace("w");
         let request = InvokeRequest {
             invocation: InvocationId::new(),
-            target: tilo_actions::remote::application_action_target(
-                "w",
-                APP,
-                RESOURCE,
-                ACTION,
-            ),
+            target: tilo_actions::remote::application_action_target("w", APP, RESOURCE, ACTION),
             argument: InvokeArgument::Json(
                 serde_json::json!({ "photos": named })
                     .as_object()
@@ -341,7 +334,11 @@ mod tests {
         let tilo_actions::remote::ReceiptStatus::Completed { output } = receipt.status else {
             panic!("the batch ran: {:?}", receipt.status);
         };
-        assert_eq!(output.resources.len(), 2, "one thumbnail per distinct picture");
+        assert_eq!(
+            output.resources.len(),
+            2,
+            "one thumbnail per distinct picture"
+        );
         for address in &output.resources {
             let hash = tilo_actions::content_hash(address).unwrap();
             let mut digest = [0; 32];

@@ -136,7 +136,8 @@ impl DeviceRecords {
         let followers: Vec<_> = {
             let mut held = held.lock_recover();
             held.values.insert(name.to_owned(), value.clone());
-            held.followers.retain(|(_, follower)| follower.strong_count() > 0);
+            held.followers
+                .retain(|(_, follower)| follower.strong_count() > 0);
             held.followers
                 .iter()
                 .filter(|(followed, _)| followed == name)

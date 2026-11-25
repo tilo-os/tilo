@@ -338,9 +338,12 @@ fn surface_of(app_id: &str) -> Option<Arc<crate::surface::SurfaceFile>> {
 /// surface.
 #[must_use]
 pub fn resource_surface(kind: &str) -> Option<tilo_actions::surface::Surface> {
-    every()
-        .iter()
-        .find_map(|file| file.resources.iter().find(|resource| resource.kind == kind).cloned())
+    every().iter().find_map(|file| {
+        file.resources
+            .iter()
+            .find(|resource| resource.kind == kind)
+            .cloned()
+    })
 }
 
 /// The kind of `app_id`'s own record of a workspace, the first its surface declares: the resource

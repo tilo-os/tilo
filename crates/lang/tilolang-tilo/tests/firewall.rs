@@ -560,7 +560,11 @@ fn a_stored_change_reaches_this_devices_firewall_without_a_press() {
                 let Value::Ref(zone) = zone else { return None };
                 let held = std::rc::Rc::unwrap_or_clone(zone.target.clone());
                 let kind = app.host.runtime().read(&held, "kind").expect("kind");
-                if kind == Value::text("public") { Some(held) } else { None }
+                if kind == Value::text("public") {
+                    Some(held)
+                } else {
+                    None
+                }
             })
             .expect("the public zone");
         let rules = app
@@ -597,7 +601,11 @@ fn a_stored_change_reaches_this_devices_firewall_without_a_press() {
     let window = app.window();
     let mut timers = Vec::new();
     with_kind(window.tree(), "ui.Timer", &mut timers);
-    assert_eq!(timers.len(), 1, "the device does not hold the stored change");
+    assert_eq!(
+        timers.len(),
+        1,
+        "the device does not hold the stored change"
+    );
     let before = applies(&app);
     window.fire(&timers[0], "tick").expect("the clock strikes");
     assert!(

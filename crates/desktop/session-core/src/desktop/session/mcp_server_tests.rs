@@ -258,7 +258,7 @@ pub fn a_window_asks_the_shell_for_the_persons_connect_setup_or_pairing_link() {
 /// devices serving nothing changes nothing.
 #[test]
 pub fn workspace_accounts_and_models_reach_the_workspace_host_with_no_device() {
-    use tilo_actions::remote::{person_accounts, model_providers, server_account};
+    use tilo_actions::remote::{model_providers, person_accounts, server_account};
 
     let (session, _openings) = super::serve("workspace", Arc::default());
     let person = Caller::local_person("ada").in_workspace("workspace");

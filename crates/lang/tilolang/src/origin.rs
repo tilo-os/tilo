@@ -828,7 +828,11 @@ pub const KINDS: &[OriginKind] = &[
             field("key", "Text", "Its id, as `<question>/<number>`."),
             field("question", "Text", "The question it is of, by its key."),
             field("app", "Text", "The app that keeps the record, by its name."),
-            field("what", "Text", "What the step does there, in the person's words."),
+            field(
+                "what",
+                "Text",
+                "What the step does there, in the person's words.",
+            ),
         ],
     },
     OriginKind {

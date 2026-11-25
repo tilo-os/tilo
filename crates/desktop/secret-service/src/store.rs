@@ -219,9 +219,12 @@ impl KeySource for DeviceDaemon {
                     Locked::Unreadable(refusal.message)
                 }
             })?;
-        answer.get("proven").and_then(Value::as_bool).ok_or_else(|| {
-            Locked::Unreadable(format!("the device service answered no proven: {answer}"))
-        })
+        answer
+            .get("proven")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                Locked::Unreadable(format!("the device service answered no proven: {answer}"))
+            })
     }
 }
 
@@ -446,7 +449,8 @@ impl Store {
                 // A fresh vault is written on the first change, not now:
                 // opening must not create state. It is sealed all the same,
                 // so a store whose vault could not be kept says so now.
-                self.keys.seal(&Self::plain(&fresh).map_err(Locked::Unreadable)?)?;
+                self.keys
+                    .seal(&Self::plain(&fresh).map_err(Locked::Unreadable)?)?;
                 fresh
             }
             Err(error) => return Err(Locked::Unreadable(error.to_string())),

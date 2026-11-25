@@ -20,7 +20,6 @@ use discord_wire::op::{DeleteEmojiOp, EmojiSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-
 use crate::emoji::discord_name;
 use crate::guild::{Guild, MappedKind, Mapping};
 

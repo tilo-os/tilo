@@ -46,7 +46,9 @@ mod export;
 
 pub use adopt::{MAX_IMPORTED_ANNOTATIONS, annotation_key, imported_id, kind_of};
 pub use dates::{parse_pdf_date, pdf_date};
-pub use export::{ExportAdopted, ExportMark, ExportPage, ExportReply, ExportValue, SaveRequest, save};
+pub use export::{
+    ExportAdopted, ExportMark, ExportPage, ExportReply, ExportValue, SaveRequest, save,
+};
 
 /// The largest file a reader opens, and the largest one it takes pages from.
 pub const MAX_DOCUMENT_BYTES: usize = 128 * 1024 * 1024;
@@ -329,10 +331,9 @@ impl Document {
     pub fn pages(&self) -> Result<Vec<Page>, Error> {
         (0..self.inner.page_count())
             .map(|page| {
-                let size = self
-                    .inner
-                    .page_size(page)
-                    .ok_or_else(|| Error::Unreadable(format!("page {} cannot be read", page + 1)))?;
+                let size = self.inner.page_size(page).ok_or_else(|| {
+                    Error::Unreadable(format!("page {} cannot be read", page + 1))
+                })?;
                 Ok(Page {
                     page: page + 1,
                     width: size.width,
@@ -453,10 +454,7 @@ impl Document {
             return Err(Error::NoPage(page));
         }
         let width = width.clamp(64, MAX_PICTURE_SIDE);
-        let size = self
-            .inner
-            .page_size(page - 1)
-            .ok_or(Error::NoPage(page))?;
+        let size = self.inner.page_size(page - 1).ok_or(Error::NoPage(page))?;
         let options = tilo_pdf::RenderOptions {
             scale: if size.width > 0.0 {
                 width as f32 / size.width
@@ -483,10 +481,7 @@ impl Document {
     ///
     /// Why the page is not one the document has.
     pub fn page_size(&self, page: usize) -> Result<(f32, f32), Error> {
-        let size = self
-            .inner
-            .page_size(page - 1)
-            .ok_or(Error::NoPage(page))?;
+        let size = self.inner.page_size(page - 1).ok_or(Error::NoPage(page))?;
         Ok((size.width, size.height))
     }
 }

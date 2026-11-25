@@ -30,9 +30,8 @@ fn the_edges_of_what_people_export_read_as_they_look() {
     assert!(parse(r#"<opml version="2.0"><head/><body></body></opml>"#).is_empty());
     assert!(parse("a < b and outlines > none").is_empty());
     // Single quotes, no title (the address names it), and a title over the text.
-    let one = parse(
-        "<outline text='One' xmlUrl='https://one.test/feed' htmlUrl='https://one.test'/>",
-    );
+    let one =
+        parse("<outline text='One' xmlUrl='https://one.test/feed' htmlUrl='https://one.test'/>");
     assert_eq!(one[0].title, "One");
     assert_eq!(one[0].site, "https://one.test");
     let bare = parse(r#"<outline xmlUrl="https://bare.test/feed"/>"#);
@@ -40,7 +39,9 @@ fn the_edges_of_what_people_export_read_as_they_look() {
     let titled = parse(r#"<outline text="Text" title="Title" xmlUrl="https://t.test/feed"/>"#);
     assert_eq!(titled[0].title, "Title");
     // An attribute that only ends in the name is not it, and an ampersand left bare stays.
-    let near = parse(r#"<outline text="X" myxmlUrl="https://wrong.test" xmlUrl="https://right.test/feed"/>"#);
+    let near = parse(
+        r#"<outline text="X" myxmlUrl="https://wrong.test" xmlUrl="https://right.test/feed"/>"#,
+    );
     assert_eq!(near[0].url, "https://right.test/feed");
     let amp = parse(r#"<outline text="Q" xmlUrl="https://q.test/feed?a=1&b=2"/>"#);
     assert_eq!(amp[0].url, "https://q.test/feed?a=1&b=2");
@@ -48,7 +49,8 @@ fn the_edges_of_what_people_export_read_as_they_look() {
     // folder.
     let unnamed = parse(r#"<outline><outline text="In" xmlUrl="https://in.test/feed"/></outline>"#);
     assert_eq!(unnamed[0].folder, "Folder");
-    let empty = parse(r#"<outline text="Empty"/><outline text="Feed" xmlUrl="https://feed.test/feed"/>"#);
+    let empty =
+        parse(r#"<outline text="Empty"/><outline text="Feed" xmlUrl="https://feed.test/feed"/>"#);
     assert_eq!(empty[0].folder, "");
     let stray = parse(r#"</outline><outline text="Feed" xmlUrl="https://feed.test/feed"/>"#);
     assert_eq!(stray[0].folder, "");
