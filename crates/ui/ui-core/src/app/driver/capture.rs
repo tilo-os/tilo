@@ -354,17 +354,20 @@ impl Driver {
     }
 
     /// The items the app leaves out past each collection's published page, by id and label, read
-    /// without building them ([`crate::widget::past_page_labels`]).
+    /// without building them ([`crate::bound_dispatch::past_page_labels`]).
     #[must_use]
     pub fn past_page_labels(&self) -> Vec<(String, String)> {
-        crate::widget::past_page_labels(self.app.root_widget.as_ref(), &self.app.state.doc)
+        crate::bound_dispatch::past_page_labels(self.app.root_widget.as_ref(), &self.app.state.doc)
     }
 
     /// The items the app leaves out past each collection's published page, every one built
-    /// ([`crate::widget::resources_past_page`]).
+    /// ([`crate::bound_dispatch::resources_past_page`]).
     #[must_use]
     pub fn resources_past_page(&self) -> Vec<tilo_actions::ResourceSpec> {
-        crate::widget::resources_past_page(self.app.root_widget.as_ref(), &self.app.state.doc)
+        crate::bound_dispatch::resources_past_page(
+            self.app.root_widget.as_ref(),
+            &self.app.state.doc,
+        )
     }
 
     #[cfg(feature = "model")]

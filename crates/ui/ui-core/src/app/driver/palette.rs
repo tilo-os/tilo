@@ -231,17 +231,17 @@ impl Driver {
     }
 
     /// How many items the app leaves out past each collection's published page, counted without
-    /// building them ([`crate::widget::past_page_len`]).
+    /// building them ([`crate::bound_dispatch::past_page_len`]).
     #[must_use]
     pub fn past_page_len(&self) -> usize {
-        crate::widget::past_page_len(self.app.root_widget.as_ref(), &self.app.state.doc)
+        crate::bound_dispatch::past_page_len(self.app.root_widget.as_ref(), &self.app.state.doc)
     }
 
     /// The items the app leaves out past each collection's published page from `offset` on, at
-    /// most `take` of them, built alone ([`crate::widget::past_page_range`]).
+    /// most `take` of them, built alone ([`crate::bound_dispatch::past_page_range`]).
     #[must_use]
     pub fn past_page_range(&self, offset: usize, take: usize) -> Vec<tilo_actions::ResourceSpec> {
-        crate::widget::past_page_range(
+        crate::bound_dispatch::past_page_range(
             self.app.root_widget.as_ref(),
             &self.app.state.doc,
             offset,

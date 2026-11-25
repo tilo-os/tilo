@@ -548,8 +548,12 @@ fn draw_presence_layer(
                 (
                     app.window.app_id.as_deref().unwrap_or("native-primary"),
                     &|id| {
-                        crate::widget::find_resource(app.root_widget.as_ref(), &app.state.doc, id)
-                            .map(|resource| resource.label)
+                        crate::bound_dispatch::find_resource(
+                            app.root_widget.as_ref(),
+                            &app.state.doc,
+                            id,
+                        )
+                        .map(|resource| resource.label)
                     },
                 ),
                 now,

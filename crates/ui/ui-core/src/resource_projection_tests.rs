@@ -456,7 +456,7 @@ fn a_widget_answering_for_a_child_it_walks_publishes_that_childs_resources_once(
     }
 
     let mut resources = Vec::new();
-    crate::widget::collect_widget_resources(
+    crate::bound_dispatch::collect_widget_resources(
         &Displaying(Publisher),
         &AutoCommit::new(),
         &mut resources,

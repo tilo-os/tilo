@@ -19,8 +19,8 @@ impl TileHost {
             return published;
         }
         WindowPublication {
-            resources: crate::widget::published_resources(self, doc),
-            providers: crate::widget::published_search_providers(self),
+            resources: crate::bound_dispatch::published_resources(self, doc),
+            providers: crate::bound_dispatch::published_search_providers(self),
         }
     }
 

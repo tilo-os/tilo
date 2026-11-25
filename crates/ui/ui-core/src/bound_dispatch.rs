@@ -30,10 +30,23 @@ pub use executing::{
 use tilo_actions::ResourceSpec;
 
 mod node_map;
+mod resource_walk;
 pub use node_map::{BoundNodeMap, invoke_bound_node};
 pub(crate) use node_map::{
     NodeSweep, enter_traversal, enter_widget, inspect_bound_node, layout_bound_node,
     mutate_bound_node,
+};
+#[cfg(feature = "model")]
+pub(crate) use resource_walk::action_directory_page_at;
+pub(crate) use resource_walk::collect_widget_resources;
+#[cfg(feature = "model")]
+pub use resource_walk::published_search_providers;
+#[cfg(test)]
+#[cfg(feature = "model")]
+pub(crate) use resource_walk::resolve_widget_resource;
+pub use resource_walk::{
+    find_resource, past_page_labels, past_page_len, past_page_range, published_resources,
+    resources_past_page,
 };
 
 #[cfg(feature = "model")]

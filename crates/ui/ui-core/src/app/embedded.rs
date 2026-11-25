@@ -1037,14 +1037,17 @@ impl crate::widget::CompleteContentProvider for EmbeddedApp {
 impl AppWidget for EmbeddedApp {
     fn device_local_resources(&self) -> Option<Vec<tilo_actions::ResourceSpec>> {
         self.device_local.then(|| {
-            crate::widget::published_resources(self.app.root_widget.as_ref(), &self.app.state.doc)
+            crate::bound_dispatch::published_resources(
+                self.app.root_widget.as_ref(),
+                &self.app.state.doc,
+            )
         })
     }
     fn window_search(&self) -> Option<crate::widget::WindowPublication> {
         let root = self.app.root_widget.as_ref();
         Some(crate::widget::WindowPublication {
-            resources: crate::widget::published_resources(root, &self.app.state.doc),
-            providers: crate::widget::published_search_providers(root),
+            resources: crate::bound_dispatch::published_resources(root, &self.app.state.doc),
+            providers: crate::bound_dispatch::published_search_providers(root),
         })
     }
     fn run_window_control(

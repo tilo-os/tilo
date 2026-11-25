@@ -1,13 +1,11 @@
 //! How a walk of a widget tree crosses the components it hosts: entering a
-//! component's scope before calling into its widgets, and reading the
-//! document as the component holds it.
+//! component's scope before calling into its widgets.
 //!
 //! A component is an app's record owner, which only Tilo's model has: without
 //! the `model` feature a tree hosts no components, every widget answers to
 //! the window, and a walk reads the document as it is.
 
 use super::Widget;
-use automerge::AutoCommit;
 
 /// The component a widget belongs to, as a walk hands it down to the
 /// widget's children.
@@ -121,53 +119,6 @@ impl HeldScope {
         match binding {
             Some(binding) => match *binding {},
             None => Ok(()),
-        }
-    }
-}
-
-/// Where a walk stands at one widget: whether the widget is a component's
-/// boundary, the component it reads under, and that component's scope held.
-pub(crate) struct Crossing {
-    /// The widget hosts a component: what it publishes is the component's,
-    /// read below it.
-    pub(crate) boundary: bool,
-    /// The component the widget belongs to, its own or the one it is inside.
-    pub(crate) binding: Option<Binding>,
-    _entry: Entry,
-}
-
-/// Step onto `widget`, inside `inherited`'s component. `None` when the walk
-/// must leave the widget's subtree: it owns a document of its own no component
-/// answers for, or its component has closed.
-pub(crate) fn cross(widget: &dyn Widget, inherited: Option<Binding>) -> Option<Crossing> {
-    let own = binding_of(widget);
-    if own.is_none() && has_separate_document_owner(widget) {
-        return None;
-    }
-    let boundary = own.is_some();
-    let binding = own.or(inherited);
-    let entry = enter(binding.as_ref())?;
-    Some(Crossing {
-        boundary,
-        binding,
-        _entry: entry,
-    })
-}
-
-impl Crossing {
-    /// `read` of `doc` as the widget holds it: its component's document, else
-    /// the window's. `None` when the component's document cannot be read now.
-    pub(crate) fn read<T>(
-        &self,
-        doc: &AutoCommit,
-        read: impl FnOnce(&AutoCommit) -> T,
-    ) -> Option<T> {
-        match &self.binding {
-            #[cfg(feature = "model")]
-            Some(binding) => binding.read_document(doc, |doc, _| read(doc)).ok(),
-            #[cfg(not(feature = "model"))]
-            Some(binding) => match *binding {},
-            None => Some(read(doc)),
         }
     }
 }

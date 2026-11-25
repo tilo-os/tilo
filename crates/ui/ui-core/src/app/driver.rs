@@ -2501,7 +2501,7 @@ impl Driver {
     pub fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let _entry = self.app.enter_wake_scope();
         let mut resources = Vec::new();
-        crate::widget::collect_widget_resources(
+        crate::bound_dispatch::collect_widget_resources(
             self.app.root_widget.as_ref(),
             &self.app.state.doc,
             &mut resources,
@@ -2527,7 +2527,7 @@ impl Driver {
     #[must_use]
     pub fn resource(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
         let _entry = self.app.enter_wake_scope();
-        crate::widget::find_resource(self.app.root_widget.as_ref(), &self.app.state.doc, id)
+        crate::bound_dispatch::find_resource(self.app.root_widget.as_ref(), &self.app.state.doc, id)
     }
 
     #[cfg(feature = "model")]

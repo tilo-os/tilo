@@ -2676,7 +2676,7 @@ tilo_test_env::scenario! {
     // component's provider must say which `open` that is.
     {
         let fixture = ActionFixture::new();
-        let opens: Vec<_> = crate::widget::published_search_providers(fixture.app.root_widget.as_ref())
+        let opens: Vec<_> = crate::bound_dispatch::published_search_providers(fixture.app.root_widget.as_ref())
             .iter()
             .map(|provider| provider.open_action())
             .collect();

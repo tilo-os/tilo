@@ -4,8 +4,8 @@
 //! An app's search (its search control, the window bar's "Search `<app>`")
 //! is about that window: the resources it publishes, what its own search
 //! providers find, and its actions. [`WindowSearch`] answers it from what
-//! the window publishes now ([`ui::widget::published_resources`] and
-//! [`ui::widget::published_search_providers`]): the same catalogue its own
+//! the window publishes now ([`ui::bound_dispatch::published_resources`] and
+//! [`ui::bound_dispatch::published_search_providers`]): the same catalogue its own
 //! controls, agents and remote peers invoke, never a copy kept by the
 //! desktop. Every desktop that hosts windows (the native shell, the
 //! portable desktop surface) shows an app's search through this.

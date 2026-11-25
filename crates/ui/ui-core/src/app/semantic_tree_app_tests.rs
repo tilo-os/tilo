@@ -803,7 +803,7 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
         let tree =
             ResourceSpec::new("test.lazy.parent", "test.lazy.parent", "Parent").with_child(child);
         let mut app = lazy_app(tree);
-        let resolved = crate::widget::resolve_widget_resource(
+        let resolved = crate::bound_dispatch::resolve_widget_resource(
             app.root_widget.as_ref(),
             &app.state.doc,
             "test.lazy.child",

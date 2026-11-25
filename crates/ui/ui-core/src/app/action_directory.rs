@@ -395,7 +395,7 @@ impl App {
                     true
                 };
                 while projected_done && rows.len() < max_results && inspected < max_work {
-                    let Some(page) = crate::widget::action_directory_page_at(
+                    let Some(page) = crate::bound_dispatch::action_directory_page_at(
                         self.root_widget.as_ref(),
                         &self.state.doc,
                         widget_index,
