@@ -1770,7 +1770,7 @@ fn search_once_held(
                 match daemon.action_provider() {
                     Ok(host) => {
                         let workspace = daemon.workspace().unwrap_or_default();
-                        match crate::os_search::start(host, &workspace, daemon.actor()) {
+                        match crate::os_search::start(host, &workspace, daemon.actor(), &daemon) {
                             Ok(started) => {
                                 let _ = search.set(started);
                             }

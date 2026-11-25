@@ -513,6 +513,53 @@ fn standalone_is_the_clients_own_explicit_choice_for_connect() {
     assert!(args(&["--connect", "--standalone", "--standalone"]).is_err());
 }
 
+/// Host search asks the host the person's part admitted only while that part lives: when the
+/// part ends (a restart through another server, a stop), its admission is retired and every
+/// later ask would be refused, so the feed ends with it and lets the host go.
+#[test]
+fn host_search_ends_with_the_part_it_was_admitted_under() {
+    let host = PageHost::default();
+    host.offered
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
+        std::sync::Arc::new(host.clone()),
+        tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
+    ));
+    let part = std::sync::Arc::new(());
+    let runtime = tilo_rt::try_app().unwrap();
+    let feeding = {
+        let (search, part) = (
+            std::sync::Arc::clone(&search),
+            std::sync::Arc::downgrade(&part),
+        );
+        runtime.handle().spawn(async move {
+            crate::os_search::feed(&search, &part, std::time::Duration::from_millis(5)).await;
+        })
+    };
+    runtime.handle().block_on(tilo_test_env::within(
+        "the feed walks the catalogue",
+        async {
+            while search.search("travel", 1).is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        },
+    ));
+    drop(part);
+    runtime
+        .handle()
+        .block_on(tilo_test_env::within(
+            "the feed ends with its part",
+            feeding,
+        ))
+        .unwrap();
+    drop(search);
+    assert_eq!(
+        std::sync::Arc::strong_count(&host.offered),
+        1,
+        "the ended feed holds the part's host no longer"
+    );
+}
+
 /// One page resource with an `open` view action, offered by publisher `7`,
 /// and every invocation the host was asked to run.
 #[derive(Clone, Default)]

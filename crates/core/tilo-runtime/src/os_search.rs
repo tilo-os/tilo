@@ -6,7 +6,11 @@
 //! socket), and it walks the catalogue again every [`REFRESH`] so
 //! what the owner may no longer see leaves every host search.
 
-use std::{io, sync::Arc, time::Duration};
+use std::{
+    io,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use tilo_actions::remote::{ActionProvider, Caller};
 use tilo_os_search::{Changes, OsSearch};
@@ -15,10 +19,18 @@ use tilo_os_search::{Changes, OsSearch};
 const REFRESH: Duration = Duration::from_secs(10);
 
 /// Feed host search from `host`, as the profile's owner `actor` confined
-/// to the profile's `workspace`: the caller MCP acts as.
-pub(crate) fn start<H>(host: H, workspace: &str, actor: &str) -> io::Result<Arc<OsSearch>>
+/// to the profile's `workspace`: the caller MCP acts as. The feed lasts as long as `part`,
+/// the person's part `host` was admitted under: a host outlives its admission when the part
+/// ends, and asking it then is refused every time.
+pub(crate) fn start<H, P>(
+    host: H,
+    workspace: &str,
+    actor: &str,
+    part: &Arc<P>,
+) -> io::Result<Arc<OsSearch>>
 where
     H: ActionProvider + Send + Sync + 'static,
+    P: Send + Sync + 'static,
 {
     let search = Arc::new(OsSearch::new(
         Arc::new(host),
@@ -26,6 +38,7 @@ where
     ));
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let feeding = Arc::clone(&search);
+    let part = Arc::downgrade(part);
     runtime.handle().spawn(async move {
         #[cfg(all(unix, not(target_os = "macos")))]
         let _providers = tilo_os_search::dbus::serve_on_session_bus(&feeding)
@@ -40,15 +53,20 @@ where
         } else {
             tracing::info!("Spotlight indexes for an app bundle; this runtime runs without one");
         }
-        loop {
-            match feeding.refresh().await {
-                Ok(changes) => publish(&changes),
-                Err(error) => tracing::debug!(%error, "host search keeps its previous index"),
-            }
-            tokio::time::sleep(REFRESH).await;
-        }
+        feed(&feeding, &part, REFRESH).await;
     });
     Ok(search)
+}
+
+/// Walk the catalogue into `search` every `every` while `part` lives, and end with it.
+pub(crate) async fn feed<P>(search: &OsSearch, part: &Weak<P>, every: Duration) {
+    while part.strong_count() > 0 {
+        match search.refresh().await {
+            Ok(changes) => publish(&changes),
+            Err(error) => tracing::debug!(%error, "host search keeps its previous index"),
+        }
+        tokio::time::sleep(every).await;
+    }
 }
 
 /// Hand the host searches that keep their own copy what changed.
