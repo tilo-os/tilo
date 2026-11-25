@@ -6,7 +6,7 @@
     clippy::expect_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
-use super::{index_of, part_bytes, parts_of};
+use super::{NoHost, index_of, open_file_with, part_bytes, parts_of};
 use crate::owner::{DeviceWorkspaces, WorkspaceId, open_file, read_file, testing};
 use ed25519_dalek::SigningKey;
 use std::{
@@ -286,16 +286,63 @@ fn an_earlier_workspace_file_is_brought_up_and_kept_beside_it() {
         record.holds(founded),
         "the workspace of the earlier file reads"
     );
+    let now = part_files(&path);
+    assert_eq!(now.len(), 1, "the pair the earlier build wrote is replaced");
+    let (current, written) = now.into_iter().next().unwrap();
     assert_eq!(
-        String::from_utf8(std::fs::read(&snapshot).unwrap()).unwrap(),
+        String::from_utf8(written).unwrap(),
         bytes,
         "the file is written again as this build's layout"
     );
-    let kept_beside = parts_of(&path).join(format!("{name}.v{}", today.saturating_sub(1)));
+    assert_ne!(
+        current, *name,
+        "the brought-up snapshot is a snapshot of its own"
+    );
+    assert!(
+        !snapshot.exists(),
+        "the file the earlier build wrote is not a part any more"
+    );
+    let kept_beside = parts_of(&path).join(format!("{current}.v{}", today.saturating_sub(1)));
     assert_eq!(
         std::fs::read(kept_beside).unwrap(),
         earlier.as_bytes(),
         "the file as the earlier version wrote it is kept beside it"
+    );
+}
+
+/// Opening the owner through its store keeps the snapshot an earlier version wrote beside the one
+/// this build reads: an update never loses the copy the build before it read.
+#[test]
+fn opening_the_owner_keeps_the_snapshot_an_earlier_version_wrote() {
+    let directory = directory();
+    let path = resource_path(&directory);
+    let (key, device) = device();
+    let owner = open_file(&path).unwrap();
+    let founded = testing::founded(&owner, &device, &key).unwrap();
+    drop(owner);
+
+    let today = crate::owner::stored::WORKSPACE_VERSION;
+    let files = part_files(&path);
+    let (name, bytes) = files.iter().next().unwrap();
+    let bytes = String::from_utf8(bytes.clone()).unwrap();
+    let earlier = bytes.replacen(
+        &format!("\"version\":{today}"),
+        &format!("\"version\":{}", today.saturating_sub(1)),
+        1,
+    );
+    let snapshot = parts_of(&path).join(name);
+    std::fs::write(&snapshot, &earlier).unwrap();
+
+    drop(open_file_with(&path, std::sync::Arc::new(NoHost)).unwrap());
+    assert!(read_file(&path).unwrap().holds(founded));
+    let now = part_files(&path);
+    assert_eq!(now.len(), 1, "the pair the earlier build wrote is replaced");
+    let (current, _) = now.iter().next().unwrap();
+    let kept_beside = parts_of(&path).join(format!("{current}.v{}", today.saturating_sub(1)));
+    assert_eq!(
+        std::fs::read(kept_beside).unwrap(),
+        earlier.as_bytes(),
+        "the store keeps the file as the earlier version wrote it"
     );
 }
 

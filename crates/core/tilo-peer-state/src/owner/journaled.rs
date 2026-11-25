@@ -55,10 +55,11 @@ pub trait JournalParts: collab_types::signer::MaybeSendSync {
     fn write_part(&self, name: &str, bytes: &[u8]) -> Result<(), String>;
     /// Append `bytes` to the part `name`, which need not exist yet.
     fn append_part(&self, name: &str, bytes: &[u8]) -> Result<(), String>;
-    /// The bytes of the part `name`, which are of the workspace entry's version
-    /// `stored`, brought up to this build's: a store of files keeps what the part
-    /// held beside it before it writes the brought-up bytes back. A store that
-    /// keeps no layout older than its build reads returns them as they are.
+    /// `bytes`, a snapshot of the workspace entry's version `stored`, brought up to this build's in
+    /// the part `name`: a store of files writes the brought-up bytes there and keeps `bytes` beside
+    /// it as `<name>.v<stored>`. The record names `name` only through the index, so a crash leaves
+    /// the snapshot and journal the earlier build wrote. A store that keeps no layout older than
+    /// its build reads returns them as they are.
     fn bring_up_part(&self, _name: &str, bytes: Vec<u8>, _stored: u32) -> Result<Vec<u8>, String> {
         Ok(bytes)
     }
@@ -92,6 +93,18 @@ struct Kept {
     appended: usize,
 }
 
+/// A workspace's snapshot of an earlier version, read but not yet brought up: the store writes the
+/// pair it brings the workspace up with at a snapshot of this build's, so the earlier build's
+/// snapshot and journal stay the record's until the index names the new pair.
+struct Earlier {
+    workspace: WorkspaceId,
+    snapshot: Vec<u8>,
+    version: u32,
+    ownership: Option<serde_json::Value>,
+    entries: Option<Vec<u8>>,
+    list: Option<Vec<u8>>,
+}
+
 /// The record `parts` keeps.
 pub struct Journaled {
     index: Index,
@@ -113,7 +126,9 @@ impl Journaled {
     /// # Errors
     /// The index is kept and cannot be read, or names a part that is not
     /// there or does not read as the record. Nothing is guessed at: the caller
-    /// starts from no record rather than from part of one.
+    /// starts from no record rather than from part of one. A record brought up
+    /// from an earlier version that cannot be written fails here, the pair the
+    /// earlier build wrote untouched.
     pub fn open(
         parts: &dyn JournalParts,
     ) -> Result<Option<(Self, NativeAuthorityStorage)>, String> {
@@ -134,22 +149,50 @@ impl Journaled {
         let mut chunks = BTreeMap::new();
         let mut written = BTreeSet::from([INDEX_NAME.to_owned()]);
         let mut revision = index.revision;
+        let mut earlier = Vec::new();
         for (&workspace, &snapshot_revision) in &index.held {
             let name = snapshot_name(workspace, snapshot_revision);
             let snapshot = parts.read_part(&name)?.ok_or_else(|| {
                 format!("the record names {workspace}'s snapshot and it is missing")
             })?;
             written.insert(name.clone());
-            // The layout the snapshot names: one this build writes reads as it
-            // is, and an earlier one is brought up, the next publication writing
-            // a snapshot of this build's version. A journal is a delta of the
-            // snapshot beside it, as that version's bytes. One beside a
-            // snapshot of the build before this one replays too: it is a delta
-            // of the ownership that snapshot held, which its step drops, so that
-            // is read first. One beside an older snapshot is refused.
-            let ownership = journal::ownership_before(&snapshot)
-                .map_err(|error| format!("{workspace}'s snapshot does not read: {error}"))?;
+            // The layout the snapshot names: one this build writes reads as it is; an earlier one
+            // is read as that build wrote it, and brought up into a snapshot of this build's at the
+            // end, the journal beside it folded in, so the pair on disk is one build's or the other.
+            // A journal is a delta of the snapshot beside it, and one beside the snapshot of the
+            // build before this one is a delta of the ownership that snapshot held, which its step
+            // drops, so that is read first.
             let snapshot_version = stored_version(&name, &snapshot)?;
+            if snapshot_version < WORKSPACE_VERSION {
+                let ownership = journal::ownership_before(&snapshot)
+                    .map_err(|error| format!("{workspace}'s snapshot does not read: {error}"))?;
+                let log = journal_name(workspace, snapshot_revision);
+                let entries = match parts.read_part(&log)? {
+                    Some(entries) => {
+                        written.insert(log);
+                        Some(entries)
+                    }
+                    None => None,
+                };
+                let list = list_name(workspace, snapshot_revision);
+                let list = match parts.read_part(&list)? {
+                    Some(list) => {
+                        written.insert(list);
+                        Some(list)
+                    }
+                    None => None,
+                };
+                earlier.push(Earlier {
+                    workspace,
+                    snapshot,
+                    version: snapshot_version,
+                    ownership,
+                    entries,
+                    list,
+                });
+                continue;
+            }
+            // A snapshot this build reads as it is; one a later build wrote is refused here.
             let snapshot = parts.bring_up_part(&name, snapshot, snapshot_version)?;
             let mut size = snapshot.len();
             let mut stored: StoredWorkspace = serde_json::from_slice(&snapshot)
@@ -181,16 +224,15 @@ impl Journaled {
                     "the record names {workspace}'s chunks and their list is missing"
                 ));
             }
-            let mut whole = snapshot_version == WORKSPACE_VERSION;
+            let mut whole = true;
             let mut appended = 0;
             let log = journal_name(workspace, snapshot_revision);
             if let Some(entries) = parts.read_part(&log)? {
                 written.insert(log);
-                whole = whole && journal::read_whole(&entries);
+                whole = journal::read_whole(&entries);
                 appended = entries.len();
-                let (replayed, newest) =
-                    journal::replay(stored, &entries, snapshot_version, ownership.as_ref())
-                        .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
+                let (replayed, newest) = journal::replay(stored, &entries, snapshot_version, None)
+                    .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
                 stored = replayed;
                 revision = revision.max(newest.unwrap_or(0));
             }
@@ -214,20 +256,100 @@ impl Journaled {
             }
             workspaces.insert(workspace, stored);
         }
-        let record = NativeAuthorityStorage {
+        let mut record = NativeAuthorityStorage {
             revision,
             workspaces,
             pending: index.pending.clone(),
         };
-        Ok(Some((
-            Self {
-                index,
-                kept,
-                chunks,
-                written,
-            },
-            record,
-        )))
+        let mut journaled = Self {
+            index,
+            kept,
+            chunks,
+            written,
+        };
+        journaled.write_brought_up(parts, &mut record, earlier)?;
+        Ok(Some((journaled, record)))
+    }
+
+    /// Write each workspace whose snapshot was brought up as one snapshot of this build's version
+    /// with an empty journal beside it, then the index naming them: the index is the commit point
+    /// of a change, so a crash at any point leaves either the pair the earlier build wrote, its
+    /// journal with the writes no link took yet, or the pair this build wrote. Each file is
+    /// replaced whole or not at all ([`JournalParts::write_part`]).
+    fn write_brought_up(
+        &mut self,
+        parts: &dyn JournalParts,
+        record: &mut NativeAuthorityStorage,
+        earlier: Vec<Earlier>,
+    ) -> Result<(), String> {
+        if earlier.is_empty() {
+            return Ok(());
+        }
+        let revision = record
+            .revision
+            .checked_add(1)
+            .ok_or("the record's revision is exhausted")?;
+        let mut held = self.index.held.clone();
+        for read in earlier {
+            let workspace = read.workspace;
+            let name = snapshot_name(workspace, revision);
+            // The brought-up bytes go to the snapshot this build names, the bytes the earlier
+            // build wrote kept beside it, and the journal beside it is written empty: none of them
+            // is the record's until the index below is.
+            let snapshot = parts.bring_up_part(&name, read.snapshot, read.version)?;
+            self.written.insert(name);
+            let mut stored: StoredWorkspace = serde_json::from_slice(&snapshot)
+                .map_err(|error| format!("{workspace}'s snapshot does not read: {error}"))?;
+            stored.version = WORKSPACE_VERSION;
+            if let Some(list) = read.list {
+                let digests = read_list(&list)?;
+                let mut peer = Vec::new();
+                for digest in &digests {
+                    let chunk_name = chunk_name(workspace, digest);
+                    let chunk = parts.read_part(&chunk_name)?.ok_or_else(|| {
+                        format!("{workspace}'s snapshot lists a chunk that is missing")
+                    })?;
+                    if blake3::hash(&chunk).as_bytes() != digest {
+                        return Err(format!("a chunk of {workspace}'s snapshot does not read"));
+                    }
+                    peer.extend_from_slice(&chunk);
+                    self.written.insert(chunk_name);
+                }
+                stored.peer = DurablePeer::read(&peer);
+            } else if stored.peer.layout().len() == 0 {
+                return Err(format!(
+                    "the record names {workspace}'s chunks and their list is missing"
+                ));
+            }
+            if let Some(entries) = read.entries {
+                let (replayed, _) =
+                    journal::replay(stored, &entries, read.version, read.ownership.as_ref())
+                        .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
+                stored = replayed;
+            }
+            if stored.workspace != workspace {
+                return Err(format!("{workspace}'s record holds another workspace"));
+            }
+            self.write_snapshot(parts, workspace, revision, &stored)?;
+            held.insert(workspace, revision);
+            record.workspaces.insert(workspace, stored);
+        }
+        let index = Index {
+            version: INDEX_VERSION,
+            revision,
+            held,
+            pending: record.pending.clone(),
+        };
+        let bytes = serde_json::to_vec(&index).map_err(|error| error.to_string())?;
+        parts.write_part(INDEX_NAME, &bytes)?;
+        self.written.insert(INDEX_NAME.to_owned());
+        self.index = index;
+        record.revision = revision;
+        let held = &self.index.held;
+        self.chunks
+            .retain(|(workspace, revision), _| held.get(workspace) == Some(revision));
+        self.prune(parts);
+        Ok(())
     }
 
     /// The record `parts` keeps from `record`, which this store takes as
@@ -543,6 +665,8 @@ mod tests {
         replaced: Mutex<Vec<String>>,
         /// The bytes every part written whole held.
         rewritten: Mutex<usize>,
+        /// The part a write fails on, as a publication that stopped before it.
+        fail: Mutex<Option<String>>,
     }
 
     impl JournalParts for Memory {
@@ -556,6 +680,13 @@ mod tests {
         }
 
         fn write_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+            {
+                let mut fail = self.fail.lock().map_err(|error| error.to_string())?;
+                if fail.as_deref() == Some(name) {
+                    *fail = None;
+                    return Err(format!("{name} is not written"));
+                }
+            }
             self.replaced
                 .lock()
                 .map_err(|error| error.to_string())?
@@ -905,12 +1036,22 @@ mod tests {
         let workspace = WorkspaceId::parse("40267648-f762-4c8d-89ad-c5ab27aa13b8")
             .ok_or("the golden entry's workspace")?;
         let parts = Memory::default();
+        // The same record without a journal, for the replica the journal's entry leaves as it was.
+        let alone_parts = Memory::default();
         let mut held = serde_json::Map::new();
         held.insert(workspace.to_string(), 1.into());
-        let index = serde_json::json!({ "version": INDEX_VERSION, "revision": 1, "held": held });
-        parts.write_part(INDEX_NAME, &serde_json::to_vec(&index)?)?;
-        parts.write_part(&snapshot_name(workspace, 1), &golden)?;
-        let alone = Journaled::open(&parts)?.ok_or("the record is not kept")?.1;
+        let index = serde_json::to_vec(&serde_json::json!({
+            "version": INDEX_VERSION,
+            "revision": 1,
+            "held": held
+        }))?;
+        for parts in [&parts, &alone_parts] {
+            parts.write_part(INDEX_NAME, &index)?;
+            parts.write_part(&snapshot_name(workspace, 1), &golden)?;
+        }
+        let alone = Journaled::open(&alone_parts)?
+            .ok_or("the record is not kept")?
+            .1;
         let held = alone.stored(workspace).ok_or("the snapshot's workspace")?;
         check(held.generation == 1, "the golden entry is of generation 1")?;
         let layout = held.peer.layout();
@@ -964,6 +1105,34 @@ mod tests {
             tail: kept(length(&layout.tail)),
         };
         parts.write_part(&journal_name(workspace, 1), &framed(&entry(Vec::new()))?)?;
+        // A store that stopped after writing the pair it brings the workspace up with, before the
+        // index named it, opens again from the pair the earlier build wrote, the entry read.
+        parts
+            .fail
+            .lock()
+            .map_err(|error| error.to_string())?
+            .replace(INDEX_NAME.to_owned());
+        check(
+            Journaled::open(&parts).is_err(),
+            "the open stops where the index is written",
+        )?;
+        {
+            let kept = parts.parts.lock().map_err(|error| error.to_string())?;
+            check(
+                kept.get(&snapshot_name(workspace, 2))
+                    .is_some_and(|snapshot| !snapshot.is_empty())
+                    && kept
+                        .get(&journal_name(workspace, 2))
+                        .is_some_and(Vec::is_empty),
+                "the brought-up pair is written before the index",
+            )?;
+            let index: Index =
+                serde_json::from_slice(kept.get(INDEX_NAME).ok_or("the index is kept")?)?;
+            check(
+                index.held.get(&workspace) == Some(&1),
+                "the index still names the pair the earlier build wrote",
+            )?;
+        }
         let (mut journaled, read) = Journaled::open(&parts)?.ok_or("the record is not kept")?;
         let stored = read.stored(workspace).ok_or("the journal's workspace")?;
         check(stored.generation == 7, "the entry's change is read")?;
@@ -1007,7 +1176,7 @@ mod tests {
 
         // An entry of that build that carries an answer is refused, never read past.
         let parts_with_answer = Memory::default();
-        parts_with_answer.write_part(INDEX_NAME, &serde_json::to_vec(&index)?)?;
+        parts_with_answer.write_part(INDEX_NAME, &index)?;
         parts_with_answer.write_part(&snapshot_name(workspace, 1), &golden)?;
         parts_with_answer.write_part(&journal_name(workspace, 1), &framed(&entry(vec![()]))?)?;
         check(

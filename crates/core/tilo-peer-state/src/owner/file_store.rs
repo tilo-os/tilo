@@ -19,7 +19,7 @@ use crate::owner::journaled::{INDEX_NAME, JournalParts, Journaled};
 use crate::owner::{Change, DeviceWorkspaces, NativeAuthorityStorage, Store};
 use parking_lot::{Mutex, RwLock};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::{
@@ -160,15 +160,44 @@ impl FileParts<'_> {
     }
 }
 
+/// The workspace a snapshot's file names, from `<workspace>.<revision>.json`.
+fn snapshot_name_of(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let (workspace, rest) = name.strip_suffix(".json")?.split_once('.')?;
+    rest.starts_with(|first: char| first.is_ascii_digit())
+        .then_some(workspace.to_owned())
+}
+
+/// The copy of a snapshot kept beside it, from `<snapshot>.v<version>`: the workspace it belongs
+/// to, the revision its snapshot was written at, and the version whose build wrote it.
+fn kept_copy_of(path: &Path) -> Option<(&str, u64, u32)> {
+    let name = path.file_name()?.to_str()?;
+    let (base, version) = name.rsplit_once(".v")?;
+    let version = version.parse().ok()?;
+    let (workspace, revision) = base.strip_suffix(".json")?.split_once('.')?;
+    let revision = revision.parse().ok()?;
+    Some((workspace, revision, version))
+}
+
 impl JournalParts for FileParts<'_> {
     fn read_part(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
         read_whole(&file_of(self.parts, name))
     }
 
     fn write_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        let (store, next) = self.writing()?;
         provision(self.parts)?;
-        store.replace(&file_of(self.parts, name), bytes, next)
+        let path = file_of(self.parts, name);
+        match self.writing {
+            Some((store, next)) => store.replace(&path, bytes, next),
+            // An open that brings a record up writes its parts before a store holds it: each is
+            // replaced as a publication replaces one, whole or not at all.
+            None => tilo_files::native::atomic::replace(
+                &path,
+                bytes,
+                tilo_files::native::atomic::Privacy::OwnerOnly,
+            )
+            .map_err(|error| error.into_io_error().to_string()),
+        }
     }
 
     fn bring_up_part(&self, name: &str, bytes: Vec<u8>, stored: u32) -> Result<Vec<u8>, String> {
@@ -306,7 +335,10 @@ impl FileStore {
     }
 
     /// Remove the files the record as published does not name: those a publication stopped
-    /// before its index wrote.
+    /// before its index wrote. The copy of a snapshot an earlier build wrote, kept beside it as
+    /// `<snapshot>.v<version>`, is not the record's either, and is kept: the newest copy of each
+    /// workspace stays, so an update never loses what the build before it read, and updating again
+    /// collects no older copy.
     fn prune_parts(&self) {
         let Ok(entries) = std::fs::read_dir(&self.parts) else {
             return;
@@ -318,9 +350,29 @@ impl FileStore {
             .iter()
             .map(|name| file_of(&self.parts, name))
             .collect();
-        for entry in entries.flatten() {
-            let path = entry.path();
+        let files: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        let held: BTreeSet<String> = kept
+            .iter()
+            .filter_map(|path| snapshot_name_of(path))
+            .collect();
+        let mut newest: BTreeMap<String, (u64, u32)> = BTreeMap::new();
+        for path in &files {
+            if let Some((workspace, revision, version)) = kept_copy_of(path)
+                && held.contains(workspace)
+            {
+                let at = newest
+                    .entry(workspace.to_owned())
+                    .or_insert((revision, version));
+                *at = (*at).max((revision, version));
+            }
+        }
+        for path in files {
             if kept.contains(&path) {
+                continue;
+            }
+            if let Some((workspace, revision, version)) = kept_copy_of(&path)
+                && newest.get(workspace) == Some(&(revision, version))
+            {
                 continue;
             }
             if let Err(error) = std::fs::remove_file(&path)
