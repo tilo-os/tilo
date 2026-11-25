@@ -2421,14 +2421,67 @@ impl crate::widget::resources::PublishesResources for PaletteHistoryOwner {
     }
 }
 
-fn palette_history_app(state: Arc<PaletteContinuationState>) -> App {
+fn palette_history_window(state: Arc<PaletteContinuationState>) -> crate::headless::Driver {
     let mut app = app();
     app.root_widget = Box::new(PaletteHistoryOwner {
         text: crate::widget::Text::new("Palette history owner"),
         state,
     });
     layout(&mut app);
-    app
+    asking_window(app)
+}
+
+/// `app` in a window whose device asks the person about what its actions ask first, as a window
+/// placed in a workspace does.
+fn asking_window(app: App) -> crate::headless::Driver {
+    let mut driver = crate::headless::Driver::on_app(Box::new(app), (900, 650));
+    driver.connect_peer();
+    driver
+}
+
+/// The call the window's device holds for the person's yes once the frame that sends it ran, with
+/// the invocation and what it meant as the window keeps it.
+fn asked(
+    driver: &mut crate::headless::Driver,
+) -> Option<(
+    tilo_actions::ActionAddress,
+    tilo_actions::InvocationId,
+    Option<crate::bound_dispatch::ControlObservation>,
+)> {
+    driver.relayout();
+    let (address, _) = driver.asking()?;
+    let (invocation, held) = held_ask(driver.app());
+    Some((address, invocation, held))
+}
+
+/// The one call the window asked the device about: its invocation, and what it meant when asked.
+fn held_ask(
+    app: &App,
+) -> (
+    tilo_actions::InvocationId,
+    Option<crate::bound_dispatch::ControlObservation>,
+) {
+    let [(invocation, held)] = app.actions.asked_calls.iter().collect::<Vec<_>>()[..] else {
+        panic!("the window holds exactly one asked call");
+    };
+    (*invocation, held.seen.clone())
+}
+
+/// The person allows what the device asks, typing its phrase on the ask.
+fn allow_typing(
+    driver: &mut crate::headless::Driver,
+    phrase: &str,
+) -> Option<tilo_actions::ActionAddress> {
+    let approval = driver.approval_typing(Some(phrase));
+    driver.resolve_asked(approval)
+}
+
+/// Whether the window refused `invocation`, sent back with the person's yes, as no longer the call
+/// they were asked about.
+fn refused_as_stale(driver: &crate::headless::Driver, invocation: tilo_actions::InvocationId) -> bool {
+    driver.call_updates(invocation).iter().any(|update| {
+        matches!(update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.code == "stale_asked_call")
+    })
 }
 
 fn palette_activate(app: &mut App, action: &str, value: &str) {
@@ -2453,22 +2506,6 @@ fn palette_enter(app: &mut App) {
         winit::event::ElementState::Pressed,
     );
     assert!(app.action_palette_handle_key(&event));
-}
-
-/// Go ahead with the typed confirmation through its own button, past
-/// Cancel: Return in the field for the name stays the safe answer.
-fn palette_confirm(app: &mut App) {
-    for key in [
-        winit::keyboard::NamedKey::Tab,
-        winit::keyboard::NamedKey::Tab,
-        winit::keyboard::NamedKey::Enter,
-    ] {
-        let event = crate::synthetic_input::key_input(
-            &winit::keyboard::Key::Named(key),
-            winit::event::ElementState::Pressed,
-        );
-        assert!(app.action_palette_handle_key(&event));
-    }
 }
 
 fn palette_history_round_trip(app: &mut App) {
@@ -2511,15 +2548,16 @@ tilo_test_env::scenario! {
             if mutation == "absent" {
                 state.draft_supported.store(false, Ordering::SeqCst);
             }
-            let mut app = palette_history_app(state.clone());
-            palette_activate(&mut app, action, partial);
-            let before = editor_snapshot(&app);
+            let mut window = palette_history_window(state.clone());
+            let app = window.app_mut();
+            palette_activate(app, action, partial);
+            let before = editor_snapshot(app);
             assert_eq!(before.0, partial);
             assert!(before.1.is_some(), "the actual editor exposes its cursor");
             assert_eq!(before.2, "argument");
 
-            palette_history_round_trip(&mut app);
-            assert_eq!(editor_snapshot(&app), before, "{action}:{mutation}");
+            palette_history_round_trip(app);
+            assert_eq!(editor_snapshot(app), before, "{action}:{mutation}");
             if mutation == "changed" {
                 state.draft_epoch.store(2, Ordering::SeqCst);
             }
@@ -2528,30 +2566,40 @@ tilo_test_env::scenario! {
                 .as_deref_mut()
                 .unwrap()
                 .set_query(complete);
-            palette_enter(&mut app);
-            assert_eq!(editor_snapshot(&app).2, "confirmation");
-            app.actions
-                .action_palette
-                .as_deref_mut()
-                .unwrap()
-                .set_query(PALETTE_CONFIRMATION);
-            palette_confirm(&mut app);
+            palette_enter(app);
+            let ask = asked(&mut window);
+            assert_eq!(
+                ask.is_some(),
+                should_start,
+                "only a draft that kept its identity is asked: {action}:{mutation}"
+            );
+            assert_eq!(state.starts.lock().unwrap().len(), 0, "nothing runs before the yes");
+            if should_start {
+                assert_eq!(
+                    ask.unwrap().0,
+                    tilo_actions::ActionAddress::new("palette-owner", action)
+                );
+                assert_eq!(
+                    allow_typing(&mut window, PALETTE_CONFIRMATION),
+                    Some(tilo_actions::ActionAddress::new("palette-owner", action))
+                );
+            }
 
             let starts = state.starts.lock().unwrap().len();
             assert_eq!(starts, usize::from(should_start), "{action}:{mutation}");
             if should_start {
                 assert!(
-                    app.action_palette().is_none(),
+                    window.app().action_palette().is_none(),
                     "successful dispatch closes palette"
                 );
             } else {
-                let snapshot = editor_snapshot(&app);
-                // The name was typed in the confirmation's own plain field,
-                // never in the search field.
-                assert_eq!(snapshot.0, "");
+                let snapshot = editor_snapshot(window.app());
+                assert_eq!(snapshot.0, complete, "the refused draft stays as typed");
                 assert_eq!(snapshot.2, "ready");
                 assert!(
-                    app.actions
+                    window
+                        .app_mut()
+                        .actions
                         .action_palette
                         .as_deref_mut()
                         .unwrap()
@@ -2584,19 +2632,17 @@ tilo_test_env::scenario! {
             ),
         ] {
             let state = PaletteContinuationState::stable();
-            let mut app = palette_history_app(state.clone());
-            palette_activate(&mut app, action, complete);
-            palette_enter(&mut app);
-            assert_eq!(editor_snapshot(&app).2, "confirmation");
-            app.actions
-                .action_palette
-                .as_deref_mut()
-                .unwrap()
-                .set_query(PALETTE_CONFIRMATION);
+            let mut window = palette_history_window(state.clone());
+            palette_activate(window.app_mut(), action, complete);
+            palette_enter(window.app_mut());
+            let (address, invocation, held) =
+                asked(&mut window).expect("the palette's choice waits for the person's yes");
+            assert_eq!(address, tilo_actions::ActionAddress::new("palette-owner", action));
 
-            let named_action_target = named(&mut app, "History");
+            let app = window.app_mut();
+            let named_action_target = named(app, "History");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            layout(&mut app);
+            layout(app);
             if mutation == "target-before-return" {
                 state.target_epoch.store(2, Ordering::SeqCst);
             } else {
@@ -2605,28 +2651,32 @@ tilo_test_env::scenario! {
                     .put(ROOT, "unrelated-round3", mutation)
                     .unwrap();
             }
-            let named_action_target = named(&mut app, "History");
+            let named_action_target = named(app, "History");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            layout(&mut app);
+            layout(app);
             assert_eq!(
-                editor_snapshot(&app),
-                (String::new(), Some((0, 0)), "confirmation"),
-                "History return requires a fresh phrase: {action}:{mutation}"
+                window.asking().map(|(asked, _)| asked),
+                Some(address),
+                "the ask waits across History, and only the device's yes runs it: {action}:{mutation}"
+            );
+            assert!(
+                held_ask(window.app()) == (invocation, held),
+                "History leaves what was asked as it was"
             );
 
             if mutation == "handler-changed-before-going-ahead" {
                 assert_eq!(state.starts.lock().unwrap().len(), 0);
                 state.handler_epoch.store(2, Ordering::SeqCst);
             }
-            app.actions
-                .action_palette
-                .as_deref_mut()
-                .unwrap()
-                .set_query(PALETTE_CONFIRMATION);
-            palette_confirm(&mut app);
+            allow_typing(&mut window, PALETTE_CONFIRMATION);
             assert_eq!(
                 state.starts.lock().unwrap().len(),
                 usize::from(should_start),
+                "{action}:{mutation}"
+            );
+            assert_eq!(
+                refused_as_stale(&window, invocation),
+                !should_start,
                 "{action}:{mutation}"
             );
             let queries = state.queries.lock().unwrap().clone();
@@ -3414,23 +3464,15 @@ tilo_test_env::scenario! {
             let mut app = app();
             app.root_widget = root;
             layout(&mut app);
-            palette_history_round_trip(&mut app);
+            let mut window = asking_window(app);
+            let app = window.app_mut();
+            palette_history_round_trip(app);
 
+            // A control that asks first is continued by the same press as any other: the device
+            // asks the person when it runs.
             let command = match command_kind {
-                "continue" => emit_pending_control_command(&mut app, "history-pending-1"),
-                "cancel" => emit_pending_control_command(&mut app, "history-pending-cancel-1"),
-                "confirm" => {
-                    let named_action_target = named(&mut app, "Continue");
-                    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-                    layout(&mut app);
-                    let phrase = node_for_test_id(&app, "history-pending-1-phrase");
-                    app.perform_node_action(
-                        phrase,
-                        &crate::a11y::Action::SetValue("RUN COMPONENT".into()),
-                    )
-                    .unwrap();
-                    emit_pending_control_command(&mut app, "history-pending-1")
-                }
+                "continue" | "confirm" => emit_pending_control_command(app, "history-pending-1"),
+                "cancel" => emit_pending_control_command(app, "history-pending-cancel-1"),
                 _ => unreachable!(),
             };
             assert_eq!(original[0].starts.get(), 0);
@@ -3438,18 +3480,18 @@ tilo_test_env::scenario! {
             let (replacement, current, _) =
                 component_control_root(&[("component-replaced", confirmation)]);
             app.root_widget = replacement;
-            layout(&mut app);
+            layout(app);
             current[0]
                 .binding
                 .queued_controls
                 .borrow_mut()
                 .push_back(nested_control("component-replaced", "replacement", 6));
-            let named_action_target = named(&mut app, "History");
+            let named_action_target = named(app, "History");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            layout(&mut app);
-            let named_action_target = named(&mut app, "History");
+            layout(app);
+            let named_action_target = named(app, "History");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            layout(&mut app);
+            layout(app);
             assert_eq!(
                 app.pending_history_controls().len(),
                 2,
@@ -3476,6 +3518,10 @@ tilo_test_env::scenario! {
                 2,
                 "stale callback cannot consume either retained item"
             );
+            assert!(
+                asked(&mut window).is_none(),
+                "delayed {command_kind} asks the person nothing"
+            );
         }
     }
 
@@ -3499,24 +3545,15 @@ tilo_test_env::scenario! {
             let mut app = app();
             app.root_widget = root;
             layout(&mut app);
-            palette_history_round_trip(&mut app);
+            let mut window = asking_window(app);
+            let app = window.app_mut();
+            palette_history_round_trip(app);
 
             let callback_id = if callback_kind == "cancel" {
                 "history-pending-cancel-1"
             } else {
                 "history-pending-1"
             };
-            if callback_kind == "confirm" {
-                let named_action_target = named(&mut app, "Continue");
-                app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-                layout(&mut app);
-                let phrase = node_for_test_id(&app, "history-pending-1-phrase");
-                app.perform_node_action(
-                    phrase,
-                    &crate::a11y::Action::SetValue("RUN CALLBACK".into()),
-                )
-                .unwrap();
-            }
             let callback = app
                 .history
                 .as_ref()
@@ -3526,18 +3563,18 @@ tilo_test_env::scenario! {
 
             let (replacement, current, _) = component_control_root(&[("callback-owner", confirmation)]);
             app.root_widget = replacement;
-            layout(&mut app);
+            layout(app);
             current[0]
                 .binding
                 .queued_controls
                 .borrow_mut()
                 .push_back(nested_control("callback-owner", "replacement", 8));
-            let named_action_target = named(&mut app, "History");
+            let named_action_target = named(app, "History");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            layout(&mut app);
-            let named_action_target = named(&mut app, "History");
+            layout(app);
+            let named_action_target = named(app, "History");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-            layout(&mut app);
+            layout(app);
             assert_eq!(app.pending_history_controls().len(), 2);
 
             callback.invoke_for_test();
@@ -3549,7 +3586,59 @@ tilo_test_env::scenario! {
                 2,
                 "old {callback_kind} callback cannot mint or consume a current token"
             );
+            assert!(
+                asked(&mut window).is_none(),
+                "old {callback_kind} callback asks the person nothing"
+            );
         }
+    }
+
+    phase asked_framework_continue_cannot_cross_replacement_before_the_yes;
+    {
+        let confirmation = tilo_actions::ConfirmationPolicy::Phrase {
+            phrase: "RUN ASKED".into(),
+        };
+        let (root, original, _) =
+            component_control_root(&[("asked-owner", confirmation.clone())]);
+        original[0]
+            .binding
+            .queued_controls
+            .borrow_mut()
+            .push_back(nested_control("asked-owner", "original", 9));
+        let mut app = app();
+        app.root_widget = root;
+        layout(&mut app);
+        let mut window = asking_window(app);
+        let app = window.app_mut();
+        palette_history_round_trip(app);
+        let command = emit_pending_control_command(app, "history-pending-1");
+        app.history
+            .as_ref()
+            .unwrap()
+            .queue_pending_control_command_for_test(command);
+        app.service_pending_history_commands();
+        let (_, invocation, held) =
+            asked(&mut window).expect("the held control waits for the person's yes");
+        assert!(held.is_some(), "the control proves what it continues");
+        assert_eq!(original[0].starts.get(), 0, "nothing runs before the yes");
+
+        let app = window.app_mut();
+        let (replacement, current, _) = component_control_root(&[("asked-owner", confirmation)]);
+        app.layout.node_map.clear();
+        app.bindings.clear();
+        app.focused_node = None;
+        app.root_widget = replacement;
+        layout(app);
+        palette_history_round_trip(app);
+        allow_typing(&mut window, "RUN ASKED");
+        assert_eq!(original[0].starts.get(), 0, "the yes never reaches the retired owner");
+        assert_eq!(
+            current[0].starts.get(),
+            0,
+            "the yes never runs on the owner that replaced it"
+        );
+        assert!(refused_as_stale(&window, invocation));
+        assert!(window.app().actions.asked_calls.is_empty(), "a yes is used once");
     }
 }
 
@@ -3592,53 +3681,50 @@ tilo_test_env::scenario! {
             if changed == "unsupported" {
                 state.exact_supported.store(false, Ordering::SeqCst);
             }
-            let mut app = palette_history_app(state.clone());
-            palette_activate(&mut app, "text", "production");
-            palette_enter(&mut app);
-            palette_history_round_trip(&mut app);
-            let original =
-                crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
+            let mut window = palette_history_window(state.clone());
+            palette_activate(window.app_mut(), "text", "production");
+            palette_enter(window.app_mut());
+            asked(&mut window).expect("the palette's choice waits for the person's yes");
+            palette_history_round_trip(window.app_mut());
+            let original = held_ask(window.app());
+            assert_eq!(
+                original.1.is_some(),
+                changed != "unsupported",
+                "what the action proves of itself is what the ask holds"
+            );
             match changed {
                 "target" => state.target_epoch.store(2, Ordering::SeqCst),
                 "handler" => state.handler_epoch.store(2, Ordering::SeqCst),
                 _ => state.exact_supported.store(true, Ordering::SeqCst),
             }
-            palette_history_round_trip(&mut app);
-            let retained =
-                crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
-            assert_eq!(retained.wire_argument(), original.wire_argument());
-            app.actions
-                .action_palette
-                .as_deref_mut()
-                .unwrap()
-                .set_query(PALETTE_CONFIRMATION);
-            palette_confirm(&mut app);
-            assert_eq!(state.starts.lock().unwrap().len(), 0, "{changed}");
-            assert!(
-                retained.history_seen == original.history_seen,
-                "immutable observation: {changed}"
+            palette_history_round_trip(window.app_mut());
+            let retained = held_ask(window.app());
+            assert!(retained == original, "immutable observation: {changed}");
+            let asked_with = &window.app().actions.asked_calls[&original.0].arguments;
+            assert_eq!(
+                asked_with.as_api_arguments(),
+                (Some("production"), None),
+                "the ask holds the draft as typed: {changed}"
             );
-            let refused =
-                crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
-            assert_eq!(refused.wire_argument().as_deref(), Some("production"));
-            assert!(refused.history_seen == original.history_seen);
+            allow_typing(&mut window, PALETTE_CONFIRMATION);
+            assert_eq!(state.starts.lock().unwrap().len(), 0, "{changed}");
+            assert!(refused_as_stale(&window, original.0), "{changed}");
+            assert!(
+                window.app().actions.asked_calls.is_empty(),
+                "a refused yes is not kept to be used again: {changed}"
+            );
         }
     }
 
     phase palette_named_text_parameter_survives_history_and_confirmation;
     {
         let state = PaletteContinuationState::stable();
-        let mut app = palette_history_app(state.clone());
-        palette_activate(&mut app, "named", "  original target  ");
-        palette_enter(&mut app);
-        assert_eq!(editor_snapshot(&app).2, "confirmation");
-        palette_history_round_trip(&mut app);
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query(PALETTE_CONFIRMATION);
-        palette_confirm(&mut app);
+        let mut window = palette_history_window(state.clone());
+        palette_activate(window.app_mut(), "named", "  original target  ");
+        palette_enter(window.app_mut());
+        asked(&mut window).expect("the palette's choice waits for the person's yes");
+        palette_history_round_trip(window.app_mut());
+        allow_typing(&mut window, PALETTE_CONFIRMATION);
         let starts = state.starts.lock().unwrap();
         assert_eq!(starts.len(), 1);
         assert_eq!(
@@ -3660,18 +3746,19 @@ tilo_test_env::scenario! {
         for action in ["text", "json"] {
             for authority in [1, 2] {
                 let state = PaletteContinuationState::stable();
-                let mut app = palette_history_app(state.clone());
+                let mut window = palette_history_window(state.clone());
+                let app = window.app_mut();
                 let partial = if action == "text" {
                     "unfinished alias"
                 } else {
                     r#"{"alias":"unfinished","nested":{"#
                 };
-                palette_activate(&mut app, action, partial);
-                palette_history_round_trip(&mut app);
-                let before = editor_snapshot(&app);
+                palette_activate(app, action, partial);
+                palette_history_round_trip(app);
+                let before = editor_snapshot(app);
                 state.authority.store(authority, Ordering::SeqCst);
-                palette_enter(&mut app);
-                assert_eq!(editor_snapshot(&app), before, "{action}:{authority}");
+                palette_enter(app);
+                assert_eq!(editor_snapshot(app), before, "{action}:{authority}");
                 assert_eq!(state.starts.lock().unwrap().len(), 0);
                 assert!(
                     app.actions
@@ -3683,8 +3770,9 @@ tilo_test_env::scenario! {
                             |reason| reason.contains("unavailable") || reason.contains("removed")
                         )
                 );
-                palette_history_round_trip(&mut app);
-                assert_eq!(editor_snapshot(&app), before);
+                palette_history_round_trip(app);
+                assert_eq!(editor_snapshot(app), before);
+                assert!(asked(&mut window).is_none(), "nothing is asked: {action}:{authority}");
             }
         }
     }
@@ -3730,37 +3818,37 @@ tilo_test_env::scenario! {
         let mut app = app();
         app.root_widget = root;
         layout(&mut app);
+        let mut window = asking_window(app);
         let input = r#"{"alias":"original","nested":{"leaf":1}}"#;
-        activate_component_palette(&mut app, &old[0], "same-address", input);
-        palette_enter(&mut app);
-        palette_history_round_trip(&mut app);
-        let original =
-            crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
+        activate_component_palette(window.app_mut(), &old[0], "same-address", input);
+        palette_enter(window.app_mut());
+        asked(&mut window).expect("the palette's choice waits for the person's yes");
+        palette_history_round_trip(window.app_mut());
+        let original = held_ask(window.app());
+        let app = window.app_mut();
         let (replacement, new, _) = component_control_root(&[("same-address", confirmation)]);
         app.layout.node_map.clear();
         app.bindings.clear();
         app.focused_node = None;
         app.root_widget = replacement;
-        layout(&mut app);
-        palette_history_round_trip(&mut app);
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query(PALETTE_CONFIRMATION);
-        palette_confirm(&mut app);
-        assert_eq!(old[0].starts.get(), 0);
-        assert_eq!(new[0].starts.get(), 0);
-        let retained =
-            crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
-        assert_eq!(retained.wire_argument(), original.wire_argument());
-        assert!(retained.history_seen == original.history_seen);
-        let Some(crate::bound_dispatch::local_target::LocalResourceTarget::Component(target)) =
-            retained.history_target
+        layout(app);
+        palette_history_round_trip(app);
+        let retained = &app.actions.asked_calls[&original.0];
+        assert!(retained.seen == original.1);
+        assert_eq!(
+            retained.arguments.as_api_arguments().1,
+            Some(&serde_json::from_str(input).unwrap())
+        );
+        let crate::bound_dispatch::local_target::LocalResourceTarget::Component(target) =
+            &retained.target
         else {
             panic!("original component ownership remains inspectable")
         };
         assert!(target.binding.same_component(&old[0].binding));
+        allow_typing(&mut window, PALETTE_CONFIRMATION);
+        assert_eq!(old[0].starts.get(), 0);
+        assert_eq!(new[0].starts.get(), 0);
+        assert!(refused_as_stale(&window, original.0));
     }
 
     phase component_empty_duplicate_resource_refuses_saved_continuation;
@@ -5164,24 +5252,25 @@ tilo_test_env::scenario! {
             2,
             "current owner revocation remains canonical"
         );
-        let (mut confirming, confirmed_log) =
+        let (confirming, confirmed_log) =
             ownership_matrix_app_with_confirmation("Button", tilo_actions::ConfirmationPolicy::Confirm);
-        palette_history_round_trip(&mut confirming);
-        ownership_matrix_activate(&mut confirming, "Button", false);
-        let named_action_target = named(&mut confirming, "Live pulse");
-        confirming.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        let mut confirming = asking_window(confirming);
+        palette_history_round_trip(confirming.app_mut());
+        ownership_matrix_activate(confirming.app_mut(), "Button", false);
+        let named_action_target = named(confirming.app_mut(), "Live pulse");
+        confirming
+            .app_mut()
+            .dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
         assert!(
             confirmed_log.borrow().is_empty(),
             "fresh F still requires current confirmation"
         );
-        assert_eq!(editor_snapshot(&confirming).2, "confirmation");
-        confirming
-            .actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query("CONFIRM");
-        palette_enter(&mut confirming);
+        assert!(
+            asked(&mut confirming).is_some(),
+            "fresh F waits for the person's yes at the device"
+        );
+        assert!(confirmed_log.borrow().is_empty(), "nothing runs before the yes");
+        confirming.confirm_asked();
         assert_eq!(&*confirmed_log.borrow(), &[serde_json::json!({})]);
     }
 

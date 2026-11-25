@@ -871,6 +871,28 @@ impl App {
                 });
             return;
         }
+        // A call the person was asked about comes back with their yes: it runs only while it is
+        // still the call they allowed.
+        if let Some(asked) = self.actions.asked_calls.remove(&invocation)
+            && let Err(error) = self.asked_call_unchanged(&asked)
+        {
+            self.refuse_visibly(&error);
+            self.collaboration
+                .manager
+                .send(CollabRequest::UpdateInvocation {
+                    id,
+                    update: tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "stale_asked_call".into(),
+                            message: error.to_string(),
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                });
+            return;
+        }
         // The invoker is the delivered actor plus the presence and the
         // person it acts for that the host set for it in the delivery context
         // (never trusted from anywhere else). Resolution below rebuilds that presence's own tree, and
@@ -1086,6 +1108,19 @@ impl App {
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        self.invoke_via_broker_asking(address, typed_arguments, argument, None)
+    }
+
+    #[cfg(feature = "model")]
+    /// [`Self::invoke_via_broker`] for a call the device asks the person about first, kept as
+    /// `asked` until it comes back with their yes ([`Self::asked_call_unchanged`]).
+    pub(super) fn invoke_via_broker_asking(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+        asked: Option<super::runtime::AskedOwnCall>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let mut made = None;
         let started = Self::dispatch_broker_request(
             &mut self.actions.next_broker_request_id,
@@ -1096,6 +1131,9 @@ impl App {
             |request_id, request| made = Some((request_id, request)),
         )?;
         if let Some((request_id, request)) = made {
+            if let Some(asked) = asked {
+                self.actions.asked_calls.insert(request.invocation, asked);
+            }
             self.actions
                 .broker_requests
                 .insert(BrokerReply::Receipt(request.invocation), request_id);

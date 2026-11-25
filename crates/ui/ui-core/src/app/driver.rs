@@ -248,7 +248,7 @@ pub struct Driver {
 pub const WINDOW_PARTS: &str = "window-parts";
 
 impl Driver {
-    fn on_app(app: Box<App>, viewport: (u32, u32)) -> Self {
+    pub(crate) fn on_app(app: Box<App>, viewport: (u32, u32)) -> Self {
         let mut driver = Self::built(app, viewport);
         // A freshly built app has everything to take up: its first frame syncs the tree, as a
         // window's first frame after mounting does.

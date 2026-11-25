@@ -557,6 +557,10 @@ pub(super) struct ActionRuntime {
     /// resolves an invocation against the surface it last received from this
     /// connection, so one sent ahead of that surface is refused as unknown.
     pub(super) held_own_invocations: std::collections::VecDeque<HeldOwnInvocation>,
+    /// The person's own calls this window sent the device to ask them about, by invocation:
+    /// what each meant when asked, held against the call the device sends back with their yes.
+    #[cfg(feature = "model")]
+    pub(super) asked_calls: std::collections::HashMap<tilo_actions::InvocationId, AskedOwnCall>,
     /// Why the session action host last refused an invocation outright, so
     /// a fixture fails on the refusal instead of waiting out what it asked.
     #[cfg(any(test, feature = "test-support"))]
@@ -583,6 +587,20 @@ pub(super) struct HeldOwnInvocation {
     /// The input serial of the press the invocation followed, if it followed one: kept from the
     /// moment it was made, not from the pass that finally sends it.
     pub(super) press: Option<u32>,
+}
+
+/// A call of the window's own that waits at the device for the person's yes: the control it was
+/// asked for, and what it meant then. Their yes is for this call: sent back after its owner was
+/// replaced or re-entered, or its target, handler or meaning changed, it is refused rather than run
+/// on what stands there now.
+#[cfg(feature = "model")]
+pub(super) struct AskedOwnCall {
+    pub(super) target: crate::bound_dispatch::local_target::LocalResourceTarget,
+    pub(super) invocation: tilo_actions::ControlInvocation,
+    pub(super) arguments: crate::bound_dispatch::ControlContinuationArguments,
+    /// What the call meant when asked; `None` for an action that proves no continuation identity,
+    /// held then only to the owner and encoding it was asked of.
+    pub(super) seen: Option<crate::bound_dispatch::ControlObservation>,
 }
 
 impl ActionRuntime {
@@ -666,6 +684,8 @@ impl ActionRuntime {
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
             held_own_invocations: std::collections::VecDeque::new(),
+            #[cfg(feature = "model")]
+            asked_calls: std::collections::HashMap::new(),
             #[cfg(any(test, feature = "test-support"))]
             refused_broker_receipt: None,
             next_broker_request_id: Some(0),

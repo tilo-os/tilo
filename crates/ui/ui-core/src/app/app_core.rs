@@ -344,8 +344,75 @@ impl App {
             ),
             LocalResourceTarget::Outer => address.clone(),
         };
+        let invocation = tilo_actions::ControlInvocation {
+            address: address.clone(),
+            arguments: match arguments {
+                crate::bound_dispatch::ControlContinuationArguments::Json(arguments) => {
+                    arguments.clone()
+                }
+                _ => serde_json::Map::new(),
+            },
+        };
+        let asked = runtime::AskedOwnCall {
+            seen: self.asked_meaning(target, &invocation, arguments)?,
+            target: target.clone(),
+            invocation,
+            arguments: arguments.clone(),
+        };
         let (argument, typed) = arguments.as_api_arguments();
-        self.invoke_via_broker(&published, typed, argument)
+        self.invoke_via_broker_asking(&published, typed, argument, Some(asked))
+    }
+
+    /// What `invocation` on `target` means now, as an asked call is held to it: `None` for an
+    /// action that proves no continuation identity, once its owner resolves and it encodes.
+    #[cfg(feature = "model")]
+    fn asked_meaning(
+        &self,
+        target: &crate::bound_dispatch::local_target::LocalResourceTarget,
+        invocation: &tilo_actions::ControlInvocation,
+        arguments: &crate::bound_dispatch::ControlContinuationArguments,
+    ) -> Result<Option<crate::bound_dispatch::ControlObservation>, tilo_actions::ApiError> {
+        let tree = self.tree();
+        match crate::bound_dispatch::control_observation_with_arguments(
+            tree.root,
+            &tree.state.doc,
+            target,
+            invocation,
+            arguments,
+        ) {
+            Ok(seen) => Ok(Some(seen)),
+            Err(tilo_actions::ApiError::Unavailable { code, .. })
+                if code == "unsupported_continuation_identity" =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Whether the call the device sent back with the person's yes is still the one they were
+    /// asked about: the same owner, target, handler and meaning. Refused as stale otherwise, so
+    /// their yes never runs on what replaced or re-entered it since.
+    #[cfg(feature = "model")]
+    pub(super) fn asked_call_unchanged(
+        &self,
+        asked: &runtime::AskedOwnCall,
+    ) -> Result<(), tilo_actions::ApiError> {
+        let now = self.asked_meaning(&asked.target, &asked.invocation, &asked.arguments);
+        match (&asked.seen, now) {
+            (Some(seen), Ok(Some(now))) if *seen == now => Ok(()),
+            (None, Ok(None)) => Ok(()),
+            (_, Err(error)) => Err(tilo_actions::ApiError::Unavailable {
+                code: "stale_asked_call".into(),
+                reason: format!("What you allowed is no longer there: {error}"),
+            }),
+            _ => Err(tilo_actions::ApiError::Unavailable {
+                code: "stale_asked_call".into(),
+                reason: "What you allowed changed before it ran: its target, handler or meaning \
+                         is no longer the one you were asked about"
+                    .into(),
+            }),
+        }
     }
 }
 

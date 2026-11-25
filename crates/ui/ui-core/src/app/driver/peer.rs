@@ -556,7 +556,7 @@ impl Driver {
 
     /// [`Self::confirm_asked`] with `approval`, the approve the person gave: the device admits the
     /// kept call again in its own dispatch, never on a frame the app sends.
-    pub(super) fn resolve_asked(
+    pub(crate) fn resolve_asked(
         &mut self,
         approval: tilo_actions::remote::asked::Approval,
     ) -> Option<tilo_actions::ActionAddress> {
