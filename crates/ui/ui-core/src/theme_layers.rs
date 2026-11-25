@@ -8,7 +8,7 @@ use vello::peniko::Color;
 use crate::theme::{Theme, WindowAppearance};
 use crate::theme_document::{PresetDesign, ThemeDocument};
 use crate::tokens::{Emphasis, PresenceHue};
-use settings_model::theme::{Preset, THEMES_KEY, ThemeDensity};
+use settings_model::theme::{Preset, ThemeDensity};
 
 /// JSON id of the distribution-defaults layer.
 pub const DISTRIBUTION_LAYER_ID: &str = "distribution";
@@ -404,12 +404,12 @@ fn finish_layer(appearance: Option<&serde_json::Value>) -> FinishLayer {
 }
 
 /// The person's own theme `custom`, one of the records the appearance section keeps under
-/// [`THEMES_KEY`].
+/// [`THEMES_KEY`](settings_model::theme::THEMES_KEY).
 #[cfg(feature = "model")]
 fn own_theme(appearance: &serde_json::Value, custom: &str) -> Option<ThemeDocument> {
     Some(
         appearance
-            .get(THEMES_KEY)
+            .get(settings_model::theme::THEMES_KEY)
             .map(|themes| {
                 <tilo_resource::Collection<crate::theme::ThemeRecord> as tilo_resource::Model>::from_json(themes)
                     .map_err(|error| {
