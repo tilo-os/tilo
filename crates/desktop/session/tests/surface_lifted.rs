@@ -10,7 +10,7 @@ use std::rc::Rc;
 use tilo_session_core::surface::ShellSurface as _;
 
 use tilo_session::platform::surfaces::{Placement, WidgetSurface};
-use ui::kurbo::{Affine, Rect};
+use ui::kurbo::Rect;
 use ui::peniko::{Color, Fill};
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::widget::{TaffyTreeExt as _, Widget};
@@ -49,7 +49,11 @@ impl Widget for Fader {
     ui::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _text, _theme, mut env) = ctx.parts();
         if self.under.get() {
             scene.fill(

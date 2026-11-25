@@ -37,7 +37,6 @@ use crate::platform::fabric::SharedLink;
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_lock::MutexRecover as _;
-use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_speaker_service::remote_audio::{self, RemoteAudioPhase};

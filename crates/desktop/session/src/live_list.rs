@@ -13,7 +13,6 @@ use serde_json::{Map, Value};
 use tilo_actions::ApiError;
 use tilo_broker_core::route::CrdtRoute;
 use tilo_lock::MutexRecover as _;
-use tilo_resource::Effect;
 use tilo_service::Started;
 
 /// The resource the rows are published under.

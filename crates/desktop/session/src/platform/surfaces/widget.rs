@@ -24,7 +24,6 @@ use winit::keyboard::ModifiersState;
 use super::Placement;
 use super::app_process::{ime_event, key_event, mouse_input};
 use super::frames::Frames;
-use ui::widget::Widget;
 
 /// The colour a widget tree draws on: nothing, so the desktop shows through
 /// wherever it painted nothing.

@@ -2,7 +2,6 @@
 //! the one in front first, with where each stands and what may be pictured of it. The layout's
 //! resource publishes these readings, and the switcher's panel shows the walk over them.
 
-use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
 };
