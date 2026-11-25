@@ -399,7 +399,6 @@ fn session_task(
         outbound_due: false,
         held_since: BTreeMap::new(),
         kept_why: BTreeMap::new(),
-        pending_signed: BTreeMap::new(),
         owed_since: BTreeMap::new(),
         answered: Vec::new(),
         let_go: BTreeSet::new(),
@@ -602,9 +601,6 @@ struct Task {
     held_since: BTreeMap<DocumentRoute, tilo_clock::time::Instant>,
     /// What the replica last said a document's held writes wait for, where it named something.
     kept_why: BTreeMap<DocumentRoute, crate::Waits>,
-    /// Signed writes of this device whose publication waits for what they need: their record
-    /// here, or a signature.
-    pending_signed: BTreeMap<DocumentRoute, Vec<collab_types::SignedOp>>,
     /// Since when each document has committed writes of this device its holder has not answered.
     owed_since: BTreeMap<DocumentRoute, tilo_clock::time::Instant>,
     /// Records of writes the replica let go undecided, its queue of undecided writes full: the
@@ -1745,13 +1741,6 @@ impl Task {
                 self.publish(&route);
                 true
             }
-            Command::Client(Cmd::PublishSigned(route, op)) => {
-                if let Ok(workspace_id) = route.workspace_id() {
-                    self.open_record_once(workspace_id, &route);
-                }
-                self.publish_signed(&route, *op);
-                true
-            }
             Command::Client(Cmd::Barrier(done)) => {
                 self.barrier(done, Scope::Session, None);
                 true
@@ -2673,20 +2662,6 @@ fn written_to(bytes: &[u8]) -> Option<(DocumentRoute, Vec<[u8; 32]>)> {
     ))
 }
 
-/// What became of a write this session handed to its device's ownership.
-enum Publishing {
-    /// Ownership carries it, and its host answers for it.
-    Owned,
-    /// Its record is not here yet, or this device has not signed it: it is kept, and goes when
-    /// what it waits for comes.
-    Waiting,
-    /// Its record's history is full: it is kept as a signed write, and goes once the record is
-    /// compacted.
-    History,
-    /// The workspace refused it for good: it is never saved.
-    Refused(tilo_peer_state::owner::WriteRefusal),
-}
-
 /// The most bytes one action answer may carry.
 const MAX_ACTION_FRAME: usize = 8 * 1024 * 1024;
 
@@ -3484,7 +3459,6 @@ impl Task {
 
     /// Draft and publish the writes held for their route's keys, once they may.
     async fn commit_held(&mut self) {
-        self.commit_signed_waiting();
         if !std::mem::take(&mut self.outbound_due) {
             return;
         }
@@ -3552,127 +3526,19 @@ impl Task {
         }
     }
 
-    /// Publish `op`, a write of this device that its holder signed and this replica admitted
-    /// already, as its outgoing ownership.
-    fn publish_signed(&mut self, route: &DocumentRoute, op: collab_types::SignedOp) {
-        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
-            self.fail(
-                "protocol-rejected",
-                "A document names an invalid workspace.",
-            );
-            return;
-        };
-        match self.publish_request(route, workspace, op) {
-            Publishing::Refused(refusal) => {
-                let refused = BTreeMap::from([(route.clone(), refusal.to_string())]);
-                self.note_refused(route, &refusal);
-                self.release_barriers(&refused);
-            }
-            Publishing::History => self.note_history(route),
-            Publishing::Owned | Publishing::Waiting => {}
-        }
-    }
-
-    /// Commit the signed writes still waiting for what they need, in the turn.
-    fn commit_signed_waiting(&mut self) {
-        if self.pending_signed.is_empty() {
-            return;
-        }
-        let waiting = std::mem::take(&mut self.pending_signed);
-        let mut refused = BTreeMap::new();
-        let mut changed = false;
-        for (route, requests) in waiting {
-            let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
-                continue;
-            };
-            for envelope in requests {
-                match self.publish_request(&route, workspace, envelope) {
-                    Publishing::Refused(refusal) => {
-                        self.note_refused(&route, &refusal);
-                        refused.insert(route.clone(), refusal.to_string());
-                        changed = true;
-                        break;
-                    }
-                    Publishing::History => self.note_history(&route),
-                    Publishing::Owned => changed = true,
-                    Publishing::Waiting => {}
-                }
-            }
-        }
-        if changed {
-            self.release_barriers(&refused);
-        }
-    }
-
-    /// Take `envelope`, this device's signed write of `route`, into its workspace: admitted where
-    /// the replica does not hold it yet, and kept in the record as a frame its link carries until
-    /// the host answers it.
-    fn publish_request(
-        &mut self,
-        route: &DocumentRoute,
-        workspace: tilo_desktop_model::WorkspaceId,
-        envelope: collab_types::SignedOp,
-    ) -> Publishing {
-        let now = crate::clock::system_time(tilo_clock::unix_now_ns());
-        let retry = envelope.clone();
-        match self.engine.owner().admit_writes(
-            workspace,
-            vec![tilo_peer_state::owner::WorkspaceDocumentWrite {
-                app: route.app_id.clone(),
-                document: route.document.clone(),
-                readers: None,
-                envelope,
-            }],
-            now,
-        ) {
-            Ok(()) => {
-                self.owes(route);
-                self.landed(route, Some(self.config.cert.device_public_key));
-                self.count_ownership();
-                Publishing::Owned
-            }
-            Err(
-                refusals @ (tilo_peer_state::owner::WriteRefusal::Waiting(_)
-                | tilo_peer_state::owner::WriteRefusal::Unsigned(_)),
-            ) => {
-                tracing::debug!(app = %route.app_id, record = %route.document, %refusals,
-                    "a signed write waits to be published");
-                self.pending_signed
-                    .entry(route.clone())
-                    .or_default()
-                    .push(retry);
-                Publishing::Waiting
-            }
-            Err(refusal @ tilo_peer_state::owner::WriteRefusal::HistoryFull { .. }) => {
-                tracing::debug!(app = %route.app_id, record = %route.document, %refusal,
-                    "a signed write waits for its record's history to be compacted");
-                self.pending_signed
-                    .entry(route.clone())
-                    .or_default()
-                    .push(retry);
-                Publishing::History
-            }
-            Err(refusal) => {
-                tracing::warn!(app = %route.app_id, record = %route.document, %refusal,
-                    "the workspace refused a write of this device for good");
-                Publishing::Refused(refusal)
-            }
-        }
-    }
-
-    /// Draft, seal, sign and admit `mutation` of `route` through this device's holder, then
-    /// publish the signed op it answered.
+    /// Draft, seal, sign and admit `mutation` of `route` through this device's holder, which
+    /// keeps it as a frame its links carry.
     async fn commit_held_write(
         &mut self,
         route: &DocumentRoute,
         mutation: &collab_types::DocumentMutation,
     ) -> Option<Result<(), String>> {
         let keys = self.keys_of(route)?;
-        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
+        if tilo_desktop_model::WorkspaceId::parse(&route.cluster_id).is_none() {
             const INVALID: &str = "A document names an invalid workspace.";
             self.fail("protocol-rejected", INVALID);
             return Some(Err(INVALID.to_owned()));
-        };
+        }
         let snapshot = matches!(mutation, collab_types::DocumentMutation::Snapshot(_));
         let changes = match mutation {
             collab_types::DocumentMutation::Snapshot(bytes)
@@ -3696,14 +3562,12 @@ impl Task {
             )
             .await;
         match written {
-            Ok(receipt) => match self.publish_request(route, workspace, receipt.envelope) {
-                Publishing::Owned | Publishing::Waiting => Some(Ok(())),
-                Publishing::History => {
-                    self.note_history(route);
-                    Some(Ok(()))
-                }
-                Publishing::Refused(refusal) => Some(self.refused_write(route, &refusal)),
-            },
+            Ok(_) => {
+                self.owes(route);
+                self.landed(route, Some(self.config.cert.device_public_key));
+                self.count_ownership();
+                Some(Ok(()))
+            }
             Err(tilo_peer_state::owner::WriteRefusal::HistoryFull { .. }) => {
                 self.history_full(route)
             }
@@ -3871,9 +3735,7 @@ impl Task {
 
     /// The routes this session still holds a write on.
     fn waiting_routes(&self) -> BTreeSet<DocumentRoute> {
-        let mut routes: BTreeSet<DocumentRoute> = self.held.lock().keys().cloned().collect();
-        routes.extend(self.pending_signed.keys().cloned());
-        routes
+        self.held.lock().keys().cloned().collect()
     }
 
     /// Complete `done` once every write in this device's ownership is answered.

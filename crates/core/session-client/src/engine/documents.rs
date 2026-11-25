@@ -14,8 +14,8 @@ use super::Engine;
 
 impl Engine {
     /// This device's documents, written as the device its identity certifies: each write is
-    /// drafted, sealed and signed into the replica this engine owns, and whoever holds this can
-    /// publish it as it was signed ([`crate::Outbox::publish_signed`]).
+    /// drafted, sealed and signed into the replica this engine owns, and kept as a frame its
+    /// links carry ([`tilo_peer_state::owner::NativeWorkspaceOwner::write_local`]).
     ///
     /// A write the engine holds no replica of `workspace` for is refused, as is one whose
     /// workspace has not admitted what it needs here yet ([`WriteRefusal::Waiting`]): the caller
@@ -42,21 +42,11 @@ impl DeviceWrites for EngineWrites {
                 Err(WriteRefusal::Refused(format!("{named} is not a workspace")))
             });
         };
-        let Ok(replica) = self.0.owner().replica(workspace_id) else {
-            let named = workspace.to_owned();
-            return Box::pin(async move {
-                Err(WriteRefusal::Refused(format!(
-                    "this device holds no workspace {named}"
-                )))
-            });
-        };
         let identity = self.0.identity();
-        tilo_peer_state::owner::admit_local_write(
-            replica,
-            Some(self.0.owner().clone()),
+        self.0.owner().write_local(
+            workspace_id,
             identity.device_cert.device_public_key,
             Arc::clone(&identity.signer),
-            workspace,
             LocalWrite {
                 app: writing.app,
                 document: writing.document,

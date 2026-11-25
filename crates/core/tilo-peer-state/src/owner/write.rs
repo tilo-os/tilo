@@ -505,18 +505,23 @@ impl NativeWorkspaceOwner {
     }
 
     /// Draft, seal and sign `write` as `device` by `signer`, admit it into `workspace`, and keep
-    /// it as a frame a link carries.
+    /// it as a frame a link carries: the one way a write of this device's own goes out.
     ///
     /// # Errors
     /// As [`crate::draft::admit_local_write`], and when the record could not be made durable.
-    pub async fn write_local(
+    pub fn write_local(
         &self,
         workspace: WorkspaceId,
         device: [u8; 32],
         signer: Arc<dyn DeviceSigner>,
         write: crate::draft::LocalWrite<'_>,
-    ) -> Result<crate::owner::AppWrite, WriteRefusal> {
-        let replica = self.replica(workspace).map_err(WriteRefusal::Refused)?;
+    ) -> crate::workspace_documents::DocumentWrite {
+        let replica = match self.replica(workspace) {
+            Ok(replica) => replica,
+            Err(error) => {
+                return Box::pin(async move { Err(crate::owner::WriteRefusal::Refused(error)) });
+            }
+        };
         let written = crate::draft::admit_local_write(
             replica,
             Some(self.clone()),
@@ -524,21 +529,25 @@ impl NativeWorkspaceOwner {
             signer,
             &workspace.to_string(),
             write,
-        )
-        .await?;
-        self.keep_frame(
-            workspace,
-            &NeighbourMsg::AppDocument {
-                peer: written.peer,
-                app_id: written.app_id.clone(),
-                cluster_id: written.cluster_id.clone(),
-                document_id: written.document_id.clone(),
-                envelope: Box::new(written.envelope.clone()),
-                readers: None,
-            },
-        )
-        .map_err(WriteRefusal::Refused)?;
-        Ok(written)
+        );
+        let owner = self.clone();
+        Box::pin(async move {
+            let written = written.await?;
+            owner
+                .keep_frame(
+                    workspace,
+                    &NeighbourMsg::AppDocument {
+                        peer: written.peer,
+                        app_id: written.app_id.clone(),
+                        cluster_id: written.cluster_id.clone(),
+                        document_id: written.document_id.clone(),
+                        envelope: Box::new(written.envelope.clone()),
+                        readers: None,
+                    },
+                )
+                .map_err(crate::owner::WriteRefusal::Refused)?;
+            Ok(written)
+        })
     }
 
     /// Write `command` into `workspace`'s governance as `caller`, signed by `signer`, and make it
