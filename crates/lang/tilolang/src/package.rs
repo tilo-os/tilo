@@ -313,6 +313,19 @@ fn emit_package(a: Analysis) -> Compiled {
     // A template's body travels in the metadata JSON, which is how a `PackageMeta` handed to another
     // compiler reaches it; the module hash is taken over the code alone.
     meta.templates = a.templates;
+    // A string ends on the line it starts, so a line's indentation says nothing to the importer that
+    // parses the template; the library's are found by their text in its own source, so they stay as
+    // written.
+    if meta.app != crate::stdlib::APP {
+        for template in &mut meta.templates {
+            template.source = template
+                .source
+                .lines()
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+    }
     let bare = codegen::emit(&a.ir, None);
     meta.module_hash = sha256_hex(&bare);
     crate::stdlib::digest().clone_into(&mut meta.std);
