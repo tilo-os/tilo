@@ -96,6 +96,8 @@ tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 # The catalogue an installed app's manifest is read from, as a connector's is.
 package-store = { package = "tilo-package-store", path = "../../core/package-store" }
 tilo-agent-session = { path = "../../core/agent-session" }
+# The environment record a fresh workspace's Terminal makes, as the shell runtime tests read it.
+tilo-environment = { path = "../../vm/environment" }
 tilo-automation = { path = "../../core/automation" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-device-identity = { path = "../../core/tilo-device-identity" }
