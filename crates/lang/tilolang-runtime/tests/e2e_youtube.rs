@@ -438,11 +438,11 @@ mod cases {
         }
 
         fn status(&self, job: &str) -> Result<String, String> {
-            self.0.status(job)
+            tilolang_grayjay::Engine::status(job)
         }
 
         fn cancel(&self, job: &str) -> bool {
-            self.0.cancel(job)
+            tilolang_grayjay::Engine::cancel(job)
         }
     }
 

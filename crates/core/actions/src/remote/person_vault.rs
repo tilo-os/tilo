@@ -1327,6 +1327,59 @@ pub struct Kept {
     pub reference: ItemRef,
 }
 
+/// The key this device holds for an app and a purpose of its own ([`DeviceKeyFor`]), as a
+/// [`DeviceKey`]: what identifies the app's install on this device to a service that pairs with
+/// devices, such as the Noise static key a sync protocol presents. The device's daemon derives it
+/// from the device's own key, so it is the same for the same app and purpose on this device for as
+/// long as the device exists, differs on every other device, and is kept nowhere: it is no vault
+/// item and syncs to no other device. It is answered only on the app's own process's connection,
+/// the same one [`KEEP`] is: the app is the one that process runs, never an argument.
+pub const DEVICE_KEY: &str = "device-key";
+
+/// Where [`DEVICE_KEY`] is addressed: the vault itself.
+#[must_use]
+pub fn device_key_target() -> RemoteActionTarget {
+    target(DEVICE_KEY)
+}
+
+/// Whether `target` is a [`DEVICE_KEY`] at the vault's own resource.
+#[must_use]
+pub fn is_device_key(target: &RemoteActionTarget) -> bool {
+    *target == device_key_target()
+}
+
+/// The parameters [`DEVICE_KEY`] is published with.
+#[must_use]
+pub fn device_key_params() -> Vec<crate::ActionParam> {
+    use crate::{ActionParam, ParamType};
+    vec![ActionParam::required(
+        "purpose",
+        ParamType::Text,
+        "What the app uses the key for, such as `grayjay-noise`: the same purpose answers the \
+         same key on this device.",
+    )]
+}
+
+/// What [`DEVICE_KEY`] names: the purpose of the app's own the key is for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeviceKeyFor {
+    pub purpose: String,
+}
+
+/// What [`DEVICE_KEY`] answers: 32 bytes of key, as lowercase hex.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeviceKey {
+    pub key: String,
+}
+
+impl std::fmt::Debug for DeviceKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("DeviceKey").finish_non_exhaustive()
+    }
+}
+
 /// The logins the vault keeps for one site ([`PageLoginsAt`]), as [`PageLogins`]: what is safe to
 /// say of each, the name it signs in with included, never its secret.
 ///

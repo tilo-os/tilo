@@ -273,6 +273,12 @@ pub struct Device {
     keep_content: fn(*mut c_void, &str, &str, &[u8]) -> Result<File, String>,
     read: fn(*mut c_void, &str) -> Result<Vec<u8>, String>,
     redeem: fn(*mut c_void, &str) -> Option<String>,
+    key_for: fn(*mut c_void, &str) -> Result<[u8; 32], String>,
+}
+
+/// A device with nothing to give holds no key for the app.
+fn no_device_key(_context: *mut c_void, _purpose: &str) -> Result<[u8; 32], String> {
+    Err("this device holds no key for the app here".to_owned())
 }
 
 /// A device with nothing to give holds no handed-over context.
@@ -311,6 +317,7 @@ impl Device {
             keep_content: no_keep_content,
             read: no_read,
             redeem: no_redeem,
+            key_for: no_device_key,
         }
     }
 
@@ -328,6 +335,7 @@ impl Device {
             keep_content,
             read,
             redeem: no_redeem,
+            key_for: no_device_key,
         }
     }
 
@@ -337,6 +345,25 @@ impl Device {
     pub fn redeeming(mut self, redeem: fn(*mut c_void, &str) -> Option<String>) -> Self {
         self.redeem = redeem;
         self
+    }
+
+    /// This device, answering the key it holds for the app with `device_key`.
+    #[must_use]
+    pub fn keying(mut self, device_key: fn(*mut c_void, &str) -> Result<[u8; 32], String>) -> Self {
+        self.key_for = device_key;
+        self
+    }
+
+    /// The key this device holds for the app's own `purpose`: the same on every ask on this
+    /// device, different on every other device and for every other app and purpose, and kept
+    /// nowhere. The device's daemon derives it from the device's own key and answers it to the
+    /// app's own process alone (`tilo.vault` `vault#device-key`).
+    ///
+    /// # Errors
+    ///
+    /// The process is not the app's own, or the daemon refused it, in words a person reads.
+    pub fn device_key(&self, purpose: &str) -> Result<[u8; 32], String> {
+        (self.key_for)(self.context, purpose)
     }
 
     /// The context a window of this process kept under `handle`, once: `None` when it was

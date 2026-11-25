@@ -615,6 +615,8 @@ fn serve_device(
         // hands over, or one founded for them now) and a link their shell is admitted by.
         native.seats.follow_launches(app_of(&session));
         native.serve_apps(app_take(&session));
+        #[cfg(unix)]
+        session.apps().serve_own_lines(own_lines(&session));
         native
             .seats
             .serve(Arc::new(PersonShells(Arc::downgrade(&session))));
@@ -834,11 +836,16 @@ fn serve_app(
     session: &Arc<Daemon>,
     app: &AppAt,
 ) -> io::Result<()> {
-    let frames = Frames::of_an_app(session, app);
+    serve_as_app(stream, Frames::of_an_app(session, app), slot)
+}
+
+/// Answer `stream` with `frames`, an app's own connection, on a thread of its own while it lasts,
+/// holding `held` until it ends: the action wire alone, its first line a frame.
+fn serve_as_app(stream: Stream, frames: Frames, held: impl Send + 'static) -> io::Result<()> {
     std::thread::Builder::new()
         .name("tilo-native-app".into())
         .spawn(move || {
-            let _slot = slot;
+            let _held = held;
             let reader = match stream.try_clone() {
                 Ok(reader) => reader,
                 Err(error) => {
@@ -864,6 +871,36 @@ fn serve_app(
             frames.serve(stream, &line, reader);
         })?;
     Ok(())
+}
+
+/// What makes the daemon line of the tilolang process the daemon started to run one app's own
+/// instances ([`crate::device::processes::OwnLines`]).
+///
+/// That process's sandbox holds its process link and nothing else: no socket of the daemon's
+/// ([`launcher::run::tilolang_process`]). Its Rust host still has to reach the calls a sandboxed
+/// app makes on its held connection for itself (keeping and reading back its own secrets, the key
+/// this device holds for it), so the daemon makes a connected pair, serves its end exactly as the
+/// native endpoint serves a process it started for an app ([`Frames::of_an_app`]), and hands the
+/// other end over the process link. It is the one path from a tilolang app's process to the
+/// daemon. The line is bound to the process by its pid, app and workspace as the daemon recorded
+/// them at its start: whatever writes on it is answered as that process, for as long as that
+/// process runs, and as nothing once it ended.
+#[cfg(unix)]
+pub(crate) fn own_lines(session: &Arc<Daemon>) -> crate::device::processes::OwnLines {
+    let session = Arc::downgrade(session);
+    Arc::new(move |pid, app: &str, workspace: &str| {
+        let session = session
+            .upgrade()
+            .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+        let (ours, theirs) = tilo_socket::pair()?;
+        let at = AppAt {
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            pid,
+        };
+        serve_as_app(ours, Frames::of_an_app(&session, &at), ())?;
+        Ok(runtime_portal::packet::descriptor_of(theirs))
+    })
 }
 
 /// Serve `session`'s native endpoint at `socket`, as the daemon does once the person's services

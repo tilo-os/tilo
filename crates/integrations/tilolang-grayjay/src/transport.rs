@@ -131,8 +131,7 @@ fn io_err(error: &io::Error) -> Error {
     Error::Transport(format!("io: {error}"))
 }
 
-/// The device's Noise static key, derived from the secret the platform's store keeps for
-/// this app. Grayjay identifies a device by this key: it is what the peer shows as the
+/// The device's Noise static key, derived from the key the device holds for the app. Grayjay identifies a device by this key: it is what the peer shows as the
 /// fingerprint the person checks on both ends.
 #[derive(Clone)]
 pub struct DeviceKey {

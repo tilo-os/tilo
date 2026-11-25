@@ -281,6 +281,12 @@ impl Apps {
         self.instances.read_provided_from(providers);
     }
 
+    /// Hand the tilolang process of each app's own instances started from now on its daemon line,
+    /// made by `lines` ([`crate::device::processes::OwnLines`]).
+    pub(crate) fn serve_own_lines(&self, lines: crate::device::processes::OwnLines) {
+        self.instances.serve_own_lines(lines);
+    }
+
     /// Run the code of an app whose calls name no view as `person`, the member the device acts
     /// as, from now on.
     pub(crate) fn keep_person(&self, person: &str) {
@@ -652,6 +658,13 @@ impl Apps {
     )]
     pub(crate) fn record_started(&self, pid: u32, app: &str, workspace: &str) {
         let _ = self.launched.record_started(pid, app, workspace);
+    }
+
+    /// Record `pid` as the tilolang process that runs `app`'s own instances in `workspace`, as the
+    /// device's processes record the one they start.
+    #[cfg(test)]
+    pub(crate) fn record_own_tilolang(&self, pid: u32, app: &str, workspace: &str) {
+        let _ = self.launched.record_own_tilolang(pid, app, workspace);
     }
 
     /// Forget the launch recorded for `pid`, once its process ended.

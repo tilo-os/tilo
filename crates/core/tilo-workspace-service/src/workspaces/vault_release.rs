@@ -239,6 +239,38 @@ pub(super) fn kept_by_app(facts: &ItemFacts, app: &str) -> bool {
 /// The longest purpose an app keeps a secret for, in characters.
 const MAX_PURPOSE_CHARS: usize = 64;
 
+/// `purpose` as an app names what it keeps a secret, or holds a device key, for: one short line.
+fn purpose_of(purpose: &str) -> Result<String, ActionCallError> {
+    let purpose = purpose.trim();
+    if purpose.is_empty()
+        || purpose.chars().count() > MAX_PURPOSE_CHARS
+        || purpose.chars().any(char::is_control)
+    {
+        return Err(ActionCallError::refused(NOT_A_PURPOSE.to_owned()));
+    }
+    Ok(purpose.to_owned())
+}
+
+/// The context every device key is derived in: no other key of the device's is derived in it.
+const DEVICE_KEY_CONTEXT: &str = "tilo.so 2026-11 device key of an app's own purpose v1";
+
+/// The key the device whose key is `device` holds for `app`'s own `purpose` in `workspace`: each
+/// part length-prefixed, so no two triples hash alike, under the device's own key as the secret
+/// it is derived from. The device's key cannot be read back from it.
+fn derive_device_key(
+    device: &ed25519_dalek::SigningKey,
+    (workspace, app, purpose): (&str, &str, &str),
+) -> Zeroizing<[u8; 32]> {
+    let secret = Zeroizing::new(device.to_bytes());
+    let mut hasher = blake3::Hasher::new_derive_key(DEVICE_KEY_CONTEXT);
+    hasher.update(secret.as_slice());
+    for part in [workspace, app, purpose] {
+        hasher.update(&u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    Zeroizing::new(*hasher.finalize().as_bytes())
+}
+
 /// What kind of item a person reads it as.
 pub(super) const fn kind_word(kind: accounts::vault_items::ItemKind) -> &'static str {
     use accounts::vault_items::ItemKind;
@@ -631,13 +663,7 @@ impl Workspaces {
             request,
             "a secret an app keeps names its purpose and its value",
         )?;
-        let purpose = keeping.purpose.trim().to_owned();
-        if purpose.is_empty()
-            || purpose.chars().count() > MAX_PURPOSE_CHARS
-            || purpose.chars().any(char::is_control)
-        {
-            return Err(refused(NOT_A_PURPOSE.to_owned()));
-        }
+        let purpose = purpose_of(&keeping.purpose)?;
         let tags = [
             person_vault::app_tag(app),
             person_vault::purpose_tag(&purpose),
@@ -691,6 +717,56 @@ impl Workspaces {
         let reference = ItemRef::from_id(kept.id.as_str())
             .ok_or_else(|| refused("the kept item has no reference".to_owned()))?;
         Ok(Kept { reference })
+    }
+
+    /// The key this device holds for `app`'s own `purpose` in `workspace`
+    /// ([`person_vault::DEVICE_KEY`]), answered to `process`: derived from the device's own key,
+    /// so the same on every ask here and different on every other device, for every other app,
+    /// purpose and workspace, and kept nowhere. Nobody is asked: it is no item of the vault, and
+    /// says nothing of the device's key. The call is written down as the app's, as its keep is,
+    /// and the key is not.
+    ///
+    /// # Errors
+    /// Refused, in the words a keep is, for a process no turn placed here or one apps share, a
+    /// connection another device holds, and a purpose that is no short line.
+    pub async fn device_key_for(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &AppProcess,
+        request: &InvokeRequest,
+    ) -> Result<person_vault::DeviceKey, ActionCallError> {
+        let derived = self.device_key_on((app, workspace), process, request).await;
+        let ended = derived.as_ref().map(|_| Value::Null);
+        self.note_own_call((app, workspace), request, ended, true);
+        derived
+    }
+
+    async fn device_key_on(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &AppProcess,
+        request: &InvokeRequest,
+    ) -> Result<person_vault::DeviceKey, ActionCallError> {
+        let refused = ActionCallError::refused;
+        match process {
+            AppProcess::OwnTilolang => {}
+            AppProcess::Placed { lease } => {
+                let here = self.lease_device(workspace).await;
+                let holder = self.lease_holder(workspace, lease).await.ok().flatten();
+                if holder != Some(here) {
+                    return Err(refused(held_elsewhere(app)));
+                }
+            }
+            AppProcess::Unplaced => return Err(refused(from_an_unplaced_process(app))),
+            AppProcess::Tilolang => return Err(refused(from_a_tilolang_process(app))),
+        }
+        let asked: person_vault::DeviceKeyFor =
+            super::person_vault::argument(request, "a device key names what it is for")?;
+        let purpose = purpose_of(&asked.purpose)?;
+        let key = derive_device_key(&self.inner.host.key, (workspace, app, &purpose));
+        Ok(person_vault::DeviceKey {
+            key: hex::encode(key.as_slice()),
+        })
     }
 
     /// Ask the person `caller` acts for whether its app may read `item`, as an asked record

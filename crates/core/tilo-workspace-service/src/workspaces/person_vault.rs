@@ -128,7 +128,10 @@ impl Workspaces {
         if person_vault::is_page_login(&request.target) {
             return Err(ActionCallError::refused(super::page_logins::NOT_A_WINDOW));
         }
-        if action == person_vault::RELEASE || action == person_vault::KEEP {
+        if action == person_vault::RELEASE
+            || action == person_vault::KEEP
+            || action == person_vault::DEVICE_KEY
+        {
             return Err(ActionCallError::refused(super::vault_release::refusal_for(
                 caller,
             )));

@@ -845,3 +845,161 @@ fn the_clis_calls_reach_a_second_workspace_through_the_daemon_and_no_other() {
     );
     assert_eq!(probe.asked().len(), 1, "nothing ran in it");
 }
+
+const OWN_LINE_TEST: &str =
+    "device::local::tests::an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line";
+
+/// A process standing in for one the daemon started, alive until it is ended.
+fn a_process() -> std::process::Child {
+    std::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+/// `client`'s call of `target` with `argument`: the value answered, or the reason refused.
+fn called(
+    client: &tilo_actions::remote::LineClient,
+    target: tilo_actions::remote::RemoteActionTarget,
+    argument: Value,
+) -> Result<Value, String> {
+    use tilo_actions::remote::{ActionCallError, InvokeRequest, ReceiptStatus};
+    let argument = match argument {
+        Value::Object(fields) => fields,
+        _ => serde_json::Map::new(),
+    };
+    let answer = client
+        .invoke(
+            &Caller::local_person(""),
+            InvokeRequest::plain(target, argument),
+        )
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("the daemon answers on the line");
+    match answer {
+        Err(ActionCallError::Refused { reason }) => Err(reason),
+        Err(other) => Err(other.to_string()),
+        Ok(receipt) => match receipt.status {
+            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+            ReceiptStatus::Rejected {
+                error: ActionCallError::Refused { reason },
+            } => Err(reason),
+            other => Err(format!("{other:?}")),
+        },
+    }
+}
+
+/// The line the daemon makes for the process `pid` of `app` in `workspace`, as a client.
+fn own_line(
+    daemon: &Arc<Daemon>,
+    (pid, app, workspace): (u32, &str, &str),
+) -> tilo_actions::remote::LineClient {
+    let line = crate::daemon::own_lines(daemon)(pid, app, workspace).unwrap();
+    tilo_actions::remote::LineClient::of_stream(UnixStream::from(line)).unwrap()
+}
+
+/// The tilolang process the daemon started to run an app's own instances is answered on the line
+/// the daemon handed it, as that app's own connection, and as nothing else: it keeps its secret
+/// and reads it back with nobody asked, is answered one key per purpose, the same on every ask,
+/// and is refused another app's item. A task's host of the same app is refused all of it, and
+/// a line whose process ended speaks for nobody.
+#[test]
+fn an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line() {
+    use tilo_actions::remote::person_vault;
+    const BRIDGE: &str = "so.tilo.bridge";
+    const READER: &str = "so.tilo.reader";
+    const TOKEN: &str = "made-up-bridge-token-0123456789abcdef";
+    let Some(root) = isolated_root(OWN_LINE_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().expect("the workspace");
+    let (mut bridge, mut reader, mut task) = (a_process(), a_process(), a_process());
+    daemon
+        .apps()
+        .record_own_tilolang(bridge.id(), BRIDGE, &workspace);
+    daemon
+        .apps()
+        .record_own_tilolang(reader.id(), READER, &workspace);
+    daemon.apps().record_started(task.id(), BRIDGE, &workspace);
+    let bridges = own_line(&daemon, (bridge.id(), BRIDGE, &workspace));
+    let readers = own_line(&daemon, (reader.id(), READER, &workspace));
+    let tasks = own_line(&daemon, (task.id(), BRIDGE, &workspace));
+
+    // The bridge keeps its token, and reads it back with nobody asked.
+    let kept = called(
+        &bridges,
+        person_vault::keep_target(),
+        serde_json::json!({"purpose": "bot-token", "value": TOKEN}),
+    )
+    .expect("the bridge's own process keeps its token");
+    let kept: person_vault::Kept = serde_json::from_value(kept).unwrap();
+    let released = called(
+        &bridges,
+        person_vault::release_target(&kept.reference),
+        Value::Null,
+    )
+    .expect("and reads it back");
+    let released: person_vault::Released = serde_json::from_value(released).unwrap();
+    assert_eq!(released.secret, TOKEN);
+
+    // One key per purpose, the same on every ask.
+    let key = |client: &tilo_actions::remote::LineClient, purpose: &str| {
+        called(
+            client,
+            person_vault::device_key_target(),
+            serde_json::json!({ "purpose": purpose }),
+        )
+        .map(|key| serde_json::from_value::<person_vault::DeviceKey>(key).unwrap())
+    };
+    let first = key(&bridges, "grayjay-noise").expect("the bridge's process is keyed");
+    assert_eq!(key(&bridges, "grayjay-noise").unwrap(), first);
+    assert_ne!(key(&bridges, "signing").unwrap(), first);
+    assert_ne!(key(&readers, "grayjay-noise").unwrap(), first);
+
+    // The reader's own process is refused the bridge's item.
+    assert!(
+        called(
+            &readers,
+            person_vault::release_target(&kept.reference),
+            Value::Null
+        )
+        .is_err_and(|refused| refused.contains(READER)),
+        "another app's own process is refused the bridge's item"
+    );
+
+    // A task's host of the bridge runs code that is not the bridge's: refused all of it.
+    let from_a_task =
+        tilo_workspace_service::workspaces::vault_release::from_a_tilolang_process(BRIDGE);
+    assert_eq!(key(&tasks, "grayjay-noise"), Err(from_a_task.clone()));
+    assert_eq!(
+        called(
+            &tasks,
+            person_vault::release_target(&kept.reference),
+            Value::Null
+        ),
+        Err(from_a_task.clone())
+    );
+    assert_eq!(
+        called(
+            &tasks,
+            person_vault::keep_target(),
+            serde_json::json!({"purpose": "bot-token", "value": TOKEN}),
+        ),
+        Err(from_a_task)
+    );
+
+    // Once the bridge's process ended, its line speaks for nobody.
+    bridge.kill().unwrap();
+    bridge.wait().unwrap();
+    assert!(
+        key(&bridges, "grayjay-noise").is_err_and(|refused| refused.contains("no longer")),
+        "a line outliving its process is refused"
+    );
+    for process in [&mut reader, &mut task] {
+        process.kill().unwrap();
+        process.wait().unwrap();
+    }
+}

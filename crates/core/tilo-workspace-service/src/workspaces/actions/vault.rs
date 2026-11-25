@@ -200,6 +200,9 @@ pub(super) fn params_of(action: &str) -> Option<Vec<ActionParam>> {
     if action == person_vault::KEEP {
         return Some(person_vault::keep_params());
     }
+    if action == person_vault::DEVICE_KEY {
+        return Some(person_vault::device_key_params());
+    }
     VAULT_VERBS
         .iter()
         .find(|(verb, named)| verb.id == action || *named == action)

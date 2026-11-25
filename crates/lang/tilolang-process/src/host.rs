@@ -282,6 +282,7 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
                 tracing::error!(task = request.task, %error, "a task did not start");
             }
         }
+        ToProcess::Daemon { line } => tilolang_process::daemon_line::keep(line),
         ToProcess::Finish => {}
         other @ (ToProcess::Window { .. } | ToProcess::Patch { .. }) => {
             tracing::error!(
