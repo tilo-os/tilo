@@ -76,13 +76,7 @@ fn person(user: &TestUser) -> String {
 /// The windows on the workspace's desktop as its host follows them, as
 /// `(tab, group)` in order; empty while it holds none.
 async fn windows(server: &Server, workspace: &str) -> Vec<(u64, u64)> {
-    let Some(bytes) = server
-        .workspaces()
-        .unwrap()
-        .resource_document(workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
-        .await
-        .unwrap()
-    else {
+    let Some(bytes) = desktop_record(server, workspace).await else {
         return Vec::new();
     };
     let doc = AutoCommit::load(&bytes).unwrap();
@@ -98,15 +92,21 @@ async fn windows(server: &Server, workspace: &str) -> Vec<(u64, u64)> {
 
 /// The name of the strip on the workspace's desktop as its host follows it.
 async fn strip_name(server: &Server, workspace: &str) -> Option<String> {
-    let bytes = server
-        .workspaces()
-        .unwrap()
-        .resource_document(workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
-        .await
-        .unwrap()?;
+    let bytes = desktop_record(server, workspace).await?;
     let doc = AutoCommit::load(&bytes).unwrap();
     let desktop = shared_resource::read(&doc, None)?;
     Some(desktop.tree.workspaces[0].strips[0].name.clone())
+}
+
+/// The workspace's desktop record as the host's copy holds it: a page's writes, which the
+/// host follows as it does any record's, and not a record of the workspace's store.
+async fn desktop_record(server: &Server, workspace: &str) -> Option<Vec<u8>> {
+    server
+        .workspaces()
+        .unwrap()
+        .state(workspace)
+        .await?
+        .document(DESKTOP_APP, DESKTOP_DOCUMENT)
 }
 
 async fn wait_for_strip_name(server: &Server, workspace: &str, want: &str) {
@@ -152,12 +152,7 @@ impl Page<'_> {
         server: &Server,
         desktop: &SharedDesktop,
     ) -> Vec<NeighbourMsg> {
-        let held = server
-            .workspaces()
-            .unwrap()
-            .resource_document(&self.workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
-            .await
-            .unwrap();
+        let held = desktop_record(server, &self.workspace).await;
         // A page's every write is its own: a refused one is never the base
         // of the next, which takes up from the workspace's desktop again.
         self.seq = self.seq.saturating_add(1);
