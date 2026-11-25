@@ -675,7 +675,7 @@ impl tilo_actions::remote::Admits for TurnSteps {
     const APP: &'static str = tilo_actions::remote::session_actions::PROVIDER;
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-        tilo_actions::remote::admitted::top_level(self.descriptors())
+        tilo_actions::remote::admitted::top_level(TurnSteps::descriptors())
     }
 
     fn start(
@@ -692,7 +692,7 @@ impl tilo_actions::remote::Admits for TurnSteps {
 }
 
 impl TurnSteps {
-    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+    fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
             did: None,
             state: tilo_actions::ActionState::default(),

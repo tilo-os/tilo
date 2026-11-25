@@ -104,10 +104,16 @@ tilo_test_env::scenario! {
         let changes = f.state.resource_changes().expect("a host with an origin");
         let answer = changes.apply(&f.agent("scribe"), &change(NOTES)).unwrap();
         assert_eq!(answer["differs"], false);
-        let handed = f.origin.0.lock().unwrap();
-        let (workspace, applied, invoker) = handed.first().expect("the origin was handed the change");
-        assert_eq!(workspace, &f.workspace);
-        assert_eq!(applied, &change(NOTES));
+        let (workspace, applied, invoker) = f
+            .origin
+            .0
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("the origin was handed the change");
+        assert_eq!(workspace, f.workspace);
+        assert_eq!(applied, change(NOTES));
         assert_eq!(
             invoker.acting.by,
             tilo_actions::Actor::member(tilo_actions::MemberId::agent("scribe", f.person.as_str()))

@@ -445,7 +445,10 @@ impl Pinned {
     }
 
     fn set(&self, now_ms: u64) {
-        self.0.pin(UNIX_EPOCH + Duration::from_millis(now_ms));
+        let Some(now) = UNIX_EPOCH.checked_add(Duration::from_millis(now_ms)) else {
+            unreachable!("a near time");
+        };
+        self.0.pin(now);
     }
 }
 
@@ -1853,13 +1856,13 @@ async fn a_source_on_this_machine_is_refused_when_the_fetch_ships() {
 #[cfg(feature = "agents")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names() {
+    use tilo_test_env::ScopedEnv;
     if !tilo_test_env::in_own_process_here(
         module_path!(),
         "a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names",
     ) {
         return;
     }
-    use tilo_test_env::ScopedEnv;
     let proxy = test_http::Responder::handle(|_| {
         Some(
             test_http::Reply::status(200)
@@ -1918,6 +1921,55 @@ async fn a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names() {
 /// The inputs a shortcut declares that its host binds are filled on every firing: the
 /// workspace it runs in with each member's role and the public address of their picture, the
 /// workspace's own emoji, and what fired it.
+/// The workspace's own emoji, as Chat's record holds them: a `party`, founded from the same
+/// genesis every reader of the workspace's records checks.
+async fn found_party_emoji(
+    workspaces: &Workspaces,
+    workspace: &str,
+    cert: &tilo_user_identity::DeviceCert,
+    png: &[u8],
+) {
+    let record = collab_types::workspace_document_id(tilo_workspace_emoji::KIND);
+    let kind = tilo_resource::ResourceKind::of::<tilo_workspace_emoji::WorkspaceEmoji>();
+    let mut founded = automerge::AutoCommit::new();
+    collaboration::resource::genesis(
+        &mut founded,
+        &collaboration::resource::DocumentCheckout::new(
+            collaboration::resource::DocumentId::parse(&record).unwrap(),
+            collaboration::resource::ResourceType::new(kind.kind()),
+        ),
+        workspace,
+        |doc| kind.initialize(doc).map_err(|error| error.to_string()),
+    )
+    .unwrap();
+    workspaces
+        .author_workspace_document_from(
+            (workspace, cert),
+            (tilo_workspace_emoji::OWNER, &record),
+            Some(Box::new(founded)),
+            |doc| {
+                let emoji = doc
+                    .put_object(automerge::ROOT, "emoji", automerge::ObjType::Map)
+                    .map_err(|error| error.to_string())?;
+                let party = doc
+                    .put_object(&emoji, "party", automerge::ObjType::Map)
+                    .map_err(|error| error.to_string())?;
+                doc.put(&party, "image", automerge::ScalarValue::Bytes(png.to_vec()))
+                    .map_err(|error| error.to_string())?;
+                let added_by = serde_json::to_string(&tilo_action_policy::MemberId::person(
+                    hex::encode(cert.user_public_key),
+                ))
+                .map_err(|error| error.to_string())?;
+                doc.put(&party, "added_by", added_by)
+                    .map_err(|error| error.to_string())?;
+                doc.put(&party, "added_at", 1_i64)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_host_fills_the_workspace_emoji_and_context_inputs_a_shortcut_declares() {
     struct ChatProfile {
@@ -1956,45 +2008,7 @@ async fn a_host_fills_the_workspace_emoji_and_context_inputs_a_shortcut_declares
     }));
     // The workspace's own emoji, as Chat's record holds them: founded from the same genesis
     // every reader of the workspace's records checks.
-    let record = collab_types::workspace_document_id(tilo_workspace_emoji::KIND);
-    let kind = tilo_resource::ResourceKind::of::<tilo_workspace_emoji::WorkspaceEmoji>();
-    let mut founded = automerge::AutoCommit::new();
-    collaboration::resource::genesis(
-        &mut founded,
-        &collaboration::resource::DocumentCheckout::new(
-            collaboration::resource::DocumentId::parse(&record).unwrap(),
-            collaboration::resource::ResourceType::new(kind.kind()),
-        ),
-        &workspace,
-        |doc| kind.initialize(doc).map_err(|error| error.to_string()),
-    )
-    .unwrap();
-    workspaces
-        .author_workspace_document_from(
-            (&workspace, &cert),
-            (tilo_workspace_emoji::OWNER, &record),
-            Some(Box::new(founded)),
-            |doc| {
-                let emoji = doc
-                    .put_object(automerge::ROOT, "emoji", automerge::ObjType::Map)
-                    .map_err(|error| error.to_string())?;
-                let party = doc
-                    .put_object(&emoji, "party", automerge::ObjType::Map)
-                    .map_err(|error| error.to_string())?;
-                doc.put(&party, "image", automerge::ScalarValue::Bytes(PNG.to_vec()))
-                    .map_err(|error| error.to_string())?;
-                let added_by = serde_json::to_string(&tilo_action_policy::MemberId::person(
-                    hex::encode(cert.user_public_key),
-                ))
-                .map_err(|error| error.to_string())?;
-                doc.put(&party, "added_by", added_by)
-                    .map_err(|error| error.to_string())?;
-                doc.put(&party, "added_at", 1_i64)
-                    .map_err(|error| error.to_string())
-            },
-        )
-        .await
-        .unwrap();
+    found_party_emoji(workspaces, &workspace, &cert, PNG).await;
 
     let shortcut: Shortcut = serde_json::from_value(json!({
         "id": "bridge",
@@ -2054,12 +2068,23 @@ async fn a_host_fills_the_workspace_emoji_and_context_inputs_a_shortcut_declares
     );
     assert_eq!(waiting.len(), 1, "the shortcut fires on the change");
     let inputs = runner.host_inputs(&waiting[0].firing).await;
+    assert_bound_inputs(&inputs, cert.user_public_key, &workspace, PNG);
+    host.shutdown().await;
+}
 
+/// What the firing's `inputs` hold of the workspace, its emoji and what fired it, as this host
+/// binds them for the person `who` in `workspace`.
+fn assert_bound_inputs(
+    inputs: &serde_json::Map<String, serde_json::Value>,
+    who: [u8; 32],
+    workspace: &str,
+    png: &[u8],
+) {
     let me = inputs["workspace"]["members"]
         .as_array()
         .unwrap_or_else(|| panic!("the workspace input: {inputs:?}"))
         .iter()
-        .find(|row| row["member"]["person"] == json!(hex::encode(cert.user_public_key)))
+        .find(|row| row["member"]["person"] == json!(hex::encode(who)))
         .unwrap_or_else(|| panic!("the governor's row: {inputs:?}"));
     assert_eq!(me["name"], "Ada");
     assert_eq!(me["role"], "owner");
@@ -2073,15 +2098,13 @@ async fn a_host_fills_the_workspace_emoji_and_context_inputs_a_shortcut_declares
         .as_array()
         .unwrap_or_else(|| panic!("the emoji input: {inputs:?}"));
     assert_eq!(emoji[0]["name"], "party");
-    assert_eq!(emoji[0]["picture"], blake3::hash(PNG).to_hex().to_string());
+    assert_eq!(emoji[0]["picture"], blake3::hash(png).to_hex().to_string());
 
     let context = &inputs["context"];
     assert_eq!(context["trigger"], "resource_changed");
     assert_eq!(context["workspace"], workspace);
     assert!(
-        context["who"]
-            .to_string()
-            .contains(&hex::encode(cert.user_public_key)),
+        context["who"].to_string().contains(&hex::encode(who)),
         "who made the change: {}",
         context["who"]
     );
@@ -2090,5 +2113,4 @@ async fn a_host_fills_the_workspace_emoji_and_context_inputs_a_shortcut_declares
         "what they did: {}",
         context["what"]
     );
-    host.shutdown().await;
 }

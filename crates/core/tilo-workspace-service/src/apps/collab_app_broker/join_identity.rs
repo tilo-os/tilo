@@ -210,10 +210,10 @@ pub(super) fn confirmation_satisfied(
     use tilo_actions::remote::Confirmation;
     match (policy, evidence) {
         (tilo_actions::ConfirmationPolicy::None, _)
-        | (tilo_actions::ConfirmationPolicy::Confirm, Some(Confirmation::Confirmed)) => true,
+        | (tilo_actions::ConfirmationPolicy::Confirm, Some(Confirmation::Confirmed))
         // The person approved the asked record this call was kept as: only the dispatch sets it,
         // admitting the same call again on their answer.
-        (_, Some(Confirmation::Asked(_))) => true,
+        | (_, Some(Confirmation::Asked(_))) => true,
         (
             tilo_actions::ConfirmationPolicy::Phrase { phrase: expected },
             Some(Confirmation::Phrase(phrase)),

@@ -129,7 +129,7 @@ impl ServedNotices {
             self.retire(&id).await;
             self.out.remove(&key);
         }
-        let mut shown = 0;
+        let mut shown: usize = 0;
         for notice in read {
             let key = (workspace.to_owned(), app.to_owned(), notice.doc.clone());
             if self.out.contains_key(&key) {
@@ -162,7 +162,7 @@ impl ServedNotices {
             )
             .await?;
             self.out.insert(key, id);
-            shown += 1;
+            shown = shown.saturating_add(1);
         }
         Ok(shown)
     }

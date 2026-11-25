@@ -37,7 +37,7 @@ const MAX_HEARD: usize = source_change::MAX_KEYS;
 
 /// What one trigger on mail took in, and whether it looked at all yet.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub(super) struct Heard {
+pub(super) struct MailProgress {
     /// The trigger this is the progress of: another in its place starts over.
     #[serde(default)]
     pub mark: String,
@@ -165,15 +165,15 @@ impl Runner {
                 let key = (armed.workspace.clone(), armed.shortcut.id.clone(), index);
                 let mark = tilo_peer_state::trigger_mark(trigger);
                 if self.heard.get(&key).is_none_or(|heard| heard.mark != mark) {
-                    let kept = kept_progress::<Heard>(&self.workspaces, armed, index, &mark)
+                    let kept = kept_progress::<MailProgress>(&self.workspaces, armed, index, &mark)
                         .await
                         .filter(|heard| heard.mark == mark);
                     self.heard.insert(
                         key.clone(),
-                        kept.unwrap_or_else(|| Heard {
+                        kept.unwrap_or_else(|| MailProgress {
                             mark: mark.clone(),
                             since_ms: now_ms,
-                            ..Heard::default()
+                            ..MailProgress::default()
                         }),
                     );
                 }

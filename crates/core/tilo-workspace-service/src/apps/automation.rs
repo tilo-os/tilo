@@ -120,174 +120,8 @@ fn shortcut_param() -> ActionParam {
 
 #[must_use]
 pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
-    let saved = ResultSpec::Resource {
-        resource_kind: SHORTCUT_RESOURCE_KIND.into(),
-    };
-    let (label, description, params, permission, result) = match action {
-        CREATE_ACTION => (
-            "New shortcut",
-            "Save a shortcut after checking every step against the actions you are offered",
-            vec![shortcut_param()],
-            ActionKind::Undoable,
-            saved,
-        ),
-        UPDATE_ACTION => (
-            "Change shortcut",
-            "Replace a saved shortcut after checking it again",
-            vec![shortcut_param()],
-            ActionKind::Undoable,
-            saved,
-        ),
-        DELETE_ACTION => (
-            "Delete shortcut",
-            "Delete a saved shortcut",
-            vec![ActionParam::required(
-                "id",
-                ParamType::Text,
-                "Id of the shortcut to delete",
-            )],
-            ActionKind::Undoable,
-            ResultSpec::None,
-        ),
-        LIST_ACTION => (
-            "List shortcuts",
-            "Every shortcut saved in this workspace, as JSON",
-            Vec::new(),
-            ActionKind::Read,
-            ResultSpec::Json {
-                schema: serde_json::json!({"type": "array", "items": {"type": "object"}}),
-            },
-        ),
-        STOP_ACTION => (
-            "Stop a run",
-            "Stop a running shortcut before its next step; what it already did is kept and can be undone",
-            vec![ActionParam::required(
-                "id",
-                ParamType::Text,
-                "Id of the shortcut whose run to stop",
-            )],
-            ActionKind::Read,
-            ResultSpec::Json {
-                schema: serde_json::json!({"type": "object"}),
-            },
-        ),
-        PAUSE_ACTION | RESUME_ACTION => (
-            if action == PAUSE_ACTION {
-                "Pause shortcut"
-            } else {
-                "Resume shortcut"
-            },
-            if action == PAUSE_ACTION {
-                "Keep a saved shortcut's triggers from running it; what happens meanwhile is not run later"
-            } else {
-                "Let a paused shortcut's triggers run it again"
-            },
-            vec![ActionParam::required(
-                "id",
-                ParamType::Text,
-                "Id of the shortcut",
-            )],
-            ActionKind::Undoable,
-            saved,
-        ),
-        COUNT_ACTION => (
-            "Count a run",
-            "How many of a shortcut's triggered runs counted, this one included, and whether that reached a multiple of every",
-            vec![
-                ActionParam::required("id", ParamType::Text, "Id of the shortcut"),
-                ActionParam::required(
-                    "every",
-                    ParamType::Integer,
-                    "Reached at every this many runs",
-                ),
-            ],
-            ActionKind::Read,
-            ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["count", "reached"],
-                    "properties": {
-                        "count": {"type": "integer"},
-                        "reached": {"type": "boolean"}
-                    }
-                }),
-            },
-        ),
-        INSPECT_ACTION => (
-            "Check a shortcut draft",
-            "What this draft would save as: the least grant its steps need, and every problem the checker finds before saving",
-            vec![shortcut_param()],
-            ActionKind::Read,
-            ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["grant", "permissions", "problems"],
-                    "properties": {
-                        "grant": {"type": "array", "items": {"type": "object"}},
-                        "permissions": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "required": ["label", "kind"],
-                                "properties": {
-                                    "label": {"type": "string"},
-                                    "kind": {"type": "string"}
-                                }
-                            }
-                        },
-                        "problems": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "required": ["path", "message"],
-                                "properties": {
-                                    "path": {"type": "string"},
-                                    "message": {"type": "string"}
-                                }
-                            }
-                        }
-                    }
-                }),
-            },
-        ),
-        CHOICES_ACTION => (
-            "What a step argument may be bound to",
-            "Every input, variable and earlier step output the checker accepts for one parameter of a draft's step",
-            vec![
-                shortcut_param(),
-                ActionParam::required(
-                    "path",
-                    ParamType::Text,
-                    "The step's position, like 0 or 2.then.1",
-                ),
-                ActionParam::required("param", ParamType::Text, "The parameter to bind"),
-            ],
-            ActionKind::Read,
-            ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["binding", "describes"],
-                        "properties": {
-                            "binding": {},
-                            "describes": {"type": "string"}
-                        }
-                    }
-                }),
-            },
-        ),
-        STOP_ALL_ACTION => (
-            "Stop every run",
-            "Stop every running shortcut before its next step; what they already did is kept and can be undone",
-            Vec::new(),
-            ActionKind::Read,
-            ResultSpec::Json {
-                schema: serde_json::json!({"type": "array", "items": {"type": "object"}}),
-            },
-        ),
-        _ => return None,
-    };
+    let (label, description, params, permission, result) =
+        saving_shape(action).or_else(|| running_shape(action))?;
     Some(ActionDescriptor {
         did: None,
         state: tilo_actions::ActionState::default(),
@@ -314,6 +148,210 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
         input: InputSpec::None,
         params,
         view: None,
+    })
+}
+
+/// What a shortcut library action is described by, before its own address and its contract's
+/// risk.
+type LibraryShape = (
+    &'static str,
+    &'static str,
+    Vec<ActionParam>,
+    ActionKind,
+    ResultSpec,
+);
+
+/// The shape of a library action that saves a shortcut, or changes one already saved.
+fn saving_shape(action: &str) -> Option<LibraryShape> {
+    let saved = ResultSpec::Resource {
+        resource_kind: SHORTCUT_RESOURCE_KIND.into(),
+    };
+    match action {
+        CREATE_ACTION => Some((
+            "New shortcut",
+            "Save a shortcut after checking every step against the actions you are offered",
+            vec![shortcut_param()],
+            ActionKind::Undoable,
+            saved,
+        )),
+        UPDATE_ACTION => Some((
+            "Change shortcut",
+            "Replace a saved shortcut after checking it again",
+            vec![shortcut_param()],
+            ActionKind::Undoable,
+            saved,
+        )),
+        DELETE_ACTION => Some((
+            "Delete shortcut",
+            "Delete a saved shortcut",
+            vec![ActionParam::required(
+                "id",
+                ParamType::Text,
+                "Id of the shortcut to delete",
+            )],
+            ActionKind::Undoable,
+            ResultSpec::None,
+        )),
+        PAUSE_ACTION | RESUME_ACTION => Some((
+            if action == PAUSE_ACTION {
+                "Pause shortcut"
+            } else {
+                "Resume shortcut"
+            },
+            if action == PAUSE_ACTION {
+                "Keep a saved shortcut's triggers from running it; what happens meanwhile is not run later"
+            } else {
+                "Let a paused shortcut's triggers run it again"
+            },
+            vec![ActionParam::required(
+                "id",
+                ParamType::Text,
+                "Id of the shortcut",
+            )],
+            ActionKind::Undoable,
+            saved,
+        )),
+        _ => None,
+    }
+}
+
+/// The shape of a library action that runs a shortcut, or reads what its runs came to.
+fn running_shape(action: &str) -> Option<LibraryShape> {
+    match action {
+        LIST_ACTION => Some((
+            "List shortcuts",
+            "Every shortcut saved in this workspace, as JSON",
+            Vec::new(),
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "array", "items": {"type": "object"}}),
+            },
+        )),
+        STOP_ACTION => Some((
+            "Stop a run",
+            "Stop a running shortcut before its next step; what it already did is kept and can be undone",
+            vec![ActionParam::required(
+                "id",
+                ParamType::Text,
+                "Id of the shortcut whose run to stop",
+            )],
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "object"}),
+            },
+        )),
+        COUNT_ACTION => Some((
+            "Count a run",
+            "How many of a shortcut's triggered runs counted, this one included, and whether that reached a multiple of every",
+            vec![
+                ActionParam::required("id", ParamType::Text, "Id of the shortcut"),
+                ActionParam::required(
+                    "every",
+                    ParamType::Integer,
+                    "Reached at every this many runs",
+                ),
+            ],
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: count_schema(),
+            },
+        )),
+        INSPECT_ACTION => Some((
+            "Check a shortcut draft",
+            "What this draft would save as: the least grant its steps need, and every problem the checker finds before saving",
+            vec![shortcut_param()],
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: inspect_schema(),
+            },
+        )),
+        CHOICES_ACTION => Some((
+            "What a step argument may be bound to",
+            "Every input, variable and earlier step output the checker accepts for one parameter of a draft's step",
+            vec![
+                shortcut_param(),
+                ActionParam::required(
+                    "path",
+                    ParamType::Text,
+                    "The step's position, like 0 or 2.then.1",
+                ),
+                ActionParam::required("param", ParamType::Text, "The parameter to bind"),
+            ],
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: choices_schema(),
+            },
+        )),
+        STOP_ALL_ACTION => Some((
+            "Stop every run",
+            "Stop every running shortcut before its next step; what they already did is kept and can be undone",
+            Vec::new(),
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "array", "items": {"type": "object"}}),
+            },
+        )),
+        _ => None,
+    }
+}
+
+/// What [`COUNT_ACTION`] answers.
+fn count_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["count", "reached"],
+        "properties": {
+            "count": {"type": "integer"},
+            "reached": {"type": "boolean"}
+        }
+    })
+}
+
+/// What [`INSPECT_ACTION`] answers.
+fn inspect_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["grant", "permissions", "problems"],
+        "properties": {
+            "grant": {"type": "array", "items": {"type": "object"}},
+            "permissions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["label", "kind"],
+                    "properties": {
+                        "label": {"type": "string"},
+                        "kind": {"type": "string"}
+                    }
+                }
+            },
+            "problems": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["path", "message"],
+                    "properties": {
+                        "path": {"type": "string"},
+                        "message": {"type": "string"}
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// What [`CHOICES_ACTION`] answers.
+fn choices_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "required": ["binding", "describes"],
+            "properties": {
+                "binding": {},
+                "describes": {"type": "string"}
+            }
+        }
     })
 }
 
@@ -624,10 +662,8 @@ pub const TRIGGER_FACET: &str = "trigger";
 #[must_use]
 pub fn fired_context(trigger: &TriggerSpec) -> ActionContext {
     let mut context = ActionContext::default();
-    if let Some(named) = tilo_failure::ignored!(
-        "a trigger is plain data, and always reads as JSON",
-        serde_json::to_string(trigger).ok()
-    ) {
+    // A trigger is plain data, and always reads as JSON.
+    if let Ok(named) = serde_json::to_string(trigger) {
         context.facets.push(tilo_actions::context::ActionFacet::new(
             TRIGGER_FACET,
             named,
@@ -869,142 +905,20 @@ pub fn plan_library(
 ) -> Result<LibraryPlan, String> {
     let saved = &tilo_automation::decode_saved(&workspace.shortcuts);
     let (shortcut, replacing) = match operation {
-        LibraryOperation::List => {
-            return Ok(LibraryPlan::Answer(ActionOutput {
-                value: Some(serde_json::to_value(saved).map_err(|error| error.to_string())?),
-                resources: Vec::new(),
-            }));
-        }
-        LibraryOperation::Delete(id) => {
-            if !saved.iter().any(|shortcut| shortcut.id == id) {
-                return Err(format!("there is no shortcut `{id}`"));
-            }
-            return Ok(LibraryPlan::Change {
-                change: ShortcutChange::Delete(id),
-                output: ActionOutput::default(),
-            });
-        }
-        LibraryOperation::Stop(id) => {
-            if !saved.iter().any(|shortcut| shortcut.id == id) {
-                return Err(format!("there is no shortcut `{id}`"));
-            }
-            return Ok(LibraryPlan::Stop(StopRequest::Shortcut(id)));
-        }
+        LibraryOperation::List => return listed(saved),
+        LibraryOperation::Delete(id) => return deleted(saved, id),
+        LibraryOperation::Stop(id) => return stopped(saved, id),
         LibraryOperation::StopAll => return Ok(LibraryPlan::Stop(StopRequest::All)),
-        LibraryOperation::Count { id, every } => {
-            if !saved.iter().any(|shortcut| shortcut.id == id) {
-                return Err(format!("there is no shortcut `{id}`"));
-            }
-            return Ok(LibraryPlan::Count { id, every });
-        }
+        LibraryOperation::Count { id, every } => return counted(saved, id, every),
         LibraryOperation::Pause { id, paused } => {
-            let mut shortcut = saved
-                .iter()
-                .find(|shortcut| shortcut.id == id)
-                .cloned()
-                .ok_or_else(|| format!("there is no shortcut `{id}`"))?;
-            // Pausing changes nothing the saver's proof covers: the proof stays, and so does
-            // whose shortcut it is.
-            shortcut.paused = paused;
-            let resource = shortcut_resource_id(&shortcut.id);
-            return Ok(LibraryPlan::Change {
-                change: ShortcutChange::Save(Box::new(shortcut)),
-                output: ActionOutput {
-                    value: None,
-                    resources: vec![resource],
-                },
-            });
+            return paused_shortcut(saved, &id, paused);
         }
-        LibraryOperation::Inspect(draft) => {
-            let draft = *draft;
-            let permissions =
-                tilo_automation::grant::least_privilege(&draft.steps, context.catalog);
-            let grant = tilo_automation::grant::rules(&permissions);
-            let candidate = Shortcut { grant, ..draft };
-            let resolver = |id: &str| saved.iter().find(|other| other.id == id).cloned();
-            let problems: Vec<Value> =
-                match tilo_automation::check(&candidate, context.catalog, &resolver) {
-                    Ok(()) => Vec::new(),
-                    Err(errors) => errors
-                        .iter()
-                        .map(|error| {
-                            serde_json::json!({
-                                "path": error.path.as_str(),
-                                "message": error.to_string(),
-                            })
-                        })
-                        .collect(),
-                };
-            let permissions: Vec<Value> = permissions
-                .iter()
-                .map(|permission| {
-                    serde_json::json!({
-                        "label": permission.label,
-                        "kind": permission.kind.phrase(),
-                    })
-                })
-                .collect();
-            return Ok(LibraryPlan::Answer(ActionOutput {
-                value: Some(serde_json::json!({
-                    "grant": candidate.grant,
-                    "permissions": permissions,
-                    "problems": problems,
-                })),
-                resources: Vec::new(),
-            }));
-        }
+        LibraryOperation::Inspect(draft) => return Ok(inspected(saved, *draft, context)),
         LibraryOperation::Choices {
             shortcut,
             path,
             param,
-        } => {
-            let shortcut = *shortcut;
-            let step = step_at(&shortcut.steps, &path)
-                .ok_or_else(|| format!("there is no step `{path}`"))?;
-            let StepKind::Invoke {
-                action, resource, ..
-            } = &step.kind
-            else {
-                return Err(format!("step `{path}` is not an action"));
-            };
-            let target = match resource {
-                Selector::Fixed(id) => ResourceTarget::Id(id),
-                Selector::FirstOfKind(kind) => ResourceTarget::Kind(kind),
-                Selector::FromBinding(_) => ResourceTarget::Any,
-            };
-            let row = context
-                .catalog
-                .find(action, target)
-                .ok_or("the app no longer offers this action")?;
-            let param = row
-                .action
-                .as_ref()
-                .and_then(|descriptor| {
-                    descriptor
-                        .params
-                        .iter()
-                        .find(|known| known.name.as_ref() == param.as_str())
-                })
-                .ok_or_else(|| format!("`{param}` is not one of its parameters"))?;
-            let choices: Vec<Value> = tilo_automation::binding_options(
-                &shortcut,
-                context.catalog,
-                &editor_path(&path),
-                param,
-            )
-            .into_iter()
-            .map(|option| {
-                serde_json::json!({
-                    "binding": option.binding,
-                    "describes": option.describes,
-                })
-            })
-            .collect();
-            return Ok(LibraryPlan::Answer(ActionOutput {
-                value: Some(serde_json::json!(choices)),
-                resources: Vec::new(),
-            }));
-        }
+        } => return chosen(&shortcut, &path, &param, context),
         LibraryOperation::Create(shortcut) => (shortcut, false),
         LibraryOperation::Update(shortcut) => (shortcut, true),
     };
@@ -1041,12 +955,154 @@ pub fn plan_library(
     })
 }
 
+/// Every shortcut saved, as the list action answers.
+fn listed(saved: &[Shortcut]) -> Result<LibraryPlan, String> {
+    Ok(LibraryPlan::Answer(ActionOutput {
+        value: Some(serde_json::to_value(saved).map_err(|error| error.to_string())?),
+        resources: Vec::new(),
+    }))
+}
+
+/// The shortcut `id`, once it is saved.
+fn existing<'a>(saved: &'a [Shortcut], id: &str) -> Result<&'a Shortcut, String> {
+    saved
+        .iter()
+        .find(|shortcut| shortcut.id == id)
+        .ok_or_else(|| format!("there is no shortcut `{id}`"))
+}
+
+/// The deletion of the shortcut `id`, once it is saved.
+fn deleted(saved: &[Shortcut], id: String) -> Result<LibraryPlan, String> {
+    existing(saved, &id)?;
+    Ok(LibraryPlan::Change {
+        change: ShortcutChange::Delete(id),
+        output: ActionOutput::default(),
+    })
+}
+
+/// The stopping of the shortcut `id`'s run, once it is saved.
+fn stopped(saved: &[Shortcut], id: String) -> Result<LibraryPlan, String> {
+    existing(saved, &id)?;
+    Ok(LibraryPlan::Stop(StopRequest::Shortcut(id)))
+}
+
+/// The counting of the shortcut `id`'s run, once it is saved.
+fn counted(saved: &[Shortcut], id: String, every: u64) -> Result<LibraryPlan, String> {
+    existing(saved, &id)?;
+    Ok(LibraryPlan::Count { id, every })
+}
+
+/// The shortcut `id` paused, or run again, once it is saved.
+fn paused_shortcut(saved: &[Shortcut], id: &str, paused: bool) -> Result<LibraryPlan, String> {
+    let mut shortcut = existing(saved, id)?.clone();
+    // Pausing changes nothing the saver's proof covers: the proof stays, and so does whose
+    // shortcut it is.
+    shortcut.paused = paused;
+    let resource = shortcut_resource_id(&shortcut.id);
+    Ok(LibraryPlan::Change {
+        change: ShortcutChange::Save(Box::new(shortcut)),
+        output: ActionOutput {
+            value: None,
+            resources: vec![resource],
+        },
+    })
+}
+
+/// What the draft would save as: the least grant its steps need and every problem the checker
+/// finds, without saving it.
+fn inspected(saved: &[Shortcut], draft: Shortcut, context: &SaveContext<'_>) -> LibraryPlan {
+    let permissions = tilo_automation::grant::least_privilege(&draft.steps, context.catalog);
+    let grant = tilo_automation::grant::rules(&permissions);
+    let candidate = Shortcut { grant, ..draft };
+    let resolver = |id: &str| saved.iter().find(|other| other.id == id).cloned();
+    let problems: Vec<Value> = match tilo_automation::check(&candidate, context.catalog, &resolver)
+    {
+        Ok(()) => Vec::new(),
+        Err(errors) => errors
+            .iter()
+            .map(|error| {
+                serde_json::json!({
+                    "path": error.path.as_str(),
+                    "message": error.to_string(),
+                })
+            })
+            .collect(),
+    };
+    let permissions: Vec<Value> = permissions
+        .iter()
+        .map(|permission| {
+            serde_json::json!({
+                "label": permission.label,
+                "kind": permission.kind.phrase(),
+            })
+        })
+        .collect();
+    LibraryPlan::Answer(ActionOutput {
+        value: Some(serde_json::json!({
+            "grant": candidate.grant,
+            "permissions": permissions,
+            "problems": problems,
+        })),
+        resources: Vec::new(),
+    })
+}
+
+/// Every binding the checker accepts for one parameter of a draft's step.
+fn chosen(
+    shortcut: &Shortcut,
+    path: &str,
+    param: &str,
+    context: &SaveContext<'_>,
+) -> Result<LibraryPlan, String> {
+    let step =
+        step_at(&shortcut.steps, path).ok_or_else(|| format!("there is no step `{path}`"))?;
+    let StepKind::Invoke {
+        action, resource, ..
+    } = &step.kind
+    else {
+        return Err(format!("step `{path}` is not an action"));
+    };
+    let target = match resource {
+        Selector::Fixed(id) => ResourceTarget::Id(id),
+        Selector::FirstOfKind(kind) => ResourceTarget::Kind(kind),
+        Selector::FromBinding(_) => ResourceTarget::Any,
+    };
+    let row = context
+        .catalog
+        .find(action, target)
+        .ok_or("the app no longer offers this action")?;
+    let param = row
+        .action
+        .as_ref()
+        .and_then(|descriptor| {
+            descriptor
+                .params
+                .iter()
+                .find(|known| known.name.as_ref() == param)
+        })
+        .ok_or_else(|| format!("`{param}` is not one of its parameters"))?;
+    let choices: Vec<Value> =
+        tilo_automation::binding_options(shortcut, context.catalog, &editor_path(path), param)
+            .into_iter()
+            .map(|option| {
+                serde_json::json!({
+                    "binding": option.binding,
+                    "describes": option.describes,
+                })
+            })
+            .collect();
+    Ok(LibraryPlan::Answer(ActionOutput {
+        value: Some(serde_json::json!(choices)),
+        resources: Vec::new(),
+    }))
+}
+
 /// What the count step answers for the run counted: `counted` earlier runs counted before it.
 #[must_use]
 pub fn count_output(counted: usize, every: u64) -> ActionOutput {
     let count = u64::try_from(counted).unwrap_or(u64::MAX).saturating_add(1);
     ActionOutput {
-        value: Some(serde_json::json!({"count": count, "reached": count % every == 0})),
+        value: Some(serde_json::json!({"count": count, "reached": count.is_multiple_of(every)})),
         resources: Vec::new(),
     }
 }
@@ -1548,41 +1604,13 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
             field,
             offset_secs,
             ..
-        } => match tilo_automation::resource_time::refusal(kind, field, *offset_secs) {
-            Some(why) => Err(why),
-            // The Calendar app's entries are the records whose times a shortcut reads, as the app
-            // publishes them; no other app's are read this way yet.
-            None if kind != tilo_automation::resource_time::CALENDAR_EVENTS => Err(format!(
-                "a moment is counted from the start or the end of an entry of the Calendar app: \
-                 `15 minutes before \"{}\" in a \"{}\"`",
-                tilo_automation::resource_time::CALENDAR_START,
-                tilo_automation::resource_time::CALENDAR_EVENTS
-            )),
-            None => Ok(()),
-        },
+        } => resource_time_refusal(kind, field, *offset_secs),
         TriggerSpec::SourceChanged {
             kind,
             at,
             every_secs,
             ..
-        } => {
-            use tilo_automation::source_change::{self, PERSON_MAIL, WEB_FEED, WEB_PAGE};
-            match source_change::refusal(kind, at)
-                .or_else(|| source_change::look_refusal(kind, at, *every_secs))
-            {
-                Some(why) => Err(why),
-                // Mail is read as the Mail app keeps it, as it arrives.
-                None if kind == PERSON_MAIL => Ok(()),
-                // A feed or a page on the web is looked at on a clock; no other source is read.
-                None if !source_change::looked_at(kind) => Err(format!(
-                    "something new is found in the workspace's mail (`when something new is in \
-                     \"{PERSON_MAIL}\"`), in a feed on the web (`when something new is in \
-                     \"{WEB_FEED}\" at \"https://example.org/feed.xml\"`) or on a page there \
-                     (`when something new is in \"{WEB_PAGE}\" at \"https://example.org/prices\"`)"
-                )),
-                None => Ok(()),
-            }
-        }
+        } => source_refusal(kind, at, *every_secs),
         TriggerSpec::Once { .. }
         | TriggerSpec::AppOpened { .. }
         | TriggerSpec::WorkspaceJoined { .. }
@@ -1599,6 +1627,42 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
              incoming-message, app-event, connector, feed, page and mail triggers can",
             other.kind()
         )),
+    }
+}
+
+/// Why a trigger counting a moment from a record's time cannot be saved, when it cannot.
+fn resource_time_refusal(kind: &str, field: &str, offset_secs: i64) -> Result<(), String> {
+    match tilo_automation::resource_time::refusal(kind, field, offset_secs) {
+        Some(why) => Err(why),
+        // The Calendar app's entries are the records whose times a shortcut reads, as the app
+        // publishes them; no other app's are read this way yet.
+        None if kind != tilo_automation::resource_time::CALENDAR_EVENTS => Err(format!(
+            "a moment is counted from the start or the end of an entry of the Calendar app: \
+             `15 minutes before \"{}\" in a \"{}\"`",
+            tilo_automation::resource_time::CALENDAR_START,
+            tilo_automation::resource_time::CALENDAR_EVENTS
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Why a trigger watching a source cannot be saved, when it cannot.
+fn source_refusal(kind: &str, at: &str, every_secs: Option<u64>) -> Result<(), String> {
+    use tilo_automation::source_change::{self, PERSON_MAIL, WEB_FEED, WEB_PAGE};
+    match source_change::refusal(kind, at)
+        .or_else(|| source_change::look_refusal(kind, at, every_secs))
+    {
+        Some(why) => Err(why),
+        // Mail is read as the Mail app keeps it, as it arrives.
+        None if kind == PERSON_MAIL => Ok(()),
+        // A feed or a page on the web is looked at on a clock; no other source is read.
+        None if !source_change::looked_at(kind) => Err(format!(
+            "something new is found in the workspace's mail (`when something new is in \
+             \"{PERSON_MAIL}\"`), in a feed on the web (`when something new is in \
+             \"{WEB_FEED}\" at \"https://example.org/feed.xml\"`) or on a page there \
+             (`when something new is in \"{WEB_PAGE}\" at \"https://example.org/prices\"`)"
+        )),
+        None => Ok(()),
     }
 }
 

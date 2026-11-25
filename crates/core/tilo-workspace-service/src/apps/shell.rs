@@ -174,12 +174,16 @@ pub trait ShellSpeaking: Send + Sync {
         &self,
         workspace: &str,
         call: Option<runtime_collab::wire::shell::ShellInCall>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<(String, u64)>, String>> + Send>>;
+    ) -> JoinAnswer;
 
     /// The shell's link ended: the person says nothing of themselves and is in no workspace's
     /// call any more, and the device says only what it is there.
     fn gone(&self);
 }
+
+/// What [`ShellSpeaking::join`] answers once the device holds the call's media keys: the call's
+/// channel and its rule's generation.
+pub type JoinAnswer = Pin<Box<dyn Future<Output = Result<Option<(String, u64)>, String>> + Send>>;
 
 /// What carries one admitted link of a shell's live session until it ends.
 pub type LiveLinks = Arc<

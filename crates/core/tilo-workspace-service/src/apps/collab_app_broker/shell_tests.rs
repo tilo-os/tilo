@@ -12,11 +12,13 @@ use super::seat;
 use super::*;
 use crate::apps::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use crate::apps::shell::{ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices};
+use crate::workspaces::Workspaces;
 use ed25519_dalek::SigningKey;
 use runtime_collab::wire::{
     Call, Event, FRAMING, HostFrame, InvocationCall, Operation, Publication, Receipt, Record,
     Reply, Service, Topic,
 };
+use tilo_actions::remote::asked::{PressPoint, Pressed};
 use tilo_peer_state::workspace_documents::{
     DeviceDocuments, DeviceWrites, DocumentRead, DocumentServing, DocumentWrite, DocumentWriting,
 };
@@ -26,6 +28,11 @@ const APP: &str = tilo_app_id::apps::FILE_EXPLORER;
 const RECORD: &str = "the-shelf";
 /// What the daemon keeps of the app's record.
 const KEPT: &[u8] = b"the record as the daemon keeps it";
+/// The Browser app's id, and the page whose prompts it raises.
+const BROWSER: &str = "so.tilo.browser";
+const PAGE: &str = "tl:so.tilo.browser:page-1";
+/// The window the Browser runs in.
+const WINDOW: u64 = 42;
 
 fn device(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed.wrapping_add(100); 32])
@@ -35,10 +42,14 @@ fn root(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
+/// A launch a host's launcher recorded: its process, the app, its workspace, and the window it
+/// runs in, if one.
+type Launch = (u32, String, String, Option<u64>);
+
 /// The processes a host launched, as its launcher recorded them, each with the window it runs
 /// in, if one.
 #[derive(Default)]
-struct Launched(Mutex<Vec<(u32, String, String, Option<u64>)>>);
+struct Launched(Mutex<Vec<Launch>>);
 
 impl Launched {
     fn record(&self, pid: u32, app: &str, workspace: &str) {
@@ -242,7 +253,8 @@ impl NativeDocumentReads for DaemonReads {
 /// shell recorded.
 struct Device {
     _dir: tempfile::TempDir,
-    _host: crate::workspaces::fixtures::TestHost,
+    /// The host holding the person's record, kept for the run of the tests that use it.
+    record_host: crate::workspaces::fixtures::TestHost,
     _daemon: crate::apps::collab_broker::BrokerHandle,
     daemon_socket: PathBuf,
     workspace: String,
@@ -354,7 +366,7 @@ async fn device_carrying(live: Option<crate::apps::shell::LiveLinks>) -> Device 
     let seat = seat::AppSocket::bind(&seat_socket).unwrap();
     Device {
         _dir: dir,
-        _host: host,
+        record_host: host,
         _daemon: daemon,
         daemon_socket,
         workspace: id,
@@ -925,6 +937,314 @@ fn stands(
     state.receipt().status
 }
 
+/// The device, its shell linked to it, and the Browser connected to the daemon with its record
+/// open and its surface published: what a page's prompt is raised through.
+struct Prompting {
+    _identity: tempfile::TempDir,
+    _identity_env: tilo_test_env::ScopedEnv,
+    host: Device,
+    workspaces: Workspaces,
+    browser: Endpoint,
+    channel: Record,
+    store: Arc<tilo_actions::remote::asked::AskedStore>,
+    person: tilo_actions::remote::Caller,
+}
+
+/// The device's own identity, which signs what it admits for its person, set up in a home of its
+/// own: the home and the environment are returned, to be kept for the test that made them.
+fn device_identity() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
+    let identity = tempfile::tempdir().unwrap();
+    let mut identity_env = tilo_test_env::ScopedEnv::new();
+    identity_env
+        .set("XDG_CONFIG_HOME", identity.path().join("config"))
+        .set("TILO_IDENTITY_ROOT", identity.path().join("identity"))
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity::provisioning::ensure_collaboration_identity(
+        &tilo_identity::store::account_identity_dir(&identity.path().join("config/tilo/identity")),
+        &tilo_device_identity::IdentityPaths::under(identity.path().join("identity")),
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .expect("the device's identity");
+    (identity, identity_env)
+}
+
+/// What a test's step answers, driven on the test's one thread.
+type Driven<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
+
+/// Set the device's own identity up, and the Browser's connection to the daemon, its record open
+/// and its surface published.
+fn prompting() -> Driven<'static, Prompting> {
+    Box::pin(async move {
+        let (identity, identity_env) = device_identity();
+        // The person's devices, as the host holding their record answers: this one is listed.
+        tilo_identity::sources::test_trust::install();
+        let host = device_with_shell().await;
+        let workspaces = host.record_host.workspaces().clone();
+        host.launched
+            .record(std::process::id(), BROWSER, &host.workspace);
+        let (mut browser, taken) = host.app(&launch_opening(BROWSER, &host.workspace)).await;
+        taken.await;
+        let channel = browser
+            .open_as(BROWSER, &host.workspace)
+            .await
+            .expect("the Browser opens its record");
+        assert_eq!(
+            browser
+                .call(Operation::Subscribe {
+                    record: channel.clone(),
+                    topic: Topic::Invocations { stable_ids: true },
+                })
+                .await,
+            Ok(Reply::Subscribed)
+        );
+        let (surface, _) = runtime_collab::SurfacePublication::next(
+            None,
+            std::slice::from_ref(&allow_permission(PAGE)),
+        );
+        assert_eq!(
+            browser
+                .call(Operation::Publish {
+                    record: channel.clone(),
+                    publication: Publication::Surface(serde_json::to_string(&surface).unwrap()),
+                })
+                .await,
+            Ok(Reply::Done)
+        );
+        let store = workspaces
+            .asked_store()
+            .expect("the daemon keeps asked records");
+        let person = tilo_actions::remote::Caller::authenticated(
+            root(3).verifying_key().to_bytes(),
+            device(3).verifying_key().to_bytes(),
+        );
+        Prompting {
+            _identity: identity,
+            _identity_env: identity_env,
+            host,
+            workspaces,
+            browser,
+            channel,
+            store,
+            person,
+        }
+    })
+}
+
+/// Raise the Browser's call for the page's prompt `prompt`: answered as going on, kept as its one
+/// asked record.
+fn raised<'a>(
+    prompting: &'a mut Prompting,
+    prompt: (u32, &'a str, &'a str),
+) -> Driven<
+    'a,
+    (
+        tilo_actions::InvocationId,
+        tilo_actions::remote::asked::Waiting,
+    ),
+> {
+    Box::pin(async move {
+        use tilo_actions::remote::{InvocationReceipt, ReceiptStatus, RemoteActionMessage};
+        let request = asking_for(&prompting.host.workspace, PAGE, prompt);
+        let invocation = request.invocation;
+        assert_eq!(
+            remote_action(
+                &mut prompting.browser,
+                &prompting.channel,
+                RemoteActionMessage::Invoke(request)
+            )
+            .await,
+            RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Accepted,
+            }),
+            "the call goes on, waiting for its person, rather than refused for want of their yes"
+        );
+        let waiting = prompting.store.waiting_in(&prompting.host.workspace);
+        let [asked] = waiting.as_slice() else {
+            panic!("the Browser's call is kept as its one asked record: {waiting:?}");
+        };
+        assert_eq!(asked.invocation, invocation);
+        (invocation, asked.clone())
+    })
+}
+
+/// A site asks for the camera; the person turns it down while the Browser follows its call.
+fn declined(prompting: &mut Prompting) -> Driven<'_, ()> {
+    Box::pin(async move {
+        use tilo_actions::remote::ReceiptStatus;
+        use tilo_actions::remote::asked::AskedBy;
+        let (invocation, asked) = raised(prompting, (7, "https://meet.example", "camera")).await;
+        assert_eq!(
+            asked.person,
+            hex::encode(root(3).verifying_key().to_bytes()),
+            "the person using the Browser is asked"
+        );
+        assert_eq!(
+            asked.asked.facts.by,
+            AskedBy::App {
+                app: BROWSER.to_owned(),
+                title: "Browser".to_owned(),
+                author: None,
+            },
+            "the Browser asks, by the name its manifest gives it"
+        );
+        assert_eq!(
+            asked.asked.facts.fact("origin"),
+            Some("https://meet.example"),
+            "the card reads the site from the call: {:?}",
+            asked.asked.facts
+        );
+        assert_eq!(asked.asked.facts.fact("wants"), Some("camera"));
+        let Prompting {
+            browser,
+            workspaces,
+            channel,
+            person,
+            ..
+        } = prompting;
+        let (followed, declined) = tokio::join!(
+            remote_action(browser, channel, following(invocation)),
+            workspaces.resolve_asked(person, &resolving(&asked.asked.record, "decline")),
+        );
+        assert!(
+            matches!(
+                declined.expect("the resolve answers"),
+                Ok(tilo_actions::remote::InvocationReceipt {
+                    status: ReceiptStatus::Completed { .. },
+                    ..
+                })
+            ),
+            "the decline is taken"
+        );
+        assert_eq!(
+            stands(&followed),
+            ReceiptStatus::Cancelled {
+                message: Some(tilo_actions::remote::asked::DECLINED.to_owned()),
+            },
+            "the Browser's follow hears the call ended unrun: the page's no"
+        );
+        assert!(
+            prompting
+                .store
+                .waiting_in(&prompting.host.workspace)
+                .is_empty()
+        );
+    })
+}
+
+/// A site asks for the microphone, and stops asking before anyone answers: the Browser withdraws
+/// its call, which ends it unrun too.
+fn withdrawn(prompting: &mut Prompting) -> Driven<'_, ()> {
+    Box::pin(async move {
+        use tilo_actions::remote::RemoteActionMessage;
+        let (invocation, _) = raised(prompting, (8, "https://meet.example", "microphone")).await;
+        assert_eq!(
+            remote_action(
+                &mut prompting.browser,
+                &prompting.channel,
+                RemoteActionMessage::Cancel { invocation }
+            )
+            .await,
+            RemoteActionMessage::CancelResponse {
+                invocation,
+                result: Ok(()),
+            }
+        );
+        assert!(
+            prompting
+                .store
+                .waiting_in(&prompting.host.workspace)
+                .is_empty(),
+            "nothing is asked of the person any more"
+        );
+        assert!(
+            matches!(
+                stands(
+                    &remote_action(
+                        &mut prompting.browser,
+                        &prompting.channel,
+                        following(invocation)
+                    )
+                    .await
+                ),
+                tilo_actions::remote::ReceiptStatus::Cancelled { .. }
+            ),
+            "the withdrawn call ended unrun"
+        );
+    })
+}
+
+/// The site asks for the camera again, and this time the person allows it: the Browser is handed
+/// its own call, carrying the approve, and its action answers the page.
+fn approved(prompting: &mut Prompting) -> Driven<'_, ()> {
+    Box::pin(async move {
+        use tilo_actions::remote::ReceiptStatus;
+        let (invocation, asked) = raised(prompting, (9, "https://meet.example", "camera")).await;
+        let at = asked.asked.record.clone();
+        let resolve = resolving(&at, "approve");
+        let resolved = prompting
+            .workspaces
+            .resolve_asked(&prompting.person, &resolve)
+            .await
+            .expect("the resolve answers");
+        assert!(
+            matches!(
+                resolved,
+                Ok(tilo_actions::remote::InvocationReceipt {
+                    status: ReceiptStatus::Completed { .. },
+                    ..
+                })
+            ),
+            "the approve is taken: {resolved:?}"
+        );
+        assert!(
+            prompting
+                .store
+                .waiting_in(&prompting.host.workspace)
+                .is_empty(),
+            "nothing waits for the person any more"
+        );
+
+        // The Browser is handed its own call, carrying the approve: its action answers the page.
+        let handed = loop {
+            if let HostFrame::Event {
+                event: Event::Invocation(handed),
+                ..
+            } = prompting.browser.frame().await
+            {
+                break handed;
+            }
+        };
+        assert_eq!(handed.invocation, *invocation.0.as_bytes());
+        assert_eq!(
+            (handed.resource.as_str(), handed.action.as_str()),
+            (PAGE, "allow_permission")
+        );
+        let context: tilo_actions::ActionContext =
+            serde_json::from_str(handed.context.as_deref().expect("the call's context")).unwrap();
+        assert_eq!(
+            context.approval.map(|approval| approval.record),
+            Some(at),
+            "the call carries the person's approve of its record"
+        );
+        assert_eq!(
+            prompting
+                .browser
+                .call(Operation::Invocation {
+                    record: prompting.channel.clone(),
+                    id: handed.id,
+                    call: InvocationCall::Complete {
+                        code: String::new(),
+                        message: String::new(),
+                    },
+                })
+                .await,
+            Ok(Reply::Done),
+            "the Browser answers the page and ends its call"
+        );
+    })
+}
+
 /// A page's prompt the Browser raises as its own call of a page action that asks first (a site
 /// asking for the camera) waits for the person in its asked record at the device's daemon, naming
 /// the Browser by its name and the site: nobody's screen answers it in the Browser's place. The
@@ -955,7 +1275,7 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
     // The person's devices, as the host holding their record answers: this one is listed.
     tilo_identity::sources::test_trust::install();
     let host = device_with_shell().await;
-    let workspaces = host._host.workspaces().clone();
+    let workspaces = host.record_host.workspaces().clone();
     host.launched
         .record(std::process::id(), BROWSER, &host.workspace);
     let (mut browser, taken) = host.app(&launch_opening(BROWSER, &host.workspace)).await;
@@ -1151,93 +1471,108 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
     );
 }
 
-/// A call the person's press in an app's window made, and that asks first, is kept with where
-/// they pressed it: this device, the app, the window's tab key as the session publishes it and
-/// the point in the window the compositor attested over the shell link. The shell stands the
-/// question there. A call no press made, or one naming a press in another window, asks with no
-/// window.
-#[tokio::test(flavor = "current_thread")]
-async fn a_press_that_asks_first_is_kept_where_it_was_pressed() {
-    use runtime_collab::wire::shell::{ShellCall, ShellReply};
-    use tilo_actions::remote::asked::{PressPoint, Pressed};
-    use tilo_actions::remote::{InvocationReceipt, ReceiptStatus, RemoteActionMessage};
-    const BROWSER: &str = "so.tilo.browser";
-    const PAGE: &str = "tl:so.tilo.browser:page-1";
-    const WINDOW: u64 = 42;
+/// The device, its shell linked to it, the Browser connected with window `window` and its surface
+/// published, and the presses the compositor attested there: what a pressed prompt is raised
+/// through.
+struct PressedAsking {
+    _identity: tempfile::TempDir,
+    _identity_env: tilo_test_env::ScopedEnv,
+    host: Device,
+    workspaces: Workspaces,
+    browser: Endpoint,
+    channel: Record,
+    store: Arc<tilo_actions::remote::asked::AskedStore>,
+    window: u64,
+    point: PressPoint,
+}
 
-    let identity = tempfile::tempdir().unwrap();
-    let mut _identity_env = tilo_test_env::ScopedEnv::new();
-    _identity_env
-        .set("XDG_CONFIG_HOME", identity.path().join("config"))
-        .set("TILO_IDENTITY_ROOT", identity.path().join("identity"))
-        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        &tilo_identity::store::account_identity_dir(&identity.path().join("config/tilo/identity")),
-        &tilo_device_identity::IdentityPaths::under(identity.path().join("identity")),
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .expect("the device's identity");
-    tilo_identity::sources::test_trust::install();
-    let host = device_with_shell().await;
-    let workspaces = host._host.workspaces().clone();
-    host.launched
-        .record_in(std::process::id(), BROWSER, &host.workspace, Some(WINDOW));
-    let (mut browser, taken) = host.app(&launch_opening(BROWSER, &host.workspace)).await;
-    taken.await;
-    let channel = browser
-        .open_as(BROWSER, &host.workspace)
-        .await
-        .expect("the Browser opens its record");
-    let (surface, _) = runtime_collab::SurfacePublication::next(
-        None,
-        std::slice::from_ref(&allow_permission(PAGE)),
-    );
-    assert_eq!(
-        browser
-            .call(Operation::Publish {
-                record: channel.clone(),
-                publication: Publication::Surface(serde_json::to_string(&surface).unwrap()),
-            })
-            .await,
-        Ok(Reply::Done)
-    );
-    let store = workspaces
-        .asked_store()
-        .expect("the daemon keeps asked records");
-
-    // The compositor saw the person press the Browser's window at (140, 62), press a key in
-    // it, and press in another window.
-    let point = PressPoint { x: 140, y: 62 };
-    for (window, serial, at) in [
-        (WINDOW, 5, Some(point)),
-        (WINDOW, 7, None),
-        (WINDOW + 1, 6, None),
-    ] {
-        assert_eq!(
-            host.shell
-                .call(ShellCall::Press { window, serial, at })
-                .await
-                .expect("the shell link takes the press"),
-            ShellReply::Pressed
+/// Set the device's identity up, connect the Browser with window `window`, and attest the
+/// presses its window and another saw.
+fn pressed_asking(window: u64) -> Driven<'static, PressedAsking> {
+    Box::pin(async move {
+        use runtime_collab::wire::shell::{ShellCall, ShellReply};
+        let (identity, identity_env) = device_identity();
+        let host = device_with_shell().await;
+        let workspaces = host.record_host.workspaces().clone();
+        host.launched
+            .record_in(std::process::id(), BROWSER, &host.workspace, Some(window));
+        let (mut browser, taken) = host.app(&launch_opening(BROWSER, &host.workspace)).await;
+        taken.await;
+        let channel = browser
+            .open_as(BROWSER, &host.workspace)
+            .await
+            .expect("the Browser opens its record");
+        let (surface, _) = runtime_collab::SurfacePublication::next(
+            None,
+            std::slice::from_ref(&allow_permission(PAGE)),
         );
-    }
+        assert_eq!(
+            browser
+                .call(Operation::Publish {
+                    record: channel.clone(),
+                    publication: Publication::Surface(serde_json::to_string(&surface).unwrap()),
+                })
+                .await,
+            Ok(Reply::Done)
+        );
+        let store = workspaces
+            .asked_store()
+            .expect("the daemon keeps asked records");
+        // The compositor saw the person press the Browser's window at (140, 62), press a key in
+        // it, and press in another window.
+        let point = PressPoint { x: 140, y: 62 };
+        for (pressed_window, serial, at) in [
+            (window, 5, Some(point)),
+            (window, 7, None),
+            (window.saturating_add(1), 6, None),
+        ] {
+            assert_eq!(
+                host.shell
+                    .call(ShellCall::Press {
+                        window: pressed_window,
+                        serial,
+                        at,
+                    })
+                    .await
+                    .expect("the shell link takes the press"),
+                ShellReply::Pressed
+            );
+        }
+        PressedAsking {
+            _identity: identity,
+            _identity_env: identity_env,
+            host,
+            workspaces,
+            browser,
+            channel,
+            store,
+            window,
+            point,
+        }
+    })
+}
 
-    // Raise the Browser's call for the page's prompt `prompt` naming the press `serial`, its
-    // window saying the control the press answered stands at `control`: kept as its one asked
-    // record, which says where it was pressed.
-    let raised = async |browser: &mut Endpoint,
-                        prompt: (u32, &str, &str),
-                        serial: Option<u32>,
-                        control: Option<PressPoint>|
-           -> Option<Pressed> {
+/// Raise the Browser's call for the page's prompt `prompt` naming the press `press`, its window
+/// saying the control the press answered stands at: the press its asked record keeps, which is
+/// withdrawn once read.
+fn pressed_prompt<'a>(
+    browser: &'a mut Endpoint,
+    channel: &'a Record,
+    host: &'a Device,
+    store: &'a tilo_actions::remote::asked::AskedStore,
+    prompt: (u32, &'a str, &'a str),
+    press: (Option<u32>, Option<PressPoint>),
+) -> Driven<'a, Option<Pressed>> {
+    Box::pin(async move {
+        use tilo_actions::remote::{InvocationReceipt, ReceiptStatus, RemoteActionMessage};
         let request = asking_for(&host.workspace, PAGE, prompt);
         let invocation = request.invocation;
         assert_eq!(
             pressed_action(
                 browser,
-                &channel,
+                channel,
                 RemoteActionMessage::Invoke(request),
-                (serial, control)
+                press
             )
             .await,
             RemoteActionMessage::Receipt(InvocationReceipt {
@@ -1254,72 +1589,100 @@ async fn a_press_that_asks_first_is_kept_where_it_was_pressed() {
         // Withdrawn once read: the person is asked only one question at a time here.
         store.withdraw(&asked.asked.record, "done looking");
         asked.asked.pressed.clone()
-    };
+    })
+}
 
-    let in_window = |at| {
-        Some(Pressed {
-            device: hex::encode(workspaces.device_cert().device_public_key),
-            app: BROWSER.to_owned(),
-            instance: WINDOW.to_string(),
-            resource: PAGE.to_owned(),
-            at,
-        })
-    };
-    // Where the Browser says the control a press answered stands, which the compositor never saw.
-    let control = PressPoint { x: 610, y: 400 };
-    assert_eq!(
-        raised(
-            &mut browser,
-            (7, "https://meet.example", "camera"),
-            Some(5),
-            None
-        )
-        .await,
-        in_window(Some(point)),
-        "the question stands at the press in the Browser's window"
-    );
-    assert_eq!(
-        raised(
-            &mut browser,
-            (10, "https://meet.example", "camera"),
-            Some(5),
-            Some(control)
-        )
-        .await,
-        in_window(Some(point)),
-        "where a pointer pressed is the compositor's word, never the app's"
-    );
-    assert_eq!(
-        raised(
-            &mut browser,
-            (11, "https://meet.example", "microphone"),
-            Some(7),
-            Some(control)
-        )
-        .await,
-        in_window(Some(control)),
-        "a key press stands at the control its window says the key answered"
-    );
-    assert_eq!(
-        raised(
-            &mut browser,
-            (8, "https://meet.example", "microphone"),
+/// Each prompt the Browser raises stands where the compositor says its press was, never where
+/// the app says the control is; a call no press made, or one naming another window's press,
+/// stands nowhere.
+fn assert_pressed_prompts(asking: &mut PressedAsking) -> Driven<'_, ()> {
+    Box::pin(async move {
+        let in_window = |at| {
+            Some(Pressed {
+                device: hex::encode(asking.workspaces.device_cert().device_public_key),
+                app: BROWSER.to_owned(),
+                instance: asking.window.to_string(),
+                resource: PAGE.to_owned(),
+                at,
+            })
+        };
+        // Where the Browser says the control a press answered stands, which the compositor never saw.
+        let control = PressPoint { x: 610, y: 400 };
+        assert_eq!(
+            pressed_prompt(
+                &mut asking.browser,
+                &asking.channel,
+                &asking.host,
+                &asking.store,
+                (7, "https://meet.example", "camera"),
+                (Some(5), None),
+            )
+            .await,
+            in_window(Some(asking.point)),
+            "the question stands at the press in the Browser's window"
+        );
+        assert_eq!(
+            pressed_prompt(
+                &mut asking.browser,
+                &asking.channel,
+                &asking.host,
+                &asking.store,
+                (10, "https://meet.example", "camera"),
+                (Some(5), Some(control)),
+            )
+            .await,
+            in_window(Some(asking.point)),
+            "where a pointer pressed is the compositor's word, never the app's"
+        );
+        assert_eq!(
+            pressed_prompt(
+                &mut asking.browser,
+                &asking.channel,
+                &asking.host,
+                &asking.store,
+                (11, "https://meet.example", "microphone"),
+                (Some(7), Some(control)),
+            )
+            .await,
+            in_window(Some(control)),
+            "a key press stands at the control its window says the key answered"
+        );
+        assert_eq!(
+            pressed_prompt(
+                &mut asking.browser,
+                &asking.channel,
+                &asking.host,
+                &asking.store,
+                (8, "https://meet.example", "microphone"),
+                (None, Some(control)),
+            )
+            .await,
             None,
-            Some(control)
-        )
-        .await,
-        None,
-        "a call no press made stands in no window"
-    );
-    assert_eq!(
-        raised(
-            &mut browser,
-            (9, "https://meet.example", "camera"),
-            Some(6),
-            Some(control)
-        )
-        .await,
-        None,
-        "a press in another window is not this one's"
-    );
+            "a call no press made stands in no window"
+        );
+        assert_eq!(
+            pressed_prompt(
+                &mut asking.browser,
+                &asking.channel,
+                &asking.host,
+                &asking.store,
+                (9, "https://meet.example", "camera"),
+                (Some(6), Some(control)),
+            )
+            .await,
+            None,
+            "a press in another window is not this one's"
+        );
+    })
+}
+
+/// A call the person's press in an app's window made, and that asks first, is kept with where
+/// they pressed it: this device, the app, the window's tab key as the session publishes it and
+/// the point in the window the compositor attested over the shell link. The shell stands the
+/// question there. A call no press made, or one naming a press in another window, asks with no
+/// window.
+#[tokio::test(flavor = "current_thread")]
+async fn a_press_that_asks_first_is_kept_where_it_was_pressed() {
+    let mut asking = pressed_asking(WINDOW).await;
+    assert_pressed_prompts(&mut asking).await;
 }

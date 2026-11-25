@@ -50,7 +50,7 @@ impl tilo_actions::remote::Admits for Counter {
     const APP: &'static str = APP;
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-        top_level(self.descriptors())
+        top_level(Counter::descriptors())
     }
 
     fn start(
@@ -89,7 +89,7 @@ impl tilo_actions::remote::Admits for Counter {
 }
 
 impl Counter {
-    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+    fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
             did: None,
             state: tilo_actions::ActionState::default(),

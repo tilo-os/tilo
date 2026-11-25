@@ -173,7 +173,7 @@ mod external_moderation_rpc_tests {
             });
             let asked = AskedStore::opened(None, None, Vec::new())
                 .expect("the fixture keeps the calls that wait");
-            let mut me = Self {
+            let me = Self {
                 original,
                 route,
                 state,

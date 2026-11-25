@@ -218,7 +218,7 @@ fn deliver_at(
     };
     match (payload, validation) {
         (Ok(_), Ok(())) => {
-            accept(channels, fanout, document.envelope, &route);
+            accept(channels, fanout, &document.envelope, &route);
             Delivery::Done
         }
         (_, Err(ValidationError::OpAlreadyRedacted { target })) => {
@@ -280,21 +280,21 @@ pub fn validate_route(
 fn accept(
     channels: &Arc<Mutex<BrokerChannels>>,
     fanout: &FanoutState,
-    envelope: SignedOp,
+    envelope: &SignedOp,
     route: &CrdtRoute,
 ) {
     let artifact = envelope.artifact;
     let mut first_of_the_document = false;
     let unsynced = channels.lock().ok().map(|mut ch| {
         first_of_the_document = !ch.routes.contains_key(&artifact);
-        let unsynced = ch.document_history(route, &envelope);
+        let unsynced = ch.document_history(route, envelope);
         if envelope.encryption.is_some() {
             ch.sealed.insert(artifact);
         }
         let state = ch.state_for(artifact);
-        state.record_validated_op(envelope.clone());
+        state.record_validated_op((*envelope).clone());
         if envelope.kind == OpKind::Compaction
-            && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
+            && let Ok(cp) = collab_types::parse_compaction_payload(envelope)
         {
             let _ = state.apply_compaction(&cp);
         }
@@ -306,7 +306,7 @@ fn accept(
         unsynced.finish();
     }
     if envelope.kind == OpKind::Redaction {
-        apply_redaction_from_envelope(&envelope, artifact, channels);
+        apply_redaction_from_envelope(envelope, artifact, channels);
     }
     fanout.record_changed(route);
     if first_of_the_document {
@@ -430,7 +430,7 @@ mod tests {
         fn told(&self) -> usize {
             while let Ok(update) = self.updates.borrow_mut().try_recv() {
                 if matches!(update, runtime_collab::wire::ContextUpdate::RecordChanged) {
-                    self.told.set(self.told.get() + 1);
+                    self.told.set(self.told.get().saturating_add(1));
                 }
             }
             self.told.get()

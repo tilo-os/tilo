@@ -462,13 +462,7 @@ impl AppBrokerState {
             request.clone(),
         );
         asking.map(move |asked| match asked {
-            Ok(()) => state.take_registered(
-                &caller,
-                serving,
-                &registered,
-                &request,
-                admitted,
-            ),
+            Ok(()) => state.take_registered(&caller, serving, &registered, &request, admitted),
             Err(waits) => {
                 if let Ok(mut log) = state.remote_invocations.lock() {
                     log.abandon(&request.invocation);
@@ -740,7 +734,7 @@ impl AppBrokerState {
             let following = super::live_views::Following {
                 caller: decided.caller.clone(),
                 origin: decided.origin.clone(),
-                workspace: decided.workspace.clone(),
+                workspace: decided.workspace,
                 app_id: app_id.to_string(),
                 descriptor,
                 approved,
@@ -1366,7 +1360,7 @@ mod identity_admin_tests {
         const APP: &'static str = "so.tilo.settings";
 
         fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-            top_level(self.descriptors())
+            top_level(Host::descriptors())
         }
 
         fn start(
@@ -1395,7 +1389,7 @@ mod identity_admin_tests {
     }
 
     impl Host {
-        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+        fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
             device_tickets::IDENTITY_STEPS
                 .into_iter()
                 .map(|step| tilo_actions::ActionDescriptor {
@@ -2339,8 +2333,13 @@ mod settings_documents_tests {
             ..CatalogueQuery::default()
         };
         let offered = |workspaces: Vec<Workspace>| {
-            let mut tree = WorkspaceTree::default();
-            tree.workspaces = workspaces;
+            let tree = WorkspaceTree {
+                desktop: tilo_desktop_model::Layout {
+                    workspaces,
+                    ..tilo_desktop_model::Layout::default()
+                },
+                ..WorkspaceTree::default()
+            };
             let (state, _bridge_rx) = AppBrokerState::test_state(
                 Some(tree.shared().authority()),
                 crate::apps::services::ProcessServices {
@@ -2527,7 +2526,7 @@ mod own_device_verdict_tests {
     fn an_own_device_action_is_asked_or_denied_by_the_workspace_rules() {
         // No rule for the workspace's owner: it runs.
         let (state, id, workspace, owner) = broker_workspace(None);
-        let caller = Caller::own_person(owner.clone()).in_workspace(&workspace);
+        let caller = Caller::own_person(owner).in_workspace(&workspace);
         assert!(
             state
                 .own_device_verdict(&caller, &workspace, &registered(), &request())

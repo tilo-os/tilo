@@ -1078,22 +1078,26 @@ impl Asked {
         }
     }
 
-    async fn answer(
-        &self,
-        answering: &Caller,
+    fn answer<'a>(
+        &'a self,
+        answering: &'a Caller,
         resolution: tilo_actions::remote::asked::Offer,
-    ) -> Result<(), ActionCallError> {
-        self.store
-            .resolve(
-                &self.record,
-                answering,
-                &tilo_actions::remote::asked::Resolve {
-                    resolution,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap()
+    ) -> impl std::future::Future<Output = Result<(), ActionCallError>> + 'a {
+        let store = Arc::clone(&self.store);
+        let record = self.record.clone();
+        async move {
+            store
+                .resolve(
+                    &record,
+                    answering,
+                    &tilo_actions::remote::asked::Resolve {
+                        resolution,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+        }
     }
 
     /// Nothing of the run started: no job answers for its call, and no run of it finished.

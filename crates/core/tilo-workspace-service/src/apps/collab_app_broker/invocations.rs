@@ -149,7 +149,9 @@ impl AppBrokerState {
                 .iter()
                 .filter(|invocation| invocation.status == InvocationStatus::Waiting)
                 .count();
-            let total = page.total + (page.items.len() - kept);
+            let total = page
+                .total
+                .saturating_add(page.items.len().saturating_sub(kept));
             return Ok(tilo_actions::remote::ResourceCopy::reading(
                 serde_json::json!({ "items": page.items, "total": total, "waiting": waiting }),
                 None,

@@ -580,6 +580,7 @@ impl ResourceRequestContext {
         Self::authenticated(app_id, workspace_id, caller)
     }
 
+    #[must_use]
     pub fn serving<A: Into<tilo_actions::Acting>>(
         mut self,
         serving: impl IntoIterator<Item = (tilo_actions::InvocationId, A)>,

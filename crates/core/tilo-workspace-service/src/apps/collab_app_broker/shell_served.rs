@@ -201,9 +201,7 @@ impl LinkProvider {
                 })
         };
         async move {
-            let unavailable = |reason: String| ActionCallError::Unavailable {
-                reason: reason,
-            };
+            let unavailable = |reason: String| ActionCallError::Unavailable { reason };
             let answered = sent
                 .map_err(unavailable)?
                 .await
@@ -232,10 +230,13 @@ impl LinkProvider {
             return false;
         }
         followed.state = state;
-        for waiting in followed.waiting.drain(..) {
+        let waiting: Vec<_> = followed.waiting.drain(..).collect();
+        let continues = !followed.state.is_terminal();
+        drop(calls);
+        for waiting in waiting {
             waiting.complete(());
         }
-        !followed.state.is_terminal()
+        continues
     }
 
     /// No call reaches the shell any more: each under way ends failed, and each record it asked
@@ -418,11 +419,12 @@ impl ActionProvider for LinkProvider {
         let mut calls = self.calls.lock_recover();
         let followed = calls.get_mut(id)?;
         let (changed, change) = tilo_actions::remote::pending();
-        if followed.state.is_terminal() {
-            changed.complete(());
-        } else {
+        if !followed.state.is_terminal() {
             followed.waiting.push(changed);
+            return Some(change);
         }
+        drop(calls);
+        changed.complete(());
         Some(change)
     }
 

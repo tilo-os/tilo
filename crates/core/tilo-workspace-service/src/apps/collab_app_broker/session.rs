@@ -31,8 +31,7 @@ pub(super) struct AppConnection {
 }
 
 /// The certificate a connection acts under in a workspace, answered for the workspace it names.
-type CertificateForWorkspace =
-    Rc<dyn Fn(&str) -> Result<tilo_user_identity::DeviceCert, String>>;
+type CertificateForWorkspace = Rc<dyn Fn(&str) -> Result<tilo_user_identity::DeviceCert, String>>;
 
 /// Who an app's connection acts as: the person whose device it runs on, in whichever workspace
 /// a record it names is in, and the workspace agent its launch named, if any.
@@ -263,29 +262,32 @@ impl JoinedChannel {
     /// make: the caller at the route's record, decided with the write action kind. An app changes
     /// its own records; another app's record only where the caller's grants allow a change, so a
     /// grant that reads alone answers a refusal.
-    pub(super) async fn may_write(
+    pub(super) fn may_write(
         &self,
         admitted: &AdmittedJoinIdentity,
         route: &CrdtRoute,
-    ) -> Result<(), BrokerError> {
+    ) -> impl std::future::Future<Output = Result<(), BrokerError>> + Send + use<> {
         let address = route_address(route);
         let caller = self.record_caller(admitted, route);
-        let decided = match self.state.records() {
-            Some(reads) => Some(reads.may_write(&caller, &address).await),
-            None => None,
-        };
-        match decided {
-            Some(Ok(())) => Ok(()),
-            // No reader answered the write decision: none is registered at this device, or the
-            // reader cannot decide a change. The record cannot be changed from here now.
-            None | Some(Err(ActionCallError::Unavailable { .. })) => Err(BrokerError::failed(
-                "this record can't be changed right now".into(),
-            )),
-            Some(Err(refusal)) => Err(BrokerError::failed(format!(
-                "this connection may not change the record of {} and changes nothing on it: \
-                 {refusal}",
-                route.app_id
-            ))),
+        let reads = self.state.records();
+        let app_id = route.app_id.clone();
+        async move {
+            let decided = match reads {
+                Some(reads) => Some(reads.may_write(&caller, &address).await),
+                None => None,
+            };
+            match decided {
+                Some(Ok(())) => Ok(()),
+                // No reader answered the write decision: none is registered at this device, or the
+                // reader cannot decide a change. The record cannot be changed from here now.
+                None | Some(Err(ActionCallError::Unavailable { .. })) => Err(BrokerError::failed(
+                    "this record can't be changed right now".into(),
+                )),
+                Some(Err(refusal)) => Err(BrokerError::failed(format!(
+                    "this connection may not change the record of {app_id} and changes nothing on \
+                     it: {refusal}"
+                ))),
+            }
         }
     }
 
@@ -339,48 +341,58 @@ impl JoinedChannel {
 
     /// `command`, decided for this channel's caller (`current`) at `route`, answered by the
     /// device's one store `service`.
-    async fn store_command(
+    fn store_command(
         &self,
         service: Option<std::sync::Arc<dyn crate::apps::services::ResourceServices>>,
         command: collab_types::store::wire::Command,
         current: AdmittedJoinIdentity,
         route: CrdtRoute,
-    ) -> Result<collab_types::store::wire::Reply, BrokerError> {
-        // A change the caller may not make is refused for that, whether or not a store is here.
-        if command.writes() {
-            self.may_write(&current, &route).await?;
+    ) -> impl std::future::Future<Output = Result<collab_types::store::wire::Reply, BrokerError>>
+    + Send
+    + use<> {
+        let write = self.may_write(&current, &route);
+        let record_of = self.record_of(&command, &current, &route);
+        let delivered_to = self.state.delivered_to(self.peer_id);
+        let opened_for = self.opened_for();
+        let resource_type = self.resource_type.clone();
+        let founding_refusal = self.founding_refusal(&route);
+        let state = std::sync::Arc::clone(&self.state);
+        let writer = self.connection_id;
+        async move {
+            // A change the caller may not make is refused for that, whether or not a store is here.
+            if command.writes() {
+                write.await?;
+            }
+            let service = service.ok_or_else(|| {
+                BrokerError::failed("this device keeps no store for apps' resources".into())
+            })?;
+            let record = record_of.await?;
+            let caller = current.certified_caller(&route.cluster_id, false);
+            let mut context = crate::apps::services::ResourceRequestContext::authenticated(
+                route.app_id.clone(),
+                route.cluster_id.clone(),
+                caller,
+            )
+            .serving(delivered_to)
+            .opened_for(opened_for);
+            if let Some(record) = record {
+                context = context.on_record(record).of_kind(resource_type);
+            }
+            if matches!(
+                command,
+                collab_types::store::wire::Command::RecordChange { .. }
+            ) {
+                context = context.refusing_founding(founding_refusal);
+            }
+            let changes = command.writes() && context.record().is_some();
+            let answer = service.command(&context, command);
+            if changes {
+                super::record_changes::telling_record_changed(state, writer, answer, route).await
+            } else {
+                answer.await
+            }
+            .map_err(BrokerError::failed)
         }
-        let service = service.ok_or_else(|| {
-            BrokerError::failed("this device keeps no store for apps' resources".into())
-        })?;
-        let record = self.record_of(&command, &current, &route).await?;
-        let caller = current.certified_caller(&route.cluster_id, false);
-        let mut context = crate::apps::services::ResourceRequestContext::authenticated(
-            route.app_id.clone(),
-            route.cluster_id.clone(),
-            caller,
-        )
-        .serving(self.state.delivered_to(self.peer_id))
-        .opened_for(self.opened_for());
-        if let Some(record) = record {
-            context = context
-                .on_record(record)
-                .of_kind(self.resource_type.clone());
-        }
-        if matches!(
-            command,
-            collab_types::store::wire::Command::RecordChange { .. }
-        ) {
-            context = context.refusing_founding(self.founding_refusal(&route));
-        }
-        let changes = command.writes() && context.record().is_some();
-        let answer = service.command(&context, command);
-        if changes {
-            self.telling_record_changed(answer, route).await
-        } else {
-            answer.await
-        }
-        .map_err(BrokerError::failed)
     }
 
     /// Opens the query `body` in the device's one store, for this route's app in its workspace:
@@ -449,8 +461,8 @@ impl JoinedChannel {
 /// long as the channel stays admitted.
 pub(super) fn app_settings_capability(
     state: &Arc<AppBrokerState>,
-    route: CrdtRoute,
-    identity: AdmittedJoinIdentity,
+    route: &CrdtRoute,
+    identity: &AdmittedJoinIdentity,
 ) -> Result<AppSettings, BrokerError> {
     if route.app_id.is_empty() {
         return Err(BrokerError::failed(
@@ -458,8 +470,8 @@ pub(super) fn app_settings_capability(
         ));
     }
     let app_id = route.app_id.clone();
-    let grants = settings_grants(state, &route, &identity);
-    let authority = display_authority(state, &route, &identity);
+    let grants = settings_grants(state, route, identity);
+    let authority = display_authority(state, route, identity);
     let revalidate: runtime_collab::settings::host::Revalidate = {
         let (state, route, identity) = (Arc::clone(state), route.clone(), identity.clone());
         Arc::new(move || {
@@ -1037,22 +1049,8 @@ pub(super) async fn drive_connection(
         None
     };
     let _media_monitor = native_media::ProcessMonitor::start(local_media.clone(), &state, peer_id);
-    let handed_descriptors = local_media
-        .as_ref()
-        .and_then(|local| local.descriptors.clone());
-    let app_worker = local_media
-        .as_ref()
-        .map(|app| (uuid::Uuid::new_v4(), app.app_id.clone()));
-    // A launched app acts as the device's own person, and as the agent its launch named; a
-    // host-mounted worker as the certificate the host admitted it under; anything else as nobody.
-    let identity = match (&worker, &local_media) {
-        (Some(worker), _) => Some(ConnectionIdentity::certified(
-            worker.certificate.clone(),
-            None,
-        )),
-        (None, Some(app)) => Some(ConnectionIdentity::device(&state, app.member.clone())),
-        (None, None) => None,
-    };
+    let (handed_descriptors, app_worker, identity) =
+        connection_parts(&state, worker.as_ref(), local_media.as_deref());
     let (connection, outgoing) = wire::WireConnection::new(Some(Rc::new(AppConnection {
         worker,
         app_worker,
@@ -1081,6 +1079,31 @@ pub(super) async fn drive_connection(
         wire::serve(connection, outgoing, reader, writer).await
     };
     served.map_err(|error| BrokerError::failed(error.to_string()))
+}
+
+/// What a connection opened with `local_media` hands over, and the identity it acts as: a
+/// launched app as the device's own person, and as the agent its launch named; a host-mounted
+/// worker as the certificate the host admitted it under; anything else as nobody.
+fn connection_parts(
+    state: &Arc<AppBrokerState>,
+    worker: Option<&WorkerBinding>,
+    local_media: Option<&native_media::LocalAppConnection>,
+) -> (
+    Option<runtime_portal::descriptors::ReceivedDescriptors>,
+    Option<(uuid::Uuid, String)>,
+    Option<ConnectionIdentity>,
+) {
+    let handed_descriptors = local_media.and_then(|local| local.descriptors.clone());
+    let app_worker = local_media.map(|app| (uuid::Uuid::new_v4(), app.app_id.clone()));
+    let identity = match (worker, local_media) {
+        (Some(worker), _) => Some(ConnectionIdentity::certified(
+            worker.certificate.clone(),
+            None,
+        )),
+        (None, Some(app)) => Some(ConnectionIdentity::device(state, app.member.clone())),
+        (None, None) => None,
+    };
+    (handed_descriptors, app_worker, identity)
 }
 
 /// The record `route` names, as the device's one reader addresses it.

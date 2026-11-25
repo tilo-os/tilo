@@ -189,7 +189,7 @@ mod invitation_request_tests {
         const APP: &'static str = session_actions::PROVIDER;
 
         fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-            top_level(self.descriptors())
+            top_level(Shell::descriptors())
         }
 
         fn start(
@@ -217,7 +217,7 @@ mod invitation_request_tests {
     }
 
     impl Shell {
-        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+        fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
             vec![tilo_actions::ActionDescriptor {
                 did: None,
                 state: tilo_actions::ActionState::default(),

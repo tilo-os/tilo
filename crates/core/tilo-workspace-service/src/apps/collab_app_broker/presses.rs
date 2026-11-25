@@ -46,6 +46,15 @@ struct Press {
     used: bool,
 }
 
+/// What [`Presses::look`] found in its window: no press of that serial at all, or the answer
+/// `answer` made of the one there.
+enum Looked<T> {
+    /// The compositor attested no such press in that window.
+    NotThere,
+    /// The press is there, and `answer` answered this of it.
+    Answered(Option<T>),
+}
+
 /// The person's presses the compositor attested, each proving one call.
 #[derive(Debug, Default)]
 pub(super) struct Presses {
@@ -118,12 +127,15 @@ impl Presses {
         mut answer: impl FnMut(&mut Press) -> Option<T>,
     ) -> Option<T> {
         let (window, serial) = (window?, serial?);
-        let deadline = tilo_clock::now() + ATTEST_WAIT;
+        let now = tilo_clock::now();
+        let deadline = now.checked_add(ATTEST_WAIT).unwrap_or(now);
         loop {
             // The wake is registered before the look, so an attestation that lands between the
             // two is not missed.
             let attested = self.attested.notified();
-            if let Some(found) = self.look(window, serial, tilo_clock::now(), &mut answer) {
+            if let Looked::Answered(found) =
+                self.look(window, serial, tilo_clock::now(), &mut answer)
+            {
                 return found;
             }
             if tilo_clock::now() >= deadline {
@@ -175,21 +187,26 @@ impl Presses {
         })
     }
 
-    /// `answer` of the press, if it is there, without waiting: `None` where it is not.
+    /// `answer` of the press, if it is there, without waiting: [`Looked::NotThere`] where it is
+    /// not.
     fn look<T>(
         &self,
         window: u64,
         serial: u32,
         now: Instant,
         answer: &mut impl FnMut(&mut Press) -> Option<T>,
-    ) -> Option<Option<T>> {
+    ) -> Looked<T> {
         let Ok(mut seen) = self.seen.lock() else {
-            return Some(None);
+            return Looked::Answered(None);
         };
         seen.retain(|press| now.saturating_duration_since(press.at) <= MAX_PRESS_AGE);
-        seen.iter_mut()
+        match seen
+            .iter_mut()
             .find(|press| press.window == window && press.serial == serial)
-            .map(answer)
+        {
+            Some(press) => Looked::Answered(answer(press)),
+            None => Looked::NotThere,
+        }
     }
 }
 
@@ -204,12 +221,12 @@ impl super::AppBrokerState {
     /// A press older than the window it would prove, for a test that makes one.
     #[cfg(test)]
     pub(crate) fn note_stale_press(&self, window: u64, serial: u32) {
-        self.presses.note(
-            window,
-            serial,
-            None,
-            tilo_clock::now() - MAX_PRESS_AGE - Duration::from_millis(1),
-        );
+        let stale = tilo_clock::now()
+            .checked_sub(MAX_PRESS_AGE)
+            .and_then(|at| at.checked_sub(Duration::from_millis(1)));
+        if let Some(stale) = stale {
+            self.presses.note(window, serial, None, stale);
+        }
     }
 
     /// Whether the request of connection `peer_id` that names `serial` is the person's own press:
@@ -370,12 +387,11 @@ mod tests {
     async fn a_press_older_than_the_window_proves_nothing() {
         let presses = Presses::default();
         let start = tilo_clock::now();
-        presses.note(
-            7,
-            21,
-            None,
-            start - MAX_PRESS_AGE - Duration::from_millis(1),
-        );
+        let stale = start
+            .checked_sub(MAX_PRESS_AGE)
+            .and_then(|at| at.checked_sub(Duration::from_millis(1)))
+            .expect("the test's clock is past its press window");
+        presses.note(7, 21, None, stale);
         assert!(!presses.take(Some(7), Some(21)).await);
     }
 }

@@ -71,7 +71,7 @@ impl Grants for Workspace {
 fn giver(policy: &tilo_action_policy::WorkspacePolicy, subject: &Grantee) -> Grantee {
     let person = subject
         .as_agent()
-        .map_or(policy.owner().unwrap_or_default(), |(_, of)| of.as_str());
+        .map_or_else(|| policy.owner().unwrap_or_default(), |(_, of)| of.as_str());
     Grantee::person(person.to_owned())
 }
 #[derive(Clone, Default)]

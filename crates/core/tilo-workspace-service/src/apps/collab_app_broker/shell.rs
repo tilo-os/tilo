@@ -10,7 +10,7 @@ use runtime_collab::wire::shell::{
     ShellWrite,
 };
 use tilo_actions::remote::{
-    Caller, InvokeArgument, ReceiptStatus, RemoteActionMessage, ResourceReadRequest, resource_parts,
+    Caller, ReceiptStatus, RemoteActionMessage, ResourceReadRequest, resource_parts,
 };
 use tilo_peer_state::workspace_documents::DocumentWriting;
 
@@ -201,7 +201,7 @@ fn carry_live(
         .live
         .clone()
         .ok_or("this device runs no live session")?;
-    let stream = tilo_socket::tokio::from_std(handed_stream(connection)?)
+    let stream = tilo_socket::tokio::from_std(handed_stream(connection))
         .map_err(|error| format!("the live link cannot be carried: {error}"))?;
     tokio::spawn(live(stream));
     Ok(ShellReply::Vouched)
@@ -239,7 +239,7 @@ fn vouch_for(
             .identity
             .as_ref()
             .ok_or("this device runs no identity service")?;
-        identity(handed_stream(connection)?);
+        identity(handed_stream(connection));
         return Ok(ShellReply::Vouched);
     }
     let handed = match app {
@@ -258,7 +258,7 @@ fn vouch_for(
         }
         None => None,
     };
-    let stream = tilo_socket::tokio::from_std(handed_stream(connection)?)
+    let stream = tilo_socket::tokio::from_std(handed_stream(connection))
         .map_err(|error| format!("the app's connection cannot be served: {error}"))?;
     let broker = Rc::clone(&shell.broker);
     let state = Arc::clone(&broker.state);
@@ -279,154 +279,234 @@ fn vouch_for(
 }
 
 /// The connection a shell handed over as a descriptor.
-fn handed_stream(
-    connection: runtime_portal::descriptors::Owned,
-) -> Result<tilo_socket::Stream, String> {
-    tilo_socket::Stream::try_from(connection)
-        .map_err(|error| format!("what the shell handed is no connection: {error}"))
+fn handed_stream(connection: runtime_portal::descriptors::Owned) -> tilo_socket::Stream {
+    tilo_socket::Stream::from(connection)
 }
 
+/// What a shell's call answers, driven on the broker's local set: a shell holds the broker's
+/// handles, which stay on it.
+pub(super) type ShellAnswer =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Reply, String>>>>;
+
 /// Answer `call` for `shell`; a connection that is no shell is refused.
-pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Reply, String> {
-    let shell = shell.ok_or("this connection is not the person's shell")?;
-    let services = Arc::clone(&shell.services);
-    let reply = match call {
-        ShellCall::Readable {
-            workspace,
-            app,
-            resource,
-        } => {
-            let documents = Arc::clone(&services.documents);
-            ShellReply::Is(
-                tokio::task::spawn_blocking(move || {
-                    documents.readable(&workspace, &app, &resource)
-                })
-                .await
-                .map_err(|_| "the read stopped before it answered".to_owned())?,
-            )
-        }
-        ShellCall::Workspaces => ShellReply::Workspaces(services.documents.workspaces()),
-        ShellCall::MemberChanges { workspace } => {
-            let documents = Arc::clone(&services.documents);
-            ShellReply::MemberChanges(
-                tokio::task::spawn_blocking(move || documents.member_changes(&workspace))
-                    .await
-                    .map_err(|_| "the read stopped before it answered".to_owned())?
-                    .map(|changes| {
-                        changes
-                            .into_iter()
-                            .map(|change| ShellMemberChange {
-                                change: change.change,
-                                message: change.message,
-                                time: change.time,
-                            })
-                            .collect()
-                    }),
-            )
-        }
-        call @ ShellCall::Write { .. } => write(&services, call).await?,
-        ShellCall::Served {
-            workspace,
-            documents,
-        } => {
-            let named: Vec<(&str, &str)> = documents
-                .iter()
-                .map(|(app, document)| (app.as_str(), document.as_str()))
-                .collect();
-            let serving = services.writes.served(&workspace, &named);
-            ShellReply::Served(match serving {
-                Some(serving) => Some(serving.await),
-                None => None,
-            })
-        }
-        ShellCall::Press { window, serial, at } => {
-            // The compositor saw the person's input reach this window and issued `serial` with
-            // it: the daemon keeps it, and a call whose app connection is that window runs as
-            // the person once when it names it.
-            shell.broker.state.note_press(window, serial, at);
-            ShellReply::Pressed
-        }
-        ShellCall::Writes => ShellReply::Writes(next_writes(&shell.writes).await),
-        ShellCall::Say {
-            workspace,
-            word,
-            agents,
-        } => {
-            let speaking = services
-                .speaking
-                .as_ref()
-                .ok_or("this device takes part in no live session")?;
-            speaking.say(&workspace, word.map(|word| *word), agents)?;
-            ShellReply::Said
-        }
-        ShellCall::Join { workspace, call } => {
-            let speaking = services
-                .speaking
-                .as_ref()
-                .ok_or("this device takes part in no live session")?;
-            ShellReply::Joined(speaking.join(&workspace, Some(call)).await)
-        }
-        ShellCall::Leave { workspace } => {
-            let speaking = services
-                .speaking
-                .as_ref()
-                .ok_or("this device takes part in no live session")?;
-            ShellReply::Joined(speaking.join(&workspace, None).await)
-        }
-        call @ (ShellCall::Resources { .. }
-        | ShellCall::Vault(_)
-        | ShellCall::Receipt { .. }
-        | ShellCall::KeepsReceipts { .. }
-        | ShellCall::Authorizes { .. }) => kept(&services.workspaces, call).await,
-        ShellCall::Vouch(vouch) => vouch_for(&shell, vouch)?,
-        ShellCall::Processes => {
-            if services.processes.is_none() {
-                return Err("no tilolang process can start on this device".to_owned());
+pub(super) fn answer(shell: Option<Shell>, call: ShellCall) -> ShellAnswer {
+    Box::pin(async move {
+        let shell = shell.ok_or("this connection is not the person's shell")?;
+        let services = Arc::clone(&shell.services);
+        let reply = match call {
+            ShellCall::Readable {
+                workspace,
+                app,
+                resource,
+            } => readable_reply(&services, workspace, app, resource).await?,
+            ShellCall::Workspaces => ShellReply::Workspaces(services.documents.workspaces()),
+            ShellCall::MemberChanges { workspace } => {
+                member_changes_reply(&services, workspace).await?
             }
-            ShellReply::Processes {
-                socket: services.socket.clone(),
-                secret: services.links.processes(),
+            call @ ShellCall::Write { .. } => write(&services, call).await?,
+            ShellCall::Served {
+                workspace,
+                documents,
+            } => served_reply(&services, workspace, documents).await,
+            ShellCall::Press { window, serial, at } => {
+                // The compositor saw the person's input reach this window and issued `serial` with
+                // it: the daemon keeps it, and a call whose app connection is that window runs as
+                // the person once when it names it.
+                shell.broker.state.note_press(window, serial, at);
+                ShellReply::Pressed
             }
-        }
-        ShellCall::Action {
-            workspace,
-            frame,
-            caller,
-            pressed,
-        } => {
-            let frame = tilo_actions::remote::RemoteActionFrame::decode(&frame)
-                .map_err(|error| error.to_string())?;
-            // The person's own call, made by the press it names on the shell's own surfaces (a
-            // palette's row, a menu's item, a shortcut's key): it runs as their act once the
-            // compositor's record of that press proves it, as a window's press proves its app's
-            // call. A call for an app or an agent the shell names follows no press of theirs.
-            if caller.is_none()
-                && let RemoteActionMessage::Invoke(request) = &frame.message
-            {
-                shell
-                    .broker
-                    .state
-                    .shell_pressed((request.invocation, shell.caller.person), frame.press)
-                    .await;
+            ShellCall::Writes => ShellReply::Writes(next_writes(&shell.writes).await),
+            ShellCall::Say {
+                workspace,
+                word,
+                agents,
+            } => {
+                let speaking = services
+                    .speaking
+                    .as_ref()
+                    .ok_or("this device takes part in no live session")?;
+                speaking.say(&workspace, word.map(|word| *word), agents)?;
+                ShellReply::Said
             }
-            ShellReply::Action(
-                dispatch(
-                    &services,
-                    &shell.caller,
-                    workspace,
-                    caller,
-                    pressed,
-                    frame.message,
+            ShellCall::Join { workspace, call } => {
+                let speaking = services
+                    .speaking
+                    .as_ref()
+                    .ok_or("this device takes part in no live session")?;
+                ShellReply::Joined(speaking.join(&workspace, Some(call)).await)
+            }
+            ShellCall::Leave { workspace } => {
+                let speaking = services
+                    .speaking
+                    .as_ref()
+                    .ok_or("this device takes part in no live session")?;
+                ShellReply::Joined(speaking.join(&workspace, None).await)
+            }
+            call @ (ShellCall::Resources { .. }
+            | ShellCall::Vault(_)
+            | ShellCall::Receipt { .. }
+            | ShellCall::KeepsReceipts { .. }
+            | ShellCall::Authorizes { .. }) => kept(&services.workspaces, call).await,
+            ShellCall::Vouch(vouch) => vouch_for(&shell, vouch)?,
+            ShellCall::Processes => {
+                if services.processes.is_none() {
+                    return Err("no tilolang process can start on this device".to_owned());
+                }
+                ShellReply::Processes {
+                    socket: services.socket.clone(),
+                    secret: services.links.processes(),
+                }
+            }
+            ShellCall::Action {
+                workspace,
+                frame,
+                caller,
+                pressed,
+            } => {
+                let frame = tilo_actions::remote::RemoteActionFrame::decode(&frame)
+                    .map_err(|error| error.to_string())?;
+                // The person's own call, made by the press it names on the shell's own surfaces (a
+                // palette's row, a menu's item, a shortcut's key): it runs as their act once the
+                // compositor's record of that press proves it, as a window's press proves its app's
+                // call. A call for an app or an agent the shell names follows no press of theirs.
+                if caller.is_none()
+                    && let RemoteActionMessage::Invoke(request) = &frame.message
+                {
+                    shell
+                        .broker
+                        .state
+                        .shell_pressed((request.invocation, shell.caller.person), frame.press)
+                        .await;
+                }
+                ShellReply::Action(
+                    dispatch(
+                        &services,
+                        &shell.caller,
+                        workspace,
+                        caller,
+                        pressed,
+                        frame.message,
+                    )
+                    .await?,
                 )
-                .await?,
-            )
-        }
-        // The connection registers what its shell serves itself (`WireConnection::provide`).
-        ShellCall::Provide { .. } => {
-            return Err("a provider is served on the shell's own connection".to_owned());
+            }
+            // The connection registers what its shell serves itself (`WireConnection::provide`).
+            ShellCall::Provide { .. } => {
+                return Err("a provider is served on the shell's own connection".to_owned());
+            }
+        };
+        Ok(Reply::Shell(reply))
+    })
+}
+
+/// What the device's documents say of `app`'s resource `resource` in `workspace`, as their
+/// window may read it.
+async fn readable_reply(
+    services: &ShellServices,
+    workspace: String,
+    app: String,
+    resource: String,
+) -> Result<ShellReply, String> {
+    let documents = Arc::clone(&services.documents);
+    Ok(ShellReply::Is(
+        tokio::task::spawn_blocking(move || documents.readable(&workspace, &app, &resource))
+            .await
+            .map_err(|_| "the read stopped before it answered".to_owned())?,
+    ))
+}
+
+/// The member changes of `workspace`, as the device's documents read them.
+async fn member_changes_reply(
+    services: &ShellServices,
+    workspace: String,
+) -> Result<ShellReply, String> {
+    let documents = Arc::clone(&services.documents);
+    Ok(ShellReply::MemberChanges(
+        tokio::task::spawn_blocking(move || documents.member_changes(&workspace))
+            .await
+            .map_err(|_| "the read stopped before it answered".to_owned())?
+            .map(|changes| {
+                changes
+                    .into_iter()
+                    .map(|change| ShellMemberChange {
+                        change: change.change,
+                        message: change.message,
+                        time: change.time,
+                    })
+                    .collect()
+            }),
+    ))
+}
+
+/// What the device's writes record of `documents` in `workspace`, once it is served.
+async fn served_reply(
+    services: &ShellServices,
+    workspace: String,
+    documents: Vec<(String, String)>,
+) -> ShellReply {
+    let named: Vec<(&str, &str)> = documents
+        .iter()
+        .map(|(app, document)| (app.as_str(), document.as_str()))
+        .collect();
+    let serving = services.writes.served(&workspace, &named);
+    ShellReply::Served(match serving {
+        Some(serving) => Some(serving.await),
+        None => None,
+    })
+}
+
+/// The frame the device's services publish the action of `request` as, where they publish what
+/// its provider names, changed by the app the request names as its own action: `None` where they
+/// do not, and the resource's provider answers instead.
+async fn published_invoke_answer(
+    services: &ShellServices,
+    workspace: Option<String>,
+    request: &tilo_actions::remote::InvokeRequest,
+) -> Result<Option<Vec<u8>>, String> {
+    use tilo_actions::remote::{InvokeArgument, RemoteActionFrame, RemoteActionMessage};
+    let Some(published) = &services.published else {
+        return Ok(None);
+    };
+    let Some((app, record)) = resource_parts(&request.target.provider) else {
+        return Ok(None);
+    };
+    if !published_publishes(
+        published,
+        &ServiceCaller {
+            app_id: app.to_owned(),
+            workspace: workspace.clone().unwrap_or_default(),
+        },
+        record,
+    )
+    .await?
+    {
+        return Ok(None);
+    }
+    let arguments = match &request.argument {
+        InvokeArgument::Json(arguments) => serde_json::to_vec(arguments)
+            .map_err(|error| format!("the arguments do not encode: {error}"))?,
+        InvokeArgument::None => br"{}".to_vec(),
+        InvokeArgument::Text(_) => {
+            return Err("a published resource's action takes named arguments".into());
         }
     };
-    Ok(Reply::Shell(reply))
+    RemoteActionFrame::new(RemoteActionMessage::Receipt(receipt_of(
+        request.invocation,
+        published_action(
+            published,
+            &ServiceCaller {
+                app_id: app.to_owned(),
+                workspace: workspace.unwrap_or_default(),
+            },
+            record,
+            &request.target.address.action,
+            arguments,
+        )
+        .await,
+    )))
+    .encode()
+    .map(Some)
+    .map_err(|error| error.to_string())
 }
 
 /// `frame`, a `tilo_actions::remote::RemoteActionFrame` request the shell made in `workspace`,
@@ -458,84 +538,29 @@ async fn dispatch(
         RemoteActionMessage::ResourceRead {
             correlation, read, ..
         } => {
-            // A resource the device's services publish themselves (this device's server
-            // settings) is read as the app the read names, decided there as its grant decides.
-            // The device's own records are its daemon's, never published there: a desktop reads
-            // what it kept for its next session before it serves anything, and without asking
-            // itself.
-            if read.app != tilo_actions::remote::DEVICE_SETTINGS
-                && let Some(published) = &services.published
-                && let Some(revision) = published_revision(published, &read).await?
-            {
-                return RemoteActionFrame::new(RemoteActionMessage::ResourceReading {
-                    correlation,
-                    result: published_read(published, &read, revision)
-                        .await
-                        .map_err(
-                            |reason| tilo_actions::remote::ActionCallError::Unavailable { reason },
-                        ),
-                })
-                .encode()
-                .map_err(|error| error.to_string());
+            if let Some(answer) = published_read_answer(services, correlation, &read).await? {
+                return Ok(answer);
             }
-            // The person reads through the device's reader of its workspaces; an app or an agent
-            // acting for them through the dispatch's, which decides each as the one actor the
-            // dispatch decides its calls as: an app bounded by what it declares.
-            let reads: Arc<dyn tilo_actions::remote::ResourceReads> = if named.is_some() {
-                let (dispatch, _) = services
-                    .actions
-                    .dispatch(caller, Some(read.workspace.clone()), None)
-                    .await?;
-                dispatch
-                    .resource_reads()
-                    .ok_or("this device's dispatch reads no records")?
-            } else {
-                workspaces.resource_reads()
-            };
-            let reader = person.in_workspace(read.workspace.clone());
-            reads.answer_read(&reader, correlation, read).await
+            read_answer(
+                services,
+                workspaces,
+                caller,
+                named.is_some(),
+                &person,
+                correlation,
+                read,
+            )
+            .await?
         }
         RemoteActionMessage::Invoke(request)
             if tilo_actions::remote::is_resource_provider(&request.target.provider) =>
         {
             // A resource the device's services publish themselves is changed by the app the
             // request names, as its own action.
-            if let Some(published) = &services.published
-                && let Some((app, record)) = resource_parts(&request.target.provider)
-                && published_publishes(
-                    published,
-                    &ServiceCaller {
-                        app_id: app.to_owned(),
-                        workspace: workspace.clone().unwrap_or_default(),
-                    },
-                    record,
-                )
-                .await?
+            if let Some(answer) =
+                published_invoke_answer(services, workspace.clone(), &request).await?
             {
-                let arguments = match &request.argument {
-                    InvokeArgument::Json(arguments) => serde_json::to_vec(arguments)
-                        .map_err(|error| format!("the arguments do not encode: {error}"))?,
-                    InvokeArgument::None => br"{}".to_vec(),
-                    InvokeArgument::Text(_) => {
-                        return Err("a published resource's action takes named arguments".into());
-                    }
-                };
-                return RemoteActionFrame::new(RemoteActionMessage::Receipt(receipt_of(
-                    request.invocation,
-                    published_action(
-                        published,
-                        &ServiceCaller {
-                            app_id: app.to_owned(),
-                            workspace: workspace.unwrap_or_default(),
-                        },
-                        record,
-                        &request.target.address.action,
-                        arguments,
-                    )
-                    .await,
-                )))
-                .encode()
-                .map_err(|error| error.to_string());
+                return Ok(answer);
             }
             let workspace =
                 workspace.ok_or("a resource's action is asked in the workspace that keeps it")?;
@@ -572,6 +597,62 @@ async fn dispatch(
     RemoteActionFrame::new(answer)
         .encode()
         .map_err(|error| error.to_string())
+}
+
+/// The frame the device's services publish `read` as, where they publish it (this device's
+/// server settings), read as the app the read names: `None` where they do not, and the device's
+/// reader of its workspaces answers instead.
+async fn published_read_answer(
+    services: &ShellServices,
+    correlation: u64,
+    read: &ResourceReadRequest,
+) -> Result<Option<Vec<u8>>, String> {
+    use tilo_actions::remote::{ActionCallError, RemoteActionFrame, RemoteActionMessage};
+    if read.app == tilo_actions::remote::DEVICE_SETTINGS {
+        return Ok(None);
+    }
+    let Some(published) = &services.published else {
+        return Ok(None);
+    };
+    let Some(revision) = published_revision(published, read).await? else {
+        return Ok(None);
+    };
+    RemoteActionFrame::new(RemoteActionMessage::ResourceReading {
+        correlation,
+        result: published_read(published, read, revision)
+            .await
+            .map_err(|reason| ActionCallError::Unavailable { reason }),
+    })
+    .encode()
+    .map(Some)
+    .map_err(|error| error.to_string())
+}
+
+/// The answer to reading `read` as `person`: by the device's reader of its workspaces, or the
+/// dispatch's for an app or an agent acting for the person (`named`, `caller`), which decides
+/// each call as the one actor it decides its calls as.
+async fn read_answer(
+    services: &ShellServices,
+    workspaces: &crate::workspaces::Workspaces,
+    caller: &ShellCaller,
+    named: bool,
+    person: &Caller,
+    correlation: u64,
+    read: ResourceReadRequest,
+) -> Result<tilo_actions::remote::RemoteActionMessage, String> {
+    let reads: Arc<dyn tilo_actions::remote::ResourceReads> = if named {
+        let (dispatch, _) = services
+            .actions
+            .dispatch(caller, Some(read.workspace.clone()), None)
+            .await?;
+        dispatch
+            .resource_reads()
+            .ok_or("this device's dispatch reads no records")?
+    } else {
+        workspaces.resource_reads()
+    };
+    let reader = person.clone().in_workspace(read.workspace.clone());
+    Ok(reads.answer_read(&reader, correlation, read).await)
 }
 
 /// The caller the shell names on its link (`named`): the device's person acting through an app,

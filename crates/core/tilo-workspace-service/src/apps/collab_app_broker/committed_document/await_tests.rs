@@ -305,10 +305,10 @@ async fn an_announced_wait_checks_again_only_when_woken() {
         None,
         || {},
         || {
-            std::future::ready((|| {
+            std::future::ready({
                 checks.set(checks.get() + 1);
                 Ok((!stale.get()).then_some(true))
-            })())
+            })
         },
     );
     tokio::pin!(held);
@@ -346,11 +346,11 @@ async fn an_unannounced_input_keeps_the_old_poll_interval() {
         None,
         || {},
         || {
-            std::future::ready((|| {
+            std::future::ready({
                 checks.set(checks.get() + 1);
                 // Revoked on the sixth look, which a 200 ms clock reaches at 1 s.
                 Ok((checks.get() < 6).then_some(false))
-            })())
+            })
         },
     );
     assert_eq!(held.await, Ok(()));
@@ -487,12 +487,12 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
         Some(&keys),
         || {},
         || {
-            std::future::ready((|| {
+            std::future::ready({
                 if keys_here() {
                     *service.owner.lock().unwrap() = Owner::At([2; 32]);
                 }
                 Ok(holds(&service, &ownership, None, false).then_some(true))
-            })())
+            })
         },
     );
     tokio::pin!(held);

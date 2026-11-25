@@ -32,7 +32,7 @@ impl tilo_actions::remote::Admits for Slow {
     const APP: &'static str = APP;
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-        top_level(self.descriptors())
+        top_level(Slow::descriptors())
     }
 
     fn start(
@@ -59,7 +59,7 @@ impl tilo_actions::remote::Admits for Slow {
 }
 
 impl Slow {
-    fn descriptors(&self) -> Vec<ActionDescriptor> {
+    fn descriptors() -> Vec<ActionDescriptor> {
         vec![ActionDescriptor {
             did: None,
             state: tilo_actions::ActionState::default(),

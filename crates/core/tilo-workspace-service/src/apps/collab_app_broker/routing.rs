@@ -248,20 +248,15 @@ impl AppBrokerState {
     /// The saves the connection whose route holds are `holds` was asked and did not answer:
     /// their waiters hear no answer now.
     pub(super) fn drop_saves_of(&self, holds: &[u64]) {
-        let dropped: Vec<_> = {
-            let mut saves = self
-                .saves
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let gone: Vec<_> = saves
-                .iter()
-                .filter(|(_, (peer, _))| holds.contains(peer))
-                .map(|(key, _)| key.clone())
-                .collect();
-            gone.into_iter()
-                .filter_map(|key| saves.remove(&key))
-                .collect()
-        };
+        let mut saves = self
+            .saves
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (dropped, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *saves)
+            .into_iter()
+            .partition(|(_, (peer, _))| holds.contains(peer));
+        saves.extend(kept);
+        drop(saves);
         drop(dropped);
     }
 

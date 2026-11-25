@@ -105,8 +105,10 @@ impl Pinned {
     }
 
     fn set(&self, now_ms: u64) {
-        self.0
-            .pin(UNIX_EPOCH + std::time::Duration::from_millis(now_ms));
+        let Some(now) = UNIX_EPOCH.checked_add(std::time::Duration::from_millis(now_ms)) else {
+            unreachable!("a near time");
+        };
+        self.0.pin(now);
     }
 }
 
@@ -211,7 +213,7 @@ fn shortcut(id: &str, trigger: tilo_automation::TriggerSpec) -> Shortcut {
 }
 
 /// The filter `object` names, as a trigger holds it.
-fn filter(object: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+fn filter(object: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     object.as_object().cloned().unwrap_or_default()
 }
 
@@ -223,7 +225,7 @@ fn before_board_entries() -> Shortcut {
             kind: "tl.so.tilo.calendar.Event".into(),
             field: "start".into(),
             offset_secs: -900,
-            filter: filter(json!({ "categories": "Board" })),
+            filter: filter(&json!({ "categories": "Board" })),
         },
     )
 }
@@ -237,7 +239,9 @@ fn handed_moments(started: &Started) -> Vec<(String, i64)> {
         .unwrap()
         .iter()
         .map(|firing| {
-            let event = &firing.inputs[tilo_automation::EVENT_INPUT];
+            let Some(event) = firing.inputs.get(tilo_automation::EVENT_INPUT) else {
+                unreachable!("a fired moment carries its event");
+            };
             let held_by = event["item"].as_str().unwrap();
             (
                 held_by.rsplit('/').next().unwrap().to_owned(),
@@ -486,7 +490,7 @@ fn from_bo() -> Shortcut {
             kind: "tilo.accounts.mail".into(),
             at: String::new(),
             every_secs: None,
-            filter: filter(json!({ "from": "bo@example.test" })),
+            filter: filter(&json!({ "from": "bo@example.test" })),
         },
     )
 }
@@ -500,7 +504,9 @@ fn heard_mail(started: &Started) -> Vec<(String, String, String, String)> {
         .unwrap()
         .iter()
         .map(|firing| {
-            let event = &firing.inputs[tilo_automation::EVENT_INPUT];
+            let Some(event) = firing.inputs.get(tilo_automation::EVENT_INPUT) else {
+                unreachable!("a fired moment carries its event");
+            };
             let facts = &event["facts"];
             let from = &event["$from"];
             (
@@ -516,82 +522,43 @@ fn heard_mail(started: &Started) -> Vec<(String, String, String, String)> {
     heard
 }
 
-/// A message arriving after the trigger was set up fires it once, a message the filter leaves
-/// out fires nothing, one the person sent is no arrival, and a restart hears nothing twice.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_new_message_fires_the_shortcut_watching_mail_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let host = test_server(dir.path(), &key, &cert).await;
-    let workspaces = host.workspaces().clone();
-    workspaces.set_member_device(Arc::new(MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key.clone()),
-    }));
-    declare_app(
-        &host,
+/// One message `id` in `mailbox`, from `from` (`from_name`) about `subject`, received at
+/// `received`, kept in `workspace`'s Mail as the app keeps it.
+async fn keep_message(
+    workspaces: &Workspaces,
+    workspace: &str,
+    id: &str,
+    mailbox: &str,
+    from: (&str, &str),
+    subject: &str,
+    received: &str,
+) {
+    keep(
+        workspaces,
+        workspace,
         "so.tilo.mail",
-        tilo_surface_compile::compile(MAIL_SURFACE)
-            .expect("the surface compiles")
-            .as_bytes(),
-    );
-    let workspace = workspaces.create("Mail").await.unwrap().workspace;
-    let clock = Pinned::at(pinned_at("2026-11-23T08:00:00Z"));
-    let keep_message = async |id: &str,
-                              mailbox: &str,
-                              from: &str,
-                              from_name: &str,
-                              subject: &str,
-                              received: &str| {
-        keep(
-            &workspaces,
-            &workspace,
-            "so.tilo.mail",
-            "tl.so.tilo.mail.Message",
-            id,
-            vec![
-                ("key", text(id)),
-                ("account", text("ada@example.test")),
-                ("mailbox", text(mailbox)),
-                ("from", text(from)),
-                ("from_name", text(from_name)),
-                ("to", text("ada@example.test")),
-                ("cc", text("")),
-                ("subject", text(subject)),
-                ("received", text(received)),
-                ("snippet", text("Could we meet on Friday?")),
-                ("message_id", text(id)),
-                ("unread", Cell::One(Value::Bool(true))),
-            ],
-        )
-        .await;
-    };
-
-    // What its inbox held before the trigger was set up is never new.
-    keep_message(
-        "old",
-        "inbox",
-        "bo@example.test",
-        "Bo",
-        "Before",
-        "2026-11-23T07:00:00Z",
+        "tl.so.tilo.mail.Message",
+        id,
+        vec![
+            ("key", text(id)),
+            ("account", text("ada@example.test")),
+            ("mailbox", text(mailbox)),
+            ("from", text(from.0)),
+            ("from_name", text(from.1)),
+            ("to", text("ada@example.test")),
+            ("cc", text("")),
+            ("subject", text(subject)),
+            ("received", text(received)),
+            ("snippet", text("Could we meet on Friday?")),
+            ("message_id", text(id)),
+            ("unread", Cell::One(Value::Bool(true))),
+        ],
     )
     .await;
-    save_signed(&workspaces, &workspace, from_bo(), (&key, &cert)).await;
-    let started = Arc::new(Started::default());
-    let mut runner = Runner::new(
-        workspaces.clone(),
-        Arc::clone(&started) as Arc<dyn StartRun>,
-        Order::WORKSPACE,
-    );
-    runner.arm().await;
-    pass_at(&clock, &mut runner, "2026-11-23T08:00:00Z").await;
-    assert!(
-        heard_mail(&started).is_empty(),
-        "what was there is not news"
-    );
+}
 
-    // Two messages from Bo arrive, and one from someone else: the two fire, once each.
+/// The messages that arrive after the trigger was set up: two from Bo, and one from someone else.
+async fn messages_after_setup(workspaces: &Workspaces, workspace: &str) {
     for (id, from, from_name, subject, received) in [
         (
             "new-1",
@@ -615,8 +582,85 @@ async fn a_new_message_fires_the_shortcut_watching_mail_once() {
             "2026-11-23T08:12:00Z",
         ),
     ] {
-        keep_message(id, "inbox", from, from_name, subject, received).await;
+        keep_message(
+            workspaces,
+            workspace,
+            id,
+            "inbox",
+            (from, from_name),
+            subject,
+            received,
+        )
+        .await;
     }
+}
+
+/// The runner a device starts again, armed and passed at `at`.
+async fn restarted(
+    workspaces: &Workspaces,
+    started: &Arc<Started>,
+    clock: &Pinned,
+    at: &str,
+) -> Runner {
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    pass_at(clock, &mut runner, at).await;
+    runner
+}
+
+/// A message arriving after the trigger was set up fires it once, a message the filter leaves
+/// out fires nothing, one the person sent is no arrival, and a restart hears nothing twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_message_fires_the_shortcut_watching_mail_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_server(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces().clone();
+    workspaces.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    declare_app(
+        &host,
+        "so.tilo.mail",
+        tilo_surface_compile::compile(MAIL_SURFACE)
+            .expect("the surface compiles")
+            .as_bytes(),
+    );
+    let workspace = workspaces.create("Mail").await.unwrap().workspace;
+    let clock = Pinned::at(pinned_at("2026-11-23T08:00:00Z"));
+
+    // What its inbox held before the trigger was set up is never new.
+    keep_message(
+        &workspaces,
+        &workspace,
+        "old",
+        "inbox",
+        ("bo@example.test", "Bo"),
+        "Before",
+        "2026-11-23T07:00:00Z",
+    )
+    .await;
+    save_signed(&workspaces, &workspace, from_bo(), (&key, &cert)).await;
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    pass_at(&clock, &mut runner, "2026-11-23T08:00:00Z").await;
+    assert!(
+        heard_mail(&started).is_empty(),
+        "what was there is not news"
+    );
+
+    // Two messages from Bo arrive, and one from someone else: the two fire, once each.
+    messages_after_setup(&workspaces, &workspace).await;
     pass_at(&clock, &mut runner, "2026-11-23T08:13:00Z").await;
     assert_eq!(
         heard_mail(&started),
@@ -639,10 +683,11 @@ async fn a_new_message_fires_the_shortcut_watching_mail_once() {
 
     // Looking again, and a message the person sent rather than received, fires nothing more.
     keep_message(
+        &workspaces,
+        &workspace,
         "sent-1",
         "sent",
-        "ada@example.test",
-        "Ada",
+        ("ada@example.test", "Ada"),
         "Re: Friday",
         "2026-11-23T08:14:00Z",
     )
@@ -652,23 +697,18 @@ async fn a_new_message_fires_the_shortcut_watching_mail_once() {
 
     // The device starts over: what it heard is kept, and the next message comes once.
     drop(runner);
-    let mut runner = Runner::new(
-        workspaces.clone(),
-        Arc::clone(&started) as Arc<dyn StartRun>,
-        Order::WORKSPACE,
-    );
-    runner.arm().await;
-    pass_at(&clock, &mut runner, "2026-11-23T08:20:00Z").await;
+    let mut runner = restarted(&workspaces, &started, &clock, "2026-11-23T08:20:00Z").await;
     assert_eq!(
         heard_mail(&started).len(),
         2,
         "a restart hears nothing twice"
     );
     keep_message(
+        &workspaces,
+        &workspace,
         "new-3",
         "inbox",
-        "bo@example.test",
-        "Bo",
+        ("bo@example.test", "Bo"),
         "Monday",
         "2026-11-23T08:21:00Z",
     )
@@ -725,7 +765,7 @@ async fn a_shortcut_kept_to_her_account_hears_her_mail_and_no_other_account() {
             kind: "tilo.accounts.mail".into(),
             at: "ada@example.test".into(),
             every_secs: None,
-            filter: filter(json!({})),
+            filter: filter(&json!({})),
         },
     );
     save_signed(&workspaces, &workspace, kept, (&key, &cert)).await;

@@ -100,18 +100,21 @@ fn dispatch(
     bytes: &[u8],
 ) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
     let context = context(app, live);
-    match delegate_item_use(services.browser_service_sessions.as_ref(), &context, bytes) {
-        Some(answer) => now(&mut answer?).expect("a stand-in answers without waiting"),
-        None => {
-            let answer = delegate_browser_service_session_command(services, &context, bytes);
-            match std::pin::pin!(answer)
-                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-            {
-                std::task::Poll::Ready(answered) => answered,
-                std::task::Poll::Pending => panic!("a stand-in answers without waiting"),
-            }
-        }
-    }
+    let Some(answer) =
+        delegate_item_use(services.browser_service_sessions.as_ref(), &context, bytes)
+    else {
+        let answer = delegate_browser_service_session_command(services, &context, bytes);
+        return match std::pin::pin!(answer)
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+        {
+            std::task::Poll::Ready(answered) => answered,
+            std::task::Poll::Pending => Err(BrokerError::failed(
+                "a stand-in answers without waiting".into(),
+            )),
+        };
+    };
+    now(&mut answer?)
+        .ok_or_else(|| BrokerError::failed("a stand-in answers without waiting".into()))?
 }
 /// What `answer` is now, without waiting for it: `None` while nobody answered.
 fn now(

@@ -101,6 +101,7 @@ impl super::AppBrokerState {
         if let Some(instance) = windows.get(&peer_id) {
             return Some(*instance);
         }
+        drop(windows);
         self.channels
             .lock()
             .ok()?

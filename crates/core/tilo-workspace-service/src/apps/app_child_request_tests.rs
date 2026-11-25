@@ -173,7 +173,7 @@ fn asked(
                 ..
             },
         ) => (**facts).clone(),
-        other => panic!("not waiting for the person: {other:?}"),
+        other => unreachable!("not waiting for the person: {other:?}"),
     }
 }
 

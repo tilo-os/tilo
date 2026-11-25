@@ -107,7 +107,7 @@ impl Wakeups {
             package.cloned().unwrap_or(Package::BuiltIn),
         );
         let mut kept = BTreeSet::new();
-        let mut handed = 0;
+        let mut handed: usize = 0;
         for wakeup in &wanted {
             for (ordinal, told) in wakeup.told.iter().enumerate() {
                 let tag = tag_of(workspace, app, &wakeup.key, ordinal);
@@ -135,7 +135,7 @@ impl Wakeups {
                                 notification,
                             },
                         );
-                        handed += 1;
+                        handed = handed.saturating_add(1);
                     }
                     Err(error) => self.refused(&error),
                 }

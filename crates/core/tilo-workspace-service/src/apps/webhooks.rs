@@ -317,24 +317,28 @@ impl ActionProvider for Poster {
                 .max(1);
             let id = request.invocation;
             // What this device was asked for, recorded once: a retried step sends the same id.
-            let attempt = {
-                let mut attempts = attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                let made = attempts.entry(id).or_insert(0);
+            let (attempt, first) = {
+                let mut kept = attempts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let made = kept.entry(id).or_insert(0);
                 *made = made.saturating_add(1);
-                if *made == 1 {
-                    let route: Arc<dyn ActionProvider + Send + Sync> = Arc::new(Recorder {
-                        states: Arc::clone(&states),
-                    });
-                    invocations.record(
-                        &caller,
-                        &caller,
-                        &request,
-                        Some(&workspace),
-                        (route, caller.clone()),
-                    );
-                }
-                *made
+                let count = *made;
+                drop(kept);
+                (count, count == 1)
             };
+            if first {
+                let route: Arc<dyn ActionProvider + Send + Sync> = Arc::new(Recorder {
+                    states: Arc::clone(&states),
+                });
+                invocations.record(
+                    &caller,
+                    &caller,
+                    &request,
+                    Some(&workspace),
+                    (route, caller.clone()),
+                );
+            }
             let answered = posting.post(url, webhook, &delivery, &body).await;
             let (code, update) = match answered {
                 Ok(code) if (200..300).contains(&code) => {

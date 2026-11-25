@@ -16,7 +16,7 @@
 //! once: its invocation id is derived from the event ([`super::dispatched`]), so both name one
 //! firing.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
 use jiff::civil::{Date, DateTime, Time as WallTime};
@@ -26,7 +26,8 @@ use tilo_automation::TriggerSpec;
 use tilo_automation::dispatch::{Event, TimeEvent};
 use tilo_automation::resource_time::{self, Answered, Held};
 
-use super::{Armed, Runner, dispatched, fields_of, keep_progress, kept_progress};
+use super::{Armed, Runner, Waiting, dispatched, fields_of, keep_progress, kept_progress};
+use crate::workspaces::Workspaces;
 
 /// The longest the times wait before they are read again, so a time another client moved or
 /// added is found within it: as often as the runner looks by itself.
@@ -61,8 +62,8 @@ impl Progress {
 
 /// The times `field` names in the records of `kind` that `filter` takes, from `from_ms` to before
 /// `to_ms`.
-async fn times_read(
-    runner: &Runner,
+async fn read_times(
+    workspaces: &Workspaces,
     armed: &Armed,
     kind: &str,
     field: &str,
@@ -70,8 +71,7 @@ async fn times_read(
     from_ms: i64,
     to_ms: i64,
 ) -> Result<Vec<Held>, String> {
-    let found = runner
-        .workspaces
+    let found = workspaces
         .store_found(
             &armed.workspace,
             collab_types::store::Query::of(kind, MOST_RECORDS),
@@ -100,102 +100,17 @@ impl Runner {
         let mut firings = Vec::new();
         for armed in &self.armed {
             for (index, trigger) in armed.shortcut.triggers.iter().enumerate() {
-                let TriggerSpec::ResourceTime {
-                    kind,
-                    field,
-                    offset_secs,
-                    filter,
-                } = trigger
-                else {
-                    continue;
-                };
-                // The Calendar app's entries are the one kind of resource whose times are read
-                // here; a kind this host knows nothing of fires nothing.
-                if kind != resource_time::CALENDAR_EVENTS {
-                    continue;
-                }
-                let key = (armed.workspace.clone(), armed.shortcut.id.clone(), index);
-                let mark = tilo_peer_state::trigger_mark(trigger);
-                // A trigger first seen here, or another trigger in this one's place, carries on
-                // from what the workspace kept of it, and starts over where nothing was.
-                if self
-                    .times
-                    .get(&key)
-                    .is_none_or(|progress| progress.answered.mark != mark)
-                {
-                    let kept = kept_progress::<Answered>(&self.workspaces, armed, index, &mark)
-                        .await
-                        .filter(|answered| answered.mark == mark);
-                    self.times.insert(
-                        key.clone(),
-                        kept.map_or_else(
-                            || Progress::starting(&mark, now_ms),
-                            |answered| Progress {
-                                answered,
-                                read_at_ms: now_ms,
-                            },
-                        ),
-                    );
-                }
-                if self
-                    .times
-                    .get(&key)
-                    .is_some_and(|progress| now_ms < progress.read_at_ms)
-                {
-                    continue;
-                }
-                let (from_ms, to_ms) = resource_time::window(*offset_secs, now_ms);
-                let times = times_read(self, armed, kind, field, filter, from_ms, to_ms).await;
-                let Some(progress) = self.times.get_mut(&key) else {
-                    continue;
-                };
-                let before = progress.answered.clone();
-                match times {
-                    Ok(times) => {
-                        let due = resource_time::due(
-                            *offset_secs,
-                            &times,
-                            &mut progress.answered,
-                            now_ms,
-                        );
-                        progress.read_at_ms = due.next_ms.map_or_else(
-                            || now_ms.saturating_add(look_again_ms()),
-                            |at| at.min(now_ms.saturating_add(look_again_ms())),
-                        );
-                        for one in due.fire {
-                            let event = TimeEvent {
-                                workspace: armed.workspace.clone(),
-                                trigger: index,
-                                key: one.key.clone(),
-                                at_ms: one.at_ms,
-                                payload: resource_time::told(
-                                    kind,
-                                    field,
-                                    *offset_secs,
-                                    one,
-                                    now_ms,
-                                ),
-                            };
-                            firings.extend(dispatched(
-                                std::slice::from_ref(armed),
-                                Event::Time(&event),
-                                now_ms,
-                            ));
-                        }
-                    }
-                    // Times that could not be read are looked at again, and nothing is answered
-                    // or forgotten for them meanwhile.
-                    Err(error) => {
-                        tracing::warn!(%error, shortcut = %armed.shortcut.id, "the times a shortcut waits on could not be read; it looks again");
-                        progress.read_at_ms = now_ms.saturating_add(look_again_ms());
-                    }
-                }
-                // What was answered is kept in the workspace, so a moment answered here is not
-                // answered again after a restart or on the device that looks next.
-                if progress.answered != before {
-                    let answered = progress.answered.clone();
-                    keep_progress(&self.workspaces, armed, index, &mark, &answered).await;
-                }
+                firings.extend(
+                    moment(
+                        &mut self.times,
+                        &self.workspaces,
+                        armed,
+                        index,
+                        trigger,
+                        now_ms,
+                    )
+                    .await,
+                );
             }
         }
         let waited: BTreeSet<(String, String, usize)> = self
@@ -214,6 +129,103 @@ impl Runner {
         self.times.retain(|key, _| waited.contains(key));
         self.offer(firings);
     }
+}
+
+/// The firings of `trigger` at `index` of `armed` at `now_ms`, once its times are read: `times`
+/// keeps each trigger's progress, and what was answered is kept in `workspaces`.
+async fn moment(
+    times: &mut BTreeMap<(String, String, usize), Progress>,
+    workspaces: &Workspaces,
+    armed: &Armed,
+    index: usize,
+    trigger: &TriggerSpec,
+    now_ms: i64,
+) -> Vec<Waiting> {
+    let mut firings = Vec::new();
+    let TriggerSpec::ResourceTime {
+        kind,
+        field,
+        offset_secs,
+        filter,
+    } = trigger
+    else {
+        return firings;
+    };
+    // The Calendar app's entries are the one kind of resource whose times are read
+    // here; a kind this host knows nothing of fires nothing.
+    if kind != resource_time::CALENDAR_EVENTS {
+        return firings;
+    }
+    let key = (armed.workspace.clone(), armed.shortcut.id.clone(), index);
+    let mark = tilo_peer_state::trigger_mark(trigger);
+    // A trigger first seen here, or another trigger in this one's place, carries on
+    // from what the workspace kept of it, and starts over where nothing was.
+    if times
+        .get(&key)
+        .is_none_or(|progress| progress.answered.mark != mark)
+    {
+        let kept = kept_progress::<Answered>(workspaces, armed, index, &mark)
+            .await
+            .filter(|answered| answered.mark == mark);
+        times.insert(
+            key.clone(),
+            kept.map_or_else(
+                || Progress::starting(&mark, now_ms),
+                |answered| Progress {
+                    answered,
+                    read_at_ms: now_ms,
+                },
+            ),
+        );
+    }
+    if times
+        .get(&key)
+        .is_some_and(|progress| now_ms < progress.read_at_ms)
+    {
+        return firings;
+    }
+    let (from_ms, to_ms) = resource_time::window(*offset_secs, now_ms);
+    let times_read = read_times(workspaces, armed, kind, field, filter, from_ms, to_ms).await;
+    let Some(progress) = times.get_mut(&key) else {
+        return firings;
+    };
+    let before = progress.answered.clone();
+    match times_read {
+        Ok(read) => {
+            let due = resource_time::due(*offset_secs, &read, &mut progress.answered, now_ms);
+            progress.read_at_ms = due.next_ms.map_or_else(
+                || now_ms.saturating_add(look_again_ms()),
+                |at| at.min(now_ms.saturating_add(look_again_ms())),
+            );
+            for one in due.fire {
+                let event = TimeEvent {
+                    workspace: armed.workspace.clone(),
+                    trigger: index,
+                    key: one.key.clone(),
+                    at_ms: one.at_ms,
+                    payload: resource_time::told(kind, field, *offset_secs, one, now_ms),
+                };
+                firings.extend(dispatched(
+                    std::slice::from_ref(armed),
+                    Event::Time(&event),
+                    now_ms,
+                ));
+            }
+        }
+        // Times that could not be read are looked at again, and nothing is answered
+        // or forgotten for them meanwhile.
+        Err(error) => {
+            tracing::warn!(%error, shortcut = %armed.shortcut.id, "the times a shortcut waits on could not be read; it looks again");
+            progress.read_at_ms = now_ms.saturating_add(look_again_ms());
+        }
+    }
+    // What was answered is kept in the workspace, so a moment answered here is not
+    // answered again after a restart or on the device that looks next.
+    if progress.answered != before {
+        let answered = progress.answered.clone();
+        keep_progress(workspaces, armed, index, &mark, &answered).await;
+    }
+    firings
 }
 
 /// One entry's fields, as the Calendar app's record keeps them.
@@ -448,7 +460,7 @@ mod tests {
     use super::*;
 
     /// One record `id` holds, with `fields` as the app keeps them.
-    fn entry(id: &str, fields: Value) -> (String, Map<String, Value>) {
+    fn entry(id: &str, fields: &Value) -> (String, Map<String, Value>) {
         (
             id.to_owned(),
             fields.as_object().cloned().unwrap_or_default(),
@@ -460,7 +472,7 @@ mod tests {
     fn an_end_is_the_length_the_entry_holds_after_and_a_cancelled_date_is_no_time() {
         let series = entry(
             "standup-1",
-            serde_json::json!({
+            &serde_json::json!({
                 "key": "standup-1@example.org",
                 "start": "2026-10-26T09:30:00",
                 "end": "2026-10-26T10:00:00",
@@ -471,7 +483,7 @@ mod tests {
         );
         let cancelled = entry(
             "standup-1-2026-10-27",
-            serde_json::json!({
+            &serde_json::json!({
                 "key": "standup-1@example.org",
                 "start": "2026-10-27T09:30:00",
                 "end": "2026-10-27T10:00:00",

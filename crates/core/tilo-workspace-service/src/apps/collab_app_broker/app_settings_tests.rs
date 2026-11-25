@@ -616,7 +616,7 @@ tilo_test_env::scenario! {
     // A field the section declares read only is changed by an action the section declares: the
     // channel asks the source, which keeps the declarations, before it writes.
     {
-        let dir = tempfile::tempdir().unwrap();
+        let _dir = tempfile::tempdir().unwrap();
         let source = Declaring(Arc::new(HostDocument::new(Map::new(), |_| Ok(()))));
         let settings = AppSettingsServer::new(
             "so.tilo.settings",

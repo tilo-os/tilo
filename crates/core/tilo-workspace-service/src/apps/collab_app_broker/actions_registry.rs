@@ -170,7 +170,7 @@ impl AppBrokerState {
                     let result = result.unwrap_or(Err(ActionCallError::Unavailable {
                         reason: "the call was not answered".to_owned(),
                     }));
-                    completer.complete(Ok(answered(outer, started_ms, &verb, who, result)));
+                    completer.complete(Ok(answered(outer, started_ms, &verb, &who, result)));
                 });
         });
         Ok(answer)
@@ -209,18 +209,16 @@ fn target_of(
     resource: &str,
     verb: &str,
 ) -> Option<RemoteActionTarget> {
-    rows.iter()
-        .filter_map(|row| {
-            let descriptor = row.action.as_ref()?;
-            (row.app_id == app
-                && descriptor.address.action == verb
-                && descriptor.address.resource == resource)
-                .then(|| RemoteActionTarget {
-                    provider: row.provider.clone(),
-                    address: descriptor.address.clone(),
-                })
-        })
-        .next()
+    rows.iter().find_map(|row| {
+        let descriptor = row.action.as_ref()?;
+        (row.app_id == app
+            && descriptor.address.action == verb
+            && descriptor.address.resource == resource)
+            .then(|| RemoteActionTarget {
+                provider: row.provider.clone(),
+                address: descriptor.address.clone(),
+            })
+    })
 }
 
 /// The receipt answering `invocation` with `value`.
@@ -242,10 +240,9 @@ fn answered(
     invocation: InvocationId,
     started_ms: i64,
     action: &str,
-    who: InvocationBy,
+    who: &InvocationBy,
     result: Result<InvocationReceipt, ActionCallError>,
 ) -> InvocationReceipt {
-    let who = who;
     let record = |status: InvocationStatus, output: Option<serde_json::Value>| {
         let now = tilo_clock::unix_now_ms_i64();
         InvocationRecord {
@@ -373,7 +370,7 @@ mod tests {
             InvocationId::new(),
             1,
             "notes.note:1#write",
-            who.clone(),
+            &who,
             Ok(InvocationReceipt {
                 invocation: InvocationId::new(),
                 status: ReceiptStatus::Rejected {
@@ -390,7 +387,7 @@ mod tests {
             InvocationId::new(),
             1,
             "notes.note:1#write",
-            who,
+            &who,
             Ok(InvocationReceipt {
                 invocation: InvocationId::new(),
                 status: ReceiptStatus::Rejected {

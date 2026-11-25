@@ -53,7 +53,10 @@ mod durable_local_matrix {
         ) -> tilo_action_policy::GrantId {
             use crate::apps::test_support::{Grants as _, KindSet, TreePath};
             let scribe = || tilo_action_policy::Grantee::member(self.agent(id));
-            let workspace = &mut self.membership.write().workspaces[0];
+            let mut membership = self.membership.write();
+            let Some(workspace) = membership.workspaces.first_mut() else {
+                unreachable!("the fixture's membership holds its workspace");
+            };
             let across = workspace.allow(scribe(), &TreePath::root(), reads);
             for app in apps {
                 workspace.allow_app(scribe(), app, KindSet::ALL);

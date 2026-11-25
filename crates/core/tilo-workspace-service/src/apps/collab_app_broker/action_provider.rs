@@ -58,6 +58,29 @@ use directory::bridge_error;
 /// a stalled shortcut run.
 pub(super) const CHANGE_SAFETY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Whether `message` is a response to what an app asked, or a change to what it read: what its
+/// api answers as the person using it.
+fn answered_as_person(message: &tilo_actions::remote::RemoteActionMessage) -> bool {
+    use tilo_actions::remote::RemoteActionMessage;
+    matches!(
+        message,
+        RemoteActionMessage::CatalogueResponse { .. }
+            | RemoteActionMessage::Receipt(_)
+            | RemoteActionMessage::Update { .. }
+            | RemoteActionMessage::CancelResponse { .. }
+            | RemoteActionMessage::ResourceReading { .. }
+            | RemoteActionMessage::RetiredFeedbackResponse { .. }
+            | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::ContentPutResponse { .. }
+            | RemoteActionMessage::ContentGetResponse { .. }
+            | RemoteActionMessage::ContentLinkResponse { .. }
+            | RemoteActionMessage::ChangesResponse { .. }
+            | RemoteActionMessage::ChangedResponse { .. }
+            | RemoteActionMessage::SurfaceResponse { .. }
+            | RemoteActionMessage::CatalogueChanged { .. }
+    )
+}
+
 /// Why an action's arguments are too large to pass, in words a caller can
 /// act on: how large they are, the most one action takes, and to split.
 fn oversized_argument(argument: &str) -> Option<String> {
@@ -680,7 +703,29 @@ impl AppBrokerState {
         if let Some(workspace) = person.workspace() {
             as_app = as_app.in_workspace(workspace);
         }
-        let permitted = match message {
+        let permitted = self.permitted(person, app_id, message, access, as_app);
+        permitted.ok_or_else(|| {
+            Box::new(refuse(message, ActionCallError::NotPermitted).unwrap_or(
+                RemoteActionMessage::CatalogueResponse {
+                    correlation: 0,
+                    result: Err(ActionCallError::NotPermitted),
+                },
+            ))
+        })
+    }
+
+    /// Who `message` from the app `app_id` runs as, when it may: the person using it, or `as_app`
+    /// acting for them. `None` where the app's api does not carry it.
+    fn permitted(
+        &self,
+        person: &Caller,
+        app_id: &str,
+        message: &tilo_actions::remote::RemoteActionMessage,
+        access: crate::apps::app_actions::AppActionAccess,
+        as_app: Caller,
+    ) -> Option<Caller> {
+        use tilo_actions::remote::RemoteActionMessage;
+        match message {
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 (access.query || own_view_lookup(app_id, query)).then(|| person.clone())
             }
@@ -741,54 +786,11 @@ impl AppBrokerState {
                     None => as_app,
                 }
             }),
-            RemoteActionMessage::RetiredFeedbackRequest { .. }
-            // Questions travel between a person's own devices; an
-            // application neither asks nor answers them.
-            | RemoteActionMessage::ConfirmationRequest { .. }
-            // A retired verb: nothing asks for a reading this way, and
-            // nothing is answered.
-            // An application puts content through its own store, not into or out of another
-            // device's workspace over this api.
-            | RemoteActionMessage::ContentPutRequest { .. }
-            | RemoteActionMessage::ContentGetRequest { .. }
-            | RemoteActionMessage::ContentLinkRequest { .. }
-            // Nor does it follow another device's workspace: that is an agent's.
-            | RemoteActionMessage::ChangesRequest { .. }
-            // Nor does it wait for another device's workspace to change.
-            | RemoteActionMessage::ChangedRequest { .. }
-            | RemoteActionMessage::SurfaceRequest { .. }
-            // An outside call is carried by the call lane of the connection the app holds, which
-            // takes these before any provider sees them; the broker carries none.
-            | RemoteActionMessage::CallCarryRequest { .. }
-            | RemoteActionMessage::CallCarryResponse { .. }
-            | RemoteActionMessage::CallReport { .. }
-            | RemoteActionMessage::CallReportResponse { .. }
-            | RemoteActionMessage::CallHeard(_)
-            | RemoteActionMessage::CallSaid(_)
-            | RemoteActionMessage::CallStatus(_) => None,
-            RemoteActionMessage::CatalogueResponse { .. }
-            | RemoteActionMessage::Receipt(_)
-            | RemoteActionMessage::Update { .. }
-            | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::ResourceReading { .. }
-            | RemoteActionMessage::RetiredFeedbackResponse { .. }
-            | RemoteActionMessage::ConfirmationResponse { .. }
-            | RemoteActionMessage::ContentPutResponse { .. }
-            | RemoteActionMessage::ContentGetResponse { .. }
-            | RemoteActionMessage::ContentLinkResponse { .. }
-            | RemoteActionMessage::ChangesResponse { .. }
-            | RemoteActionMessage::ChangedResponse { .. }
-            | RemoteActionMessage::SurfaceResponse { .. }
-            | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
-        };
-        permitted.ok_or_else(|| {
-            Box::new(refuse(message, ActionCallError::NotPermitted).unwrap_or(
-                RemoteActionMessage::CatalogueResponse {
-                    correlation: 0,
-                    result: Err(ActionCallError::NotPermitted),
-                },
-            ))
-        })
+            // A response to what the app asked, or a change to what it read, as the person using
+            // it. Every other message is one the app's api does not carry.
+            other if answered_as_person(other) => Some(person.clone()),
+            _ => None,
+        }
     }
 
     /// What application `app_id` declared it may do on the API.

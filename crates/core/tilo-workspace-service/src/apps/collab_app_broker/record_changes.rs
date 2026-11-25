@@ -78,64 +78,74 @@ impl JoinedChannel {
     /// The record a record command of `command` addresses (`route`, [`addressed`]): once the
     /// device's one reader let this channel's caller (`admitted`) read it. `None` for any other
     /// command. A listing of the app's records names none, and each is read by id.
-    pub(super) async fn record_of(
+    pub(super) fn record_of(
         &self,
         command: &Command,
         admitted: &AdmittedJoinIdentity,
         route: &CrdtRoute,
-    ) -> Result<Option<String>, BrokerError> {
-        match command {
-            Command::RecordChanges { .. } => {
-                self.may_read_record(admitted, route).await?;
-                Ok(Some(route.document_id.clone()))
-            }
+    ) -> impl std::future::Future<Output = Result<Option<String>, BrokerError>> + Send + use<> {
+        let (permitted, record) = match command {
+            Command::RecordChanges { .. } => (
+                Some(self.may_read_record(admitted, route)),
+                Some(route.document_id.clone()),
+            ),
             // Decided as every write on the route is, before it got here.
-            Command::RecordChange { .. } => Ok(Some(route.document_id.clone())),
-            _ => Ok(None),
+            Command::RecordChange { .. } => (None, Some(route.document_id.clone())),
+            _ => (None, None),
+        };
+        async move {
+            if let Some(permitted) = permitted {
+                permitted.await?;
+            }
+            Ok(record)
         }
     }
 
     /// Refuse a read of the route's record the device's one reader does not let the caller make.
     /// One it would ask the person about reads, as the channel's join asked them already.
-    async fn may_read_record(
+    fn may_read_record(
         &self,
         admitted: &AdmittedJoinIdentity,
         route: &CrdtRoute,
-    ) -> Result<(), BrokerError> {
+    ) -> impl std::future::Future<Output = Result<(), BrokerError>> + Send + use<> {
         use tilo_actions::remote::ActionCallError::ConfirmationRequired;
         let address = session::route_address(route);
         let caller = self.record_caller(admitted, route);
-        let decided = match self.state.records() {
-            Some(reads) => Some(reads.may_read(&caller, &address).await),
-            None => None,
-        };
-        let why = match decided {
-            Some(Ok(()) | Err(ConfirmationRequired(_))) => return Ok(()),
-            Some(Err(refusal)) => refusal.to_string(),
-            None => "this device serves no reader of records".to_owned(),
-        };
-        Err(BrokerError::failed(format!(
-            "this connection may not read {}'s record `{}`: {why}",
-            route.app_id, route.document_id
-        )))
+        let reads = self.state.records();
+        let app_id = route.app_id.clone();
+        let document_id = route.document_id.clone();
+        async move {
+            let decided = match reads {
+                Some(reads) => Some(reads.may_read(&caller, &address).await),
+                None => None,
+            };
+            let why = match decided {
+                Some(Ok(()) | Err(ConfirmationRequired(_))) => return Ok(()),
+                Some(Err(refusal)) => refusal.to_string(),
+                None => "this device serves no reader of records".to_owned(),
+            };
+            Err(BrokerError::failed(format!(
+                "this connection may not read {app_id}'s record `{document_id}`: {why}"
+            )))
+        }
     }
+}
 
-    /// `answer`, the store's answer to this channel's own change of `route`'s record: once it is
-    /// written, every other window open on the record is told it changed.
-    pub(super) fn telling_record_changed(
-        &self,
-        answer: crate::apps::services::ResourceAnswer,
-        route: CrdtRoute,
-    ) -> crate::apps::services::ResourceAnswer {
-        let (state, writer) = (Arc::clone(&self.state), self.connection_id);
-        Box::pin(async move {
-            let reply = answer.await?;
-            if matches!(reply, Reply::Written) {
-                state.record_changed(&route, writer);
-            }
-            Ok(reply)
-        })
-    }
+/// `answer`, the store's answer to a channel's own change of `route`'s record: once it is
+/// written, every other window open on the record in `state` is told it changed, but `writer`.
+pub(super) fn telling_record_changed(
+    state: Arc<AppBrokerState>,
+    writer: u64,
+    answer: crate::apps::services::ResourceAnswer,
+    route: CrdtRoute,
+) -> crate::apps::services::ResourceAnswer {
+    Box::pin(async move {
+        let reply = answer.await?;
+        if matches!(reply, Reply::Written) {
+            state.record_changed(&route, writer);
+        }
+        Ok(reply)
+    })
 }
 
 impl AppBrokerState {

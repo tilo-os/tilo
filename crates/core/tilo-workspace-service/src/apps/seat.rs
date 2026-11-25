@@ -526,7 +526,8 @@ impl PublishedResources for SeatPublished {
     }
 
     fn unwatch(&self, watch: ResourceWatch) {
-        if let Some(following) = self.watches.lock_recover().remove(&watch.id()) {
+        let removed = self.watches.lock_recover().remove(&watch.id());
+        if let Some(following) = removed {
             following.abort();
         }
     }

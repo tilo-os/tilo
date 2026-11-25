@@ -218,7 +218,7 @@ async fn keep_progress(
     armed: &Armed,
     trigger: usize,
     mark: &str,
-    progress: &impl serde::Serialize,
+    progress: &(impl serde::Serialize + Sync),
 ) {
     let kept = match serde_json::to_value(progress) {
         Ok(progress) => {
@@ -655,7 +655,7 @@ pub struct Runner {
     times: BTreeMap<(String, String, usize), times::Progress>,
     /// What each trigger on mail took in, by workspace, shortcut and trigger (`mail`).
     #[cfg(feature = "agents")]
-    heard: BTreeMap<(String, String, usize), mail::Heard>,
+    heard: BTreeMap<(String, String, usize), mail::MailProgress>,
     /// What the looks at each source outside took in, by workspace, shortcut and trigger
     /// (`outside`).
     #[cfg(feature = "agents")]
@@ -1702,11 +1702,11 @@ fn wants_event(events: &[String], kind: &str) -> bool {
 /// How an invocation stands, as a webhook's receiver reads it.
 fn phase_of(recorded: &tilo_actions::remote::invocation_record::Recorded) -> &'static str {
     match recorded.state.as_ref().map(|state| &state.update) {
-        None => "running",
         Some(tilo_actions::InvocationUpdate::Succeeded { .. }) => "succeeded",
         Some(tilo_actions::InvocationUpdate::Failed { .. }) => "failed",
         Some(tilo_actions::InvocationUpdate::Cancelled { .. }) => "cancelled",
-        Some(_) => "running",
+        // A call still under way reads as running, as one the webhook cannot place.
+        _ => "running",
     }
 }
 

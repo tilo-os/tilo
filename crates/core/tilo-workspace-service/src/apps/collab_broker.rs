@@ -277,7 +277,8 @@ impl FanoutState {
                 (sub.sink)(&event, origin);
             }
         }
-        if let (Some(frame), Some(app_broker)) = (frame, self.app_broker()) {
+        let heard_by = (frame, self.app_broker());
+        if let (Some(frame), Some(app_broker)) = heard_by {
             app_broker.heard(member, &frame, except, &scope);
         }
     }

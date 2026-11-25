@@ -98,7 +98,7 @@ impl ChannelSession {
             return Ok(Rc::clone(settings));
         }
         let settings = Rc::new(
-            app_settings_capability(&self.state, route, self.verified_identity.clone())
+            app_settings_capability(&self.state, &route, &self.verified_identity)
                 .map_err(Refusal::refusal)?,
         );
         *self.settings.borrow_mut() = Some(Rc::clone(&settings));
@@ -1391,15 +1391,15 @@ impl WireConnection {
             .as_ref()
             .ok_or("this connection is not the person's shell")?;
         // A provider this shell serves already offers what it lists now.
-        if let Some((handle, served)) = self
-            .served
-            .borrow()
+        let served = self.served.borrow();
+        let found = served
             .iter()
-            .find(|(_, served)| served.provider() == provider)
-        {
+            .find(|(_, served)| served.provider() == provider);
+        if let Some((handle, served)) = found {
             served.publish(catalogue)?;
             return Ok(*handle);
         }
+        drop(served);
         let providers = shell.services.workspaces.providers();
         let asks = self
             .serving
@@ -1461,18 +1461,18 @@ impl WireConnection {
     /// The record the call `request` is about and this connection has yet to open: where its
     /// first call is decided before it is answered.
     fn unopened(&self, request: &Operation) -> Option<(Record, Opened)> {
-        let record = match request {
-            Operation::Publish { record, .. }
-            | Operation::Say { record, .. }
-            | Operation::Subscribe { record, .. }
-            | Operation::Read { record, .. }
-            | Operation::Command { record, .. }
-            | Operation::Changed { record, .. }
-            | Operation::Invocation { record, .. }
-            | Operation::Settings { record, .. }
-            | Operation::LiveActivity { record, .. }
-            | Operation::Admit { record, .. } => record,
-            _ => return None,
+        let (Operation::Publish { record, .. }
+        | Operation::Say { record, .. }
+        | Operation::Subscribe { record, .. }
+        | Operation::Read { record, .. }
+        | Operation::Command { record, .. }
+        | Operation::Changed { record, .. }
+        | Operation::Invocation { record, .. }
+        | Operation::Settings { record, .. }
+        | Operation::LiveActivity { record, .. }
+        | Operation::Admit { record, .. }) = request
+        else {
+            return None;
         };
         let opened = Rc::clone(
             self.records
@@ -1750,7 +1750,7 @@ impl WireConnection {
             }) => Box::pin(std::future::ready(self.provide(provider, &catalogue).map(
                 |handle| Reply::Shell(runtime_collab::wire::shell::ShellReply::Providing(handle)),
             ))),
-            Operation::Shell(call) => Box::pin(super::shell::answer(self.shell.clone(), call)),
+            Operation::Shell(call) => super::shell::answer(self.shell.clone(), call),
             request => {
                 let result = self.dispatch(id, request);
                 let _ = self.frames.send(HostFrame::Reply { id, result });
@@ -1970,7 +1970,8 @@ impl WireConnection {
                 // An app that asks for no more invocations is still handed every one already
                 // addressed to it, then told the stream ended: it answers them before it goes,
                 // so none is left with an outcome nobody knows.
-                if let Some(end) = self.invocation_ends.borrow_mut().remove(&subscription) {
+                let ended = self.invocation_ends.borrow_mut().remove(&subscription);
+                if let Some(end) = ended {
                     end.finish();
                     self.subscriptions.borrow_mut().remove(&subscription);
                     return Ok(Reply::Done);

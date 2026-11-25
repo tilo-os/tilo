@@ -31,20 +31,19 @@ pub(super) fn store_disclosure(
     caller: &Caller,
     request: &InvokeRequest,
 ) -> Result<crate::apps::app_actions::ModerationConsentPreview, ActionCallError> {
-    let signing_key = match caller.user_public_key() {
-        Some(key) => *key,
-        None => {
-            let workspace = caller
-                .workspace()
-                .ok_or_else(|| ActionCallError::Unavailable {
-                    reason: "no workspace to sign the Store disclosure in".into(),
-                })?;
-            tilo_identity::trusted_device::certificate(workspace)
-                .map(|certificate| certificate.user_public_key)
-                .map_err(|error| ActionCallError::Unavailable {
-                    reason: format!("no identity to sign the Store disclosure with: {error}"),
-                })?
-        }
+    let signing_key = if let Some(key) = caller.user_public_key() {
+        *key
+    } else {
+        let workspace = caller
+            .workspace()
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "no workspace to sign the Store disclosure in".into(),
+            })?;
+        tilo_identity::trusted_device::certificate(workspace)
+            .map(|certificate| certificate.user_public_key)
+            .map_err(|error| ActionCallError::Unavailable {
+                reason: format!("no identity to sign the Store disclosure with: {error}"),
+            })?
     };
     crate::apps::app_actions::ModerationConsentPreview::from_argument(
         &request.target.address.action,

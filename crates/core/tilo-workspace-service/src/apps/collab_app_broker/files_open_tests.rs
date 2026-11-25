@@ -38,7 +38,9 @@ impl FilesTreePuts for Recorder {
         _acting: Option<tilo_actions::ActionContext>,
         confirm: &dyn Fn() -> bool,
     ) -> Result<Value, String> {
-        assert!(confirm(), "the caller may still write the workspace's files");
+        if !confirm() {
+            return Err("the caller may no longer write the workspace's files".to_owned());
+        }
         self.0
             .lock()
             .unwrap()
@@ -72,8 +74,16 @@ fn fixture() -> Fixture {
         fs_protocol::tree::FILES_APP,
         &fs_protocol::tree::document_id(),
     );
-    workspace.allow(Grantee::agent("porter", owner_id()), &TreePath::root(), KindSet::READ);
-    workspace.allow(Grantee::agent("porter", owner_id()), &records, KindSet::READ_UNDOABLE);
+    workspace.allow(
+        Grantee::agent("porter", owner_id()),
+        &TreePath::root(),
+        KindSet::READ,
+    );
+    workspace.allow(
+        Grantee::agent("porter", owner_id()),
+        &records,
+        KindSet::READ_UNDOABLE,
+    );
     for verb in [
         fs_protocol::file_action::verbs::NEW_FOLDER,
         fs_protocol::file_action::verbs::NEW_FILE,
@@ -81,7 +91,11 @@ fn fixture() -> Fixture {
     ] {
         let node =
             TreePath::workspace(&id).joined(&fs_protocol::file_action::verb_node(None, verb));
-        workspace.allow(Grantee::agent("porter", owner_id()), &node, KindSet::READ_UNDOABLE);
+        workspace.allow(
+            Grantee::agent("porter", owner_id()),
+            &node,
+            KindSet::READ_UNDOABLE,
+        );
     }
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
@@ -118,13 +132,16 @@ fn agent(id: &str, workspace: &str) -> Caller {
 }
 
 /// The workspace's `open` of Files, given `arguments`.
-fn open(workspace: &str, arguments: Value) -> InvokeRequest {
+fn open(workspace: &str, arguments: &Value) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: tilo_actions::remote::workspace_provider(workspace),
             address: ActionAddress::new(
-                format!("{APPLICATION_RESOURCE_PREFIX}{}", fs_protocol::tree::FILES_APP),
+                format!(
+                    "{APPLICATION_RESOURCE_PREFIX}{}",
+                    fs_protocol::tree::FILES_APP
+                ),
                 APPLICATION_OPEN_ACTION,
             ),
         },
@@ -175,7 +192,7 @@ async fn a_person_puts_a_file_and_a_caller_the_workspace_does_not_let_is_refused
     let caller = owner(&fixture.workspace);
     let request = open(
         &fixture.workspace,
-        json!({"content": "tilo.content:abc", "name": "plan.md", "dir": "Inbox"}),
+        &json!({"content": "tilo.content:abc", "name": "plan.md", "dir": "Inbox"}),
     );
     tilo_test_env::within(
         "the person's open is admitted",
@@ -189,17 +206,21 @@ async fn a_person_puts_a_file_and_a_caller_the_workspace_does_not_let_is_refused
     )
     .await;
     assert_eq!(answer["path"], "Inbox/plan.md", "{answer}");
-    let reached = fixture.recorder.0.lock().unwrap();
-    assert_eq!(reached.len(), 1, "one put reached the folder");
-    assert_eq!(reached[0].0, fixture.workspace);
-    assert_eq!(reached[0].1.get("name").and_then(Value::as_str), Some("plan.md"));
-    drop(reached);
+    {
+        let reached = fixture.recorder.0.lock().unwrap();
+        assert_eq!(reached.len(), 1, "one put reached the folder");
+        assert_eq!(reached[0].0, fixture.workspace);
+        assert_eq!(
+            reached[0].1.get("name").and_then(Value::as_str),
+            Some("plan.md")
+        );
+    }
 
     // An agent the workspace lets write the folder puts as its person's device does.
     let porter = agent("porter", &fixture.workspace);
     let request = open(
         &fixture.workspace,
-        json!({"content": "tilo.content:abc", "name": "plan.md"}),
+        &json!({"content": "tilo.content:abc", "name": "plan.md"}),
     );
     settled(fixture.state.action_invoke(&porter, None, None, &request))
         .await
@@ -218,10 +239,15 @@ async fn a_person_puts_a_file_and_a_caller_the_workspace_does_not_let_is_refused
         .in_new_execution();
     let request = open(
         &fixture.workspace,
-        json!({"content": "tilo.content:abc", "name": "plan.md"}),
+        &json!({"content": "tilo.content:abc", "name": "plan.md"}),
     );
     assert!(matches!(
-        settled(fixture.state.action_invoke(&commenter, None, None, &request)).await,
+        settled(
+            fixture
+                .state
+                .action_invoke(&commenter, None, None, &request)
+        )
+        .await,
         Err(ActionCallError::NotPermitted)
     ));
 
@@ -238,7 +264,7 @@ async fn a_person_puts_a_file_and_a_caller_the_workspace_does_not_let_is_refused
 async fn an_open_of_nothing_is_no_put() {
     let fixture = fixture();
     let caller = owner(&fixture.workspace);
-    let request = open(&fixture.workspace, json!({}));
+    let request = open(&fixture.workspace, &json!({}));
     assert!(
         settled(fixture.state.action_invoke(&caller, None, None, &request))
             .await

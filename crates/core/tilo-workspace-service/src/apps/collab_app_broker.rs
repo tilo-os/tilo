@@ -418,7 +418,7 @@ pub struct AppBrokerState {
     /// (its channel key) and the request's number: the connection asked, and where its answer
     /// goes. The connection's going away drops what it was asked, which the asker hears as no
     /// answer ([`Self::ask_save`]).
-    saves: Mutex<HashMap<(String, u64), (u64, tilo_actions::remote::Completer<HandoffReport>)>>,
+    saves: Mutex<HashMap<(String, u64), SaveAnswer>>,
     /// The person's own presses, as the compositor attested them over the shell link: what a
     /// call an app's window makes proves it runs as the person
     /// ([`presses::Presses`]).
@@ -527,10 +527,17 @@ pub struct AppBrokerState {
     /// expired as idle while they do, and cancelling one cancels its jobs.
     job_invocations: Mutex<std::collections::HashSet<String>>,
     /// What cancels a held invocation's jobs, once the daemon runs them.
-    job_canceller: Mutex<Option<Arc<dyn Fn(&tilo_actions::InvocationId) + Send + Sync>>>,
+    job_canceller: Mutex<Option<JobCanceller>>,
     #[cfg(any(test, feature = "test-support"))]
     gone: BrokerGone,
 }
+
+/// A save the shell asked of a window's app, still unanswered: the connection asked, and where
+/// its answer goes.
+type SaveAnswer = (u64, tilo_actions::remote::Completer<HandoffReport>);
+
+/// What cancels a held invocation's jobs, once the daemon runs them.
+type JobCanceller = Arc<dyn Fn(&tilo_actions::InvocationId) + Send + Sync>;
 
 /// Work another thread handed the broker's turn, run with the state.
 type TurnTask = Box<dyn FnOnce(&AppBrokerState) + Send>;

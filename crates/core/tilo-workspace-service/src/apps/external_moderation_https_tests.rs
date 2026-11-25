@@ -123,7 +123,7 @@ mod https_completion {
             tilo_actions::remote::ReceiptStatus::Rejected {
                 error: tilo_actions::remote::ActionCallError::ConfirmationRequired(facts),
             } => *facts,
-            other => panic!("the disclosure waits for the person: {other:?}"),
+            other => unreachable!("the disclosure waits for the person: {other:?}"),
         }
     }
 
@@ -769,7 +769,7 @@ mod https_completion {
 mod store_report_fixture {
     use std::collections::BTreeMap;
 
-    use tilo_resource::{self, Model, Refusal, resource};
+    use tilo_resource::{self, Model, resource};
 
     pub const DRAFT_STATUS: &str = "Not submitted";
 
@@ -800,10 +800,9 @@ mod store_report_fixture {
         pub fn draft_report(
             &mut self,
             #[param("App identity")] app_id: String,
-        ) -> Result<(), Refusal> {
+        ) {
             let report = self.reports.entry(app_id).or_default();
             DRAFT_STATUS.clone_into(&mut report.status);
-            Ok(())
         }
 
         #[action(external)]
@@ -812,20 +811,17 @@ mod store_report_fixture {
             #[param("App identity")] app_id: String,
             #[param("The registry's case id")] case_id: String,
             #[param("The case's status")] status: String,
-        ) -> Result<(), Refusal> {
+        ) {
             let report = self.reports.entry(app_id).or_default();
             report.case = Some(case_id);
             report.status = status;
-            Ok(())
         }
     }
 
     impl Reports {
-        fn valid(&self) -> Result<(), Refusal> {
-            Ok(())
-        }
+        fn valid(_: &Self) {}
 
-        fn search(&self) -> Vec<tilo_resource::SearchEntry> {
+        fn search(_: &Self) -> Vec<tilo_resource::SearchEntry> {
             Vec::new()
         }
 
