@@ -1705,6 +1705,15 @@ impl Runtime {
             return;
         }
         role.hand(&**self.core.words.borrow(), &catalogues);
+        if let Some((_, source)) = catalogues
+            .iter()
+            .find(|(locale, _)| locale == tilolang::messages::SOURCE_LOCALE)
+        {
+            self.core
+                .source_words
+                .borrow_mut()
+                .extend(tilolang::messages::one_line_words(source));
+        }
         self.core.catalogues.borrow_mut().push((role, catalogues));
     }
 

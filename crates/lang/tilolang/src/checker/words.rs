@@ -160,8 +160,9 @@ impl Checker<'_> {
         self.shown.contains(&span)
     }
 
-    /// A literal a view shows: its message, with each interpolation its argument, falling back to the text as
-    /// written. A literal of no words (`"{n}"`, `"·"`) is text.
+    /// A literal a view shows: its message, with each interpolation its argument. The text as written is
+    /// the package's source catalogue's, which the module carries and the runtime reads it from, so the
+    /// call gives none of its own. A literal of no words (`"{n}"`, `"·"`) is text.
     pub(super) fn words(&mut self, parts: &[StrPart]) -> Ex {
         let has_words = parts.iter().any(
             |part| matches!(part, StrPart::Lit(text) if text.chars().any(char::is_alphabetic)),
@@ -169,18 +170,13 @@ impl Checker<'_> {
         if !has_words {
             return self.string(parts);
         }
-        // Each interpolation is evaluated once, into a local the message's arguments and the fallback text both
-        // read.
+        // Each interpolation is evaluated once, into a local the message's arguments read.
         let mut stmts = Vec::new();
         let mut text = String::new();
         let mut args: Vec<(String, Ex)> = Vec::new();
-        let mut fallback: Option<Ex> = None;
         for part in parts {
-            let piece = match part {
-                StrPart::Lit(lit) => {
-                    text.push_str(lit);
-                    Ex::str(lit)
-                }
+            match part {
+                StrPart::Lit(lit) => text.push_str(lit),
                 StrPart::Interp(x) => {
                     let v = self.expr(x, None);
                     let v = self.text_of(v, x.span);
@@ -191,24 +187,15 @@ impl Checker<'_> {
                     text.push_str(&name);
                     text.push('}');
                     args.push((name, Ex::local(local, Ty::Text)));
-                    Ex::local(local, Ty::Text)
                 }
-            };
-            fallback = Some(match fallback {
-                None => piece,
-                Some(acc) => Ex::host(Imp::StrConcat, vec![acc, piece], Ty::Text),
-            });
+            }
         }
         let key = self.word_key(&text);
         let message = format!("{}.{key}", crate::messages::key_of(&self.words_owner()));
         let list = self.text_pairs(args);
         let call = Ex::host(
             Imp::Word,
-            vec![
-                Ex::str(&message),
-                list,
-                fallback.unwrap_or_else(|| Ex::str("")),
-            ],
+            vec![Ex::str(&message), list, Ex::str("")],
             Ty::Text,
         );
         Ex::new(Ek::Seq(stmts, Box::new(call)), Ty::Text)

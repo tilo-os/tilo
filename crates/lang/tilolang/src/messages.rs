@@ -144,6 +144,79 @@ pub fn word(catalogue: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Every one-line message and attribute `catalogue` gives, as `(key, Fluent pattern)`: the words a
+/// view shows as written, read from the source catalogue its module carries rather than from a
+/// second copy of them in its code. A message that spans lines (a noun's plural) is none of them.
+#[must_use]
+pub fn one_line_words(catalogue: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut message: Option<&str> = None;
+    for line in catalogue.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = trimmed.split_once(" = ") else {
+            if !line.starts_with(char::is_whitespace) {
+                message = trimmed.strip_suffix(" =");
+            }
+            continue;
+        };
+        let key = if line.starts_with(char::is_whitespace) {
+            match (name.strip_prefix('.'), message) {
+                (Some(attr), Some(message)) => format!("{message}.{attr}"),
+                _ => continue,
+            }
+        } else {
+            message = Some(name);
+            name.to_owned()
+        };
+        // A selector (`{ $count ->`) goes on over the lines below it.
+        if !value.trim_end().ends_with("->") {
+            out.push((key, value.to_owned()));
+        }
+    }
+    out
+}
+
+/// The text a one-line Fluent `pattern` reads as with `args`: each `{ $name }` its argument's value,
+/// each quoted literal (`{"{"}`) its text.
+#[must_use]
+pub fn said(pattern: &str, args: &[(String, String)]) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut rest = pattern;
+    while let Some((before, after)) = rest.split_once('{') {
+        out.push_str(before);
+        let Some((placeable, next)) = after.split_once('}') else {
+            out.push('{');
+            rest = after;
+            continue;
+        };
+        let placeable = placeable.trim();
+        if let Some(name) = placeable.strip_prefix('$') {
+            if let Some((_, value)) = args.iter().find(|(arg, _)| arg == name) {
+                out.push_str(value);
+            }
+            rest = next;
+        } else if let Some(text) = placeable
+            .strip_prefix('"')
+            .and_then(|quoted| quoted.strip_suffix('"'))
+        {
+            // `{"}"}`: the quoted brace closes after its quote, not at the first `}`.
+            out.push_str(text);
+            rest = next;
+        } else if let Some(after_quote) = next.strip_prefix("\"}").filter(|_| placeable == "\"") {
+            out.push('}');
+            rest = after_quote;
+        } else {
+            out.push('{');
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn keys_only_in(one: &str, two: &str) -> Vec<String> {
     let other = keys(two);
     keys(one)

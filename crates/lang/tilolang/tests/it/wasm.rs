@@ -63,7 +63,20 @@ fn assert_shape(c: &Compiled) {
         assert!(s.exports.contains(&format!("n_{}", f.id)));
     }
     assert!(s.custom.contains(&"tilolang.meta".to_string()));
-    assert_eq!(PackageMeta::from_wasm(&c.wasm).as_ref(), Some(&c.meta));
+    // The module carries the build's metadata, less what only the build reads: the words, which
+    // its source catalogue carries, and what each view reaches, which the manifest declares.
+    let mut carried = c.meta.clone();
+    carried.words.clear();
+    for view in &mut carried.views {
+        view.reaches.clear();
+    }
+    assert_eq!(PackageMeta::from_wasm(&c.wasm).as_ref(), Some(&carried));
+    assert!(
+        tilolang::meta::locales_from_wasm(&c.wasm)
+            .iter()
+            .any(|(locale, _)| locale == tilolang::messages::SOURCE_LOCALE),
+        "the module carries its source catalogue"
+    );
     assert_eq!(c.meta.module_hash.len(), 64);
 }
 

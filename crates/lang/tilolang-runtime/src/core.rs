@@ -255,6 +255,9 @@ pub struct Core {
     /// Every loaded package's catalogues and which package of the window they belong to,
     /// handed to the words the host sets later too.
     pub catalogues: RefCell<Vec<crate::words::LoadedCatalogues>>,
+    /// The one-line words of every loaded package's source catalogue, by key: what a view's
+    /// words say as written, which its code names by key alone.
+    pub source_words: RefCell<std::collections::HashMap<String, String>>,
     /// Compiled embedded blocks.
     pub embeds: RefCell<crate::embed::EmbedState>,
     /// The view state of every view, and the platform's own readings.
@@ -477,6 +480,7 @@ impl Core {
             retry_waiting: std::cell::Cell::new(false),
             words: RefCell::new(Box::new(crate::words::SourceWords)),
             catalogues: RefCell::new(Vec::new()),
+            source_words: RefCell::new(std::collections::HashMap::new()),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
             calls_read: std::cell::Cell::new(false),

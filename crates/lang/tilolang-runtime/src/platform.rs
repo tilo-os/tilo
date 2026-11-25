@@ -504,10 +504,16 @@ impl Core {
                         .collect::<Vec<_>>(),
                     _ => Vec::new(),
                 };
-                // A phrase is the platform's, known by its id; a view's words fall back to the
-                // text as the view wrote it.
+                // A phrase is the platform's, known by its id. A view's words fall back to the
+                // text as the view wrote it, which its package's source catalogue says; a call
+                // gives the text itself only for a key no loaded catalogue holds (the label of a
+                // platform package's action).
                 let source = if imp == Imp::Word {
-                    self.text(a.h(2)?)?
+                    let pattern = self.source_words.borrow().get(&id).cloned();
+                    match pattern {
+                        Some(pattern) => tilolang::messages::said(&pattern, &args),
+                        None => self.text(a.h(2)?)?,
+                    }
                 } else {
                     id.clone()
                 };

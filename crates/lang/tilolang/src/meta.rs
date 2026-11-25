@@ -143,7 +143,10 @@ pub struct PackageMeta {
     pub types: Vec<TypeMeta>,
     #[serde(default)]
     pub enums: Vec<EnumMeta>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// The words the package's declarations show and tell as written, from which the build writes
+    /// its source catalogue. The module carries them in that catalogue (`tilolang.locales`), where a
+    /// window reads them, so the metadata section leaves them out rather than carry each twice.
+    #[serde(default, skip_serializing)]
     pub words: Vec<WordMeta>,
     pub actions: Vec<ActionMeta>,
     pub views: Vec<ViewMeta>,
@@ -918,6 +921,10 @@ pub struct ViewMeta {
     /// stand in its frame, and so the anchors a test reaches through it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<String>,
+    /// The actions the view's controls reach, which the build reads to write what the manifest
+    /// declares (`[actions] invoke`). Nothing reads them from a module, so the metadata section
+    /// leaves them out.
+    #[serde(default, skip_serializing)]
     pub reaches: Vec<Reach>,
     #[serde(default)]
     pub state: Vec<StateMeta>,
