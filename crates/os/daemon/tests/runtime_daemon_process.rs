@@ -129,49 +129,53 @@ impl DaemonProfile {
                 .spawn_locked()?,
         );
         let path = self.path().to_owned();
-        let mut unanswered = String::new();
-        // The condition is the daemon's own answer on its endpoint; a machine busy with the rest
-        // of the suite must not turn a start that is progressing into a failure, so the wait is
-        // bounded only by the suite's hang bound. A daemon that ended is a failure at once, with
-        // its log, and is not left serving behind the test.
         let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            tilo_test_env::wait_for(
-                ItsLog {
-                    log: path.join("daemon.log"),
-                    what: "the profile's daemon to answer its status",
-                },
-                || {
-                    match status(&path) {
-                        Ok(status)
-                            if status
-                                .get("pid")
-                                .and_then(Value::as_u64)
-                                .is_some_and(|pid| pid != 0) =>
-                        {
-                            return Some(());
-                        }
-                        Ok(status) => unanswered = format!("its status answers no pid: {status}"),
-                        Err(error) => unanswered = format!("its status: {error:#}"),
-                    }
-                    let ended = self.daemon.as_mut().map(Child::try_wait);
-                    match ended {
-                        Some(Ok(Some(status))) => panic!(
-                            "the profile's daemon ended ({status}) before it answered: \
-                             {unanswered}\n{}",
-                            self.log()
-                        ),
-                        Some(Err(error)) => panic!("whether the daemon ended: {error:#}"),
-                        Some(Ok(None)) | None => {}
-                    }
-                    None
-                },
-            );
+            self.wait_until_answering(&path);
         }));
         if let Err(panic) = answered {
             self.end();
             std::panic::resume_unwind(panic);
         }
         self.found_person()
+    }
+    /// Wait for the daemon this profile started to answer `path`'s status, failing the test with
+    /// its log at once when it ended first.
+    fn wait_until_answering(&mut self, path: &Path) {
+        let mut unanswered = String::new();
+        // The condition is the daemon's own answer on its endpoint; a machine busy with the rest
+        // of the suite must not turn a start that is progressing into a failure, so the wait is
+        // bounded only by the suite's hang bound. A daemon that ended is a failure at once, with
+        // its log, and is not left serving behind the test.
+        tilo_test_env::wait_for(
+            ItsLog {
+                log: path.join("daemon.log"),
+                what: "the profile's daemon to answer its status",
+            },
+            || {
+                match status(path) {
+                    Ok(status)
+                        if status
+                            .get("pid")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|pid| pid != 0) =>
+                    {
+                        return Some(());
+                    }
+                    Ok(status) => unanswered = format!("its status answers no pid: {status}"),
+                    Err(error) => unanswered = format!("its status: {error:#}"),
+                }
+                let ended = self.daemon.as_mut().map(Child::try_wait);
+                match ended {
+                    Some(Ok(Some(status))) => panic!(
+                        "the profile's daemon ended ({status}) before it answered: {unanswered}\n{}",
+                        self.log()
+                    ),
+                    Some(Err(error)) => panic!("whether the daemon ended: {error:#}"),
+                    Some(Ok(None)) | None => {}
+                }
+                None
+            },
+        );
     }
     /// Set this computer up for the account that runs it, as `tilo login --new-identity` does: a
     /// device no person's certificate names yet answers its own actions, and its founding call
@@ -209,31 +213,24 @@ impl DaemonProfile {
     }
 
     /// What a call in the workspace is told while the daemon is not serving it yet: its person's
-    /// services start after it answers its device's actions, and its own client asks whether the
-    /// profile's daemon answers within three hundred milliseconds.
-    const NOT_SERVING_YET: [&'static str; 2] = [
-        "has no person signed in yet",
-        "no Tilo daemon serves the profile",
-    ];
+    /// services start after it answers its device's actions.
+    const NOT_SERVING_YET: &'static str = "has no person signed in yet";
 
     /// Found the person's workspace here, as the first call of theirs in it does: this device's
     /// own client of the daemon asking in the workspace their key names. A key's run and a
     /// desktop's first call found it the same way.
     ///
     /// The daemon answers its device's actions from boot and takes connections as its person
-    /// once their services start. A machine busy with the rest of the suite can outlast both the
-    /// bound the daemon gives its own wait and the client's own look for the daemon, so a call
-    /// that failed for either is asked again, bounded only by the suite's hang bound.
+    /// once their services start. A machine busy with the rest of the suite can outlast the bound
+    /// the daemon gives its own wait, so a call refused for it is asked again, bounded only by the
+    /// suite's hang bound.
     fn found(&self) -> Result<()> {
         let deadline = tilo_test_env::hang_deadline();
         loop {
             let Some(refused) = self.first_call()? else {
                 return Ok(());
             };
-            if !Self::NOT_SERVING_YET
-                .iter()
-                .any(|said| refused.contains(said))
-            {
+            if !refused.contains(Self::NOT_SERVING_YET) {
                 bail!("the person's first call failed: {refused}\n{}", self.log());
             }
             if Instant::now() >= deadline {
@@ -760,27 +757,7 @@ fn a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run() -> 
     // delays it without failing the test. One that ended without writing is a failure at once,
     // and the wait is bounded only by the suite's hang bound.
     let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        tilo_test_env::wait_for(
-            ItsLog {
-                log: log_path.clone(),
-                what: "the attaching program to write its refusal",
-            },
-            || {
-                let said = std::fs::read_to_string(&file).unwrap_or_default();
-                if !said.is_empty() {
-                    return Some(said);
-                }
-                match program.try_wait() {
-                    Ok(Some(status)) => panic!(
-                        "the attaching program ended ({status}) and wrote nothing:\n{}",
-                        std::fs::read_to_string(&log_path).unwrap_or_default()
-                    ),
-                    Ok(None) => {}
-                    Err(error) => panic!("whether the program ended: {error:#}"),
-                }
-                None
-            },
-        )
+        attached_refusal(&mut program, &file, &log_path)
     }));
     let refused = match refused {
         Ok(refused) => refused,
@@ -799,6 +776,33 @@ fn a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run() -> 
         "the refusal must say how to run the program so this computer launches it: {refused}"
     );
     Ok(())
+}
+
+/// The refusal the attaching program wrote, waited for: the file is its answer, so a busy
+/// machine delays it without failing the test, and one that ended without writing fails it at
+/// once, with its log.
+fn attached_refusal(program: &mut Child, file: &Path, log: &Path) -> String {
+    tilo_test_env::wait_for(
+        ItsLog {
+            log: log.to_owned(),
+            what: "the attaching program to write its refusal",
+        },
+        || {
+            let said = std::fs::read_to_string(file).unwrap_or_default();
+            if !said.is_empty() {
+                return Some(said);
+            }
+            match program.try_wait() {
+                Ok(Some(status)) => panic!(
+                    "the attaching program ended ({status}) and wrote nothing:\n{}",
+                    std::fs::read_to_string(log).unwrap_or_default()
+                ),
+                Ok(None) => {}
+                Err(error) => panic!("whether the program ended: {error:#}"),
+            }
+            None
+        },
+    )
 }
 
 /// A built development app: its manifest and payload in one directory, the SDK app with

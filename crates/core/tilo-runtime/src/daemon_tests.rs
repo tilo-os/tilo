@@ -499,6 +499,55 @@ tilo_test_env::scenario! {
     }
 }
 
+/// A profile's daemon is looked for as long as the daemon itself gives a caller: a probe that
+/// missed in its short read is asked again, so a machine busy with other work does not make the
+/// client say no daemon serves the profile while one is starting.
+#[test]
+fn a_probe_that_missed_is_asked_again_within_the_daemons_bound() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::UnixListener,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let socket = super::native_socket(directory.path()).unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let answering = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            // The first look is out before this daemon writes its answer, as a busy machine's
+            // is: every look that reaches it from then on is answered.
+            std::thread::sleep(Duration::from_millis(600));
+            while !stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = String::new();
+                        let _ = BufReader::new(stream.try_clone().unwrap()).read_line(&mut request);
+                        let _ = writeln!(
+                            stream,
+                            "{}",
+                            serde_json::json!({"version": 1, "pid": 4242, "workspace": ""})
+                        );
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("the profile's endpoint failed: {error}"),
+                }
+            }
+        })
+    };
+    let status = super::running(directory.path()).expect("the daemon answers a second look");
+    assert_eq!(status.pid, 4242);
+    stop.store(true, Ordering::SeqCst);
+    answering.join().unwrap();
+}
+
 /// A client that names a profile chose a standalone runtime itself; one that
 /// names none is routed by its login (`session_api::route`).
 #[test]

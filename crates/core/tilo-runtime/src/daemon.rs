@@ -35,6 +35,16 @@ pub use crate::daemon_args::{Mode, default_profile, parse_args, validate_profile
 
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
+/// How long a client looks for the daemon of a profile it names apart before saying none serves
+/// it. The daemon answers its device's actions from boot and takes a connection as its person
+/// once their services start, which it bounds itself at [`WAITED_WITHIN`]: a probe that missed in
+/// its short read says nothing about a machine busy with other work, so it is asked again for as
+/// long as the daemon gives a caller.
+const LOOKING: Duration = WAITED_WITHIN;
+
+/// How long the client waits between looks for its profile's daemon.
+const LOOKING_AGAIN: Duration = Duration::from_millis(50);
+
 /// Every socket the daemon serving a profile binds, named in the one directory its clients
 /// derive from [`sockets_dir`]: what it listens on and what an app it starts connects to are
 /// this one value, never a path each side works out for itself.
@@ -263,6 +273,21 @@ struct Status {
     workspace: String,
 }
 
+/// [`probe`] of `socket` asked again until it answers or `within` passes: an answer a busy
+/// machine has not written yet is asked for again rather than taken for no daemon.
+fn answered_within(socket: &Path, within: Duration) -> io::Result<Status> {
+    let deadline = Instant::now()
+        .checked_add(within)
+        .unwrap_or_else(Instant::now);
+    loop {
+        match probe(socket) {
+            Ok(status) => return Ok(status),
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_) => std::thread::sleep(LOOKING_AGAIN),
+        }
+    }
+}
+
 fn probe(socket: &Path) -> io::Result<Status> {
     let mut stream = tilo_files::native::socket::connect(socket)?;
     stream.set_read_timeout(Some(PROBE_TIMEOUT))?;
@@ -287,15 +312,16 @@ fn probe(socket: &Path) -> io::Result<Status> {
 /// How long a client waits for the daemon the service started to serve its person.
 const ANSWERING: Duration = Duration::from_secs(120);
 
-/// The daemon serving `profile`, once its native endpoint answers: asked at once, and, when it
-/// does not answer, after the one start ([`tilo_api::daemon::service::start`]) for a profile that
-/// is this computer's. A profile named apart (a test's, a VM host's) is served by whoever started
-/// its daemon, and is only asked. Its status names the person's workspace once there is one: at
-/// boot, before anything founded it or their desktop handed it over, it names none.
+/// The daemon serving `profile`, once its native endpoint answers: looked for as long as the
+/// daemon itself gives a caller ([`LOOKING`]), and, when it does not answer, after the one start
+/// ([`tilo_api::daemon::service::start`]) for a profile that is this computer's. A profile named
+/// apart (a test's, a VM host's) is served by whoever started its daemon, and is only asked. Its
+/// status names the person's workspace once there is one: at boot, before anything founded it or
+/// their desktop handed it over, it names none.
 fn running(profile: &Path) -> io::Result<Status> {
     validate_profile(profile)?;
     let socket = native_socket(profile)?;
-    if let Ok(status) = probe(&socket) {
+    if let Ok(status) = answered_within(&socket, LOOKING) {
         return Ok(status);
     }
     if std::env::var_os("TILO_RUNTIME_PROFILE").is_some() || default_profile()? != profile {
