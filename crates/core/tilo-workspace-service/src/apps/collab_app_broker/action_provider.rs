@@ -666,13 +666,15 @@ impl AppBrokerState {
     ) -> Result<Caller, Box<tilo_actions::remote::RemoteActionMessage>> {
         use tilo_actions::remote::{RemoteActionMessage, refuse};
         let access = self.app_action_access(app_id);
-        // With no person behind the connection, the app acts by itself, where its connection is
-        // the process this device's daemon launched as it.
+        // With no person behind it, the process this device's daemon launched acts as the app.
         let mut as_app = match person.launched_app() {
             Some(launched) if launched.as_str() == app_id => Caller::launched(app_id),
             _ => Caller::local_app(app_id),
         };
-        if let Some(owner) = person.acting_for_person().or(person.acting().person_id()) {
+        if let Some(owner) = person
+            .acting_for_person()
+            .or_else(|| person.acting().person_id())
+        {
             as_app = as_app.acting_for(owner.to_owned());
         }
         if let Some(workspace) = person.workspace() {
