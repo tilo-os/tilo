@@ -177,6 +177,17 @@ fn the_seeded_apps_publish_their_records_to_the_session() {
     }
 }
 
+/// Read each line `out` prints into `told`: a test waits for the socket a session prints on a
+/// process's output without blocking on a process that prints nothing more.
+fn printed(out: std::process::ChildStdout, told: std::sync::mpsc::Sender<String>) {
+    let mut out = BufReader::new(out);
+    let mut line = String::new();
+    while out.read_line(&mut line).is_ok_and(|read| read > 0) {
+        let _ = told.send(line.trim_end().to_owned());
+        line.clear();
+    }
+}
+
 /// A headless `tilo-session`, started as `dist/dev/nested-session.sh` starts its first pass, in a
 /// runtime directory and a process group of its own.
 struct StartedSession {
@@ -213,19 +224,38 @@ impl StartedSession {
                 .env_remove("DISPLAY")
                 .env_remove(tilo_paths::machine::DAEMON_PROFILE_VAR);
         };
-        // A session is one of a computer's: this account's daemon serves it, and makes the
-        // account's identity through `devices#found`.
+        // A session is one of a computer's: this account's daemon serves it, makes the
+        // account's identity through `devices#found`, and once its person's services run starts
+        // the person's shell — this build's session, which the test names — writing to the
+        // daemon's output. So the test reads the socket it serves from the daemon's output.
         let mut daemon = std::process::Command::new(tilo_test_env::sibling_binary(
             "tilo-daemon",
             "tilo-runtime",
         ));
         configure(&mut daemon);
-        let daemon = daemon
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+        let mut daemon = daemon
+            .env(
+                tilo_runtime::daemon::TEST_SHELL_ENV,
+                tilo_test_env::package_binary!("tilo-session"),
+            )
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            // Why the daemon refused a session or ended shows in the test's own output.
+            .stderr(std::process::Stdio::inherit())
+            // A group of its own, which holds the shell it starts: a test that ends the daemon
+            // ends its shell with it.
+            .process_group(0)
             .dies_with_the_test()
             .spawn_locked()
             .expect("this account's daemon starts");
+        // What the session, or the shell the daemon starts in its place, prints: the socket it
+        // serves is the last line it prints.
+        let (told, heard) = std::sync::mpsc::channel::<String>();
+        {
+            let out = daemon.stdout.take().expect("the daemon's output");
+            let told = told.clone();
+            std::thread::spawn(move || printed(out, told));
+        }
         // Where the daemon binds, as it reads it from the environment both are started in.
         let socket = {
             let mut environment = tilo_test_env::ScopedEnv::new();
@@ -275,15 +305,38 @@ impl StartedSession {
             .stdout(std::process::Stdio::piped())
             .spawn_locked()
             .expect("tilo-session starts");
-        let mut out = BufReader::new(child.stdout.take().unwrap());
-        let mut line = String::new();
-        while line.trim_end() != format!("TILO_TEST_CONTROL={}", control.display()) {
-            line.clear();
-            assert!(
-                out.read_line(&mut line).unwrap() > 0,
-                "the session ended before it listened: {:?}",
-                child.wait()
-            );
+        {
+            let out = child.stdout.take().expect("the session's output");
+            std::thread::spawn(move || printed(out, told));
+        }
+        let listening = format!("TILO_TEST_CONTROL={}", control.display());
+        let bound = std::time::Instant::now();
+        loop {
+            match heard.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(line) if line == listening => break,
+                Ok(_) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!(
+                    "the session ended before it listened: session {:?}, daemon {:?}",
+                    child.try_wait(),
+                    daemon.try_wait()
+                ),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // The session stands in for the shell until it ends: one that ended printed
+                    // no socket, and why is on the daemon's output or the test's own.
+                    let ended = child.try_wait();
+                    assert!(
+                        ended.as_ref().is_ok_and(Option::is_none),
+                        "the session ended before it listened: session {ended:?}, daemon {:?}",
+                        daemon.try_wait()
+                    );
+                    assert!(
+                        bound.elapsed() < tilo_test_env::hang_bound(),
+                        "the session served no socket at {}: daemon {:?}",
+                        control.display(),
+                        daemon.try_wait()
+                    );
+                }
+            }
         }
         Self {
             child,
@@ -292,28 +345,31 @@ impl StartedSession {
             daemon,
         }
     }
+}
 
-    /// The group the session leads: `kill(2)` reads a negative pid as every process in that
-    /// process group.
-    fn group(&self) -> libc::pid_t {
-        libc::pid_t::try_from(self.child.id())
-            .expect("a pid fits a pid_t")
-            .wrapping_neg()
-    }
+/// The group `child` leads: `kill(2)` reads a negative pid as every process in that process
+/// group.
+fn group_of(child: &std::process::Child) -> libc::pid_t {
+    libc::pid_t::try_from(child.id())
+        .expect("a pid fits a pid_t")
+        .wrapping_neg()
 }
 
 impl Drop for StartedSession {
     /// A test that failed before it ended the session still leaves none behind, nor the daemon
-    /// that served it.
+    /// that served it, nor the shell the daemon started.
     fn drop(&mut self) {
         if self.child.try_wait().is_ok_and(|ended| ended.is_none()) {
-            let group = self.group();
+            let group = group_of(&self.child);
             // SAFETY: a pid and a signal number are all kill(2) reads.
             let _ = unsafe { libc::kill(group, libc::SIGKILL) };
             let _ = self.child.wait();
         }
         if self.daemon.try_wait().is_ok_and(|ended| ended.is_none()) {
-            let _ = self.daemon.kill();
+            // The daemon's group holds the shell it started: both end, so no session is left.
+            let group = group_of(&self.daemon);
+            // SAFETY: as above; the group is the daemon's own, made as it started.
+            let _ = unsafe { libc::kill(group, libc::SIGKILL) };
             let _ = self.daemon.wait();
         }
     }

@@ -1451,6 +1451,34 @@ impl Native {
                         // A person's part that has not started in time is said, never waited on
                         // for as long as it is broken: the caller would otherwise wait forever.
                         let Some(person) = person else {
+                            // The request is read before the connection is answered: closing it
+                            // with the request unread sends the client a reset, and it reads
+                            // that instead of why it is not served.
+                            let (first, rest, descriptors) = match first_line(&stream, Vec::new()) {
+                                Ok(read) => read,
+                                Err(error) => {
+                                    tracing::debug!(%error, "a native connection was not read");
+                                    return;
+                                }
+                            };
+                            let line = first.strip_suffix(b"\n").unwrap_or(&first);
+                            // A session asking for its shell is served by the seats, which wait
+                            // for the person's services themselves: its shell starts once they
+                            // run, rather than the start being refused a few seconds in.
+                            if serde_json::from_slice::<Value>(line)
+                                .is_ok_and(|request| Seats::asks(&request))
+                            {
+                                seated.receives(descriptors);
+                                let Ok(follow) = stream.try_clone() else {
+                                    return;
+                                };
+                                let input = io::Cursor::new(first)
+                                    .chain(io::Cursor::new(rest).chain(follow));
+                                if let Err(error) = serve_seat(&stream, input, &seated) {
+                                    tracing::debug!(%error, "native seat client disconnected");
+                                }
+                                return;
+                            }
                             crate::device::serve::refuse(
                                 &stream,
                                 "this computer has no person signed in yet: run `tilo status` to \
@@ -1470,7 +1498,9 @@ impl Native {
 
 /// How long a connection waits for the person's part to take it before it is told why it is not
 /// served. The agents' endpoint bounds its own handoff by the same name. A caller is told within
-/// seconds: a person's part that is not up is said, never waited on.
+/// seconds: a person's part that is not up is said, never waited on for as long as it is broken.
+/// A session asking for its shell is the seats' to answer, and its shell starts once the person's
+/// services run.
 const WAITED_WITHIN: Duration = Duration::from_secs(10);
 
 /// How long a connection's session is made within before it is told why it was not: a daemon whose
