@@ -672,8 +672,11 @@ fn settings_offer_a_model() {
 }
 
 /// A session of a computer with an identity, which keeps its workspaces in `home`'s state: what
-/// the Agents tab reads a workspace's models from.
-fn session_keeping_workspaces(home: &mut tilo_test_env::TestHome) -> Session {
+/// the Agents tab reads a workspace's models from. The device key this process took as the daemon's
+/// is answered with it, since the session signs with it from here.
+fn session_keeping_workspaces(
+    home: &mut tilo_test_env::TestHome,
+) -> (Session, tilo_device_identity::persist::DeviceKeyLock) {
     let identity = home.config().join("tilo/identity");
     std::fs::create_dir_all(&identity).expect("the identity's directory");
     let secrets = home.root().join("secrets");
@@ -685,19 +688,25 @@ fn session_keeping_workspaces(home: &mut tilo_test_env::TestHome) -> Session {
             tilo_identity::provisioning::TEST_PLATFORM_ENV,
             tilo_identity::provisioning::TILO_OS_PLATFORM,
         );
+    let paths = tilo_device_identity::IdentityPaths::under(&identity);
+    // This process stands in for the machine's daemon: it takes the device key first, so the
+    // person's root is sealed with it, and keeps it while the session signs with it.
+    let taken_key = tilo_identity::provisioning::device_key_taken_as_daemon(&paths)
+        .expect("this computer's device key");
     tilo_identity::provisioning::create_person(
         &identity,
-        &tilo_device_identity::IdentityPaths::under(&identity),
+        &paths,
         "Agents tab owner",
         "Agents tab owner",
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    crate::common::headless(Options {
+    let session = crate::common::headless(Options {
         collab: false,
         state: Some(home.state().to_path_buf()),
         ..Options::default()
-    })
+    });
+    (session, taken_key)
 }
 
 /// The model this device's Settings offer, linked into the workspace in front of `session` as
@@ -722,7 +731,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
-    let mut session = session_keeping_workspaces(&mut home);
+    let (mut session, _taken_key) = session_keeping_workspaces(&mut home);
     session.step(Duration::from_millis(1)).unwrap();
     // Nothing of Notes is open or held here: an installed app is answered for before an agent
     // ever reaches for it.
@@ -1313,7 +1322,7 @@ fn workspace_settings_makes_the_workspaces_agents() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
-    let mut session = session_keeping_workspaces(&mut home);
+    let (mut session, _taken_key) = session_keeping_workspaces(&mut home);
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &[]);
     let workspace = front_workspace(&session);

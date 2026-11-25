@@ -946,7 +946,7 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
         .set("XDG_CONFIG_HOME", identity.path().join("config"))
         .set("TILO_IDENTITY_ROOT", identity.path().join("identity"))
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity::provisioning::ensure_collaboration_identity(
+    let _taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
         &tilo_identity::store::account_identity_dir(&identity.path().join("config/tilo/identity")),
         &tilo_device_identity::IdentityPaths::under(identity.path().join("identity")),
         tilo_identity::provisioning::IdentityStorage::Files,

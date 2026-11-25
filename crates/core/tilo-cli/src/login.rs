@@ -17,6 +17,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow, bail};
+#[cfg(test)]
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_device_identity::login::{Direction, REPORTED, Step, Ticket};
@@ -27,8 +28,7 @@ use crate::api::Calls;
 #[cfg(test)]
 use tilo_api::daemon::enter::enter_said;
 pub(crate) use tilo_api::daemon::enter::{
-    LOGIN_ENDED, NOT_LOGGED_IN, UNREACHED, choose_workspace, connect, debug_why, host_of,
-    signed_over_iroh,
+    LOGIN_ENDED, NOT_LOGGED_IN, UNREACHED, choose_workspace, debug_why, host_of, signed_over_iroh,
 };
 pub use tilo_device_identity::login::{Device, Place, served_device_key};
 
@@ -42,15 +42,6 @@ const WHAT_TILO_DOES: &str = "you are in their Tilo workspace as them, where the
 /// read without the key, so the process stays dumpable.
 pub fn logged_in() -> bool {
     served_device_key(&crate::identity::paths()).is_some()
-}
-
-/// This computer's device key, with the device it is as it enters its person's workspaces, as its
-/// daemon knows it ([`tilo_api::daemon::who::here`]): `None` while it knows no server of theirs.
-///
-/// # Errors
-/// The device key cannot be read, or the daemon serves another.
-pub fn here() -> Result<Option<(SigningKey, Device)>> {
-    tilo_api::daemon::who::here()
 }
 
 /// The device this computer is as it enters its person's workspaces, read without the device key
@@ -102,12 +93,18 @@ fn which_agent(name: &str) -> String {
 /// just certified this device answers a moment later.
 const ENTER_TRIES: u32 = 3;
 
-/// Enter the workspace, asking again a few times with a growing pause.
-pub(crate) async fn connect_retrying(key: &SigningKey, device: &Device) -> Result<Entered> {
+/// Enter the workspace, asking again a few times with a growing pause. `signer` signs as this
+/// computer's device, through its daemon ([`tilo_identity::daemon_signer::DaemonSigner`]).
+pub(crate) async fn connect_retrying(
+    signer: std::sync::Arc<dyn tilo_server_client::DeviceSigner>,
+    device: &Device,
+) -> Result<Entered> {
     let mut pause = std::time::Duration::from_secs(1);
     let mut last = None;
     for _ in 0..ENTER_TRIES {
-        match connect(key, device, None).await {
+        match tilo_api::daemon::enter::connect_signed(std::sync::Arc::clone(&signer), device, None)
+            .await
+        {
             Ok(entered) => return Ok(entered),
             Err(error) => {
                 debug_why("entering the workspace", &error);
@@ -565,14 +562,16 @@ fn entered_after_login(
 /// `state`, `identity` and `run` as this account's state directory, this computer's identity root
 /// and its runtime directory, `key` becomes its device key with `device`'s certificate filed for
 /// it, and a daemon answers `account#who` at its native endpoint with `device` as where it
-/// enters.
+/// enters. This process takes the device key for as long as the returned lock lives, as this
+/// computer's device service does when the login files the certificate: nothing else reads the
+/// key, and the tests have no daemon of their own to ask.
 #[cfg(test)]
 pub(crate) fn keep_for_test(
     env: &mut tilo_test_env::ScopedEnv,
     dir: &Path,
     key: &SigningKey,
     device: &Device,
-) {
+) -> tilo_device_identity::persist::DeviceKeyLock {
     use std::io::{BufRead as _, Write as _};
     std::fs::create_dir_all(dir.join("run")).unwrap();
     env.set("XDG_STATE_HOME", dir.join("state"))
@@ -580,6 +579,7 @@ pub(crate) fn keep_for_test(
         .set("XDG_RUNTIME_DIR", dir.join("run"));
     let place = Place::here(crate::identity::paths()).unwrap();
     tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
+    let taken = tilo_device_identity::persist::take_device_key(place.keys()).unwrap();
     tilo_device_identity::login::file_certificate(&place, &device.cert).unwrap();
     let native = tilo_api::daemon::this_computer().unwrap().native();
     let listener = std::os::unix::net::UnixListener::bind(&native).unwrap();
@@ -599,6 +599,7 @@ pub(crate) fn keep_for_test(
             }
         }
     });
+    taken
 }
 
 /// A member certificate `root` signs for `key`, named `label`, for a test.
@@ -718,6 +719,9 @@ mod tests {
             "a login certifies this computer's device key, and it has none yet"
         );
         tilo_device_identity::persist::adopt_device_key(&keys, &key.to_bytes()).unwrap();
+        // This process stands in for this computer's device service, which is the one that reads
+        // the key a login files a certificate against.
+        let _taken = tilo_device_identity::persist::take_device_key(&keys).unwrap();
         file_certificate(&place, &device.cert).unwrap();
         assert!(tilo_device_identity::login::claimed(&place, &this));
         assert_eq!(served_device_key(&keys), Some(this));

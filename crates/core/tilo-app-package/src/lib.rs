@@ -36,7 +36,9 @@ pub use manifest::{
     SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment, SplashSegmentError, Target, Trust,
     TrustAttestation, WindowKind, dev_app_id,
 };
-pub use pack::{PackError, Packed, SigningIdentity, pack, pack_dev, sign_placeholder_root};
+pub use pack::{
+    ExternalSigner, PackError, Packed, SigningIdentity, pack, pack_dev, sign_placeholder_root,
+};
 pub use package::{MetaError, PackageMeta, is_safe_path};
 pub use registry_types::interfaces;
 pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootError};

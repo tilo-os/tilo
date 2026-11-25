@@ -14,9 +14,9 @@ fn layer(hash: &str) -> Value {
 }
 
 tilo_test_env::scenario! {
-    fn a_device_is_driven_over_its_own_action_frames;
+    fn a_device_is_driven_through_this_computers_daemon;
 
-    phase a_step_reaches_the_device_signed_by_this_machine_and_answers_typed;
+    phase a_step_reaches_the_device_in_its_workspace_and_answers_typed;
     {
         let device = Device::serving(|action, argument| match action {
             "layer-verify" => Ok(layer(argument["hash"].as_str().unwrap())),
@@ -29,7 +29,11 @@ tilo_test_env::scenario! {
         assert_eq!(asked[0].action, "layer-verify");
         assert_eq!(asked[0].resource, format!("devices/{}/vm", device.route.device));
         assert_eq!(asked[0].argument, json!({ "hash": "ab".repeat(32) }));
-        assert_eq!(asked[0].by, device.machine_key(), "asked as this machine's device key");
+        assert_eq!(
+            asked[0].workspace.as_deref(),
+            Some(device.route.workspace.as_str()),
+            "asked in the route's workspace"
+        );
         assert_eq!(verified.unwrap().hash, "ab".repeat(32));
     }
 

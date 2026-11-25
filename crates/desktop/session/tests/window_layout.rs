@@ -102,6 +102,9 @@ fn a_shell_this_device_cannot_seal_is_not_said_to_have_been_refused() {
     std::fs::create_dir_all(&identity).expect("the identity's directory");
     let root = home.root().join("system");
     home.env().set("TILO_IDENTITY_ROOT", &root);
+    // This process stands in for the machine's daemon: it takes the device key first, so the
+    // identity is sealed with it.
+    crate::common::take_device_key(&tilo_identity::provisioning::collaboration_identity_paths());
     tilo_identity::provisioning::ensure_throwaway_test_identity(
         &identity,
         &tilo_identity::provisioning::collaboration_identity_paths(),

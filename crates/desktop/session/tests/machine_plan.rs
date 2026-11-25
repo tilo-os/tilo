@@ -22,16 +22,21 @@ const ANSWER_WITHIN: Duration = Duration::from_secs(60);
 
 /// `tilo login --new-identity` on a fresh profile: the person's root in the
 /// one identity directory the session reads, and the device key, certificate
-/// and fleet entry the session's broker admits this computer by.
-fn login(identity_dir: &Path) {
+/// and fleet entry that admit this computer. Returns the device key this
+/// process took as the daemon's, which the session signs with from here.
+fn login(identity_dir: &Path) -> tilo_device_identity::persist::DeviceKeyLock {
+    let paths = IdentityPaths::under(identity_dir);
+    let taken_key = tilo_identity::provisioning::device_key_taken_as_daemon(&paths)
+        .expect("this computer's device key");
     tilo_identity::provisioning::create_person(
         identity_dir,
-        &IdentityPaths::under(identity_dir),
+        &paths,
         "plan cycle owner",
         "plan cycle owner",
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
+    taken_key
 }
 
 /// The plan `tilo machine add --os server --name cupboard --disk
@@ -121,7 +126,7 @@ fn a_person_on_a_fresh_profile_plans_a_machine_and_is_answered() {
             tilo_identity::provisioning::TEST_PLATFORM_ENV,
             tilo_identity::provisioning::TILO_OS_PLATFORM,
         );
-    login(&identity);
+    let _taken_key = login(&identity);
     let socket = home.runtime().join("test-control.sock");
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),

@@ -39,6 +39,9 @@ struct Keys {
 /// The person's keys, and the identity they were provisioned in.
 struct Person {
     keys: Keys,
+    /// The device key this process took as the daemon's, which the session signs with here: let go
+    /// of with the identity's files.
+    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
     // The environment the identity was provisioned in, restored before the directories it names are
     // removed.
     _env: tilo_test_env::ScopedEnv,
@@ -62,7 +65,9 @@ fn person() -> Person {
     tilo_identity::sources::test_trust::install();
     let personal = tilo_identity::store::account_identity_dir(&xdg.join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
-    tilo_identity::provisioning::ensure_collaboration_identity(
+    // This process stands in for the machine's daemon: it takes the device key first, and keeps it
+    // while the sessions this person's tests run sign with it.
+    let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
         &personal,
         &paths,
         IdentityStorage::Files,
@@ -75,6 +80,7 @@ fn person() -> Person {
     };
     Person {
         keys,
+        _taken_key: taken_key,
         _env: env,
         _root: root,
     }

@@ -150,6 +150,8 @@ mod line;
 pub use execution_lease::ExecutionLease;
 #[cfg(not(target_arch = "wasm32"))]
 pub use line::{CallLanes, LineClient, LinePut, Take, serve_lines, serve_lines_with};
+#[cfg(not(target_arch = "wasm32"))]
+pub use line::{Carry, CarryAnswer, carry_answer_line, carry_line, carry_request};
 pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use resource_read::{

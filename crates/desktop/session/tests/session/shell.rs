@@ -833,7 +833,8 @@ fn plain_desktop(
         let left = pixel(centre - 100, row);
         let right = pixel(centre + 100, row);
         let middle = pixel(centre, row);
-        if (0..3).any(|channel| (middle[channel] - (left[channel] + right[channel]) / 2).abs() > 4) {
+        if (0..3).any(|channel| (middle[channel] - (left[channel] + right[channel]) / 2).abs() > 4)
+        {
             failures.push(format!(
                 "{name}: something stands under the bar at row {row}: {middle:?} between \
                  {left:?} and {right:?}, where the wallpaper runs unbroken"

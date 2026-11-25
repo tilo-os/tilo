@@ -492,7 +492,7 @@ pub fn answer_sign_in(
         .unwrap_or_default()
         .to_owned();
     let root = rooted.root;
-    let device = tilo_device_identity::persist::load_device_key(keys)
+    let device = tilo_device_identity::persist::taken_device_key(keys)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let cert = tilo_device_identity::persist::read_device_cert(&keys.device_cert)
         .map_err(|error| io::Error::other(error.to_string()))?;

@@ -255,8 +255,9 @@ impl Keeping {
                 format!("read {}: {error}", token_file.display()),
             )
         })?;
-        let (device, _) =
-            tilo_device_identity::load_or_create_device_key(&paths).map_err(io::Error::other)?;
+        // The key this daemon took: the install listener signs with it, and nothing reads it again.
+        let device =
+            tilo_device_identity::persist::taken_device_key(&paths).map_err(io::Error::other)?;
         println!(
             "{}",
             serde_json::json!({

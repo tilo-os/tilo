@@ -27,6 +27,8 @@
 pub mod broker;
 pub mod certificates;
 pub mod certification_ceremony;
+#[cfg(not(target_family = "wasm"))]
+pub mod daemon_signer;
 pub mod identity_store;
 #[cfg(not(target_family = "wasm"))]
 pub mod join_proof;

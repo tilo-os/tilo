@@ -351,10 +351,16 @@ file on Windows by `LockFileEx`. Every other program of the computer that
 needs the device to sign, seal or prove something asks the daemon's device
 actions at its native endpoint (`tilo_device_identity::login::daemon`): the
 Secret Service's vault and caller proofs, an image endorsement, a boot's
-enrolment with the person's other devices. The daemon answers these for the
-device's own system and the person's own programs on the computer, whose
-account could read the key before, and never for an agent that runs
-elsewhere or in a roster turn. It gets back what the key made,
+enrolment with the person's other devices, and a plain signature as the device
+(`devices#sign`, which `tilo_identity::daemon_signer::DaemonSigner` turns into
+a `DeviceSigner`). The daemon answers these for the device's own system and
+the person's own programs on the computer, whose account could read the key
+before, and never for an agent that runs elsewhere or in a roster turn. It
+answers them as soon as it has taken the key, from the device's own actions,
+before its person's services start or any workspace is admitted: a signature
+depends on neither. The daemon's own parts sign with the key it took
+(`persist::taken_device_key`) and never read it again. A program never gets an
+endpoint secret from the daemon: only the daemon dials as the device. It gets back what the key made,
 never the key, and with no daemon running it is told the device service
 isn't running. Only first boot's `tilo-device-key-init` makes the key before
 any daemon runs, and hands it over in the file it leaves.

@@ -479,10 +479,20 @@ fn found_a_person_in(
     // No root is kept here: the person this device already holds a certificate for is the one
     // this account is, so a login or founding interrupted before its identity record was written
     // is completed rather than a second person made over it.
-    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(keys)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    // The key this daemon took, which it never reads again; on a computer that has none yet, the
+    // key made here before its daemon first starts, which takes it from its file.
+    let refused = |error: tilo_device_identity::PersistError| io::Error::other(error.to_string());
+    let device = match tilo_device_identity::persist::taken_device_key(keys) {
+        Ok(device) => device.verifying_key().to_bytes(),
+        Err(_) if !tilo_device_identity::persist::holds_device_key(keys).map_err(refused)? => {
+            let (made, _) =
+                tilo_device_identity::persist::load_or_create_device_key(keys).map_err(refused)?;
+            made.verifying_key().to_bytes()
+        }
+        Err(error) => return Err(refused(error)),
+    };
     let held = tilo_device_identity::login::served_cert(keys)
-        .filter(|cert| cert.device_public_key == device.verifying_key().to_bytes())
+        .filter(|cert| cert.device_public_key == device)
         // A certificate that admits devices is the root's own: it is the device's, not a joined
         // account's to take up here.
         .filter(|cert| !cert.capabilities.can_admit_devices)
@@ -5613,10 +5623,6 @@ impl RuntimeActionProvider {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let answered = Tickets::asks_for_a_person(&request)
             || self.is_the_person(caller)
-            // The person's own programs on this computer ask the daemon to seal, prove and
-            // sign with the device key, as their account read the key before the daemon
-            // alone kept it: never an agent that runs elsewhere or for a turn.
-            || (Tickets::uses_the_device_key(&request) && self.is_own_client(caller))
             // What only the person's root signs, asked by their own programs on this
             // computer: the device signs it with the root it keeps, and hands the ask to a
             // device of theirs that keeps it otherwise. A session reaches its daemon as the
@@ -5932,12 +5938,6 @@ impl ActionProvider for RuntimeActionProvider {
         // what lets another device in, to the person alone.
         if let Some(answered) = self.the_device_answers(caller, &request) {
             return answered;
-        }
-        if let Some(tickets) = &self.tickets
-            && Tickets::seals_or_proves(&request)
-            && (self.is_the_person(caller) || self.is_own_client(caller))
-        {
-            return tilo_actions::remote::ActionProvider::invoke(tickets.as_ref(), caller, request);
         }
         // The person's shell runtime on this computer, for the Terminal windows it serves: never
         // an agent that runs elsewhere, nor an app.

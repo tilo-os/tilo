@@ -125,13 +125,39 @@ pub fn in_own_process_with_packages(rust: &[(&str, &str)], body: impl FnOnce(&Pa
     }
     say_what_went_wrong();
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
+    // The person is founded as the daemon founds them: with the device key made at first boot
+    // and taken, then let go of for the daemon `body` starts.
+    let keys = tilo_identity::provisioning::collaboration_identity_paths();
+    tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let taken = tilo_device_identity::persist::take_device_key(&keys).unwrap();
     tilo_runtime::device::services::found_account_person(
-        &tilo_identity::provisioning::collaboration_identity_paths(),
+        &keys,
         "",
         tilo_runtime::device::services::this_account_uid(),
     )
     .unwrap();
+    drop(taken);
     body(&profile);
+}
+
+/// [`in_own_process`] on a device no person has claimed: no workspace is ever admitted on it.
+///
+/// # Panics
+///
+/// When `body` fails.
+pub fn in_own_unclaimed_process(body: impl FnOnce(&Path)) {
+    let test = std::thread::current()
+        .name()
+        .expect("libtest names a test's thread after the test")
+        .to_owned();
+    if std::env::var(OWN).ok().as_deref() != Some(test.as_str()) {
+        own_process(&test, &[], &[]);
+        return;
+    }
+    say_what_went_wrong();
+    body(&PathBuf::from(
+        std::env::var_os(PROFILE).expect("the profile is named"),
+    ));
 }
 
 /// [`run`], on a device that has the tilolang apps `apps` (directories under `apps/tl`)

@@ -56,7 +56,7 @@ use tilo_user_identity::cert::{
 
 mod one_writer;
 
-pub use one_writer::{DeviceKeyLock, take_device_key};
+pub use one_writer::{DeviceKeyLock, device_public_key, take_device_key, taken_device_key};
 
 const MAX_DEVICE_CERT_BYTES: usize = 64 * 1024;
 
@@ -420,6 +420,12 @@ pub enum PersistError {
         /// The program it runs, when the system says.
         program: Option<String>,
     },
+    /// This process signs as the device without having taken its key: only the device's daemon
+    /// does ([`take_device_key`]); another program asks it.
+    #[error(
+        "the device service isn't running in this process: only the device's daemon signs as the device"
+    )]
+    NotTheDaemon,
 }
 
 impl PersistError {
@@ -435,7 +441,8 @@ impl PersistError {
             | Self::InsecureOwner { .. }
             | Self::WrongKeyLength(_)
             | Self::Canonical(_)
-            | Self::KeyInUse { .. } => None,
+            | Self::KeyInUse { .. }
+            | Self::NotTheDaemon => None,
         }
     }
 }
@@ -1425,8 +1432,8 @@ pub fn install_device_cert(
     now_ns: u64,
 ) -> Result<(), PersistError> {
     let refused = |kind, message: String| PersistError::Io(io::Error::new(kind, message));
-    let device = read_device_key(&paths.device_privkey)?;
-    if cert.device_public_key != device.verifying_key().to_bytes() {
+    let device = device_public_key(paths)?;
+    if cert.device_public_key != device {
         return Err(refused(
             io::ErrorKind::InvalidData,
             "the certificate is for another device key".into(),
@@ -1486,7 +1493,7 @@ pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistE
         _ => return Ok(false),
     }
     let pubkey = read_public_key(&paths.user_pubkey)?;
-    let device = read_device_key(&paths.device_privkey)?;
+    let device = device_public_key(paths)?;
     let cert = read_device_cert(&paths.device_cert)?;
     // A primary device can admit further devices. That is an ordinary
     // machine, not one the imager already enrolled, so first-boot
@@ -1502,8 +1509,7 @@ pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistE
             format!("enrolled device certificate did not verify: {error}"),
         ))
     })?;
-    if cert.user_public_key != pubkey || cert.device_public_key != device.verifying_key().to_bytes()
-    {
+    if cert.user_public_key != pubkey || cert.device_public_key != device {
         return Err(PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidData,
             "enrolled device certificate does not match its keys",
@@ -1925,6 +1931,7 @@ mod tests {
             let dir = identity_tempdir();
             let paths = IdentityPaths::under(dir.path());
             let (device, _) = load_or_create_device_key(&paths).unwrap();
+            let _taken = take_device_key(&paths).expect("this process signs as the device");
             let root = SigningKey::from_bytes(&[3; 32]);
             let cert = |root: &SigningKey, device: [u8; 32], capabilities| {
                 let mut cert = DeviceCert {
@@ -2007,6 +2014,7 @@ mod tests {
             let dir = identity_tempdir();
             let paths = IdentityPaths::under(dir.path());
             let (device, _) = load_or_create_device_key(&paths).unwrap();
+            let _taken = take_device_key(&paths).expect("this process signs as the device");
             let root = SigningKey::from_bytes(&[5; 32]);
             let mut cert = DeviceCert {
                 user_public_key: root.verifying_key().to_bytes(),

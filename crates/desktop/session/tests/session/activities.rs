@@ -550,8 +550,7 @@ fn the_bar_shows_the_whole_clock_on_a_phone_and_a_desktop() {
             ),
             (
                 "light",
-                super::shell::light_runner_inputs
-                    as fn() -> ui::application::ComponentRunnerInputs,
+                super::shell::light_runner_inputs as fn() -> ui::application::ComponentRunnerInputs,
             ),
         ] {
             let mut session = session_with(width, presentation);
@@ -573,8 +572,7 @@ fn the_bar_shows_the_whole_clock_on_a_phone_and_a_desktop() {
     for (theme, presentation) in [
         (
             "dark",
-            ui::headless::fixture_runner_inputs
-                as fn() -> ui::application::ComponentRunnerInputs,
+            ui::headless::fixture_runner_inputs as fn() -> ui::application::ComponentRunnerInputs,
         ),
         (
             "light",

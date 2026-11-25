@@ -900,7 +900,9 @@ mod tests {
         let paths = tilo_device_identity::IdentityPaths::under(&system);
         // The account's own store below the identity directory, where every reader looks.
         tilo_identity::sources::test_trust::install();
-        tilo_identity::provisioning::ensure_collaboration_identity(
+        // This process stands in for the machine's daemon while the identity is provisioned: the
+        // daemon the tests start afterwards takes the key itself, so it is let go of here.
+        let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
             &tilo_identity::store::account_identity_dir(&xdg.join("tilo/identity")),
             &paths,
             tilo_identity::provisioning::IdentityStorage::Files,
@@ -910,6 +912,7 @@ mod tests {
             tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
         let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
             .expect("this device's certificate");
+        drop(taken_key);
         let owner = tilo_peer_state::owner::open_file(
             &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
         )

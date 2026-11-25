@@ -11,7 +11,11 @@
 //! - [`ENDORSE_IMAGE`]: an image endorsement the device signs, under the image-signing grant its
 //!   person's root gave it;
 //! - [`ENROL_BOOT`]: a boot's enrolment asked of the person's other devices, over the device's
-//!   one endpoint.
+//!   one endpoint;
+//! - [`SIGN`]: a message the device signs, for a program that proves it is this device.
+//!
+//! The daemon answers these from the moment it took the key, before its person's services run
+//! or any workspace is admitted: what the key signs depends on neither.
 //!
 //! [`take_device_key`]: tilo_device_identity::persist::take_device_key
 
@@ -20,17 +24,24 @@ use serde_json::{Value, json};
 use tilo_actions::{ActionParam, ParamType};
 use tilo_device_identity::login::{
     CHECK_CALLER_PROOF, ENDORSE_IMAGE, ENROL_BOOT, MALFORMED_ASK, OPEN_VAULT, SEAL_VAULT,
-    SEALED_BY_ANOTHER_KEY,
+    SEALED_BY_ANOTHER_KEY, SIGN,
 };
 use tilo_user_identity::ImageEndorsement;
 use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes};
 
-/// The actions a person's programs ask with the device key: the Secret Service's.
-pub(crate) const FOR_A_PERSON: [&str; 3] = [SEAL_VAULT, OPEN_VAULT, CHECK_CALLER_PROOF];
+/// The actions a person's programs ask with the device key: the Secret Service's, and a
+/// signature as the device. Their answers are kept in no invocation record: an opened vault is a
+/// secret, and these are a program's steps, never acts the person's history shows.
+pub(crate) const FOR_A_PERSON: [&str; 4] = [SEAL_VAULT, OPEN_VAULT, CHECK_CALLER_PROOF, SIGN];
 
 /// The actions the device's own system asks (root, or the daemon's own account): the boot chain's
 /// and the update's.
 pub(crate) const FOR_THE_SYSTEM: [&str; 2] = [ENDORSE_IMAGE, ENROL_BOOT];
+
+/// Whether `action` is one of what the device key does.
+pub(crate) fn asked_of_the_key(action: &str) -> bool {
+    FOR_A_PERSON.contains(&action) || FOR_THE_SYSTEM.contains(&action)
+}
 
 /// Why one of these actions was not done: its stable code, and its words.
 #[derive(Debug)]
@@ -150,6 +161,10 @@ pub(crate) fn answer(action: &str, args: &Value, key: &SigningKey) -> Result<Val
             })?;
             Ok(json!({ "endorsement": hex::encode(signed) }))
         }
+        SIGN => {
+            let signature = ed25519_dalek::Signer::sign(key, &bytes(args, "message")?);
+            Ok(json!({ "signature": hex::encode(signature.to_bytes()) }))
+        }
         other => Err(malformed(format!("{other} is no action of the device key"))),
     }
 }
@@ -200,6 +215,16 @@ pub(crate) fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
                 "endorsement",
                 ParamType::Text,
                 "The unsigned endorsement, its bytes in hex.",
+            )],
+        ),
+        descriptor(
+            SIGN,
+            "Sign as this device",
+            "Sign a message with this device's key, for a program proving it is this device.",
+            &[ActionParam::required(
+                "message",
+                ParamType::Text,
+                "The message, its bytes in hex.",
             )],
         ),
         descriptor(

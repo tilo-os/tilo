@@ -238,6 +238,8 @@ struct Fixture {
     native: Arc<Native>,
     state: Arc<AppBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
+    /// The device's key, taken as its daemon takes it, for as long as this lives.
+    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
     _identity_env: tilo_test_env::ScopedEnv,
 }
 impl Fixture {
@@ -289,7 +291,7 @@ impl Fixture {
             .set("TILO_IDENTITY_ROOT", directory.path().join("identity"))
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity::sources::test_trust::install();
-        tilo_identity::provisioning::ensure_collaboration_identity(
+        let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
             &tilo_identity::store::account_identity_dir(
                 &directory.path().join("config/tilo/identity"),
             ),
@@ -376,6 +378,7 @@ impl Fixture {
             native,
             state,
             directories: Rc::new(LocalActionDirectoryRegistry::new(rx)),
+            _taken_key: taken_key,
             _identity_env: identity_env,
         }
     }

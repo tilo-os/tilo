@@ -66,6 +66,8 @@ struct Fixture {
     key: InvocationKey,
     _clock_origin: crate::apps::policy_clock::PolicyOrigin,
     _root: tempfile::TempDir,
+    /// The device's key, taken as its daemon takes it, for as long as this lives.
+    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
     _environment: tilo_test_env::ScopedEnv,
 }
 
@@ -92,7 +94,7 @@ impl Fixture {
             .set("TILO_IDENTITY_ROOT", scratch.path().join("identity"))
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity::sources::test_trust::install();
-        tilo_identity::provisioning::ensure_collaboration_identity(
+        let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
             &tilo_identity::store::account_identity_dir(
                 &scratch.path().join("config/tilo/identity"),
             ),
@@ -231,6 +233,7 @@ impl Fixture {
             key,
             _clock_origin: clock_origin,
             _root: scratch,
+            _taken_key: taken_key,
             _environment: environment,
         }
     }

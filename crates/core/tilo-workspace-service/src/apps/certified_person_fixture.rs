@@ -8,6 +8,8 @@ pub struct CertifiedPersonFixture {
     pub host: tilo_identity::identity_store::DeviceIdentity,
     pub origin: crate::apps::policy_clock::PolicyOrigin,
     pub current: Arc<std::sync::atomic::AtomicBool>,
+    /// The device's key, taken as its daemon takes it, for as long as this lives.
+    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
     _evidence_env: tilo_test_env::ScopedEnv,
     _evidence_home: tilo_test_env::TestHome,
 }
@@ -55,7 +57,7 @@ pub fn certified_person_fixture_for_seeds(
         )
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     tilo_identity::sources::test_trust::install();
-    tilo_identity::provisioning::ensure_collaboration_identity(
+    let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
         &tilo_identity::store::account_identity_dir(&evidence_home.config().join("tilo/identity")),
         &identity_paths,
         tilo_identity::provisioning::IdentityStorage::Files,
@@ -135,6 +137,7 @@ pub fn certified_person_fixture_for_seeds(
         caller,
         origin,
         current,
+        _taken_key: taken_key,
         _evidence_env: evidence_env,
         _evidence_home: evidence_home,
         host: tilo_identity::identity_store::DeviceIdentity::kept(certificate, device),

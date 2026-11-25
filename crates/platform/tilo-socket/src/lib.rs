@@ -135,6 +135,53 @@ pub fn is_bound(path: &Path) -> bool {
     }
 }
 
+/// What the peer at the other end of `stream` has sent so far, up to `buffer`'s length, without
+/// consuming it: the next read gets the same bytes. Waits up to `within` for the first of them;
+/// `0` when the peer sent nothing by then, or closed.
+///
+/// # Errors
+/// The connection fails while it is looked at.
+pub fn peek(stream: &Stream, buffer: &mut [u8], within: std::time::Duration) -> io::Result<usize> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd as _;
+        stream.set_read_timeout(Some(within))?;
+        // SAFETY: a peek into `buffer`, a live local of the length given, on a descriptor
+        // `stream` owns for the whole call; `MSG_PEEK` leaves the bytes for the next read.
+        let read = unsafe {
+            libc::recv(
+                stream.as_raw_fd(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                libc::MSG_PEEK,
+            )
+        };
+        let error = io::Error::last_os_error();
+        stream.set_read_timeout(None)?;
+        match usize::try_from(read) {
+            Ok(read) => Ok(read),
+            Err(_)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                Ok(0)
+            }
+            Err(_) => Err(error),
+        }
+    }
+    #[cfg(windows)]
+    {
+        windows::peek(stream, buffer, within)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (stream, buffer, within);
+        Ok(0)
+    }
+}
+
 /// Whether the peer at the other end of `stream` is still connected, without consuming what it
 /// sent: a peek that finds the connection over says it is not, and one that finds bytes waiting
 /// or nothing yet says it is.

@@ -737,7 +737,7 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
         .set("XDG_CONFIG_HOME", one.path().join("config"))
         .set("TILO_IDENTITY_ROOT", one.path().join("identity"))
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity::provisioning::ensure_collaboration_identity(
+    let _taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
         &tilo_identity::store::account_identity_dir(&one.path().join("config/tilo/identity")),
         &tilo_device_identity::IdentityPaths::under(one.path().join("identity")),
         tilo_identity::provisioning::IdentityStorage::Files,

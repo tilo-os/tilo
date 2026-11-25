@@ -1052,12 +1052,11 @@ mod tests {
     use crate::api;
     use std::sync::Arc;
 
-    /// This computer's own key, as `tilo login` kept it, is a key file the API
-    /// in process reads: its certificate in the canonical bytes `Direct`
-    /// decodes, which is not the postcard the login itself keeps it as.
-    /// A key `--out` wrote for a script is a key of its own, never this one.
+    /// A key `tilo do account/keys#create --out FILE` wrote (the key alone, as the SDKs take it)
+    /// reaches the server this computer's login reaches, through a key file of its own: it is
+    /// never the device's key, which stays with the daemon.
     #[test]
-    fn the_login_key_is_a_key_file_the_in_process_api_reads() {
+    fn a_script_key_reaches_the_server_this_computers_login_reaches() {
         let dir = tempfile::tempdir().unwrap();
         let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
@@ -1087,26 +1086,15 @@ mod tests {
             server_address: None,
         };
         let mut env = tilo_test_env::ScopedEnv::new();
-        crate::login::keep_for_test(&mut env, dir.path(), &key, &device);
+        let _taken = crate::login::keep_for_test(&mut env, dir.path(), &key, &device);
 
-        let file = api::login_key(None)
-            .unwrap()
-            .expect("a logged-in computer has a key");
-        assert_eq!(file.host, "https://eu1.tilo.test");
+        // The login's device is where its keys reach: a script's key file is built on it.
+        let home = crate::login::home().expect("a logged-in computer");
+        assert_eq!(home.host_origin, "https://eu1.tilo.test");
         assert_eq!(
-            file.site.as_deref(),
-            Some("https://tilo.sh"),
+            home.site, "https://tilo.sh/",
             "the device keeps the site it logged in with: links are built there"
         );
-        assert_eq!(file.name, "Claude Code on build-box");
-        assert_eq!(file.key, hex::encode(key.to_bytes()));
-        assert_eq!(
-            hex::decode(&file.cert).unwrap(),
-            tilo_user_identity::canonical::canonical_bytes(&cert).unwrap(),
-            "the certificate is the canonical encoding the in-process API reads"
-        );
-        // It is a key the API in process takes, as it stands.
-        tilo_api::direct::Direct::new(&file).unwrap();
 
         // A key file is someone else's key: it names no workspace of its own.
         assert_eq!(
@@ -1150,13 +1138,18 @@ mod tests {
             0o600,
             "only this account may read a key"
         );
-        let file = api::login_key(None).unwrap().expect("still logged in");
         let written = tilo_api::direct::KeyFile::read(&out).unwrap();
-        assert_ne!(written.key, file.key, "never the device's own key");
         assert_eq!(written.key, hex::encode(script.to_bytes()));
         assert_eq!(written.name, "Visa backend");
-        assert_eq!(written.host, file.host, "it reaches the login's server");
-        assert_eq!(written.site, file.site, "it keeps the login's site");
+        assert_eq!(
+            written.host, device.host_origin,
+            "it reaches the login's server"
+        );
+        assert_eq!(
+            written.site.as_deref(),
+            Some(device.site.trim_end_matches('/')),
+            "it keeps the login's site"
+        );
         tilo_api::direct::Direct::new(&written).unwrap();
         // It acts as itself; a key file naming the device's own key acts as this computer.
         let as_file = |path: &Path| {
@@ -1168,9 +1161,19 @@ mod tests {
             .unwrap()
         };
         assert!(!as_file(&out));
-        let own = dir.join("own.json");
-        std::fs::write(&own, serde_json::to_vec(&file).unwrap()).unwrap();
-        assert!(as_file(&own));
+        // The device's own key file, as a person's own device names it: a program that writes
+        // one is that computer.
+        let own = tilo_api::direct::KeyFile::new(
+            &device.host_origin,
+            Some(&device.site),
+            &device.cert.device_label,
+            &ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+            &device.cert,
+        );
+        let own_path = dir.join("own.json");
+        std::fs::write(&own_path, serde_json::to_vec(&own).unwrap()).unwrap();
+        tilo_api::direct::Direct::new(&own).unwrap();
+        assert!(as_file(&own_path));
     }
 
     tilo_test_env::scenario! {

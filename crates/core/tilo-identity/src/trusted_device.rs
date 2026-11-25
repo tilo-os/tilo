@@ -1,29 +1,96 @@
-//! This machine's device key, for the host only, while the identity it signs for still trusts it.
+//! This machine's device key, for its daemon only, while the identity it signs for still trusts it.
 //!
 //! The key answers only while this device holds a valid certificate from the identity a workspace
 //! selected, held in that person's devices record and not revoked there, so a revocation takes
 //! effect at the very next call. Apps never get the key: they sign through the
 //! [`broker`](crate::broker).
 //!
+//! The device's daemon is the one process that has the key: it took it
+//! ([`tilo_device_identity::persist::take_device_key`]), and every answer here that carries the key
+//! is the one it took. Another program gets the certificate alone ([`certificate`]), checked
+//! against the key the daemon says it signs with, and signs by asking the daemon
+//! ([`device_signer`]). Nothing here opens the key file.
+//!
 //! The person's devices are answered by the host that holds their record
 //! ([`crate::sources::DeviceTrust`]): this crate keeps no list of its own.
 
 use std::io;
+use std::sync::Arc;
 
+use collab_types::signer::DeviceSigner;
 use ed25519_dalek::SigningKey;
 use tilo_device_identity::IdentityPaths;
+use tilo_device_identity::login::daemon::{DeviceActions, DeviceRefusal};
 use tilo_user_identity::DeviceCert;
 
-/// This machine's device key and its certificate for the identity this device presents in
-/// `workspace`.
+/// This device's public key: the key this process took, in the device's daemon, else the one the
+/// daemon says it signs with.
 ///
 /// # Errors
-/// This device has no identity for the workspace, or its certificate is invalid, another
-/// identity's or device's, not enrolled, or revoked.
+/// The device's daemon is not running, or does not answer.
+pub fn device_public_key(paths: &IdentityPaths) -> io::Result<[u8; 32]> {
+    tilo_device_identity::persist::device_public_key(paths).map_err(|error| match error {
+        tilo_device_identity::PersistError::Io(error) => error,
+        error => io::Error::other(error),
+    })
+}
+
+/// What signs as this device: the key this process took, in the device's daemon, else the daemon
+/// asked to sign ([`crate::daemon_signer::DaemonSigner`]).
+///
+/// # Errors
+/// The device's daemon is not running, or does not answer.
+pub fn device_signer(paths: &IdentityPaths) -> io::Result<Arc<dyn DeviceSigner>> {
+    if let Ok(key) = tilo_device_identity::persist::taken_device_key(paths) {
+        return Ok(Arc::new(key));
+    }
+    let actions = DeviceActions::here(paths.clone()).map_err(io::Error::other)?;
+    Ok(Arc::new(
+        crate::daemon_signer::DaemonSigner::of(actions).map_err(refused)?,
+    ))
+}
+
+/// The daemon's refusal as an error of the call that asked it: one the daemon gave because it is
+/// not running says so.
+fn refused(refusal: DeviceRefusal) -> io::Error {
+    let kind = if refusal.not_running() {
+        io::ErrorKind::NotConnected
+    } else {
+        io::ErrorKind::Other
+    };
+    io::Error::new(kind, refusal)
+}
+
+/// This machine's device key and its certificate for the identity this device presents in
+/// `workspace`, in the device's daemon: the key it took.
+///
+/// # Errors
+/// This process is not the device's daemon, this device has no identity for the workspace, or
+/// its certificate is invalid, another identity's or device's, not enrolled, or revoked.
 pub fn current(workspace: &str) -> io::Result<(SigningKey, DeviceCert)> {
-    let profile = crate::store::identity_for_workspace(workspace)?
-        .ok_or_else(|| io::Error::other("this device has no identity to sign in with"))?;
-    of_profile(&profile)
+    of_profile(&profile_for(workspace)?)
+}
+
+/// This device's certificate for the identity it presents in `workspace`, as [`current`] checks
+/// it, for a program that is not the device's daemon: the key it names is the one the daemon
+/// signs with.
+///
+/// # Errors
+/// As [`current`], and when the device's daemon is not running.
+pub fn certificate(workspace: &str) -> io::Result<DeviceCert> {
+    let paths = crate::provisioning::collaboration_identity_paths();
+    certified_in(
+        &profile_for(workspace)?,
+        &paths,
+        true,
+        device_public_key(&paths)?,
+    )
+}
+
+/// The identity this device presents in `workspace`.
+fn profile_for(workspace: &str) -> io::Result<crate::store::IdentityProfile> {
+    crate::store::identity_for_workspace(workspace)?
+        .ok_or_else(|| io::Error::other("this device has no identity to sign in with"))
 }
 
 /// This machine's device key and the certificate its person's root signed for it, before any
@@ -34,9 +101,22 @@ pub fn current(workspace: &str) -> io::Result<(SigningKey, DeviceCert)> {
 /// # Errors
 /// As [`current`], except that the device need not be listed yet.
 pub fn unlisted(workspace: &str) -> io::Result<(SigningKey, DeviceCert)> {
-    let profile = crate::store::identity_for_workspace(workspace)?
-        .ok_or_else(|| io::Error::other("this device has no identity to sign in with"))?;
-    checked(&profile, false)
+    checked(&profile_for(workspace)?, false)
+}
+
+/// [`unlisted`]'s certificate, for a program that is not the device's daemon, as [`certificate`]
+/// checks it.
+///
+/// # Errors
+/// As [`unlisted`], and when the device's daemon is not running.
+pub fn unlisted_certificate(workspace: &str) -> io::Result<DeviceCert> {
+    let paths = crate::provisioning::collaboration_identity_paths();
+    certified_in(
+        &profile_for(workspace)?,
+        &paths,
+        false,
+        device_public_key(&paths)?,
+    )
 }
 
 /// As [`current`], for the identity `profile` names.
@@ -93,15 +173,27 @@ fn checked(
     )
 }
 
-/// [`checked`] with this device's key and certificates kept in `paths`.
+/// [`checked`] with this device's key and certificates kept in `paths`: the key this process took
+/// as the device's daemon.
 fn checked_in(
     profile: &crate::store::IdentityProfile,
     paths: &IdentityPaths,
     listed: bool,
 ) -> io::Result<(SigningKey, DeviceCert)> {
-    let device = tilo_device_identity::persist::load_device_key(paths)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let device_key = device.verifying_key().to_bytes();
+    let device = tilo_device_identity::persist::taken_device_key(paths)
+        .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
+    let cert = certified_in(profile, paths, listed, device.verifying_key().to_bytes())?;
+    Ok((device, cert))
+}
+
+/// This device's certificate for `profile`, kept in `paths`, naming `device_key`: refused when
+/// revoked, and when not `listed` in the person's devices record where it must be already.
+fn certified_in(
+    profile: &crate::store::IdentityProfile,
+    paths: &IdentityPaths,
+    listed: bool,
+    device_key: [u8; 32],
+) -> io::Result<DeviceCert> {
     let cert_path = paths.device_cert_for_user(&profile.user_public_key);
     let cert = tilo_device_identity::persist::read_device_cert(&cert_path)
         .map_err(|error| io::Error::other(error.to_string()))?;
@@ -127,7 +219,7 @@ fn checked_in(
             "this device is not enrolled for the selected identity",
         ));
     }
-    Ok((device, cert))
+    Ok(cert)
 }
 
 #[cfg(test)]
@@ -148,6 +240,9 @@ mod tests {
         let paths = tilo_device_identity::IdentityPaths::under(&system_root);
         let workspace = tilo_desktop_model::WorkspaceId::new().to_string();
 
+        // This test is the device's daemon: it took the device's key.
+        tilo_device_identity::persist::load_or_create_device_key(&paths).unwrap();
+        let _taken = tilo_device_identity::persist::take_device_key(&paths).unwrap();
         assert!(current(&workspace).is_err(), "no identity yet");
         crate::provisioning::ensure_collaboration_identity(
             &identity_dir,
@@ -156,6 +251,7 @@ mod tests {
         )
         .unwrap();
         let (device, certificate) = current(&workspace).unwrap();
+        assert_eq!(super::certificate(&workspace).unwrap(), certificate);
         assert_eq!(
             certificate.device_public_key,
             device.verifying_key().to_bytes()

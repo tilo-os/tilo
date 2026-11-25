@@ -329,6 +329,8 @@ pub(crate) mod tests {
         paths: IdentityPaths,
         pub(crate) user_public_key: [u8; 32],
         pub(crate) workspace: String,
+        /// The device's key, taken as its daemon takes it: the proofs are signed with it.
+        _taken: tilo_device_identity::persist::DeviceKeyLock,
         _env: tilo_test_env::ScopedEnv,
         _root: tempfile::TempDir,
     }
@@ -344,6 +346,9 @@ pub(crate) mod tests {
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = IdentityPaths::under(&system_root);
+            tilo_device_identity::persist::load_or_create_device_key(&paths).expect("device key");
+            let taken =
+                tilo_device_identity::persist::take_device_key(&paths).expect("the key taken");
             crate::provisioning::ensure_collaboration_identity(
                 &identity_dir,
                 &paths,
@@ -359,6 +364,7 @@ pub(crate) mod tests {
                 paths,
                 user_public_key: profile.user_public_key,
                 workspace,
+                _taken: taken,
                 _env: env,
                 _root: temp,
             };

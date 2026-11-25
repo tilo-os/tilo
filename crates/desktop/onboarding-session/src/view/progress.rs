@@ -40,11 +40,13 @@ pub(super) enum Stage {
     TourStart,
 }
 
-/// This device's leaf in [`SECTION`]: the public half of its key.
+/// This device's leaf in [`SECTION`]: its public key, as this computer's daemon answers what the
+/// device is. The key stays with the daemon; a computer it does not answer for has no leaf.
 pub(super) fn leaf(paths: &IdentityPaths) -> std::io::Result<String> {
-    let key = tilo_device_identity::persist::load_device_key(paths)
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
-    Ok(hex::encode(key.verifying_key().as_bytes()))
+    let actions = tilo_device_identity::login::daemon::DeviceActions::here(paths.clone())
+        .map_err(std::io::Error::other)?;
+    let key = actions.device_key().map_err(std::io::Error::other)?;
+    Ok(hex::encode(key))
 }
 
 /// The step the person's settings hold for this device: `None` when its setup is finished or

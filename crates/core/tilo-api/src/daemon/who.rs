@@ -134,27 +134,6 @@ pub fn home() -> Result<Option<Device>, String> {
     who().map(|who| who.home)
 }
 
-/// This computer's device key, with the device it is as it enters its person's workspaces, as its
-/// daemon knows it: `None` while the daemon knows no server of theirs, or none answers. Reading
-/// the key makes this process undumpable; [`home`] reads what needs no key.
-///
-/// # Errors
-/// The device key cannot be read, or the daemon serves another key than this account's.
-pub fn here() -> anyhow::Result<Option<(ed25519_dalek::SigningKey, Device)>> {
-    let Ok(Some(device)) = home() else {
-        return Ok(None);
-    };
-    let key = tilo_device_identity::persist::load_device_key(&crate::calls::device_keys())
-        .map_err(|_| anyhow::anyhow!(tilo_device_identity::login::LOGIN_DAMAGED))?;
-    if device.cert.device_public_key != key.verifying_key().to_bytes() {
-        anyhow::bail!(
-            "this computer's daemon serves another device key than this account's: log in again \
-             with a ticket `tilo device add` prints on one of your devices"
-        );
-    }
-    Ok(Some((key, device)))
-}
-
 /// Log this computer in with `ticket` through its daemon (`devices#logIn`), for `agent`, listed
 /// as `label`: the daemon spends the ticket, files the certificate the person's root signs, and
 /// its person's part starts again as the device it became. Who this account is to the daemon

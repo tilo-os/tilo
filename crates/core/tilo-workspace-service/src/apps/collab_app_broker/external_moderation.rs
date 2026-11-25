@@ -147,21 +147,38 @@ impl Context {
             .map_err(|error| error.to_string())?;
         // The identity is loaded afresh for every operation. Revocation, identity
         // selection and device removal invalidate ownership; no signing key is cached.
-        let (device, certificate) =
-            tilo_identity::trusted_device::current(&self.original.route().cluster_id)
-                .map_err(|error| error.to_string())?;
+        let workspace = &self.original.route().cluster_id;
+        let certificate = tilo_identity::trusted_device::certificate(workspace)
+            .map_err(|error| error.to_string())?;
         if certificate.user_public_key != self.original.certificate()?.user_public_key {
             return Err("external moderation cannot use another person's signing identity".into());
         }
+        // The device signs: the key this daemon took, or the daemon asked by a program beside it.
+        let device = tilo_identity::trusted_device::device_signer(
+            &tilo_identity::provisioning::collaboration_identity_paths(),
+        )
+        .map_err(|error| error.to_string())?;
+        if collab_types::signer::DeviceSigner::device_public_key(device.as_ref())
+            != certificate.device_public_key
+        {
+            return Err("external moderation's device is not the one its certificate names".into());
+        }
         self.recheck()?;
-        let signed = registry_types::sign_external_moderation(&self.request.operation, &device)
-            .map_err(|error| error.to_string())?;
+        let signed = registry_types::sign_external_moderation_as(
+            &self.request.operation,
+            certificate.device_public_key,
+            |message| {
+                collab_types::signer::sign_now(device.as_ref(), message.to_vec()).map_err(|error| {
+                    registry_types::moderation::ModerationWireError::Unsigned(error.0)
+                })
+            },
+        )
+        .map_err(|error| error.to_string())?;
         drop(device);
         self.recheck()?;
         // Re-read enrollment immediately before disclosure as well as signing.
-        let (_, current) =
-            tilo_identity::trusted_device::current(&self.original.route().cluster_id)
-                .map_err(|error| error.to_string())?;
+        let current = tilo_identity::trusted_device::certificate(workspace)
+            .map_err(|error| error.to_string())?;
         if certificate != current {
             return Err("external moderation signing identity changed".into());
         }

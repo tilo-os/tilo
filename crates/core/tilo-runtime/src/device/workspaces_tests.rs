@@ -807,9 +807,7 @@ async fn a_founded_workspaces_standing_crosses_as_json() {
     );
     // It is the holders record naming it that lets it in, not the copy: another device of the
     // same person reading these same bytes, named nowhere in it, waits for its host.
-    let unnamed = SigningKey::from_bytes(&[7; 32])
-        .verifying_key()
-        .to_bytes();
+    let unnamed = SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes();
     let copy = standing::reading(
         *workspace,
         peer,
@@ -822,7 +820,9 @@ async fn a_founded_workspaces_standing_crosses_as_json() {
         Vec::new(),
     );
     assert!(
-        copy.hosting.as_ref().is_some_and(|hosting| !hosting.admitted),
+        copy.hosting
+            .as_ref()
+            .is_some_and(|hosting| !hosting.admitted),
         "a device with a copy that no holders record names is not admitted: {:?}",
         copy.hosting
     );

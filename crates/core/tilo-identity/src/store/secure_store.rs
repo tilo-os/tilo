@@ -391,16 +391,15 @@ fn account_seal_key(identity_dir: &Path) -> io::Result<tilo_seal::SymmetricKey> 
     key.update(&uid.to_le_bytes());
     key.update(b"account secret\0");
     key.update(&account_own_secret(identity_dir)?);
-    // Read as every read of the device key is: inside the device's daemon, the key it took.
-    let device = tilo_device_identity::persist::load_device_key(
+    // The key the device's daemon took: only the daemon opens an account's root, and it never
+    // reads the key again.
+    let device = tilo_device_identity::persist::taken_device_key(
         &crate::provisioning::collaboration_identity_paths(),
     )
     .map_err(|error| {
         io::Error::new(
-            error
-                .io()
-                .map_or(io::ErrorKind::InvalidData, io::Error::kind),
-            format!("this computer's device key cannot be read: {error}"),
+            io::ErrorKind::PermissionDenied,
+            format!("only this computer's device service opens an account's identity: {error}"),
         )
     })?;
     key.update(b"device\0");
@@ -539,6 +538,8 @@ mod sealed_files {
             &ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
         )
         .unwrap();
+        // This test is the device's daemon, the one process that opens an account's root.
+        let _taken = tilo_device_identity::persist::take_device_key(&paths).unwrap();
         environment.set("TILO_IDENTITY_ROOT", &identity_root);
         let dir = identity_root.join("accounts").join("1000");
         std::fs::create_dir_all(&dir).unwrap();

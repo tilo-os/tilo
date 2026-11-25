@@ -630,7 +630,7 @@ mod tests {
             signature: Some([0; 64]),
             ..packed.meta.root.clone()
         };
-        root.signature = Some(signer.sign_signed_root(&root));
+        root.signature = Some(signer.sign_signed_root(&root).unwrap());
         tilo_app_package::PackageMeta::from_root(
             root,
             packed.meta.manifest_bytes.clone(),

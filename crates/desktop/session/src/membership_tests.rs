@@ -1054,12 +1054,18 @@ pub(crate) fn provisioned_identity(
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     // The account's own store below the identity directory, where every reader looks.
     tilo_identity::sources::test_trust::install();
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        &tilo_identity::store::account_identity_dir(&home.config().join("tilo").join("identity")),
-        &paths,
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .expect("this computer is provisioned as a device");
+    // Provisioned as the device's daemon provisions: with the device key taken, and let go
+    // of at once, for the daemon this test starts takes it itself.
+    drop(
+        tilo_identity::provisioning::provisioned_as_its_daemon(
+            &tilo_identity::store::account_identity_dir(
+                &home.config().join("tilo").join("identity"),
+            ),
+            &paths,
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .expect("this computer is provisioned as a device"),
+    );
     let key = tilo_device_identity::persist::load_device_key(&paths).expect("this computer's key");
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this computer's certificate");

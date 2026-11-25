@@ -86,8 +86,9 @@ impl InstallListener {
     /// # Errors
     ///
     /// Returns [`ServerError::Iroh`] (the transport error kind) for a token
-    /// shorter than 16 characters, or when the certificate cannot be loaded
-    /// or an address cannot be bound.
+    /// shorter than 16 characters, when this process is not the one that took
+    /// the device's key, or when the certificate cannot be loaded or an address
+    /// cannot be bound.
     pub fn bind(
         config: &WebConfig,
         paths: IdentityPaths,
@@ -100,7 +101,7 @@ impl InstallListener {
     ///
     /// # Errors
     ///
-    /// As [`Self::bind`], and when the device key cannot be read.
+    /// As [`Self::bind`], and when this process is not the one that took the device's key.
     pub fn bind_with_session(
         config: &WebConfig,
         paths: IdentityPaths,
@@ -108,7 +109,7 @@ impl InstallListener {
         session: Option<SessionDevice>,
     ) -> Result<Self, ServerError> {
         let failed = |message: String| ServerError::Iroh(format!("install listener: {message}"));
-        let key = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
+        let key = tilo_device_identity::persist::taken_device_key(&paths)
             .map_err(|error| failed(format!("device key: {error}")))?;
         let device = key.verifying_key().to_bytes();
         let session = session.map(|session| {
@@ -577,6 +578,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(dir.path().join("identity"));
         let (device, _) = tilo_device_identity::load_or_create_device_key(&paths).unwrap();
+        // The listener runs in the process that took the device's key: the daemon.
+        let _taken = tilo_device_identity::persist::take_device_key(&paths).unwrap();
         let own = device.verifying_key().to_bytes();
         let root = SigningKey::from_bytes(&[7; 32]);
         let config = config(dir.path());
@@ -666,6 +669,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(dir.path().join("identity"));
         let (device, _) = tilo_device_identity::load_or_create_device_key(&paths).unwrap();
+        // The listener runs in the process that took the device's key: the daemon.
+        let _taken = tilo_device_identity::persist::take_device_key(&paths).unwrap();
         let own = device.verifying_key().to_bytes();
         let root = SigningKey::from_bytes(&[7; 32]);
         let listener = InstallListener::bind(&config(dir.path()), paths, TOKEN).unwrap();
@@ -697,6 +702,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(dir.path().join("identity"));
         let (device, _) = tilo_device_identity::load_or_create_device_key(&paths).unwrap();
+        // The listener runs in the process that took the device's key: the daemon.
+        let _taken = tilo_device_identity::persist::take_device_key(&paths).unwrap();
         let own = device.verifying_key().to_bytes();
         let session = SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes();
         let cert_out = dir.path().join("session/delivered.cert");

@@ -24,7 +24,7 @@ fn configure_profile(profile: &Path) -> io::Result<()> {
 pub const CHOOSER_HELPER_ARG: &str = "--file-chooser";
 
 /// Prints this computer's device as JSON (its key, label and the people whose certificate names
-/// it), without starting anything, and exits.
+/// it), as its running daemon answers it, and exits.
 pub const DEVICE_INFO_ARG: &str = "--device-info";
 
 /// Prints the tools a workspace's MCP server offers an agent, as JSON, and exits.
@@ -54,17 +54,19 @@ fn run() -> io::Result<()> {
         println!("{}", tilo_mcp::tools_json());
         return Ok(());
     }
-    // What this computer's device is, read from where its daemon keeps it: a workspace VM's
-    // keeper reads it to learn the device its daemon logged in as.
+    // What this computer's device is, as its daemon answers it: a workspace VM's keeper reads it
+    // to learn the device its daemon logged in as. Only the daemon reads the device's key.
     if arguments
         .first()
         .is_some_and(|argument| argument == DEVICE_INFO_ARG)
     {
-        let keys = tilo_api::calls::device_keys();
-        let key = tilo_device_identity::persist::load_device_key(&keys)
-            .map_err(|error| io::Error::other(format!("this computer's device key: {error}")))?;
-        let place = tilo_device_identity::login::Place::here(keys).map_err(io::Error::other)?;
-        println!("{}", crate::device::ticket::device_info(&place, &key));
+        let info = tilo_device_identity::login::daemon::DeviceActions::here(
+            tilo_api::calls::device_keys(),
+        )
+        .map_err(io::Error::other)?
+        .ask("info", serde_json::json!({}))
+        .map_err(|refusal| io::Error::other(format!("this computer's device: {refusal}")))?;
+        println!("{info}");
         return Ok(());
     }
     #[cfg(target_os = "macos")]

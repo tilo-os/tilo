@@ -510,6 +510,37 @@ pub fn ensure_collaboration_identity(
     )
 }
 
+/// This device's key made and taken by a process that stands in for the device's daemon, as a
+/// test's does: the lock keeps the key taken while it lives, so everything else in the process
+/// signs as the device.
+///
+/// # Errors
+/// The key cannot be made or read, or this process took it already.
+#[cfg(any(test, feature = "test-support"))]
+pub fn device_key_taken_as_daemon(paths: &IdentityPaths) -> io::Result<persist::DeviceKeyLock> {
+    let refused = |error: persist::PersistError| io::Error::other(error.to_string());
+    persist::load_or_create_device_key(paths).map_err(refused)?;
+    persist::take_device_key(paths).map_err(refused)
+}
+
+/// [`ensure_collaboration_identity`] in a process that stands in for the device's daemon, as a
+/// test's does: the device key is made and taken first, as the daemon takes it when it starts,
+/// and the identity is provisioned with that one key. The key stays taken while the returned lock
+/// lives.
+///
+/// # Errors
+/// As [`ensure_collaboration_identity`], or the key cannot be made or is taken already.
+#[cfg(any(test, feature = "test-support"))]
+pub fn provisioned_as_its_daemon(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    storage: IdentityStorage,
+) -> io::Result<persist::DeviceKeyLock> {
+    let taken = device_key_taken_as_daemon(paths)?;
+    ensure_collaboration_identity(identity_dir, paths, storage)?;
+    Ok(taken)
+}
+
 /// Provision the native chain with the installer's approved device label.
 /// Existing verified certificates and their labels remain unchanged.
 ///
@@ -1056,8 +1087,7 @@ fn ensure_collaboration_identity_in_context(
     let class = DeviceClass::of(identity_dir, class);
     // A root kept for an account alone is sealed with this computer's device key: it is made
     // before the root it seals.
-    tilo_device_identity::persist::load_or_create_device_key(paths)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let made = made_device_key(paths)?;
 
     let now_ns = tilo_clock::unix_now_ns();
     drop_unreadable_certificates_of_held_root(identity_dir, paths);
@@ -1146,7 +1176,7 @@ fn ensure_collaboration_identity_in_context(
 
     // The device's certificate for this identity: the owner's is also the
     // device's system-facing certificate, one certificate in both places.
-    ensure_device_certificate_for_identity(&signer, paths, device_label, class)?;
+    ensure_device_certificate_for_identity(&signer, paths, device_label, class, made)?;
 
     // Register the primary record in the multi-identity registry. A registry
     // write failure is a provisioning failure: silently creating a key that no
@@ -1307,11 +1337,25 @@ pub fn active_identity_owns_device(identity_dir: &Path, paths: &IdentityPaths) -
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
     tilo_user_identity::verify_device_cert(&cert)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-    let device = persist::load_device_key(paths)
-        .map_err(|error| io::Error::other(error.to_string()))?
-        .verifying_key()
-        .to_bytes();
+    let device = crate::trusted_device::device_public_key(paths)?;
     Ok(cert.user_public_key == owner && cert.device_public_key == device)
+}
+
+/// This device's public key when it is known here without asking the device's daemon: the key
+/// this process took as the daemon, or one made here because the computer had none yet. A key
+/// made before the daemon first starts is handed to it in its file, and nothing here keeps it.
+/// `None` when the key is the daemon's in another process: it answers which key that is
+/// ([`crate::trusted_device::device_public_key`]).
+fn made_device_key(paths: &IdentityPaths) -> io::Result<Option<[u8; 32]>> {
+    if let Ok(key) = persist::taken_device_key(paths) {
+        return Ok(Some(key.verifying_key().to_bytes()));
+    }
+    if persist::holds_device_key(paths).map_err(|error| io::Error::other(error.to_string()))? {
+        return Ok(None);
+    }
+    let (key, _) = persist::load_or_create_device_key(paths)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    Ok(Some(key.verifying_key().to_bytes()))
 }
 
 /// Ensure this device holds its certificate for `identity`, labelled
@@ -1323,16 +1367,19 @@ pub fn active_identity_owns_device(identity_dir: &Path, paths: &IdentityPaths) -
 /// held for the device's key is kept (the system-facing one first) and
 /// written wherever the other copy differs; a new one is issued only when
 /// none is held or the held one is due for renewal, and then written to
-/// every place at once.
+/// every place at once. The device's key is `made` when this process knows it
+/// ([`made_device_key`]), else the one the device's daemon signs with.
 fn ensure_device_certificate_for_identity(
     identity: &crate::store::SigningIdentity,
     paths: &IdentityPaths,
     device_label: &str,
     class: DeviceClass,
+    made: Option<[u8; 32]>,
 ) -> Result<PathBuf, io::Error> {
-    let (device, _) =
-        persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
-    let device_public_key = device.verifying_key().to_bytes();
+    let device_public_key = match made {
+        Some(key) => key,
+        None => crate::trusted_device::device_public_key(paths)?,
+    };
     let user_public_key = identity.group_public_key();
     let cert_path = paths.device_cert_for_user(&user_public_key);
     let owns_device =
@@ -1498,7 +1545,7 @@ pub fn verify_collaboration_identity(
     }
     let root_public = persist::read_public_key(&paths.user_pubkey)
         .map_err(|e| io::Error::other(e.to_string()))?;
-    let device = persist::load_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
+    let device = crate::trusted_device::device_public_key(paths)?;
     let cert = persist::read_device_cert(&paths.device_cert)
         .map_err(|e| io::Error::other(e.to_string()))?;
     tilo_user_identity::verify_device_cert_at(&cert, now_ns).map_err(|error| {
@@ -1515,10 +1562,10 @@ pub fn verify_collaboration_identity(
             "personal identity and persisted certification root do not match",
         ));
     }
-    if cert.device_public_key != device.verifying_key().to_bytes() {
+    if cert.device_public_key != device {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "certified device key does not match the persisted device secret",
+            "certified device key does not match the device's key",
         ));
     }
     Ok(())
@@ -1576,10 +1623,8 @@ pub fn create_person(
     if !label.is_empty() {
         approved_label(label)?;
     }
-    // A root kept for an account alone is sealed with this computer's device key, so the key is
-    // made before the root it seals.
-    tilo_device_identity::persist::load_or_create_device_key(paths)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    // A root kept for an account alone is sealed with this computer's device key: the one its
+    // daemon took, which makes the person.
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
     import_single_device_root(identity_dir, &root, display_name, storage)?;
     mark_founding(identity_dir)?;
@@ -1704,6 +1749,8 @@ mod recovery_words_tests {
         let identity = source.path().join("identity");
         let source_paths = IdentityPaths::under(source.path().join("device"));
         let storage = IdentityStorage::Files;
+        // Each device's key is taken by the process that signs as it, as its daemon does.
+        let _source_taken = device_key_taken_as_daemon(&source_paths)?;
         let user = create_person(&identity, &source_paths, "Ada", "Original", storage)?;
         let words = crate::store::recovery_words(identity.join(PRIMARY_IDENTITY_FILE))?;
         let original = read_device_cert(&source_paths.device_cert)?;
@@ -1711,6 +1758,7 @@ mod recovery_words_tests {
         let target = tempfile::tempdir()?;
         let identity = target.path().join("identity");
         let target_paths = IdentityPaths::under(target.path().join("device"));
+        let _target_taken = device_key_taken_as_daemon(&target_paths)?;
         let profile = restore_from_recovery_words(
             &identity,
             &target_paths,
@@ -1809,6 +1857,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let identity = temp.path().join("identity");
         let paths = IdentityPaths::under(temp.path().join("device"));
+        let _taken = device_key_taken_as_daemon(&paths).unwrap();
         let person = create_person(&identity, &paths, "Ada", "laptop", FILES).unwrap();
         let mut cert = persist::read_device_cert(&paths.device_cert).unwrap();
         assert_eq!(cert.user_public_key, person);
@@ -1883,6 +1932,8 @@ mod tests {
                 assert!(!identity.exists());
                 assert!(!paths.device_privkey.exists());
             }
+            // This process signs as the device, as its daemon does, from here on.
+            let _taken = device_key_taken_as_daemon(&paths).unwrap();
             ensure_collaboration_identity_with_device_label(&identity, &paths, FILES, "Ada's laptop")
                 .unwrap();
             let cert = persist::read_device_cert(&paths.device_cert).unwrap();
@@ -1930,6 +1981,7 @@ mod tests {
             let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
+            let _taken = device_key_taken_as_daemon(&paths).unwrap();
             ensure_collaboration_identity(&personal, &paths).unwrap();
             let held = device_certificates(&paths, &personal);
             for (_, cert) in &held {
@@ -2029,6 +2081,8 @@ mod tests {
             )
             .unwrap();
 
+            // This process signs as the device, as its daemon does.
+            let _taken = device_key_taken_as_daemon(&paths).unwrap();
             // Every consumer resolves the person through the account's active
             // record: an `Existing` with nothing to resolve strands the session
             // in recovery although the enrollment is sound.
@@ -2062,6 +2116,7 @@ mod tests {
             let carol = tmp.path().join("carol/tilo/identity");
             // Before anyone's first login there is no owner.
             assert!(!active_identity_owns_device(&alice, &paths).expect("no identity yet"));
+            let _taken = device_key_taken_as_daemon(&paths).unwrap();
             ensure_collaboration_identity(&alice, &paths).expect("alice claims the device");
             ensure_collaboration_identity(&bob, &paths).expect("bob shares it");
             assert!(active_identity_owns_device(&alice, &paths).expect("alice"));
@@ -2089,6 +2144,7 @@ mod tests {
             let identity_dir = dir.path().join("identity");
             let paths = IdentityPaths::under(dir.path().join("system"));
             let (device, _) = persist::load_or_create_device_key(&paths).unwrap();
+            let _taken = persist::take_device_key(&paths).unwrap();
             let mut cert = DeviceCert {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_public_key: device.verifying_key().to_bytes(),
@@ -2140,6 +2196,7 @@ mod tests {
             assert!(!complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
 
             let (device, _) = persist::load_or_create_device_key(&paths).unwrap();
+            let _taken = persist::take_device_key(&paths).unwrap();
             let mut cert = DeviceCert {
                 user_public_key: user,
                 device_public_key: device.verifying_key().to_bytes(),
@@ -2215,6 +2272,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let real = IdentityPaths::under(tmp.path().join("real-system"));
             let real_personal = tmp.path().join("owner/identity");
+            let _real_taken = device_key_taken_as_daemon(&real).unwrap();
             ensure_collaboration_identity(&real_personal, &real).unwrap();
             let before = fs::read(&real.device_cert).unwrap();
             let real_key = fs::read(&real.device_privkey).unwrap();
@@ -2238,6 +2296,8 @@ mod tests {
                 assert_ne!(cert.device_public_key, real_cert.device_public_key);
                 keys.push(cert.device_public_key);
                 assert!(paths.device_cert_for_user(&cert.user_public_key).is_file());
+                // The next run signs as the same device, as its daemon does.
+                let _taken = device_key_taken_as_daemon(&paths).unwrap();
                 assert_eq!(
                     ensure_throwaway_test_identity(&personal, &paths, FILES).unwrap(),
                     ProvisionOutcome::Existing
@@ -2290,7 +2350,9 @@ mod tests {
                 paths.device_cert.exists(),
                 "the device chain is provisioned too"
             );
-            // Phase `a_second_run_keeps_the_same_throwaway`.
+            // Phase `a_second_run_keeps_the_same_throwaway`: the next run signs as the
+            // same device, as its daemon does.
+            let _taken = device_key_taken_as_daemon(&paths).unwrap();
             assert_eq!(
                 ensure_throwaway_test_identity(&personal, &paths, FILES).expect("again"),
                 ProvisionOutcome::Existing
@@ -2426,6 +2488,7 @@ mod tests {
         persist::write_public_key(&paths.user_pubkey, &signer.group_public_key()).unwrap();
         assert!(!paths.device_privkey.exists());
 
+        let _taken = device_key_taken_as_daemon(&paths).unwrap();
         assert_eq!(
             ensure_collaboration_identity(&personal, &paths)
                 .expect("resume the partial host identity"),
@@ -2464,6 +2527,7 @@ mod tests {
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
 
+            let _taken = device_key_taken_as_daemon(&paths).unwrap();
             assert!(matches!(
                 ensure_collaboration_identity(&personal, &paths).expect("provision identity"),
                 ProvisionOutcome::Created { .. }
@@ -2559,6 +2623,8 @@ mod tests {
             let paths = IdentityPaths::under(tmp.path().join("system"));
             let alice = tmp.path().join("alice/tilo/identity");
             let bob = tmp.path().join("bob/tilo/identity");
+            // Both accounts sign as the one device, as its daemon does.
+            let _taken = device_key_taken_as_daemon(&paths).unwrap();
             ensure_collaboration_identity(&alice, &paths).expect("alice provisions owner");
             let owner = persist::read_public_key(&paths.user_pubkey).expect("owner key");
 
@@ -2594,6 +2660,8 @@ mod tests {
             let bob = tmp.path().join("bob/tilo/identity");
             ensure_primary_identity(&alice).expect("seed alice identity");
             ensure_primary_identity(&bob).expect("seed bob identity");
+            // One device key, taken before both accounts provision as it, as the daemon has it.
+            let _taken = device_key_taken_as_daemon(&paths).unwrap();
 
             let start = Arc::new(Barrier::new(3));
             let alice_start = Arc::clone(&start);

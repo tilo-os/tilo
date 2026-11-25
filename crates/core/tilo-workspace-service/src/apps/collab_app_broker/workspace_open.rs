@@ -416,6 +416,8 @@ mod tests {
             crate::apps::policy_clock::OwnerPolicyClock,
             crate::apps::policy_clock::PolicyOrigin,
         ),
+        /// The device's key, taken as its daemon takes it, for as long as this lives.
+        _taken_key: tilo_device_identity::persist::DeviceKeyLock,
         _env: tilo_test_env::ScopedEnv,
         _scratch: tempfile::TempDir,
     }
@@ -431,7 +433,7 @@ mod tests {
                 .set("TILO_IDENTITY_ROOT", &system)
                 .set(provisioning::FILE_SECRETS_ENV, "1");
             tilo_identity::sources::test_trust::install();
-            provisioning::ensure_collaboration_identity(
+            let taken_key = provisioning::provisioned_as_its_daemon(
                 &tilo_identity::store::account_identity_dir(&config.join("tilo/identity")),
                 &tilo_device_identity::IdentityPaths::under(&system),
                 IdentityStorage::Files,
@@ -474,6 +476,7 @@ mod tests {
                 workspace_id,
                 certificate,
                 _clock: (clock, origin),
+                _taken_key: taken_key,
                 _env: env,
                 _scratch: scratch,
             }
@@ -521,7 +524,7 @@ mod tests {
         phase native_launch_and_close_keep_certified_ownership_and_signed_terminals;
         {
             let launcher = Arc::new(Ticketed::default());
-            let NativeDevice { state, bridge, caller, workspace_id, certificate, _clock, _env, _scratch } =
+            let NativeDevice { state, bridge, caller, workspace_id, certificate, _clock, _env, _scratch, _taken_key } =
                 NativeDevice::new(launcher.clone());
             for step in 0..6 {
                 match step {

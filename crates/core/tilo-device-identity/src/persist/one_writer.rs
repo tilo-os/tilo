@@ -54,6 +54,17 @@ fn file_at(_path: &Path) -> Option<(u64, u64)> {
     None
 }
 
+impl Taken {
+    /// Whether this is the key kept at `path`, whose file is `file`: by its name, or by the file
+    /// itself, reached through another name. A file is matched only while the one taken is still
+    /// where it was taken from: once that file is gone, another file can be given its device and
+    /// inode, and it is not this key's.
+    fn is_at(&self, path: &Path, file: Option<(u64, u64)>) -> bool {
+        self.path == path
+            || (file.is_some() && self.file == file && file_at(&self.path) == self.file)
+    }
+}
+
 /// The key at `path`, when this process took it.
 pub(super) fn taken_here(path: &Path) -> Option<SigningKey> {
     let taken = taken();
@@ -63,8 +74,42 @@ pub(super) fn taken_here(path: &Path) -> Option<SigningKey> {
     let file = file_at(path);
     taken
         .iter()
-        .find(|taken| taken.path == path || (file.is_some() && taken.file == file))
+        .find(|taken| taken.is_at(path, file))
         .map(|taken| taken.key.clone())
+}
+
+/// The key this process took from where `paths` keeps it ([`take_device_key`]): what the
+/// daemon's own parts (its workspace service, the identity authority) sign with. It is never read
+/// from the file or the platform's store again.
+///
+/// # Errors
+/// This process did not take the key: only the device's daemon signs as the device
+/// ([`PersistError::NotTheDaemon`]).
+pub fn taken_device_key(paths: &IdentityPaths) -> Result<SigningKey, PersistError> {
+    taken_here(&paths.device_privkey).ok_or(PersistError::NotTheDaemon)
+}
+
+/// This device's public key, from where `paths` keeps it: the key this process took, in the
+/// device's daemon; otherwise the daemon's answer. Nothing here opens the key file.
+///
+/// # Errors
+/// This process is not the daemon and the daemon is not running ([`io::ErrorKind::NotConnected`],
+/// "the device service isn't running on this computer"), or it did not answer.
+pub fn device_public_key(paths: &IdentityPaths) -> Result<[u8; 32], PersistError> {
+    if let Some(key) = taken_here(&paths.device_privkey) {
+        return Ok(key.verifying_key().to_bytes());
+    }
+    crate::login::daemon::DeviceActions::here(paths.clone())
+        .map_err(|message| PersistError::Io(io::Error::other(message)))?
+        .device_key()
+        .map_err(|refusal| {
+            let kind = if refusal.not_running() {
+                io::ErrorKind::NotConnected
+            } else {
+                io::ErrorKind::Other
+            };
+            PersistError::Io(io::Error::new(kind, refusal))
+        })
 }
 
 /// Forget the key this process took at `path`: the key there is being replaced.
@@ -123,10 +168,7 @@ pub fn take_device_key(paths: &IdentityPaths) -> Result<DeviceKeyLock, PersistEr
     // One take at a time: two threads of this process opening the file would refuse each other.
     let mut taken = taken();
     let file = file_at(&path);
-    if taken
-        .iter()
-        .any(|taken| taken.path == path || (file.is_some() && taken.file == file))
-    {
+    if taken.iter().any(|taken| taken.is_at(&path, file)) {
         return Err(PersistError::KeyInUse {
             pid: Some(std::process::id()),
             program: program_of(std::process::id()),

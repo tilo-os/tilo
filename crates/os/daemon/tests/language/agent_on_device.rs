@@ -4,7 +4,7 @@
 
 use serde_json::json;
 
-use crate::language::agent_fixture::{act, events, ls, mcp_agent, watch};
+use crate::language::agent_fixture::{act, events, ls, mcp_agent, said, watch};
 use crate::language::host;
 
 /// Two agent runs of the person's logged-in computer each list the workspace and run what they

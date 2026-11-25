@@ -2247,7 +2247,7 @@ mod tests {
             server_address: None,
         };
         let mut env = tilo_test_env::ScopedEnv::new();
-        crate::login::keep_for_test(&mut env, dir.path(), &key, &device);
+        let _taken = crate::login::keep_for_test(&mut env, dir.path(), &key, &device);
         env.remove(api::KEY_FILE_ENV);
 
         let members = || Cmd::Ls {

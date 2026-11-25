@@ -39,8 +39,8 @@ pub(super) fn store_disclosure(
                 .ok_or_else(|| ActionCallError::Unavailable {
                     reason: "no workspace to sign the Store disclosure in".into(),
                 })?;
-            tilo_identity::trusted_device::current(workspace)
-                .map(|(_, certificate)| certificate.user_public_key)
+            tilo_identity::trusted_device::certificate(workspace)
+                .map(|certificate| certificate.user_public_key)
                 .map_err(|error| ActionCallError::Unavailable {
                     reason: format!("no identity to sign the Store disclosure with: {error}"),
                 })?

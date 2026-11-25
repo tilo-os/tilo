@@ -22,7 +22,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 use tilo_actions::remote::LineClient;
-use tilo_device_identity::login as device;
 use tilo_mcp::McpServer;
 
 mod model_ask;
@@ -1688,38 +1687,6 @@ pub fn desktop_socket() -> Option<PathBuf> {
     tilo_files::native::socket::is_bound(&socket).then_some(socket)
 }
 
-/// This computer's own key as a key file ([`crate::direct::KeyFile`]), named `name` or as the
-/// person's devices name this computer: the key `tilo login` kept, its certificate in the
-/// canonical bytes the in-process API reads, and the host it reaches. `None` when this computer
-/// did not log in.
-///
-/// # Errors
-/// The login is damaged.
-pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
-    let Some((key, device)) = crate::daemon::who::here()? else {
-        return Ok(None);
-    };
-    let canonical = tilo_user_identity::canonical::canonical_bytes(&device.cert)
-        .map_err(|_| anyhow!(device::LOGIN_DAMAGED))?;
-    Ok(Some(crate::direct::KeyFile {
-        host: device.host_origin.clone(),
-        // The site the device logged in with: links this key asks the host for are built on
-        // it, as the site's own page builds them.
-        site: Some(device.site.trim_end_matches('/').to_owned()),
-        name: name.map_or_else(|| device.label().to_owned(), str::to_owned),
-        key: hex::encode(key.to_bytes()),
-        cert: hex::encode(canonical),
-        reached_at: device
-            .server_address
-            .as_ref()
-            .map(|address| crate::server::ServerInfo {
-                server_cert: device.server_cert.clone(),
-                address: Some(address.clone()),
-                origin: Some(device.host_origin.clone()),
-            }),
-    }))
-}
-
 /// The key a script was approved (`token`, as `tilo do account/keys#create` answers it), as a key file
 /// reaching where this computer's login reaches: a key of its own, never the device's, so the
 /// script's session and the computer's each have one session. `None` when this computer did not
@@ -1728,8 +1695,26 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
 /// # Errors
 /// The token is not a key's, or the login is damaged.
 pub fn script_key(token: &str) -> Result<Option<crate::direct::KeyFile>> {
-    let Some(file) = login_key(None)? else {
+    let Some(device) = crate::daemon::who::home().map_err(anyhow::Error::msg)? else {
         return Ok(None);
+    };
+    let file = crate::direct::KeyFile {
+        host: device.host_origin.clone(),
+        // The site the device logged in with: links this key asks the host for are built on
+        // it, as the site's own page builds them.
+        site: Some(device.site.trim_end_matches('/').to_owned()),
+        // The token names the key, its certificate and the name its runs go by.
+        name: String::new(),
+        key: String::new(),
+        cert: String::new(),
+        reached_at: device
+            .server_address
+            .as_ref()
+            .map(|address| crate::server::ServerInfo {
+                server_cert: device.server_cert.clone(),
+                address: Some(address.clone()),
+                origin: Some(device.host_origin.clone()),
+            }),
     };
     Ok(Some(file.with_token(token).map_err(anyhow::Error::msg)?))
 }

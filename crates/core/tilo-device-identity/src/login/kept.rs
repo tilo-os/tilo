@@ -7,7 +7,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::ServerAddress;
 use crate::IdentityPaths;
-use crate::persist::{load_device_key, read_device_cert, write_device_cert};
+use crate::persist::{read_device_cert, taken_device_key, write_device_cert};
 
 /// What a device certificate this computer cannot read says.
 pub const LOGIN_DAMAGED: &str = "This computer's Tilo certificate is damaged: log in again with a \
@@ -167,8 +167,7 @@ pub fn file_entry(place: &Place, device: &Device) -> Result<()> {
 pub fn filed_entry(place: &Place) -> Option<Device> {
     let bytes = std::fs::read(place.dir.join(ENTRY)).ok()?;
     let device: Device = serde_json::from_slice(&bytes).ok()?;
-    let key = load_device_key(&place.keys).ok()?;
-    if device.cert.device_public_key != key.verifying_key().to_bytes() {
+    if device.cert.device_public_key != this_device(&place.keys).ok()? {
         return None;
     }
     let filed = read_device_cert(
@@ -186,8 +185,7 @@ pub fn filed_entry(place: &Place) -> Option<Device> {
 /// # Errors
 /// The certificate is for another key than this computer's, or it cannot be written.
 pub fn file_certificate(place: &Place, cert: &DeviceCert) -> Result<()> {
-    let key = load_device_key(&place.keys).context("reading this computer's device key")?;
-    if cert.device_public_key != key.verifying_key().to_bytes() {
+    if cert.device_public_key != this_device(&place.keys)? {
         bail!("the certificate is for another device key than this computer's");
     }
     write_device_cert(
@@ -195,6 +193,16 @@ pub fn file_certificate(place: &Place, cert: &DeviceCert) -> Result<()> {
         cert,
     )?;
     Ok(())
+}
+
+/// This computer's device key, as its daemon has it: the key this process took, in the daemon,
+/// else the one the daemon says it signs with. The key file is never read here.
+fn this_device(keys: &IdentityPaths) -> Result<[u8; 32]> {
+    if let Ok(key) = taken_device_key(keys) {
+        return Ok(key.verifying_key().to_bytes());
+    }
+    let actions = super::daemon::DeviceActions::here(keys.clone()).map_err(anyhow::Error::msg)?;
+    Ok(actions.device_key()?)
 }
 
 /// The label a login gives a computer that runs `agent` on the host `host`:

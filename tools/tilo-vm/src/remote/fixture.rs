@@ -1,6 +1,7 @@
-//! A device in this process for tests: a real action service on a loopback endpoint, serving its
-//! steps from a closure and its content store from memory, so tilo-vm is tested through the same
-//! frames, signatures and admission a device's daemon answers it with.
+//! A device in this process for tests: the action wire on a local socket, as this computer's
+//! daemon serves it on its native endpoint, answering the device's steps from a closure and its
+//! content store from memory, so tilo-vm is tested through the same frames, uploads and workspace
+//! naming the daemon answers it with.
 #![allow(
     clippy::unwrap_used,
     clippy::missing_panics_doc,
@@ -8,21 +9,19 @@
 )]
 
 use std::collections::BTreeMap;
+use std::io::BufReader;
+use std::os::unix::net::UnixListener;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use ed25519_dalek::SigningKey;
 use serde_json::Value;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ContentPut,
-    ContentPuts, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus,
+    ContentPuts, HostedContentPuts, InvocationReceipt, InvocationState, InvokeArgument,
+    InvokeRequest, Pending, ReceiptStatus,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId};
 use tilo_device_protocol::RpcError;
-use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService};
-use tilo_peer_state::direct::Replica;
-use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use crate::config::DeviceRoute;
 use crate::remote::Machine;
@@ -40,8 +39,8 @@ pub struct Asked {
     pub action: String,
     pub resource: String,
     pub argument: Value,
-    /// The device key the request was signed with.
-    pub by: [u8; 32],
+    /// The workspace the request was asked in.
+    pub workspace: Option<String>,
 }
 
 #[derive(Clone)]
@@ -148,7 +147,7 @@ impl ActionProvider for Provider {
             action: action.clone(),
             resource: request.target.address.resource.clone(),
             argument: argument.clone(),
-            by: *caller.device_public_key().unwrap(),
+            workspace: caller.workspace().map(str::to_owned),
         });
         let status = match (self.steps)(&action, &argument) {
             Ok(value) => ReceiptStatus::Completed {
@@ -185,13 +184,14 @@ impl ActionProvider for Provider {
     }
 }
 
-/// A device of one person, and a machine of the same person that drives it.
+/// A device of one person, and a machine of the same person whose daemon reaches it.
 pub struct Device {
     pub machine: Machine,
     pub route: DeviceRoute,
     asked: Arc<Mutex<Vec<Asked>>>,
     pub content: Arc<Store>,
-    router: iroh::protocol::Router,
+    /// Where the daemon's socket is: it goes with the device.
+    _sockets: tempfile::TempDir,
 }
 
 impl Device {
@@ -225,29 +225,7 @@ impl Device {
         status: Value,
         steps: impl Fn(&str, &Value) -> Answer + Send + Sync + 'static,
     ) -> Self {
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let (device, device_cert) = certified(&root, 2);
-        let (machine, machine_cert) = certified(&root, 3);
-        let roster = [device_cert.clone(), machine_cert];
-        let now = tilo_clock::wall();
-        let mut peer = StatePeer::new(
-            WORKSPACE,
-            device_cert.clone(),
-            roster.to_vec(),
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        peer.select_exact_admissions().unwrap();
-        peer.install_seed(
-            SeedState {
-                workspace_changes: seed_workspace(WORKSPACE, &device_cert, &roster).unwrap(),
-                documents: Vec::new(),
-            },
-            &device,
-            now,
-        )
-        .unwrap();
+        let (person, device) = ([1; 32], [2; 32]);
         let asked = Arc::new(Mutex::new(Vec::new()));
         let content = Arc::new(Store::default());
         let provider = Provider {
@@ -256,30 +234,56 @@ impl Device {
             asked: Arc::clone(&asked),
             content: Arc::clone(&content),
         };
-        let runtime = tilo_rt::app().handle();
-        let _entered = runtime.enter();
-        let endpoint = runtime.block_on(tilo_peer_state::loopback::endpoint(&device));
-        let service = ActionService::new(device.clone(), Arc::new(provider));
-        service.hold(Replica::new(peer));
-        let accepting = iroh::protocol::Router::builder(endpoint.clone())
-            .accept(ACTIONS_ALPN, service)
-            .spawn();
-        let addr = tilo_peer_state::loopback::addr(&endpoint);
+        let sockets = tempfile::tempdir().unwrap();
+        let native = sockets.path().join("native");
+        let listener = UnixListener::bind(&native).unwrap();
+        std::thread::spawn(move || {
+            let uploads = Arc::new(HostedContentPuts::default());
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let provider = provider.clone();
+                let input = BufReader::new(stream.try_clone().unwrap());
+                let uploads = Arc::clone(&uploads);
+                std::thread::spawn(move || {
+                    // The daemon answers each frame as the person on this device, in the
+                    // workspace the frame names.
+                    let tree = |frame: &tilo_actions::remote::RemoteActionFrame| {
+                        let caller = Caller::authenticated(person, device);
+                        let caller = match &frame.workspace {
+                            Some(workspace) => caller.in_workspace(workspace),
+                            None => caller,
+                        };
+                        Ok::<_, ActionCallError>((provider.clone(), caller))
+                    };
+                    tilo_actions::remote::serve_lines(
+                        tree,
+                        &uploads,
+                        None,
+                        input,
+                        stream,
+                        Duration::from_secs(5),
+                    );
+                });
+            }
+        });
         Self {
             machine: Machine {
-                key: machine,
-                user: root.verifying_key().to_bytes(),
+                device,
+                user: person,
                 workspace: WORKSPACE.into(),
+                native,
             },
             route: DeviceRoute {
-                device: hex::encode(device.verifying_key().to_bytes()),
+                device: hex::encode(device),
                 workspace: WORKSPACE.into(),
-                addresses: addr.ip_addrs().map(ToString::to_string).collect(),
+                // Where the device's daemon would answer; this machine's own device is asked at
+                // its daemon whatever the route names.
+                addresses: vec![format!("127.0.0.1:{}", crate::config::DAEMON_PORT)],
                 relay: None,
             },
             asked,
             content,
-            router: accepting,
+            _sockets: sockets,
         }
     }
 
@@ -287,32 +291,4 @@ impl Device {
     pub fn asked(&self) -> Vec<Asked> {
         self.asked.lock().unwrap().clone()
     }
-
-    /// The device key of the machine that drives it.
-    pub fn machine_key(&self) -> [u8; 32] {
-        self.machine.key.verifying_key().to_bytes()
-    }
-}
-
-impl Drop for Device {
-    fn drop(&mut self) {
-        let router = self.router.clone();
-        drop(tilo_rt::app().handle().block_on(router.shutdown()));
-    }
-}
-
-fn certified(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
-    let key = SigningKey::from_bytes(&[n; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{n}"),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    (key, cert)
 }

@@ -56,6 +56,9 @@ struct Person {
     user_public_key: [u8; 32],
     phone_cert: DeviceCert,
     phone_key: ed25519_dalek::SigningKey,
+    /// The device key this process took as the daemon's, which the session signs with here: let go
+    /// of with the identity's files.
+    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
 }
@@ -76,7 +79,9 @@ fn person() -> Person {
     tilo_identity::sources::test_trust::install();
     let personal = tilo_identity::store::account_identity_dir(&xdg.join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
-    tilo_identity::provisioning::ensure_collaboration_identity(
+    // This process stands in for the machine's daemon: it takes the device key first, and keeps it
+    // while the session this person's tests run signs with it.
+    let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
         &personal,
         &paths,
         IdentityStorage::Files,
@@ -102,6 +107,7 @@ fn person() -> Person {
         user_public_key: profile.user_public_key,
         phone_cert,
         phone_key,
+        _taken_key: taken_key,
         _env: env,
         _root: root,
     }

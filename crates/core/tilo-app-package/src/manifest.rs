@@ -1414,7 +1414,11 @@ impl Manifest {
         let bytes = self
             .signing_bytes()
             .map_err(|error| format!("this manifest does not encode: {error}"))?;
-        self.publisher.signature = hex::encode(identity.sign_message(&bytes));
+        self.publisher.signature = hex::encode(
+            identity
+                .sign_message(&bytes)
+                .map_err(|error| error.to_string())?,
+        );
         Ok(())
     }
 

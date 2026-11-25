@@ -70,7 +70,9 @@ fn the_host_opens_a_window_in_the_machine_and_reads_it_through_the_dispatch() {
         let started = Arc::clone(&started);
         Arc::new(move |holds, workspace| {
             started.lock_recover().push((holds, workspace.to_owned()));
-            std::process::Command::new("sleep").arg("600").spawn_locked()
+            std::process::Command::new("sleep")
+                .arg("600")
+                .spawn_locked()
         })
     };
     let ended = Arc::new(AtomicBool::new(false));

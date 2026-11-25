@@ -514,7 +514,8 @@ pub(super) struct LiveGuests {
 }
 
 pub(super) const MACHINE: &str = r#"cd /var/lib/tilo/device-private 2>/dev/null || exit 0
-[ -f keypair.bin ] && echo "KEY=$(sha256sum < keypair.bin | cut -c1-16)"
+k=$(tilo device key 2>/dev/null | sed -n 's/.*"device": *"\([0-9a-f]*\)".*/\1/p')
+[ -n "$k" ] && echo "KEY=$k"
 u=$(tr -d '-' < /sys/class/dmi/id/product_uuid | tr 'A-F' 'a-f')
 r=$([ -f machine.bin ] && od -An -tx1 -v machine.bin | tr -d ' \n')
 if [ ! -f branch.bin ] && [ -n "$r" ] && [ "$u" = "$r" ]; then echo RECORDED=yes; fi"#;

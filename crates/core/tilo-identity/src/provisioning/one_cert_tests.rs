@@ -41,6 +41,7 @@ tilo_test_env::scenario! {
         let temp = tempfile::tempdir().unwrap();
         let identity = temp.path().join("identity");
         let paths = IdentityPaths::under(temp.path().join("system"));
+        let _taken = device_key_taken_as_daemon(&paths).expect("this process signs as the device");
         ensure_collaboration_identity(&identity, &paths, FILES).expect("provision");
         let kept = fs::read(&paths.device_cert).unwrap();
         let first = persist::read_device_cert(&paths.device_cert).unwrap();
@@ -109,6 +110,8 @@ tilo_test_env::scenario! {
         assert!(matches!(branched.certification, Certification::Pending(_)));
         assert!(!paths.device_cert.exists());
 
+        // The sign-in process signs as the re-keyed device, as its daemon does.
+        let _taken = device_key_taken_as_daemon(&paths).expect("this process signs as the device");
         ensure_collaboration_identity(&identity, &paths, FILES).expect("sign in");
         let cert = persist::read_device_cert(&paths.device_cert).unwrap();
         tilo_user_identity::verify_device_cert(&cert).expect("the new certificate verifies");
@@ -127,10 +130,11 @@ tilo_test_env::scenario! {
 #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
 fn a_renewed_certificate_is_the_same_bytes_in_both_places() {
     let tmp = tempfile::tempdir().unwrap();
-    let (personal, paths, expired) = crate::provisioning::renewal::renewal_tests::aged_throwaway(
-        tmp.path(),
-        48 * 60 * 60 * 1_000_000_000,
-    );
+    let (personal, paths, expired, _taken) =
+        crate::provisioning::renewal::renewal_tests::aged_throwaway(
+            tmp.path(),
+            48 * 60 * 60 * 1_000_000_000,
+        );
 
     ensure_collaboration_identity(&personal, &paths, FILES).expect("start");
 

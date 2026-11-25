@@ -16,13 +16,13 @@ use std::sync::Arc;
 use tilo_action_policy::{
     Acting, ActionKind, Answer, Authority, Context, TreePath, WorkspacePolicy, roles,
 };
-use tilolang_workspace::records::{Packages, member, with_tl_record};
 use tilo_workspace_service::tl_records::{Compiled, Package};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, declare_app, governor, install_app, revoke_grant, test_host_holding,
     uninstall_app,
 };
+use tilolang_workspace::records::{Packages, member, with_tl_record};
 
 use super::mount;
 use super::wakeups_tests::{APP, CLOCKS, alarm};
@@ -154,7 +154,14 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
     }
 
     // Its trigger writes its own record, the alarm's notice, with nobody at it.
-    alarm(&workspaces, &workspace, &packages, &person, ("Standup", 6, 0, "")).await;
+    alarm(
+        &workspaces,
+        &workspace,
+        &packages,
+        &person,
+        ("Standup", 6, 0, ""),
+    )
+    .await;
     let (ran, said) = ring_next(&workspaces, &workspace, &packages, &person).await;
     assert_eq!(ran, 1, "the trigger wrote Clocks' own record: {said:?}");
     assert!(said.is_empty(), "nothing went wrong to say: {said:?}");
@@ -181,7 +188,14 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
     assert_eq!(app_may_change(&revoked, APP, &own), Answer::Deny);
 
     // The next write Clocks makes by itself is refused, and Clocks says why in its window.
-    alarm(&workspaces, &workspace, &packages, &person, ("Gym", 7, 0, "")).await;
+    alarm(
+        &workspaces,
+        &workspace,
+        &packages,
+        &person,
+        ("Gym", 7, 0, ""),
+    )
+    .await;
     let (ran, said) = ring_next(&workspaces, &workspace, &packages, &person).await;
     assert_eq!(ran, 0, "the workspace refuses what Clocks writes by itself");
     assert!(

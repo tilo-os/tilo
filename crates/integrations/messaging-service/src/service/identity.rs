@@ -24,15 +24,16 @@ pub(crate) struct Ownership {
 }
 
 impl Ownership {
-    /// The device identity of `actor` as this device holds it, on SDK
-    /// device `device`.
+    /// The device identity of `actor` on SDK device `device`: the person's certificate, and the
+    /// device's key as its daemon signs with it. The daemon is the device key's one writer, so
+    /// this program never reads the key file.
     ///
     /// # Errors
-    /// The device key or the person's certificate cannot be read.
+    /// The device service isn't running, or the person's certificate cannot be read.
     pub(crate) fn load(actor: &str, device: &str) -> Result<Self, String> {
         let paths = tilo_identity::provisioning::collaboration_identity_paths();
-        let key =
-            tilo_device_identity::persist::load_device_key(&paths).map_err(|e| e.to_string())?;
+        let signer = tilo_identity::daemon_signer::DaemonSigner::here(paths.clone())
+            .map_err(|refused| refused.message)?;
         let mut person = [0; 32];
         hex::decode_to_slice(actor, &mut person).map_err(|e| e.to_string())?;
         let cert =
@@ -41,7 +42,7 @@ impl Ownership {
         Self::with_host(
             DeviceIdentity::held(
                 cert,
-                key,
+                signer,
                 std::sync::Arc::new(tilo_identity::identity_store::files::Files::new(paths)),
             ),
             actor,

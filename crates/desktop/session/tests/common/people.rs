@@ -887,6 +887,9 @@ pub struct Person {
     /// Their root, as a workspace names them.
     pub public: [u8; 32],
     root: tilo_identity::store::SigningIdentity,
+    /// The device key this process took as the machine's daemon, so the account store seals and
+    /// unseals their root with it: let go of with the directory it is kept in.
+    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
     /// The identity the first use of this machine provisioned for them: the record each of their
     /// devices carries, and the root secret devices certify their own keys with.
     identity: tempfile::TempDir,
@@ -914,7 +917,9 @@ impl Person {
         let system = identity.path().join("system");
         let mut sealing = tilo_test_env::ScopedEnv::new();
         sealing.set("TILO_IDENTITY_ROOT", &system);
-        tilo_identity::provisioning::ensure_collaboration_identity(
+        // This process stands in for the machine's daemon: it takes the device key first, so the
+        // account store seals the person's root with it, and keeps it while the person lives.
+        let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
             &identity_dir,
             &IdentityPaths::under(&system),
             IdentityStorage::Files,
@@ -928,6 +933,7 @@ impl Person {
             name: name.to_owned(),
             public: root.group_public_key(),
             root,
+            _taken_key: taken_key,
             identity,
             first_device: std::sync::atomic::AtomicBool::new(true),
         }

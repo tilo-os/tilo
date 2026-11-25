@@ -390,9 +390,10 @@ pub fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String> {
 /// native owner/session admission remains separate.
 ///
 /// It reads the device's own root-signed certificate as the daemon's start does
-/// ([`tilo_identity::trusted_device::unlisted`]): setup runs before the host that
-/// keeps the person's devices record has listed this device, and on a computer the
-/// daemon has not started at all. A revocation the record carries is still refused.
+/// ([`tilo_identity::trusted_device::unlisted_certificate`]): setup runs before the host that
+/// keeps the person's devices record has listed this device. The key it names is the one the
+/// device's daemon signs with, so a computer whose daemon is not running is not ready. A
+/// revocation the record carries is still refused.
 pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
     if existing_identity_at(&minted.path).map_or(true, |current| current != *minted) {
         return false;
@@ -404,8 +405,8 @@ pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
         return false;
     };
     let room = collab_types::person_workspace(&person);
-    tilo_identity::trusted_device::unlisted(&room.to_string())
-        .is_ok_and(|(_, certificate)| certificate.user_public_key == person)
+    tilo_identity::trusted_device::unlisted_certificate(&room.to_string())
+        .is_ok_and(|certificate| certificate.user_public_key == person)
 }
 
 /// Whether the record at `path` carries no secret of the identity: neither a
@@ -519,6 +520,9 @@ mod tests {
             let identity_dir = dir.path().join("identity");
             let system = tilo_device_identity::IdentityPaths::under(dir.path().join("system"));
             let (device, _) = persist::load_or_create_device_key(&system).unwrap();
+            // This phase files the certificate and takes the person up as the daemon does, so it
+            // takes the key it just made, as the daemon does when it starts.
+            let _taken = persist::take_device_key(&system).unwrap();
             let mut cert = DeviceCert {
                 user_public_key: person,
                 device_public_key: device.verifying_key().to_bytes(),

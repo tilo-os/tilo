@@ -16,9 +16,8 @@
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use ed25519_dalek::SigningKey;
 use tilo_device_identity::IdentityPaths;
-use tilo_device_identity::persist::{load_device_key, read_device_cert};
+use tilo_device_identity::persist::read_device_cert;
 use tilo_identity::provisioning::IdentityStorage;
 use tilo_user_identity::DeviceCert;
 
@@ -26,11 +25,11 @@ use crate::login;
 
 /// The person this computer holds the root of.
 ///
-/// Their root stays where it is kept: the daemon that holds it signs for them
-/// ([`tilo_device_identity::login::ANSWER_SIGN_IN`]).
+/// Their root and this computer's device key stay where they are kept: the
+/// daemon that keeps them signs for both ([`tilo_device_identity::login::ANSWER_SIGN_IN`],
+/// [`tilo_device_identity::login::SIGN`]).
 pub struct Person {
-    pub device: SigningKey,
-    /// The certificate the root signed for [`Self::device`].
+    /// The certificate the root signed for this computer's device key.
     pub cert: DeviceCert,
     /// How the person is named: empty while they gave no name.
     pub name: String,
@@ -116,11 +115,7 @@ pub fn held() -> Result<Option<Person>> {
                 hex::encode(user)
             )
         })?;
-    Ok(Some(Person {
-        device: load_device_key(&paths)?,
-        cert,
-        name,
-    }))
+    Ok(Some(Person { cert, name }))
 }
 
 /// A ticket the founding call issued as part of making the person, which their own act asks
@@ -526,10 +521,11 @@ mod tests {
     use super::*;
 
     /// A person made on this computer account as its daemon makes one
-    /// ([`tilo_identity::provisioning::create_person`]), for a test that needs one there.
+    /// ([`tilo_identity::provisioning::create_person`]), for a test that needs one there. The
+    /// person is the account's own, in the store it reads.
     fn made_here(name: &str) -> Person {
         tilo_identity::provisioning::create_person(
-            &dir().unwrap(),
+            &tilo_identity::store::account_identity_dir(&dir().unwrap()),
             &paths(),
             name,
             "",
@@ -537,6 +533,21 @@ mod tests {
         )
         .unwrap();
         held().unwrap().expect("the person just made")
+    }
+
+    /// The record this account acts as, in the store it reads.
+    fn active_here() -> std::path::PathBuf {
+        let account = tilo_identity::store::account_identity_dir_from_env().unwrap();
+        tilo_identity::store::resolve_active_identity(&account).unwrap()
+    }
+
+    /// This computer's device key taken in this process, as its device service holds it while
+    /// it runs: the account's root is sealed with that key, so only the process holding it opens
+    /// the root. A test has no device service of its own to ask, so it takes the key here.
+    fn took_the_device_key() -> tilo_device_identity::persist::DeviceKeyLock {
+        let paths = paths();
+        tilo_device_identity::persist::load_or_create_device_key(&paths).unwrap();
+        tilo_device_identity::persist::take_device_key(&paths).unwrap()
     }
 
     #[test]
@@ -550,19 +561,20 @@ mod tests {
         };
         let first = tempfile::tempdir().unwrap();
         at(&mut env, first.path());
+        let _first_taken = took_the_device_key();
         let ada = made_here("Ada");
-        let active = tilo_identity::store::resolve_active_identity(&dir().unwrap()).unwrap();
-        let words = tilo_identity::store::recovery_words(&active).unwrap();
+        let words = tilo_identity::store::recovery_words(&active_here()).unwrap();
         let other = tempfile::tempdir().unwrap();
         at(&mut env, other.path());
+        let _other_taken = took_the_device_key();
         made_here("Bea");
-        let active = tilo_identity::store::resolve_active_identity(&dir().unwrap()).unwrap();
-        let bea_words = tilo_identity::store::recovery_words(&active).unwrap();
+        let bea_words = tilo_identity::store::recovery_words(&active_here()).unwrap();
 
         // A computer account with nothing of Tilo on it: the words make it Ada's again, with a
         // device of its own that her root certified.
         let fresh = tempfile::tempdir().unwrap();
         at(&mut env, fresh.path());
+        let _fresh_taken = took_the_device_key();
         assert!(!holds_root());
         let restored = restore(&format!("  {}\n", words.as_str())).unwrap();
         assert_eq!(restored.public_key(), ada.public_key(), "the same person");

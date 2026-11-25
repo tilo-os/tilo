@@ -1,6 +1,7 @@
 //! This device's identity store as the identity files hold it.
 use std::path::PathBuf;
 
+use collab_types::signer::DeviceSigner as _;
 use ed25519_dalek::VerifyingKey;
 use tilo_device_identity::IdentityPaths;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
@@ -29,14 +30,15 @@ impl IdentityStore for Files {
         ),
         String,
     > {
-        let key = tilo_device_identity::persist::load_device_key(&self.paths)
-            .map_err(|e| e.to_string())?;
+        // The key this process took as the device's daemon, else the daemon asked to sign.
+        let signer =
+            crate::trusted_device::device_signer(&self.paths).map_err(|e| e.to_string())?;
         let cert = tilo_device_identity::persist::read_device_cert(&self.paths.device_cert)
             .map_err(|e| e.to_string())?;
-        if cert.device_public_key != key.verifying_key().to_bytes() {
+        if cert.device_public_key != signer.device_public_key() {
             return Err("the collaboration device key and its certificate differ".into());
         }
-        Ok((cert, std::sync::Arc::new(key)))
+        Ok((cert, signer))
     }
 
     fn read(

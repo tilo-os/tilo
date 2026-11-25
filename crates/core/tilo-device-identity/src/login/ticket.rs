@@ -105,6 +105,10 @@ pub const TERMINAL_RECORDS: &str = "terminalRecords";
 /// descriptor handed beside the answer, on which the host's answer and then its terminal stream
 /// follow.
 pub const OPEN_TERMINAL: &str = "openTerminal";
+/// The action the device's system and its person's own programs ask the device's daemon: sign
+/// `message` (hex) with the device key. Answers the Ed25519 `signature` (hex). A program that
+/// needs the device to prove who it is asks this; the key never leaves the daemon.
+pub const SIGN: &str = "sign";
 /// The actions a daemon answers the person about the identities it keeps: listing them without
 /// secrets, and using (new apps sign in as it), removing and protecting (its key moves into
 /// protected storage) identity `id`, each change with `confirm`.

@@ -102,9 +102,13 @@ impl InvokeRequest {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+mod carry;
+#[cfg(not(target_arch = "wasm32"))]
 mod client;
 #[cfg(not(target_arch = "wasm32"))]
 mod lines;
+#[cfg(not(target_arch = "wasm32"))]
+pub use carry::{Carry, CarryAnswer, answer_line as carry_answer_line, carry_line, carry_request};
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::{LineClient, LinePut};
 #[cfg(not(target_arch = "wasm32"))]

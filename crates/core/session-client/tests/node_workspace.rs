@@ -174,6 +174,8 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     let state = node.path().join("state");
     let (device, _) = tilo_device_identity::load_or_create_device_key(&paths).unwrap();
     let device = device.verifying_key().to_bytes();
+    // The node's daemon takes its key, and the install route signs with the key it took.
+    let _taken = tilo_device_identity::persist::take_device_key(&paths).unwrap();
     let session_paths = IdentityPaths::under(node.path().join("session-identity"));
     let (session, _) = tilo_device_identity::load_or_create_device_key(&session_paths).unwrap();
     let session = session.verifying_key().to_bytes();

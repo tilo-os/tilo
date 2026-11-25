@@ -1011,6 +1011,8 @@ pub(crate) mod signed_test_support {
         pub tree: crate::apps::test_support::WorkspaceTreeHandle,
         certified_host: Option<Arc<dyn tilo_actions::remote::ActionProvider>>,
         _fanout: Arc<FanoutState>,
+        /// The device's key, taken as its daemon takes it, for as long as this lives.
+        _taken_key: tilo_device_identity::persist::DeviceKeyLock,
         _environment: tilo_test_env::ScopedEnv,
         directory: tempfile::TempDir,
         clock: crate::apps::policy_clock::OwnerPolicyClock,
@@ -1034,7 +1036,7 @@ pub(crate) mod signed_test_support {
                 .set("TILO_IDENTITY_ROOT", directory.path().join("identity"))
                 .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
             tilo_identity::sources::test_trust::install();
-            tilo_identity::provisioning::ensure_collaboration_identity(
+            let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
                 &tilo_identity::store::account_identity_dir(
                     &directory.path().join("config/tilo/identity"),
                 ),
@@ -1110,6 +1112,7 @@ pub(crate) mod signed_test_support {
                 tree,
                 certified_host: None,
                 _fanout: fanout,
+                _taken_key: taken_key,
                 _environment: environment,
                 directory,
                 clock,

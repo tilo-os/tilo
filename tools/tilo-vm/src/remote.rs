@@ -1,24 +1,24 @@
-//! How tilo-vm reaches a device: the action frames of the device's own daemon endpoint, signed
-//! with this machine's device key, as every other device of the person asks it. Each step is one
-//! action on the device's `devices/<device>/vm`, admitted by the grants of the person's own
-//! workspace; bytes go into the device's content store before the step that names them.
+//! How tilo-vm reaches a device: through this computer's daemon, over the action wire of its
+//! native endpoint. The daemon is the device key's one writer and the one endpoint under it, so
+//! tilo-vm never reads the key or dials as the device: it asks the daemon, which asks as the
+//! device. Each step is one action on the device's `devices/<device>/vm`, admitted by the grants
+//! of the person's own workspace; bytes go into the device's content store before the step that
+//! names them.
 
 use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
-use ed25519_dalek::SigningKey;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, ContentPutAnswer, ContentPutStep, InvokeArgument,
-    InvokeRequest, MAX_CONTENT_FRAME_BYTES, MAX_HAVE_HASHES, Pending, ReceiptStatus,
-    RemoteActionTarget,
+    ActionCallError, ActionProvider, Caller, Carry, ContentPut, ContentPuts as _, InvokeArgument,
+    InvokeRequest, LineClient, MAX_CONTENT_FRAME_BYTES, Pending, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, ActionFailure, InvocationId, InvocationUpdate};
+use tilo_device_identity::login::daemon::DeviceActions;
 use tilo_device_protocol::{
     Call, LayerImport, RpcError, Status, StatusResult, TreeFile, TreeManifest, TreeSymlink,
 };
-use tilo_peer_state::actions::{ActionService, NoActions, REPLY_DEADLINE, RemoteDevice};
+use tilo_peer_state::actions::REPLY_DEADLINE;
 
 use crate::config::DeviceRoute;
 use crate::error::CliError;
@@ -33,22 +33,17 @@ pub fn resource(device: &str) -> String {
     format!("devices/{device}/vm")
 }
 
-/// The identity this machine asks as: its device key, certified by the person, and the person's
-/// own workspace, whose grants decide what the device lets it do.
-#[derive(Clone)]
+/// The identity this machine asks as: its device, certified by the person, the person's own
+/// workspace, whose grants decide what the device lets it do, and the daemon's native endpoint,
+/// which asks as the device.
+#[derive(Clone, Debug)]
 pub struct Machine {
-    pub key: SigningKey,
+    /// The device's public key, as its daemon answers it.
+    pub device: [u8; 32],
     pub user: [u8; 32],
     pub workspace: String,
-}
-
-impl std::fmt::Debug for Machine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Machine")
-            .field("device", &hex::encode(self.key.verifying_key().to_bytes()))
-            .field("workspace", &self.workspace)
-            .finish_non_exhaustive()
-    }
+    /// The socket of this computer's daemon, which carries every step.
+    pub native: PathBuf,
 }
 
 /// The `tilo` command tilo-vm asks: the one built beside this tilo-vm when there is one (a
@@ -72,19 +67,21 @@ impl Machine {
     }
 
     fn at(place: &tilo_device_identity::login::Place) -> Result<Option<Self>, CliError> {
+        let (sockets, _) = tilo_device_identity::login::daemon::sockets(place.dir())
+            .map_err(|error| login_error(&anyhow::anyhow!("{error}")))?;
+        let native = tilo_device_identity::login::daemon::native_in(&sockets);
         // A computer a ticket logged in acts in its person's own workspace, as the certificate the
         // login filed names them.
         if let Some(device) = tilo_device_identity::login::served_device_key(place.keys())
             && let Some(cert) = tilo_device_identity::login::ticket_cert(place.keys(), &device)
         {
-            let key = tilo_device_identity::persist::load_device_key(place.keys())
-                .map_err(|error| login_error(&anyhow::anyhow!("{error}")))?;
             return Ok(Some(Self {
-                key,
+                device: cert.device_public_key,
                 user: cert.user_public_key,
                 workspace: tilo_server_protocol::servers::person_workspace_id(
                     &cert.user_public_key,
                 ),
+                native,
             }));
         }
         let Ok(user) = tilo_device_identity::persist::read_public_key(&place.keys().user_pubkey)
@@ -92,12 +89,19 @@ impl Machine {
             return Ok(None);
         };
         let workspace = founded()?;
-        let key = tilo_device_identity::persist::load_device_key(place.keys())
-            .map_err(|error| login_error(&anyhow::anyhow!("{error}")))?;
+        let device =
+            DeviceActions::at(&native)
+                .device_key()
+                .map_err(|refused| CliError::CommandFailed {
+                    command: "ask this computer's device service which device it is".into(),
+                    status: refused.code,
+                    stderr: refused.message,
+                })?;
         Ok(Some(Self {
-            key,
+            device,
             user,
             workspace,
+            native,
         }))
     }
 }
@@ -125,22 +129,23 @@ fn login_error(error: &anyhow::Error) -> CliError {
     }
 }
 
-/// One device, asked over its daemon's action frames.
+/// One device, asked through this computer's daemon.
 pub struct Remote {
     vm: String,
-    device: Arc<RemoteDevice>,
+    /// The connection to the daemon's native endpoint, answered as the person on this device.
+    device: LineClient,
     caller: Caller,
     resource: String,
-    /// The endpoint the connection goes out on: it lives as long as the device is asked.
-    endpoint: iroh::Endpoint,
     /// What the device answered `status` with when it was reached: its version, architecture,
     /// tools, accounts and boot.
     pub status: StatusResult,
 }
 
 impl Remote {
-    /// Reach `route`'s device as `machine` and ask its `status`, which is also how an unreachable
-    /// or refusing device shows.
+    /// Reach `route`'s device through `machine`'s daemon and ask its `status`, which is also how
+    /// an unreachable or refusing device shows. This machine's own device is asked at its daemon;
+    /// any other is carried there by the daemon, which asks it as this machine's device, in
+    /// `route`'s workspace.
     pub fn connect(vm: &str, machine: &Machine, route: &DeviceRoute) -> Result<Self, CliError> {
         let device: [u8; 32] = hex::decode(&route.device)
             .ok()
@@ -149,37 +154,36 @@ impl Remote {
                 path: vm.into(),
                 detail: format!("{} is not a device key", route.device),
             })?;
-        let mut addr =
-            iroh::EndpointAddr::new(iroh::EndpointId::from_bytes(&device).map_err(|error| {
-                CliError::Config {
-                    path: vm.into(),
-                    detail: error.to_string(),
-                }
-            })?);
-        for address in &route.addresses {
-            if let Ok(socket) = address.parse() {
-                addr = addr.with_ip_addr(socket);
-            }
-        }
-        let relay = route.relay.as_deref().and_then(|url| url.parse().ok());
-        let runtime = tilo_rt::app().handle();
-        let _entered = runtime.enter();
-        let server = tilo_server_client::ServerAddress::through(addr, relay);
-        let endpoint = runtime
-            .block_on(server.bind(Some(machine.key.to_bytes())))
-            .map_err(|error| CliError::Unreachable {
-                vm: vm.into(),
-                detail: error.to_string(),
-                debug: vec![],
-            })?;
-        let service = ActionService::new(machine.key.clone(), Arc::new(NoActions));
-        let device = Arc::new(service.remote(&endpoint, &server.addr(), &route.workspace));
+        let reached = if device == machine.device {
+            LineClient::connect(&machine.native)
+        } else {
+            LineClient::carried(
+                &machine.native,
+                &Carry {
+                    device: route.device.clone(),
+                    workspace: route.workspace.clone(),
+                    addresses: route.addresses.clone(),
+                    relay: route.relay.clone(),
+                },
+            )
+        };
+        let device = reached.map_err(|error| CliError::Unreachable {
+            vm: vm.into(),
+            detail: match error.kind() {
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => format!(
+                    "the device service isn't running on this computer ({}: {error})",
+                    machine.native.display()
+                ),
+                _ => error.to_string(),
+            },
+            debug: vec!["tilo status".into()],
+        })?;
         let mut remote = Self {
             vm: vm.into(),
             device,
-            caller: Caller::authenticated(machine.user, machine.key.verifying_key().to_bytes()),
+            caller: Caller::authenticated(machine.user, machine.device)
+                .in_workspace(&route.workspace),
             resource: resource(&route.device),
-            endpoint,
             status: unanswered(),
         };
         remote.status = remote.call(Status { account: None })?;
@@ -262,24 +266,17 @@ impl Remote {
         }
     }
 
-    fn put_step(&self, step: ContentPutStep) -> Result<ContentPutAnswer, CliError> {
-        answered(self.device.content_put(step)).map_err(|error| self.refused("content", error))
-    }
-
     /// Which of `hashes` the device already holds.
     fn have(&self, hashes: &[String]) -> Result<Vec<bool>, CliError> {
-        let mut present = Vec::with_capacity(hashes.len());
-        for batch in hashes.chunks(MAX_HAVE_HASHES) {
-            match self.put_step(ContentPutStep::Have {
-                hashes: batch.to_vec(),
-            })? {
-                ContentPutAnswer::Have { present: held } if held.len() == batch.len() => {
-                    present.extend(held);
-                }
-                _ => return Err(unexpected("have")),
-            }
+        let present = self
+            .device
+            .have(&self.caller, hashes)
+            .map_err(|error| self.refused("content", error))?;
+        if present.len() == hashes.len() {
+            Ok(present)
+        } else {
+            Err(unexpected("have"))
         }
-        Ok(present)
     }
 
     /// Put `bytes` into the device's content store unless it holds them already, and name them by
@@ -313,14 +310,13 @@ impl Remote {
 
     /// Send `size` bytes from `reader`, which hash to `hash`, in chunks the device takes.
     fn send(&self, size: u64, mut reader: impl Read, hash: &str) -> Result<(), CliError> {
-        let ContentPutAnswer::Begun { upload } = self.put_step(ContentPutStep::Begin {
-            size,
-            target: Some(self.target()),
-        })?
-        else {
-            return Err(unexpected("begin"));
-        };
-        // One append is one signed frame between devices, so a chunk is what one frame carries.
+        let refused = |error| self.refused("content", error);
+        let mut upload: Box<dyn ContentPut> = Box::new(
+            self.device
+                .begin_put_for(size, Some(self.target()))
+                .map_err(refused)?,
+        );
+        // One append is one frame, so a chunk is what one frame carries.
         let mut chunk = vec![0; MAX_CONTENT_FRAME_BYTES];
         let mut offset = 0_u64;
         loop {
@@ -331,11 +327,10 @@ impl Remote {
                 break;
             }
             let piece = chunk.get(..read).unwrap_or_default();
-            self.put_step(ContentPutStep::append(upload, offset, piece))?;
-            offset = offset.saturating_add(len(read));
+            offset = upload.append(offset, piece).map_err(refused)?;
         }
-        match self.put_step(ContentPutStep::Finish { upload })? {
-            ContentPutAnswer::Finished { content } if content.ends_with(hash) => Ok(()),
+        match upload.finish().map_err(refused)? {
+            content if content.ends_with(hash) => Ok(()),
             _ => Err(unexpected("finish")),
         }
     }
@@ -417,9 +412,8 @@ impl Remote {
     ) -> Result<(T, Result<(), CliError>), CliError> {
         let renewing = Self {
             vm: self.vm.clone(),
-            device: Arc::clone(&self.device),
+            device: self.device.clone(),
             caller: self.caller.clone(),
-            endpoint: self.endpoint.clone(),
             resource: self.resource.clone(),
             status: self.status.clone(),
         };
@@ -452,7 +446,7 @@ impl Remote {
 /// minutes), so the invocation is followed until it ends, printing each progress line the device
 /// reports.
 fn settle(
-    device: &RemoteDevice,
+    device: &impl ActionProvider,
     caller: &Caller,
     request: InvokeRequest,
 ) -> Result<InvocationUpdate, ActionCallError> {

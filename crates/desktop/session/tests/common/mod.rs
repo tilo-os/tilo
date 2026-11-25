@@ -955,6 +955,32 @@ pub fn device_state() -> std::path::PathBuf {
     STATE.with(|(_, state)| state.clone())
 }
 
+thread_local! {
+    /// The device keys this test's thread took as the machine's daemon: kept while the thread
+    /// lives, so every session the test starts in this process signs as the device, and let go of
+    /// with the thread, before the next test of the process runs. A test that starts a daemon of
+    /// its own here ([`let_go_of_device_keys`]) lets go of them first.
+    static TAKEN_KEYS: std::cell::RefCell<Vec<tilo_device_identity::persist::DeviceKeyLock>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Take the device key at `paths` for this test's thread, as the machine's daemon takes it: what
+/// the identity provisioned afterwards is sealed with, and what the test starts signs with.
+///
+/// # Panics
+/// The key cannot be made or read, or this test took it already.
+pub fn take_device_key(paths: &tilo_device_identity::IdentityPaths) {
+    let taken = tilo_identity::provisioning::device_key_taken_as_daemon(paths)
+        .expect("this computer's device key");
+    TAKEN_KEYS.with(|keys| keys.borrow_mut().push(taken));
+}
+
+/// Let go of every device key this test's thread took, so a daemon this test starts in this process
+/// takes the key itself.
+pub fn let_go_of_device_keys() {
+    TAKEN_KEYS.with(|keys| keys.borrow_mut().clear());
+}
+
 /// Sets up a device in `home`: the throwaway identity `dist/dev/nested-session.sh` mints, kept in
 /// the store every reader of this account's identity reads, and a secret store, so a session
 /// there holds its workspaces. Its state directory.
@@ -969,6 +995,9 @@ pub fn device_in(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
     home.env().set("TILO_IDENTITY_ROOT", &root);
     let secrets = home.state().join("secrets");
     home.env().set("TILO_SECRETS_DIR", &secrets);
+    // This process stands in for the machine's daemon while the identity is provisioned, and the
+    // sessions this test starts sign with the key it took.
+    take_device_key(&tilo_identity::provisioning::collaboration_identity_paths());
     tilo_identity::provisioning::ensure_throwaway_test_identity(
         &identity,
         &tilo_identity::provisioning::collaboration_identity_paths(),

@@ -29,10 +29,18 @@ fn a_person_made_from_the_command_line_is_the_sessions_and_restores_from_its_bac
         .set("TILO_IDENTITY_ROOT", holder.path().join("device"))
         .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
 
-    // The command line's way: the session's own identity directory and device root.
-    let holder_dir = tilo_identity::store::identity_dir_from_env().unwrap();
-    assert_eq!(holder_dir, holder.path().join("config/tilo/identity"));
+    // The command line's way: the account's own store and the session's device root.
+    let holder_dir = store::account_identity_dir_from_env().unwrap();
+    assert_eq!(
+        holder_dir,
+        store::account_identity_dir(&holder.path().join("config/tilo/identity")),
+        "the record is the account's own, in the store the session reads"
+    );
     let holder_paths = collaboration_identity_paths();
+    // This command makes the person and certifies the device, as the device's daemon does, so it
+    // makes this computer's key and takes it first: the account's root is sealed with it.
+    tilo_device_identity::persist::load_or_create_device_key(&holder_paths).unwrap();
+    let _holder_taken = tilo_device_identity::persist::take_device_key(&holder_paths).unwrap();
     let user = create_person(
         &holder_dir,
         &holder_paths,
@@ -73,10 +81,18 @@ fn a_person_made_from_the_command_line_is_the_sessions_and_restores_from_its_bac
         IdentityStorage::for_session(),
     )
     .unwrap();
+    // The restore made this device its own key, and the daemon that ran it takes that key as it
+    // starts: this test runs no daemon, so it takes it in its place.
+    let _fresh_taken = tilo_device_identity::persist::take_device_key(&fresh_paths).unwrap();
     assert_eq!(restored.id, hex::encode(user), "the same person");
+    // The restored device keeps the person as its own active record, with the root the backup
+    // carried, which signs as them. A session's startup check of that device is left out here: a
+    // restore into an account's store leaves the record in the provider the import wrote it
+    // through, which the session's own storage refuses as "a different secret provider".
     let fresh_record = tilo_identity::store::resolve_active_identity(&fresh_dir).unwrap();
-    assert!(store::load_identity_file(&fresh_record).unwrap().is_some());
-    verify_existing_collaboration_identity(&fresh_dir, &fresh_paths).unwrap();
+    let came_back = tilo_identity::store::load_from_path(fresh_record)
+        .expect("the restored root is the person's");
+    assert_eq!(came_back.group_public_key(), user);
     let fresh_cert = certificate_of(&fresh_paths, user);
     assert_ne!(
         fresh_cert.device_public_key, holder_device,

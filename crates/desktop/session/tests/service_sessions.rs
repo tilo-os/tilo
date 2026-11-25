@@ -75,12 +75,16 @@ fn fixture() -> Fixture {
     tilo_identity::sources::test_trust::install();
     let personal = tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        &personal,
-        &paths,
-        IdentityStorage::Files,
-    )
-    .expect("this computer's identity");
+    // Provisioned as the device's daemon provisions: with the device key taken, and let go
+    // of at once, for the daemon this test starts takes it itself.
+    drop(
+        tilo_identity::provisioning::provisioned_as_its_daemon(
+            &personal,
+            &paths,
+            IdentityStorage::Files,
+        )
+        .expect("this computer's identity"),
+    );
     let device = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");

@@ -125,10 +125,12 @@ device_cert="$host_home/.local/share/tilo/device/cert.bin"
 test -s "$primary" || fail 'host provisioning omitted the personal identity'
 test -s "$device_key" || fail 'host provisioning omitted the device key'
 test -s "$device_cert" || fail 'host provisioning omitted the device certificate'
-before=$(sha256sum "$primary" "$device_key" "$device_cert")
+# The certificate names the device key, so an unchanged certificate is an unchanged key: the key
+# itself is the daemon's alone to read.
+before=$(sha256sum "$primary" "$device_cert")
 run_identity --host-desktop --provision-identity \
     >"$work/reprovision.log" 2>&1 || fail 'idempotent host reprovision failed'
-after=$(sha256sum "$primary" "$device_key" "$device_cert")
+after=$(sha256sum "$primary" "$device_cert")
 [[ $after == "$before" ]] || fail 'reprovision changed the established identity chain'
 
 echo 'installed host first-login startup and identity lifecycle: PASS'

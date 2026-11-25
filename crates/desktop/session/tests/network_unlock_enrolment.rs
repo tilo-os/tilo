@@ -39,11 +39,14 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, verify_device_cert};
 /// The kind the sheet lists a peer's enrolment as.
 const ENROL_KIND: &str = "network.device-enrol";
 
-/// The person's identity in a directory of its own, as the desktop's own start reads it.
+/// The person's identity in a directory of its own, as the desktop's own start reads it: the
+/// runtime the session's socket is in, the environment, the directory, and the device key this
+/// process took as the daemon's, which the session signs with here.
 fn person() -> (
     std::path::PathBuf,
     tilo_test_env::ScopedEnv,
     tempfile::TempDir,
+    tilo_device_identity::persist::DeviceKeyLock,
 ) {
     let root = tempfile::tempdir().expect("a directory for the identity");
     let xdg = root.path().join("config");
@@ -60,18 +63,20 @@ fn person() -> (
     tilo_identity::sources::test_trust::install();
     let personal = tilo_identity::store::account_identity_dir(&xdg.join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
-    tilo_identity::provisioning::ensure_collaboration_identity(
+    // This process stands in for the machine's daemon: it takes the device key first, and keeps it
+    // while the session this person's tests run signs with it.
+    let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
         &personal,
         &paths,
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    (runtime, env, root)
+    (runtime, env, root, taken_key)
 }
 
 #[test]
 fn a_boot_key_enrols_through_the_sessions_socket() {
-    let (runtime, _env, _root) = person();
+    let (runtime, _env, _root, _taken_key) = person();
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
@@ -142,13 +147,16 @@ struct TwoDevices {
     enrollee: ed25519_dalek::SigningKey,
     session: tilo_session::Session,
     runtime: tokio::runtime::Runtime,
+    /// The device key this process took as the daemon's, which the session signs with here: let go
+    /// of with the identity's files.
+    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
 }
 
 impl TwoDevices {
     fn new() -> Self {
-        let (_runtime, env, root) = person();
+        let (_runtime, env, root, taken_key) = person();
         let registry = tilo_identity::store::IdentityRegistryStore::from_env()
             .expect("the identity registry")
             .load_reconciled_cached()
@@ -223,6 +231,7 @@ impl TwoDevices {
             enrollee,
             session,
             runtime: tokio::runtime::Runtime::new().expect("a runtime"),
+            _taken_key: taken_key,
             _env: env,
             _root: root,
         }

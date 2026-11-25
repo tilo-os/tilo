@@ -31,6 +31,7 @@ mod app_listing_tests;
 #[cfg(target_os = "linux")]
 pub(crate) mod approved_checks;
 mod asked;
+mod carry;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
 pub mod capabilities;
 mod commits;
@@ -55,7 +56,7 @@ mod host_runs;
 mod hosts;
 pub(crate) mod jobs;
 mod keep;
-mod key_use;
+pub(crate) mod key_use;
 pub(crate) mod layout;
 mod live;
 mod live_call;

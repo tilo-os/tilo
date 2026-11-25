@@ -293,6 +293,43 @@ impl DeviceActions {
         &self.native
     }
 
+    /// This device's public key, as its daemon answers what the device is.
+    ///
+    /// # Errors
+    /// The daemon does not answer, refused, or named no 32-byte key.
+    pub fn device_key(&self) -> Result<[u8; 32], DeviceRefusal> {
+        let info = self.ask("info", serde_json::json!({}))?;
+        info.get("device")
+            .and_then(Value::as_str)
+            .and_then(|key| hex::decode(key).ok())
+            .and_then(|key| key.try_into().ok())
+            .ok_or_else(|| {
+                DeviceRefusal::said(format!("the device service answered no device key: {info}"))
+            })
+    }
+
+    /// `message` signed with this device's key by its daemon ([`super::SIGN`]): the key never
+    /// leaves it.
+    ///
+    /// # Errors
+    /// The daemon does not answer, refused, or answered no 64-byte signature.
+    pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], DeviceRefusal> {
+        let signed = self.ask(
+            super::SIGN,
+            serde_json::json!({ "message": hex::encode(message) }),
+        )?;
+        signed
+            .get("signature")
+            .and_then(Value::as_str)
+            .and_then(|signature| hex::decode(signature).ok())
+            .and_then(|signature| signature.try_into().ok())
+            .ok_or_else(|| {
+                DeviceRefusal::said(format!(
+                    "the device service answered no signature: {signed}"
+                ))
+            })
+    }
+
     /// The device action `action` called with `args`: its result.
     ///
     /// # Errors

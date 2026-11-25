@@ -379,20 +379,30 @@ fn short(cert: &DeviceCert) -> String {
 }
 
 /// `tilo device key`: this computer's device key, its person and its label, from its login; with
-/// no login, the workspace its daemon founded for its person, as the daemon answers it.
+/// no login, the device key and the workspace its daemon founded for its person, as the daemon
+/// answers them. The key's public half is the daemon's to say: nothing here reads the key.
 ///
 /// # Errors
-/// This computer's login is damaged, or with none its daemon serves no workspace.
+/// This computer's login is damaged, or with none its daemon does not answer or serves no
+/// workspace.
 pub fn key() -> Result<ExitCode> {
     let Some(here) = login::home() else {
         login::ensure_daemon()?;
+        let device = tilo_device_identity::login::daemon::DeviceActions::here(
+            tilo_api::calls::device_keys(),
+        )
+        .map_err(anyhow::Error::msg)?
+        .device_key()?;
         let workspace = login::runtime()?.block_on(async {
             Calls::open_with(Reach::default(), crate::mcp::reach_daemon)
                 .await?
                 .founded_workspace()
                 .await
         })?;
-        println!("{}", json!({ "workspace": workspace }));
+        println!(
+            "{}",
+            json!({ "device": hex::encode(device), "workspace": workspace })
+        );
         return Ok(ExitCode::SUCCESS);
     };
     println!(

@@ -278,8 +278,8 @@ fn join(
     cancelled: &AtomicBool,
 ) -> Result<MintedIdentity, NearbyFailure> {
     let ticket = Ticket::parse(ticket).map_err(|_| NearbyFailure::new(NearbyCause::Wrong))?;
-    tilo_device_identity::persist::load_or_create_device_key(paths)
-        .map_err(NearbyFailure::storage)?;
+    // The daemon makes this computer's device key as it starts and keeps it: the login below is
+    // the daemon's, and it certifies the key the daemon made.
     let place = Place::here(paths.clone()).map_err(NearbyFailure::unavailable)?;
     make_login_dir(place.dir())?;
     // The daemon logs this computer in whether a person's certificate names it already or not,
@@ -386,6 +386,16 @@ pub(crate) mod testing {
 
     impl FakeDaemon {
         pub(crate) fn start(paths: &IdentityPaths, answer: Answer) -> Self {
+            Self::answering(paths, answer, false)
+        }
+
+        /// [`start`](Self::start) for the daemon of a computer this account's person was made on:
+        /// it keeps the person's root, which `account#who` says and a backup is made of.
+        pub(crate) fn keeping_the_person(paths: &IdentityPaths, answer: Answer) -> Self {
+            Self::answering(paths, answer, true)
+        }
+
+        fn answering(paths: &IdentityPaths, answer: Answer, holds_root: bool) -> Self {
             let place = Place::here(paths.clone()).expect("this account's login place");
             make_login_dir(place.dir()).expect("the login directory");
             let daemon = tilo_api::daemon::this_computer().expect("the daemon's place");
@@ -402,7 +412,7 @@ pub(crate) mod testing {
                 .spawn(move || {
                     while !running.load(Ordering::Acquire) {
                         match listener.accept() {
-                            Ok((stream, _)) => serve(&stream, &paths, answer, &home),
+                            Ok((stream, _)) => serve(&stream, &paths, answer, holds_root, &home),
                             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                                 std::thread::sleep(std::time::Duration::from_millis(5));
                             }
@@ -434,6 +444,7 @@ pub(crate) mod testing {
         stream: &UnixStream,
         paths: &IdentityPaths,
         answer: Answer,
+        holds_root: bool,
         home: &std::sync::Mutex<Option<Device>>,
     ) {
         let _ = stream.set_nonblocking(false);
@@ -448,6 +459,9 @@ pub(crate) mod testing {
                     "device": hex::encode(key.verifying_key().to_bytes()),
                     "claimed": false,
                 });
+                if holds_root {
+                    who["holds_root"] = json!(true);
+                }
                 if let Some(device) = home.lock().expect("the home").as_ref() {
                     who["person"] = json!(hex::encode(device.cert.user_public_key));
                     who["claimed"] = json!(true);
@@ -464,6 +478,21 @@ pub(crate) mod testing {
                 let id = asked.get("id").cloned().unwrap_or(Value::Null);
                 json!({"jsonrpc": "2.0", "id": id, "result": {
                     "content": [{"type": "text", "text": "ok"}], "isError": false}})
+            } else if asked
+                .pointer("/params/arguments/path")
+                .and_then(Value::as_str)
+                == Some("devices#info")
+            {
+                // What this computer's device is, as a daemon answers a program that only needs
+                // its public key.
+                let key = tilo_device_identity::persist::load_device_key(paths).expect("a key");
+                let id = asked.get("id").cloned().unwrap_or(Value::Null);
+                json!({"jsonrpc": "2.0", "id": id, "result": {
+                    "content": [{"type": "text", "text": "ok"}],
+                    "structuredContent": {"status": "ok", "result": {
+                        "device": hex::encode(key.verifying_key().to_bytes()),
+                    }},
+                    "isError": false}})
             } else {
                 let id = asked.get("id").cloned().unwrap_or(Value::Null);
                 let args = asked
@@ -576,6 +605,10 @@ pub(crate) mod tests {
     /// identity directories, and this computer's one device key, all under a
     /// temporary home so nothing here reads or writes the real one.
     pub(crate) struct Account {
+        /// The key this process took as the device's daemon, kept for the test's whole run: the
+        /// test makes this computer's key, logs it in and files its certificate, so it is the one
+        /// process that writes as the device.
+        _taken_key: tilo_device_identity::persist::DeviceKeyLock,
         pub dir: tempfile::TempDir,
         pub paths: IdentityPaths,
         /// Held for the test's whole run: the environment above is the
@@ -612,7 +645,10 @@ pub(crate) mod tests {
             let key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
             tilo_device_identity::persist::adopt_device_key(&paths, &key.to_bytes())
                 .expect("this computer's device key");
+            let taken_key = tilo_device_identity::persist::take_device_key(&paths)
+                .expect("this computer's daemon takes its key");
             Self {
+                _taken_key: taken_key,
                 dir,
                 paths,
                 _env: env,

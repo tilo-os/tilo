@@ -182,23 +182,43 @@ pub fn sign_external_moderation(
     operation: &ExternalModerationOperation,
     identity: &SigningKey,
 ) -> Result<SignedModerationMutation, ModerationWireError> {
+    sign_external_moderation_as(operation, identity.verifying_key().to_bytes(), |message| {
+        Ok(identity.sign(message).to_bytes())
+    })
+}
+
+/// What the identity signs to make its credential for one destination: never a message of any
+/// other protocol.
+const CREDENTIAL_DOMAIN: &[u8] = b"tilo.registry.moderation.credential.v3\0";
+
+/// [`sign_external_moderation`] for an identity whose key signs through `sign` (a device's
+/// daemon, say) and is never in hand. The destination's credential is made from the identity's
+/// signature of the destination in [`CREDENTIAL_DOMAIN`]: Ed25519 signs one message one way, so
+/// the same identity makes the same credential for a destination every time.
+///
+/// # Errors
+/// The operation is invalid, cannot be encoded, or `sign` refused.
+pub fn sign_external_moderation_as(
+    operation: &ExternalModerationOperation,
+    identity: [u8; 32],
+    sign: impl Fn(&[u8]) -> Result<[u8; 64], ModerationWireError>,
+) -> Result<SignedModerationMutation, ModerationWireError> {
     operation
         .validate()
         .map_err(ModerationWireError::InvalidOperation)?;
     let destination =
         serde_json::to_vec(&operation.destination).map_err(|_| ModerationWireError::Encoding)?;
-    let secret = blake3::derive_key(
-        "tilo.registry.moderation.credential.v2",
-        &identity.to_bytes(),
-    );
-    let key = SigningKey::from_bytes(blake3::keyed_hash(&secret, &destination).as_bytes());
+    let mut credential = CREDENTIAL_DOMAIN.to_vec();
+    credential.extend_from_slice(&destination);
+    let made = sign(&credential)?;
+    let key = SigningKey::from_bytes(blake3::hash(&made).as_bytes());
     let mut request = SignedModerationMutation {
         protocol: crate::MODERATION_PROTOCOL,
         request_id: operation.request_id.clone(),
         issued_at_unix: operation.issued_at_unix,
         expires_at_unix: operation.expires_at_unix,
         actor_role: operation.role(),
-        actor_pubkey_hex: hex::encode(identity.verifying_key().to_bytes()),
+        actor_pubkey_hex: hex::encode(identity),
         mutation: operation.mutation.clone(),
         destination: Some(operation.destination.clone()),
         credential: Some(ModerationCredential {
@@ -207,7 +227,7 @@ pub fn sign_external_moderation(
         }),
         signature_hex: String::new(),
     };
-    let binding = hex::encode(identity.sign(&binding_message(&request)?).to_bytes());
+    let binding = hex::encode(sign(&binding_message(&request)?)?);
     if let Some(credential) = &mut request.credential {
         credential.binding_signature_hex = binding;
     }

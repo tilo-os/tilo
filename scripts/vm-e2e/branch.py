@@ -129,24 +129,13 @@ class Run:
 
 # -- what the guest says --------------------------------------------------------
 
-# As root: the machine's names and keys, by digest; the device key's public half where the
-# image's Python can derive it. No private byte leaves the guest.
+# As root: the machine's names and keys, by digest, and the device key's public half as its daemon
+# says it: nothing but the daemon reads the device key.
 MACHINE_FACTS = r"""
 cd /var/lib/tilo
 echo "UUID=$(tr -d '-' < /sys/class/dmi/id/product_uuid | tr 'A-F' 'a-f')"
 [ -f device-private/machine.bin ] && echo "RECORD=$(od -An -tx1 -v device-private/machine.bin | tr -d ' \n')"
-[ -f device-private/keypair.bin ] && echo "KEY-DIGEST=$(sha256sum < device-private/keypair.bin | cut -c1-16)"
-[ -f device-private/branch.bin ] && echo "JOURNAL=present"
-echo "DEVICE-PUBLIC=$(python3 -I -c '
-import sys
-try:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives import serialization
-except ImportError:
-    sys.exit(0)
-seed = open("device-private/keypair.bin", "rb").read()
-key = Ed25519PrivateKey.from_private_bytes(seed).public_key()
-print(key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex())' 2>/dev/null)"
+echo "DEVICE-PUBLIC=$(tilo device key 2>/dev/null | sed -n 's/.*"device": *"\([0-9a-f]*\)".*/\1/p')"
 [ -f user-identity/pubkey.bin ] && echo "USER-PUBLIC=$(od -An -tx1 -v user-identity/pubkey.bin | tr -d ' \n')"
 [ -f user-identity/privkey.bin ] && echo "ROOT-HERE=yes"
 for c in device/certs/*.bin; do [ -f "$c" ] && echo "CERT=$(basename "$c" .bin)"; done
@@ -998,7 +987,7 @@ def judge_machine(facts: dict, run: Run, name: str, source: dict, others: dict) 
     m = machine_facts(run, name, f"S06-{name}")
     boot = keep_boot(run, name, "S06")
     facts["branch_unit"] = [l for l in boot.splitlines() if "tilo-device-key-init" in l or "branch" in l][-25:]
-    facts["machine"] = {k: m.get(k) for k in ("UUID", "RECORD", "KEY-DIGEST", "DEVICE-PUBLIC",
+    facts["machine"] = {k: m.get(k) for k in ("UUID", "RECORD", "DEVICE-PUBLIC",
                                                "CERT", "PENDING-LABEL", "JOURNAL", "BRANCH-UNIT")}
     problems = []
     if m.get("RECORD") != m.get("UUID"):
@@ -1006,7 +995,7 @@ def judge_machine(facts: dict, run: Run, name: str, source: dict, others: dict) 
     if name != SOURCE:
         if m.get("UUID") == source.get("UUID"):
             problems.append("the branch reports the source's product UUID")
-        if m.get("KEY-DIGEST") == source.get("KEY-DIGEST"):
+        if m.get("DEVICE-PUBLIC") == source.get("DEVICE-PUBLIC"):
             problems.append("the branch kept the source's device key")
         if m.get("MACHINE-ID") == source.get("MACHINE-ID"):
             problems.append("the branch kept the source's /etc/machine-id")
@@ -1015,13 +1004,13 @@ def judge_machine(facts: dict, run: Run, name: str, source: dict, others: dict) 
         if m.get("JOURNAL"):
             problems.append("the re-key journal is still there (a store was not re-sealed)")
     else:
-        for key in ("KEY-DIGEST", "MACHINE-ID", "UUID"):
+        for key in ("DEVICE-PUBLIC", "MACHINE-ID", "UUID"):
             if m.get(key) != source.get(key):
                 problems.append(f"box's {key} changed across the branch")
         if m["HOST-KEY"] != source["HOST-KEY"]:
             problems.append("box's SSH host keys changed across the branch")
     for other, theirs in others.items():
-        if theirs.get("KEY-DIGEST") == m.get("KEY-DIGEST"):
+        if theirs.get("DEVICE-PUBLIC") == m.get("DEVICE-PUBLIC"):
             problems.append(f"{name} and {other} share a device key")
         if theirs.get("MACHINE-ID") == m.get("MACHINE-ID"):
             problems.append(f"{name} and {other} share a machine id")

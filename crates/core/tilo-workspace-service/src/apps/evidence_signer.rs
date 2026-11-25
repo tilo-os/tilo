@@ -1,15 +1,15 @@
 //! Host-only signing for semantic admission receipts. Never exposed as a
 //! signing service: callers supply the receipt's domain-separated bytes.
 //!
-//! Keep the device key in memory only for an unchanged, settled trust stamp.
+//! Keep what signs as the device only for an unchanged, settled trust stamp.
 //! The stamp covers the identity, key, certificate, enrollment and revocation;
 //! certificate time validity is checked separately on every signature.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
-use ed25519_dalek::{Signer as _, SigningKey};
+use collab_types::signer::DeviceSigner;
 use parking_lot::Mutex;
 use tilo_identity::join_proof::{CurrentDeviceStamp, current_device_stamp};
 use tilo_identity::store::IdentityRegistryStore;
@@ -33,7 +33,8 @@ struct CacheKey {
 
 struct Entry {
     stamp: CurrentDeviceStamp,
-    key: SigningKey,
+    /// What signs as the device: the key this daemon took, or the daemon asked.
+    key: Arc<dyn DeviceSigner>,
     certificate: DeviceCert,
 }
 
@@ -80,7 +81,7 @@ impl SignerCache {
         if let Some(entry) = self.entries.get(&cache_key)
             && settled == Some(entry.stamp)
         {
-            let result = sign_entry(&entry.key, &entry.certificate, bytes, now);
+            let result = sign_entry(entry.key.as_ref(), &entry.certificate, bytes, now);
             if result.is_ok() && current_device_stamp(workspace) == before {
                 return result;
             }
@@ -95,9 +96,16 @@ impl SignerCache {
         {
             self.loads = self.loads.saturating_add(1);
         }
-        let (key, certificate) =
-            tilo_identity::trusted_device::current(workspace).map_err(|error| error.to_string())?;
-        let signed = sign_entry(&key, &certificate, bytes, now)?;
+        let certificate = tilo_identity::trusted_device::certificate(workspace)
+            .map_err(|error| error.to_string())?;
+        let key = tilo_identity::trusted_device::device_signer(
+            &tilo_identity::provisioning::collaboration_identity_paths(),
+        )
+        .map_err(|error| error.to_string())?;
+        if key.device_public_key() != certificate.device_public_key {
+            return Err("the device signing receipts is not the one its certificate names".into());
+        }
+        let signed = sign_entry(key.as_ref(), &certificate, bytes, now)?;
         let after = current_device_stamp(workspace);
         if before != after {
             return Err("device trust changed while signing receipt".into());
@@ -123,14 +131,16 @@ impl SignerCache {
 }
 
 fn sign_entry(
-    key: &SigningKey,
+    key: &dyn DeviceSigner,
     certificate: &DeviceCert,
     bytes: &[u8],
     now: u64,
 ) -> Result<(DeviceCert, [u8; 64]), String> {
     tilo_user_identity::verify_device_cert_at(certificate, now)
         .map_err(|error| error.to_string())?;
-    Ok((certificate.clone(), key.sign(bytes).to_bytes()))
+    let signature =
+        collab_types::signer::sign_now(key, bytes.to_vec()).map_err(|error| error.to_string())?;
+    Ok((certificate.clone(), signature))
 }
 
 #[cfg(test)]
@@ -148,6 +158,8 @@ mod tests {
         paths: IdentityPaths,
         profile: tilo_identity::store::IdentityProfile,
         workspace: String,
+        /// The device's key, taken as its daemon takes it, for as long as this lives.
+        _taken_key: tilo_device_identity::persist::DeviceKeyLock,
         _env: tilo_test_env::ScopedEnv,
         _root: tempfile::TempDir,
     }
@@ -165,7 +177,7 @@ mod tests {
                 tilo_identity::store::account_identity_dir(&config.join("tilo/identity"));
             let paths = IdentityPaths::under(&system);
             tilo_identity::sources::test_trust::install();
-            provisioning::ensure_collaboration_identity(
+            let taken_key = provisioning::provisioned_as_its_daemon(
                 &identity_dir,
                 &paths,
                 IdentityStorage::Files,
@@ -190,6 +202,7 @@ mod tests {
                 paths,
                 profile,
                 workspace,
+                _taken_key: taken_key,
                 _env: env,
                 _root: directory,
             };

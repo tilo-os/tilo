@@ -1,11 +1,6 @@
 //! `tilo-vm`: the host CLI for Tilo dev VMs. It chooses a VM, asks its device's
-//! daemon over action frames as this machine's device, builds and sends component
-//! layers, and drives the host's hypervisor through thin adapters.
-
-// The in-process device the tests ask keeps its workspace in automerge documents, which run in
-// worker processes this test executable serves.
-#[cfg(test)]
-tilo_automerge_isolate::test_worker!();
+//! steps through this computer's daemon, builds and sends component layers, and
+//! drives the host's hypervisor through thin adapters.
 
 pub mod app;
 pub mod appsets;

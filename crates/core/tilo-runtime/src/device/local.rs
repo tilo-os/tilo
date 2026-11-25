@@ -48,6 +48,9 @@ pub(crate) struct Frames {
     /// The call lane an app's connection carries, when the connection is an app's: its setup, or
     /// why this device will carry no call for it.
     lane: Option<Result<tilo_live::app_call::CallSetup, String>>,
+    /// Whether a connection may be carried to another of the person's devices
+    /// ([`super::carry`]): the person's own alone.
+    carrying: super::carry::Carrying,
 }
 
 impl Frames {
@@ -60,6 +63,7 @@ impl Frames {
             uploads: Arc::default(),
             own_process: None,
             lane: None,
+            carrying: super::carry::Carrying::Refused(super::carry::NOT_THE_PERSON),
         }
     }
 
@@ -67,20 +71,26 @@ impl Frames {
     /// person for reaches, and every account before the person's services run. It is in no
     /// workspace, so a workspace a frame names reaches the same actions.
     pub(crate) fn of_the_device(answers: DeviceOnly) -> Self {
-        Self::new(move |_| Ok((Arc::new(answers.clone()) as Tree, Caller::local_system())))
+        let mut frames =
+            Self::new(move |_| Ok((Arc::new(answers.clone()) as Tree, Caller::local_system())));
+        frames.carrying = super::carry::Carrying::Refused(super::carry::DEVICE_ONLY);
+        frames
     }
 
     /// The person's workspaces and account, as a plain connection from their own account reaches
     /// them ([`Daemon::connection_tree_in`]): the person, admitted from who is on the other end
     /// of the daemon's socket, in each workspace a frame names.
     pub(crate) fn of_the_person(daemon: &Arc<Daemon>) -> Self {
+        let carrying = super::carry::Carrying::of(daemon);
         let daemon = Arc::downgrade(daemon);
-        Self::new(move |workspace| {
+        let mut frames = Self::new(move |workspace| {
             let daemon = daemon
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
             daemon.connection_tree_in(workspace)
-        })
+        });
+        frames.carrying = carrying;
+        frames
     }
 
     /// The person's workspaces and account, as a program of this device reaches them
@@ -154,6 +164,17 @@ impl Frames {
             let (tree, caller) = daemon.key_tree(&key, &cert, workspace)?;
             Ok((Arc::new(tree) as Tree, caller))
         })
+    }
+
+    /// Carry `stream`, which asked for `carry` on its first line, to the device it names, reading
+    /// its frames from `input`; or tell it why it is not carried ([`super::carry`]).
+    pub(crate) fn carry(
+        &self,
+        stream: Stream,
+        carry: &tilo_actions::remote::Carry,
+        input: impl BufRead,
+    ) {
+        self.carrying.serve(stream, carry, input);
     }
 
     /// Answer `stream`'s frames, `first` and then each line `input` reads, until it ends

@@ -112,7 +112,8 @@ mod tests {
         identity_id: String,
         cert: DeviceCert,
         // Dropped after the fields above: the environment is restored before the directory it
-        // named is removed.
+        // named is removed, and this process lets go of the device's key last.
+        _taken_key: tilo_device_identity::persist::DeviceKeyLock,
         _env: tilo_test_env::ScopedEnv,
         _root: tempfile::TempDir,
     }
@@ -129,6 +130,9 @@ mod tests {
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = IdentityPaths::under(&system_root);
+            // This process signs as the device, as its daemon does.
+            let taken_key = crate::provisioning::device_key_taken_as_daemon(&paths)
+                .expect("this process takes the device's key");
             crate::provisioning::ensure_collaboration_identity(
                 &identity_dir,
                 &paths,
@@ -146,6 +150,7 @@ mod tests {
             Self {
                 identity_id: profile.id,
                 cert,
+                _taken_key: taken_key,
                 _env: env,
                 _root: root,
             }

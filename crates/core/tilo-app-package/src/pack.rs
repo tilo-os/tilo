@@ -22,6 +22,31 @@ use crate::validate::{ManifestError, validate_manifest_with_payload};
 #[derive(Clone)]
 pub enum SigningIdentity {
     Ed25519(ed25519_dalek::SigningKey),
+    /// The key is another process's ([`ExternalSigner`]): each signature asks it, and its
+    /// refusal is the package's.
+    External(ExternalSigner),
+}
+
+/// What a [`SigningIdentity::External`] signs with: the key's public half, and the call that asks
+/// the process keeping the key for a signature. The key never enters this process.
+#[derive(Clone)]
+pub struct ExternalSigner {
+    public_key: [u8; 32],
+    sign: std::sync::Arc<dyn Fn(&[u8]) -> Result<[u8; 64], String> + Send + Sync>,
+}
+
+impl ExternalSigner {
+    /// A signer for a key kept elsewhere: `sign` asks that place for a signature over a message,
+    /// and answers what it said when it refused.
+    pub fn new(
+        public_key: [u8; 32],
+        sign: impl Fn(&[u8]) -> Result<[u8; 64], String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            public_key,
+            sign: std::sync::Arc::new(sign),
+        }
+    }
 }
 
 impl SigningIdentity {
@@ -39,6 +64,11 @@ impl SigningIdentity {
         Self::Ed25519(ed25519_dalek::SigningKey::from_bytes(seed))
     }
 
+    /// An identity whose key another process keeps ([`ExternalSigner`]).
+    pub fn from_external(signer: ExternalSigner) -> Self {
+        Self::External(signer)
+    }
+
     /// Load an Ed25519 signing identity from a publisher key file
     /// ([`registry_types::key_file`]).
     pub fn from_key_file(path: &Path) -> Result<Self, registry_types::key_file::KeyFileError> {
@@ -50,6 +80,7 @@ impl SigningIdentity {
     pub fn public_key_bytes(&self) -> [u8; 32] {
         match self {
             Self::Ed25519(sk) => sk.verifying_key().to_bytes(),
+            Self::External(signer) => signer.public_key,
         }
     }
 
@@ -58,9 +89,12 @@ impl SigningIdentity {
     }
 
     /// Sign the signing-bytes prefix of a [`SignedRoot`].
-    pub fn sign_signed_root(&self, root: &SignedRoot) -> [u8; 64] {
-        let preimage = root.signing_bytes();
-        self.sign_message(&preimage)
+    ///
+    /// # Errors
+    /// The identity's key is another process's and that process refused, or named why it could
+    /// not sign.
+    pub fn sign_signed_root(&self, root: &SignedRoot) -> Result<[u8; 64], PackError> {
+        self.sign_message(&root.signing_bytes())
     }
 
     /// Sign an arbitrary message with the identity's Ed25519 key.
@@ -70,9 +104,14 @@ impl SigningIdentity {
     /// "this publisher's build of app X at version V has tapp
     /// content-hash H". Verification is a plain Ed25519 check against
     /// [`Self::public_key_bytes`].
-    pub fn sign_message(&self, msg: &[u8]) -> [u8; 64] {
+    ///
+    /// # Errors
+    /// The identity's key is another process's and that process refused, or named why it could
+    /// not sign.
+    pub fn sign_message(&self, msg: &[u8]) -> Result<[u8; 64], PackError> {
         match self {
-            Self::Ed25519(sk) => sk.sign(msg).to_bytes(),
+            Self::Ed25519(sk) => Ok(sk.sign(msg).to_bytes()),
+            Self::External(signer) => (signer.sign)(msg).map_err(PackError::Signing),
         }
     }
 }
@@ -91,6 +130,9 @@ pub enum PackError {
     ManifestEncode(#[from] crate::manifest::ManifestParseError),
     #[error("publisher identity in manifest does not match signing identity")]
     IdentityMismatch,
+    /// The process keeping the identity's key refused to sign, or named why it could not.
+    #[error("the package's signing key refused: {0}")]
+    Signing(String),
     #[error("payload path {0:?} is not valid UTF-8 — Tilo packages require UTF-8 path names")]
     NonUtf8Path(PathBuf),
     #[error("payload path {0:?} is reserved for a file the packer writes")]
@@ -318,7 +360,7 @@ pub(crate) fn pack_with_files(
     extra: Vec<(String, Vec<u8>)>,
 ) -> Result<Packed, PackError> {
     let prepared = prepare(payload_dir, manifest, identity.public_key_bytes(), extra)?;
-    let signature = identity.sign_signed_root(&prepared.root);
+    let signature = identity.sign_signed_root(&prepared.root)?;
     prepared.finish(signature)
 }
 
@@ -353,7 +395,7 @@ pub fn sign_placeholder_root(
         signature: Some([0u8; 64]),
         ..meta.root.clone()
     };
-    let signature = identity.sign_signed_root(&placeholder);
+    let signature = identity.sign_signed_root(&placeholder)?;
     Ok(PackageMeta::from_root(
         SignedRoot {
             signature: Some(signature),

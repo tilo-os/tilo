@@ -241,6 +241,8 @@ pub enum ModerationWireError {
     UnauthorizedActor(u64),
     #[error("moderation case proof is incomplete or inconsistent")]
     InvalidCase,
+    #[error("the identity did not sign: {0}")]
+    Unsigned(String),
 }
 
 /// Canonical digest covered by an actor signature.

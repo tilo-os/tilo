@@ -98,6 +98,19 @@ pub async fn connect(
     device: &Device,
     lent: Option<tilo_session_client::Lent>,
 ) -> Result<Entered> {
+    connect_signed(Arc::new(key.clone()), device, lent).await
+}
+
+/// [`connect`] for a program that signs as the device through its daemon: `signer` answers the
+/// handshake's signatures, and the key stays where the daemon keeps it.
+///
+/// # Errors
+/// As [`connect`].
+pub async fn connect_signed(
+    signer: Arc<dyn tilo_server_client::DeviceSigner>,
+    device: &Device,
+    lent: Option<tilo_session_client::Lent>,
+) -> Result<Entered> {
     if lent.is_some() && device.cert.capabilities.workspace_name().is_some() {
         return Err(anyhow!(CONFINED_OPENS_NO_SESSION));
     }
@@ -106,7 +119,7 @@ pub async fn connect(
         .as_ref()
         .ok_or_else(|| anyhow!(LOGIN_ENDED))?;
     let signed = signed_over_iroh(device, address)?;
-    let entered = Entered::enter_lent(None, &signed, Arc::new(key.clone()), lent).await?;
+    let entered = Entered::enter_lent(None, &signed, signer, lent).await?;
     enter_own_workspace(&entered);
     Ok(entered)
 }

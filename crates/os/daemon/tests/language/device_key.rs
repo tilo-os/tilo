@@ -9,6 +9,7 @@ use tilo_device_identity::login::daemon::{DeviceActions, DeviceRefusal};
 use tilo_device_identity::login::{
     CHECK_CALLER_PROOF, ENDORSE_IMAGE, OPEN_VAULT, SEAL_VAULT, SEALED_BY_ANOTHER_KEY,
 };
+use tilo_identity::daemon_signer::DaemonSigner;
 use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes};
 use tilo_user_identity::{ImageEndorsement, ImageSigningAuthorization, StatementSigner as _};
 
@@ -151,6 +152,113 @@ fn the_daemon_seals_proves_and_signs_with_the_key_it_alone_takes() {
         assert!(refused.not_running(), "{refused:?}");
         assert!(
             refused.message.contains("the device service isn't running"),
+            "{refused}"
+        );
+    });
+}
+
+/// How long a key request on a fresh computer may take: it is answered from the key the daemon
+/// took, never after the person's services start or a workspace is admitted (which a request
+/// once waited up to five minutes for).
+const AT_ONCE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A fresh computer's first sign-in: its daemon starts with a key and no person, signs and seals
+/// at once, founds its person as `tilo login --new-identity` does, and its key requests go on
+/// being answered at once while that person's services and workspace come up.
+#[test]
+fn a_fresh_computer_signs_at_once_through_its_first_sign_in() {
+    host::in_own_unclaimed_process(|profile| {
+        let running = tilo_runtime::daemon::Running::start(profile).unwrap();
+        let native = running.native_socket().to_owned();
+        let actions = DeviceActions::at(native.clone());
+        let info = actions.ask("info", json!({})).unwrap();
+        assert_eq!(
+            info["people"],
+            json!([]),
+            "a fresh computer has no person: {info}"
+        );
+
+        // What every program signing as the device takes, asked before anyone signed in.
+        let signer = DaemonSigner::of(actions.clone()).expect("the daemon says its key");
+        let device = ed25519_dalek::VerifyingKey::from_bytes(&signer.public_key()).unwrap();
+        let signs_at_once = |what: &[u8]| {
+            let asked = std::time::Instant::now();
+            let signature = collab_types::signer::sign_now(&signer, what.to_vec())
+                .expect("the daemon signs as the device");
+            assert!(
+                asked.elapsed() < AT_ONCE,
+                "signing took {:?}",
+                asked.elapsed()
+            );
+            device
+                .verify_strict(what, &ed25519_dalek::Signature::from_bytes(&signature))
+                .expect("the signature is the device key's");
+        };
+        let seals_at_once = || {
+            let asked = std::time::Instant::now();
+            let salt = hex::encode([5_u8; 32]);
+            let sealed = actions
+                .ask(
+                    SEAL_VAULT,
+                    json!({ "salt": salt, "account": "1000", "plain": hex::encode(b"secrets") }),
+                )
+                .expect("the daemon seals");
+            let opened = actions
+                .ask(
+                    OPEN_VAULT,
+                    json!({ "salt": salt, "account": "1000", "sealed": sealed["sealed"] }),
+                )
+                .expect("the daemon opens what it sealed");
+            assert_eq!(field(&opened, "plain"), b"secrets");
+            assert!(
+                asked.elapsed() < AT_ONCE,
+                "sealing took {:?}",
+                asked.elapsed()
+            );
+        };
+        signs_at_once(b"a program proves it is this device");
+        seals_at_once();
+
+        // The first sign-in: the computer founds its person, through the same call `tilo` makes.
+        let place = tilo_api::daemon::DaemonPlace::at(native.parent().unwrap(), profile);
+        place
+            .found(&tilo_api::daemon::Founding {
+                name: Some("Ada".to_owned()),
+                tickets: Vec::new(),
+            })
+            .expect("the computer founds its person")
+            .expect("a fresh computer has no person yet");
+        let info = actions.ask("info", json!({})).unwrap();
+        assert_eq!(
+            info["people"].as_array().map(Vec::len),
+            Some(1),
+            "the person certified this device: {info}"
+        );
+        // Straight after it, while the person's services and workspace start, the key answers at
+        // once, as the same key.
+        signs_at_once(b"the first thing signed after signing in");
+        seals_at_once();
+        assert_eq!(
+            DaemonSigner::of(actions.clone()).unwrap().public_key(),
+            signer.public_key(),
+            "signing in keeps the device's key"
+        );
+
+        // The key file is the daemon's: a second process taking it is refused.
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
+        assert!(matches!(
+            tilo_device_identity::persist::take_device_key(&paths),
+            Err(tilo_device_identity::PersistError::KeyInUse { .. })
+        ));
+
+        running.stop().unwrap();
+        let refused = DaemonSigner::of(DeviceActions::at(native))
+            .expect_err("nothing listens once the daemon stopped");
+        assert!(refused.not_running(), "{refused:?}");
+        assert!(
+            refused
+                .message
+                .starts_with("the device service isn't running on this computer"),
             "{refused}"
         );
     });

@@ -666,7 +666,7 @@ fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
 
 /// This computer's own: a device certified for a person's root key, kept in an identity root of the
 /// test's own, and the person's id — the one their workspaces' governance names. The root lives as
-/// long as the caller keeps it: the session reads the device's key from it.
+/// long as the caller keeps it.
 fn this_computer(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, String) {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
     let paths = tilo_device_identity::IdentityPaths::under(root.path());
@@ -674,12 +674,18 @@ fn this_computer(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, Stri
     // the device key the environment's identity root holds.
     home.env().set("TILO_IDENTITY_ROOT", root.path());
     tilo_identity::sources::test_trust::install();
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        &tilo_identity::store::account_identity_dir(&home.config().join("tilo").join("identity")),
-        &paths,
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .expect("this computer's identity");
+    // Provisioned as the device's daemon provisions: with the device key taken, and let go of at
+    // once, for the daemon this test starts takes it itself.
+    drop(
+        tilo_identity::provisioning::provisioned_as_its_daemon(
+            &tilo_identity::store::account_identity_dir(
+                &home.config().join("tilo").join("identity"),
+            ),
+            &paths,
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .expect("this computer's identity"),
+    );
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this computer's certificate");
     (root, hex::encode(cert.user_public_key))

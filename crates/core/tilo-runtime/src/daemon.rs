@@ -1480,7 +1480,25 @@ impl Native {
             };
         }
         match self.person() {
-            Some(person) => person(stream, slot, seated),
+            // What the device key does is answered by the device's own actions, from the key the
+            // daemon took: the person's services do not answer it. The first line is looked at
+            // on a thread of the connection's own, so the listener never waits on it.
+            Some(person) => {
+                let native = Arc::clone(self);
+                std::thread::Builder::new()
+                    .name("tilo-native-open".into())
+                    .spawn(move || {
+                        let served = if asks_the_device_key(&stream) {
+                            native.device_only(stream, slot, seated)
+                        } else {
+                            person(stream, slot, seated)
+                        };
+                        if let Err(error) = served {
+                            tracing::debug!(%error, "a native connection was not served");
+                        }
+                    })
+                    .map(drop)
+            }
             None if !self.answers.claimed() => self.device_only(stream, slot, seated),
             None => {
                 let native = Arc::clone(self);
@@ -1490,7 +1508,10 @@ impl Native {
                         // A caller following a call this device already took reads its stage
                         // where the device keeps it: answered here, not once the person's part
                         // starts. The call's progress is what a founding waits on.
-                        if follows_a_call(&stream) {
+                        // What the device key does is answered at once too, from the key the
+                        // daemon took: never after the person's services start or a workspace is
+                        // admitted, which a signature does not depend on.
+                        if follows_a_call(&stream) || asks_the_device_key(&stream) {
                             if let Err(error) = native.device_only(stream, slot, seated) {
                                 tracing::debug!(
                                     %error,
@@ -2004,6 +2025,12 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         // A first line that is an action frame says the connection speaks the action wire,
         // answered as whoever its account is admitted as.
         let line = first.strip_suffix(b"\n").unwrap_or(&first);
+        // A first line that names another of the person's devices asks for the connection to be
+        // carried there: its action frames go to that device from this daemon's one endpoint.
+        if let Some(carry) = tilo_actions::remote::carry_request(line) {
+            let input = BufReader::new(io::Cursor::new(rest).chain(follow));
+            return self.frames.carry(stream, &carry, input);
+        }
         if crate::device::local::is_frame(line) {
             let input = BufReader::new(io::Cursor::new(rest).chain(follow));
             return self.frames.serve(stream, line, input);
@@ -2215,6 +2242,34 @@ fn follows_a_call(stream: &Stream) -> bool {
 #[cfg(not(unix))]
 fn follows_a_call(_stream: &Stream) -> bool {
     false
+}
+
+/// Whether `stream`'s first line asks what the device key does ([`crate::device::key_use`]): one
+/// the device's own actions answer. Looked at without being read, so whoever serves the
+/// connection reads it, descriptors and all, as it always has.
+fn asks_the_device_key(stream: &Stream) -> bool {
+    // A program asking the key writes its whole request as it connects: one that says nothing
+    // within this is no such request, and is served as any other.
+    const SAYS_WITHIN: Duration = Duration::from_secs(1);
+    let mut line = vec![0_u8; 64 * 1024];
+    let read = tilo_socket::peek(stream, &mut line, SAYS_WITHIN).unwrap_or(0);
+    let Some(line) = line
+        .get(..read)
+        .and_then(|read| read.split(|byte| *byte == b'\n').next())
+    else {
+        return false;
+    };
+    let Ok(request) = serde_json::from_slice::<Value>(line) else {
+        return false;
+    };
+    let params = &request["params"];
+    request["method"] == "tools/call"
+        && params["name"] == "tilo_do"
+        && params["arguments"]["path"].as_str().is_some_and(|path| {
+            path.strip_prefix(tilo_device_identity::login::RESOURCE)
+                .and_then(|action| action.strip_prefix('#'))
+                .is_some_and(crate::device::key_use::asked_of_the_key)
+        })
 }
 
 /// The first message on `stream`, with the descriptors it carries: a Windows pipe carries bytes

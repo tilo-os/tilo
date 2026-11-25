@@ -28,7 +28,7 @@ pub mod key_file;
 pub mod moderation;
 pub use external_moderation::{
     ExternalModerationOperation, ModerationCredential, ModerationDestination,
-    sign_external_moderation,
+    sign_external_moderation, sign_external_moderation_as,
 };
 pub mod namespace;
 pub mod pending;

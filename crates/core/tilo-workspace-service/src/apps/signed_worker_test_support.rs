@@ -316,6 +316,8 @@ pub struct OriginalWorkspace {
     pub directories: Rc<LocalActionDirectoryRegistry>,
     _clock: crate::apps::policy_clock::OwnerPolicyClock,
     _owner_mailbox: crate::apps::test_owner::writes::OwnerCommitMailbox,
+    /// The host's device key, taken for as long as the host lives, as its daemon takes it.
+    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
     // Restore the environment before removing the identity and journal files.
     _identity_env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
@@ -387,7 +389,7 @@ impl OriginalWorkspace {
             .set("TILO_IDENTITY_ROOT", fixture_root.path().join("identity"))
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity::sources::test_trust::install();
-        tilo_identity::provisioning::ensure_collaboration_identity(
+        let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
             &tilo_identity::store::account_identity_dir(
                 &fixture_root.path().join("config/tilo/identity"),
             ),
@@ -472,6 +474,7 @@ impl OriginalWorkspace {
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             _clock: clock,
             _owner_mailbox: owner_mailbox,
+            _taken_key: taken_key,
             _identity_env: identity_env,
             _root: fixture_root,
         }

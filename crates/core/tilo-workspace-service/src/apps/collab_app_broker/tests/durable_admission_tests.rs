@@ -20,6 +20,8 @@ const FULL_ID: u128 = 0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b;
 
 struct DurableFixture {
     directory: LocalDirectoryFixture,
+    /// The device's key, taken as its daemon takes it, for as long as this lives.
+    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
     _identity_env: tilo_test_env::ScopedEnv,
 }
 
@@ -47,7 +49,7 @@ fn durable_fixture(
         .set("TILO_IDENTITY_ROOT", root.join("identity"))
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     tilo_identity::sources::test_trust::install();
-    tilo_identity::provisioning::ensure_collaboration_identity(
+    let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
         &tilo_identity::store::account_identity_dir(&root.join("config/tilo/identity")),
         &tilo_device_identity::IdentityPaths::under(root.join("identity")),
         tilo_identity::provisioning::IdentityStorage::Files,
@@ -113,6 +115,7 @@ fn durable_fixture(
     (
         DurableFixture {
             directory: fixture,
+            _taken_key: taken_key,
             _identity_env: identity_env,
         },
         caller,

@@ -653,15 +653,15 @@ impl App {
         self.connect_with_wake(vm, true)
     }
 
-    /// This machine's own daemon, for `--local`: asked over its action frames on loopback like
-    /// any other device, as this machine's login and under the same grants, with no dev-VM
-    /// registry and no hypervisor.
+    /// This machine's own daemon, for `--local`: asked through its native endpoint like any
+    /// other device, as this machine's login and under the same grants, with no dev-VM registry
+    /// and no hypervisor.
     pub(crate) fn connect_here(&mut self) -> Result<Remote, CliError> {
         let machine = self.machine()?;
         let route = config::DeviceRoute {
-            device: hex::encode(machine.key.verifying_key().to_bytes()),
+            device: hex::encode(machine.device),
             workspace: machine.workspace.clone(),
-            addresses: vec![format!("127.0.0.1:{}", config::DAEMON_PORT)],
+            addresses: Vec::new(),
             relay: None,
         };
         let remote = Remote::connect("this machine", &machine, &route)?;
@@ -1192,7 +1192,7 @@ impl App {
                 "login",
                 format!(
                     "asks devices as {} in workspace {}",
-                    hex::encode(machine.key.verifying_key().to_bytes()),
+                    hex::encode(machine.device),
                     machine.workspace,
                 ),
             ),

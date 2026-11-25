@@ -60,6 +60,9 @@ fn the_machines_first_boot_sets_up_and_stops_in_the_new_session() {
 /// A machine with an identity of its own: the person's trees, this device's enrolled key and
 /// certificate, and nothing else on it.
 struct Machine {
+    /// The device key this process took as the daemon's: the session binary the tests start is the
+    /// daemon of its own run, so it is let go of before one starts.
+    taken_key: Option<tilo_device_identity::persist::DeviceKeyLock>,
     // The environment the identity lives in, restored before the directories it names are removed.
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
@@ -74,6 +77,12 @@ impl Machine {
     /// This device's certificate as it is on disk.
     fn certificate(&self) -> Vec<u8> {
         std::fs::read(&self.paths.device_cert).expect("this device's certificate")
+    }
+
+    /// Let go of the device key, so the session binary started next takes it as the daemon of its
+    /// own run.
+    fn let_go_of_the_key(&mut self) {
+        self.taken_key = None;
     }
 }
 
@@ -102,13 +111,16 @@ fn machine() -> Machine {
     tilo_identity::sources::test_trust::install();
     let personal = tilo_identity::store::account_identity_dir(&config.join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
-    tilo_identity::provisioning::ensure_collaboration_identity(
+    // This process stands in for the machine's daemon: it takes the device key first, and keeps it
+    // while what the test starts reads the device from here.
+    let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
         &personal,
         &paths,
         IdentityStorage::Files,
     )
     .expect("this machine's identity");
     Machine {
+        taken_key: Some(taken_key),
         home: root.path().to_path_buf(),
         config,
         system,
@@ -377,7 +389,10 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
 }
 
 /// The session binary's answer to `flags` on `machine` , as the login runs it.
-fn run_session(machine: &Machine, flags: &[&str]) -> std::process::Output {
+fn run_session(machine: &mut Machine, flags: &[&str]) -> std::process::Output {
+    // The session binary is the daemon of its own run, and takes the device key itself: this
+    // process's take would refuse it.
+    machine.let_go_of_the_key();
     // Started under the environment lock, which closes this test's scope while the child copies the
     // environment.
     use tilo_test_env::SpawnUnderEnvLock;
@@ -399,10 +414,10 @@ tilo_test_env::scenario! {
 
     phase the_session_binary_provisions_and_verifies_the_machines_identity;
     {
-        let machine = machine();
+        let mut machine = machine();
         // The host package's installer and its tests start the session this way,
         // so both commands have to answer on the new binary rather than the shell.
-        let provisioned = run_session(&machine, &["--host-desktop", "--provision-identity"]);
+        let provisioned = run_session(&mut machine, &["--host-desktop", "--provision-identity"]);
         assert!(
             provisioned.status.success(),
             "provisioning failed: {}",
@@ -417,7 +432,7 @@ tilo_test_env::scenario! {
         assert!(resource_path.is_file(), "provisioning wrote no record");
 
         let verified = run_session(
-            &machine,
+            &mut machine,
             &["--host-desktop", "--verify-collaboration-identity"],
         );
         assert!(
@@ -434,7 +449,7 @@ tilo_test_env::scenario! {
         // minted a second identity onto a used machine.
         let resource_before = std::fs::read(&resource_path).expect("the identity record");
         let certificate_before = machine.certificate();
-        let again = run_session(&machine, &["--host-desktop", "--provision-identity"]);
+        let again = run_session(&mut machine, &["--host-desktop", "--provision-identity"]);
         assert!(
             again.status.success(),
             "provisioning an established identity failed: {}",
@@ -454,9 +469,9 @@ tilo_test_env::scenario! {
 
     phase the_session_binary_refuses_two_identity_commands_at_once;
     {
-        let machine = machine();
+        let mut machine = machine();
         let both = run_session(
-            &machine,
+            &mut machine,
             &[
                 "--host-desktop",
                 "--provision-identity",

@@ -53,6 +53,9 @@ fn session_serving(
     home.env()
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     let state = device_in(&mut home);
+    // The daemon started below takes the device key itself, so this process lets go of the one it
+    // took for the identity.
+    crate::common::let_go_of_device_keys();
     // The apps a program compiles against: this test's store, installed as a person's device
     // installs them, and named to this home as a device names its own. It is installed after
     // the home is made, since the home names the temporary directory the store is made in.

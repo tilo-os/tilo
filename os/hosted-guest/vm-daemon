@@ -47,7 +47,12 @@ runtime=/usr/libexec/tilo/tilo-runtime
 
 case ${1:-} in
     --device)
-        # Fails until the daemon made its key; names no person until it logged in.
+        # Asked of the running daemon, which alone reads the device's key: in the environment it
+        # runs in, so its sockets are found. Fails until the daemon took its key; names no person
+        # until it logged in.
+        export XDG_RUNTIME_DIR=$run/runtime HOME=$state \
+            XDG_CONFIG_HOME=$state/profile/config XDG_DATA_HOME=$state/profile/data \
+            XDG_CACHE_HOME=$state/profile/cache XDG_STATE_HOME=$state/profile/state
         exec "$runtime" --device-info ;;
     --browser-store)
         [ -n "${2:-}" ] || { echo 'usage: vm-daemon --browser-store DIR' >&2; exit 2; }

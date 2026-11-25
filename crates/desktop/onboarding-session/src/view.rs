@@ -2167,13 +2167,17 @@ mod tests {
         (v, calls)
     }
 
-    /// The device setup runs on, as its steps are recorded for it: a device
-    /// key of its own, and settings of the person's of its own for this
-    /// test's thread.
+    /// The device setup runs on, as its steps are recorded for it: a device key of its own, a
+    /// daemon that answers what the device is and keeps this account's person, and settings of the
+    /// person's of its own for this test's thread.
     pub(super) struct Device {
-        _root: TempDir,
+        /// This test's own environment, swept before the home it lives under.
+        _env: tilo_test_env::ScopedEnv,
+        _home: tilo_test_env::TestHome,
         pub(super) paths: tilo_device_identity::IdentityPaths,
         _settings: settings_store::SourceScope,
+        /// The daemon this device's programs ask, answering the device's public key.
+        _daemon: crate::nearby::testing::FakeDaemon,
     }
 
     impl Device {
@@ -2185,14 +2189,23 @@ mod tests {
         }
 
         fn with_settings(settings: Arc<dyn settings_store::SettingsSource>) -> Self {
-            let root = TempDir::new().expect("identity root");
-            let paths = tilo_device_identity::IdentityPaths::under(root.path());
+            let home = tilo_test_env::TestHome::new().expect("a test home");
+            let root = home.root().join("system-identity");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_IDENTITY_ROOT", &root);
+            let paths = tilo_device_identity::IdentityPaths::under(&root);
             tilo_device_identity::persist::adopt_device_key(&paths, &[5; 32])
                 .expect("this device's key");
+            let daemon = crate::nearby::testing::FakeDaemon::keeping_the_person(
+                &paths,
+                crate::nearby::testing::Answer::Certify,
+            );
             Self {
-                _root: root,
+                _env: env,
+                _home: home,
                 paths,
                 _settings: settings_store::scoped_source(Some(settings)),
+                _daemon: daemon,
             }
         }
 

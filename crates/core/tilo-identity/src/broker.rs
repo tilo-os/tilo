@@ -848,15 +848,22 @@ mod tests {
             }
         }
     }
+    /// An identity for this device as its daemon provisions one: the daemon took the device's
+    /// key first, and the service signs with that one key while the lock this answers lives.
     fn ensure_collaboration_identity(
         identity_dir: &std::path::Path,
         paths: &tilo_device_identity::IdentityPaths,
-    ) -> io::Result<crate::provisioning::ProvisionOutcome> {
+    ) -> io::Result<tilo_device_identity::persist::DeviceKeyLock> {
+        let refused =
+            |error: tilo_device_identity::PersistError| io::Error::other(error.to_string());
+        tilo_device_identity::persist::load_or_create_device_key(paths).map_err(refused)?;
+        let taken = tilo_device_identity::persist::take_device_key(paths).map_err(refused)?;
         crate::provisioning::ensure_collaboration_identity(
             identity_dir,
             paths,
             crate::provisioning::IdentityStorage::Files,
-        )
+        )?;
+        Ok(taken)
     }
 
     /// The identity service's bytes: the launcher's handshake is a
@@ -903,7 +910,7 @@ mod tests {
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = tilo_device_identity::IdentityPaths::under(&system_root);
-            ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+            let taken = ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();
             let workspace_id = workspace.to_string();
@@ -912,8 +919,7 @@ mod tests {
             let profile = crate::store::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
-            let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
-                .expect("device key");
+            let device = taken.key().clone();
             let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
             let mut committed = Workspace::new(workspace, "Workspace");
@@ -1133,7 +1139,7 @@ params = []
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = tilo_device_identity::IdentityPaths::under(&system_root);
-            ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+            let taken = ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();
             let workspace_id = workspace.to_string();
@@ -1143,8 +1149,7 @@ params = []
             let profile = crate::store::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
-            let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
-                .expect("device key");
+            let device = taken.key().clone();
             let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
             let mut committed = Workspace::new(workspace, "Workspace");
             committed.policy.set_owner(profile.person_id());
@@ -1202,7 +1207,7 @@ params = []
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = tilo_device_identity::IdentityPaths::under(&system_root);
-            ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+            let taken = ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();
             let workspace_id = workspace.to_string();
@@ -1211,8 +1216,7 @@ params = []
             let profile = crate::store::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
-            let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
-                .expect("device key");
+            let device = taken.key().clone();
             let op = SignedOp::new_unsigned(
                 DocumentMutation::Snapshot(b"automerge document".to_vec())
                     .encode()
@@ -1288,7 +1292,7 @@ params = []
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = tilo_device_identity::IdentityPaths::under(system_root);
-            ensure_collaboration_identity(&identity_dir, &paths).unwrap();
+            let _taken = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
             let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
             crate::store::update_identity_photo(&identity_dir, "primary", Some(photo.clone()))
                 .unwrap();
@@ -1426,7 +1430,7 @@ params = []
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = tilo_device_identity::IdentityPaths::under(system_root);
-            ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+            let _taken = ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();
             let workspace_id = workspace.to_string();

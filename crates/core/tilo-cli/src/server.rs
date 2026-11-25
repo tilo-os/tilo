@@ -226,12 +226,16 @@ fn keep_recovery_key(file: &std::path::Path) -> Result<std::process::ExitCode> {
     if key.is_empty() {
         bail!("{} holds no recovery key", file.display());
     }
-    let (signing, device) = crate::login::here()?.ok_or_else(|| {
+    let device = crate::login::home().ok_or_else(|| {
         anyhow::anyhow!("this machine is not one of your devices yet: run `tilo login` first")
     })?;
+    // This machine signs as its device through its daemon: the key never enters this process.
+    let signer = std::sync::Arc::new(tilo_identity::daemon_signer::DaemonSigner::here(
+        crate::identity::paths(),
+    )?);
     let runtime = crate::login::runtime()?;
     let kept = runtime.block_on(async {
-        let entered = crate::login::connect_retrying(&signing, &device).await?;
+        let entered = crate::login::connect_retrying(signer, &device).await?;
         let kept = entered
             .host_action(
                 machines::KEEP_RECOVERY_KEY,

@@ -2850,8 +2850,9 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
     let keys = tilo_api::calls::device_keys();
     let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
     let place = tilo_device_identity::login::Place::at(root.join("login"), keys);
-    let admission: &'static tilo_api::daemon::admission::Admission =
-        Box::leak(Box::new(tilo_api::daemon::admission::Admission::new(DAEMON, true)));
+    let admission: &'static tilo_api::daemon::admission::Admission = Box::leak(Box::new(
+        tilo_api::daemon::admission::Admission::new(DAEMON, true),
+    ));
     let answers = crate::device::unclaimed::DeviceOnly::at(key, place, root.clone(), DAEMON);
     let native = std::sync::Arc::new(super::Native::new(
         answers,
@@ -2914,7 +2915,10 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
     // endpoint, answered the same way by every caller.
     let (failed, said) = call(0, "seats#signed-in", json!({"uid": ADA}));
     assert!(!failed, "{said}");
-    assert!(said.contains("\"founding\":true"), "a person is to be made: {said}");
+    assert!(
+        said.contains("\"founding\":true"),
+        "a person is to be made: {said}"
+    );
 
     // The account's first command founds its person through the same endpoint.
     let (failed, said) = call(ADA, "devices#found", json!({}));

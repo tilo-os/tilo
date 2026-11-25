@@ -615,6 +615,43 @@ pub(crate) fn is_bound(path: &Path) -> bool {
     unsafe { WaitNamedPipeW(name.as_ptr(), 1) != 0 || GetLastError() == ERROR_SEM_TIMEOUT }
 }
 
+/// What the other end of `stream` sent so far, up to `buffer`'s length, without consuming it:
+/// looked at until the first bytes arrive or `within` passes, as a pipe's peek never waits.
+pub(crate) fn peek(
+    stream: &Stream,
+    buffer: &mut [u8],
+    within: std::time::Duration,
+) -> io::Result<usize> {
+    let deadline = std::time::Instant::now() + within;
+    let length = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
+    loop {
+        let mut read = 0_u32;
+        // SAFETY: a live pipe handle and a buffer of at least `length` bytes; what is copied
+        // stays in the pipe for the next read.
+        let peeked = unsafe {
+            PeekNamedPipe(
+                stream.pipe.as_raw_handle(),
+                buffer.as_mut_ptr().cast(),
+                length,
+                &raw mut read,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if peeked == 0 {
+            // SAFETY: reads this thread's last error, right after the call.
+            return match unsafe { GetLastError() } {
+                ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED => Ok(0),
+                _ => Err(io::Error::last_os_error()),
+            };
+        }
+        if read > 0 || std::time::Instant::now() >= deadline {
+            return Ok(read as usize);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 /// Whether the other end of `stream` is still connected: a peek at the pipe fails once it is
 /// gone, and answers either way while an end is held.
 pub(crate) fn connected(stream: &Stream) -> bool {

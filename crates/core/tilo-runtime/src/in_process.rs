@@ -358,12 +358,10 @@ impl Device {
         Ok(())
     }
 
+    /// This device's public key: the key the daemon in this process took, never read again.
     fn device_key() -> Result<[u8; 32]> {
-        let (signing, _) = tilo_device_identity::persist::load_or_create_device_key(
-            &tilo_api::calls::device_keys(),
-        )
-        .context("reading this device's key")?;
-        Ok(signing.verifying_key().to_bytes())
+        tilo_device_identity::persist::device_public_key(&tilo_api::calls::device_keys())
+            .context("this device's key")
     }
 
     /// Stop the daemon: what the app does as it ends.

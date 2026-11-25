@@ -71,11 +71,17 @@ tilo_test_env::scenario! {
 }
 
 /// A throwaway identity in `tmp`, with its device certificate replaced by
-/// one issued `age_ns` ago, as a session that ran that long ago left it.
+/// one issued `age_ns` ago, as a session that ran that long ago left it. The
+/// device key stays taken by this process, which signs as that device as its
+/// daemon does, while the returned lock lives.
 #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
-pub(crate) fn aged_throwaway(tmp: &Path, age_ns: u64) -> (PathBuf, IdentityPaths, DeviceCert) {
+pub(crate) fn aged_throwaway(
+    tmp: &Path,
+    age_ns: u64,
+) -> (PathBuf, IdentityPaths, DeviceCert, persist::DeviceKeyLock) {
     let personal = tmp.join("config/tilo/identity");
     let paths = IdentityPaths::under(tmp.join("system"));
+    let taken = device_key_taken_as_daemon(&paths).expect("this process signs as the device");
     ensure_throwaway_test_identity(&personal, &paths, FILES).expect("provision");
     let identity =
         crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
@@ -94,7 +100,7 @@ pub(crate) fn aged_throwaway(tmp: &Path, age_ns: u64) -> (PathBuf, IdentityPaths
         &aged,
     )
     .unwrap();
-    (personal, paths, aged)
+    (personal, paths, aged, taken)
 }
 
 tilo_test_env::scenario! {
@@ -105,7 +111,7 @@ tilo_test_env::scenario! {
     {
         let tmp = tempfile::tempdir().unwrap();
         // The certificate lasted a day, and two have passed.
-        let (personal, paths, expired) = aged_throwaway(tmp.path(), 48 * HOUR);
+        let (personal, paths, expired, _taken) = aged_throwaway(tmp.path(), 48 * HOUR);
         assert!(expired.is_expired_at(tilo_clock::unix_now_ns()));
 
         // A session starts the way every session does.
@@ -132,7 +138,7 @@ tilo_test_env::scenario! {
     phase a_session_keeps_a_certificate_not_yet_due;
     {
         let tmp = tempfile::tempdir().unwrap();
-        let (personal, paths, young) = aged_throwaway(tmp.path(), HOUR);
+        let (personal, paths, young, _taken) = aged_throwaway(tmp.path(), HOUR);
         ensure_collaboration_identity(&personal, &paths, FILES).expect("start");
         assert_eq!(
             persist::read_device_cert(&paths.device_cert).unwrap(),
@@ -148,7 +154,7 @@ tilo_test_env::scenario! {
     {
         let tmp = tempfile::tempdir().unwrap();
         // Eleven hours into a day: due in one.
-        let (personal, paths, held) = aged_throwaway(tmp.path(), 11 * HOUR);
+        let (personal, paths, held, _taken) = aged_throwaway(tmp.path(), 11 * HOUR);
         let identity =
             crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
         let start = tilo_clock::unix_now_ns();
@@ -190,7 +196,7 @@ tilo_test_env::scenario! {
     {
         let tmp = tempfile::tempdir().unwrap();
         // Thirteen hours into a day: due.
-        let (personal, paths, held) = aged_throwaway(tmp.path(), 13 * HOUR);
+        let (personal, paths, held, _taken) = aged_throwaway(tmp.path(), 13 * HOUR);
         let identity =
             crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
         let clock = TestClock::at(tilo_clock::unix_now_ns(), 2);
@@ -219,7 +225,7 @@ tilo_test_env::scenario! {
     phase a_failed_renewal_is_not_tried_again_while_nothing_changes;
     {
         let tmp = tempfile::tempdir().unwrap();
-        let (personal, paths, _) = aged_throwaway(tmp.path(), 13 * HOUR);
+        let (personal, paths, _, _taken) = aged_throwaway(tmp.path(), 13 * HOUR);
         // Nothing changes: the clock's wait for a change ends the loop.
         let clock = TestClock::at(tilo_clock::unix_now_ns(), 1);
         let attempts = Cell::new(0);
@@ -239,7 +245,7 @@ tilo_test_env::scenario! {
     // that ran out.
     {
         let tmp = tempfile::tempdir().unwrap();
-        let (personal, paths, expired) = aged_throwaway(tmp.path(), 36 * HOUR);
+        let (personal, paths, expired, _taken) = aged_throwaway(tmp.path(), 36 * HOUR);
         let now = tilo_clock::unix_now_ns();
         assert!(expired.is_expired_at(now));
         assert!(
@@ -364,8 +370,12 @@ fn a_renewal_waits_for_a_change_after_the_ones_it_saw() {
 
 /// A joined device's identity tree in `tmp`: a person's root, a device key,
 /// and a certificate for it issued `issued_at_ns`, expiring a day later. It
-/// holds no root of the person's.
-fn joined_device(tmp: &Path, issued_at_ns: u64) -> (PathBuf, IdentityPaths, DeviceCert) {
+/// holds no root of the person's. This process takes the device key, as the
+/// device's daemon does, while the returned lock lives.
+fn joined_device(
+    tmp: &Path,
+    issued_at_ns: u64,
+) -> (PathBuf, IdentityPaths, DeviceCert, persist::DeviceKeyLock) {
     let personal = tmp.join("config/tilo/identity");
     let system = tmp.join("system");
     let paths = IdentityPaths::under(&system);
@@ -388,6 +398,7 @@ fn joined_device(tmp: &Path, issued_at_ns: u64) -> (PathBuf, IdentityPaths, Devi
     };
     paths.ensure_directories().unwrap();
     persist::write_signing_key(&paths.device_privkey, &device).unwrap();
+    let taken = persist::take_device_key(&paths).expect("this process signs as the device");
     persist::install_device_cert(&paths, &cert, issued_at_ns).unwrap();
     let record = crate::store::public_member_record(
         crate::store::UNNAMED_DISPLAY_NAME,
@@ -403,7 +414,7 @@ fn joined_device(tmp: &Path, issued_at_ns: u64) -> (PathBuf, IdentityPaths, Devi
         0o600,
     )
     .unwrap();
-    (personal, paths, cert)
+    (personal, paths, cert, taken)
 }
 
 tilo_test_env::scenario! {
@@ -414,7 +425,8 @@ tilo_test_env::scenario! {
         let tmp = tempfile::tempdir().unwrap();
         let now = tilo_clock::unix_now_ns();
         // Certified two days ago, a day of validity: it has run out.
-        let (personal, paths, expired) = joined_device(tmp.path(), now.saturating_sub(48 * HOUR));
+        let (personal, paths, expired, _taken) =
+            joined_device(tmp.path(), now.saturating_sub(48 * HOUR));
         assert!(expired.is_expired_at(now), "the certificate ran out");
 
         // Nothing on this device can sign a renewal: it holds no part of the

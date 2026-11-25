@@ -48,6 +48,9 @@ fn offline_session(
     home.env()
         .set("TILO_IDENTITY_ROOT", &system)
         .set("TILO_SECRETS_DIR", &secrets);
+    // This process stands in for the machine's daemon: it takes the device key first, so the
+    // identity is sealed with it.
+    crate::common::take_device_key(&tilo_identity::provisioning::collaboration_identity_paths());
     tilo_identity::provisioning::ensure_throwaway_test_identity(
         &identity,
         &tilo_identity::provisioning::collaboration_identity_paths(),

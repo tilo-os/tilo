@@ -434,7 +434,12 @@ pub fn settle(
         }
         Some(recorded) if recorded.is(machine) => Ok(Settled::Same),
         Some(_) => {
-            let previous = persist::load_device_key(paths)?;
+            let previous = key_before(paths)?.ok_or_else(|| {
+                PersistError::Io(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "the device key went away while the machine was re-keyed",
+                ))
+            })?;
             let next = SigningKey::generate(&mut UnwrapErr(SysRng));
             let journal = Journal {
                 version: JOURNAL_VERSION,
@@ -450,6 +455,26 @@ pub fn settle(
     }
 }
 
+/// The device's key as a re-key finds it, `None` where there is none: taken as the device's
+/// daemon takes it and let go of at once. A re-key runs at boot before anything uses the key, so a
+/// daemon that has it refuses the re-key instead of having its key read beside it.
+fn key_before(paths: &IdentityPaths) -> Result<Option<SigningKey>, PersistError> {
+    if !persist::holds_device_key(paths)? {
+        return Ok(None);
+    }
+    let taken = persist::take_device_key(paths)?;
+    Ok(Some(taken.key().clone()))
+}
+
+/// [`key_before`], `None` for a key that cannot be read: a re-key replaces it all the same. One
+/// the daemon took still stops the re-key.
+fn readable_key_before(paths: &IdentityPaths) -> Result<Option<SigningKey>, PersistError> {
+    match key_before(paths) {
+        Err(error @ PersistError::KeyInUse { .. }) => Err(error),
+        current => Ok(current.ok().flatten()),
+    }
+}
+
 fn rebase(
     paths: &IdentityPaths,
     journal: &Journal,
@@ -457,8 +482,8 @@ fn rebase(
 ) -> Result<Journal, PersistError> {
     let mut from = journal.from.clone();
     from.push(journal.to);
-    if let Ok(held) = persist::load_device_key(paths) {
-        from.push(held.to_bytes());
+    if let Some(current) = readable_key_before(paths)? {
+        from.push(current.to_bytes());
     }
     from.sort_unstable();
     from.dedup();
@@ -495,8 +520,8 @@ fn resume(
     }
     (branch.after)(Stage::Stores)?;
 
-    let held = persist::load_device_key(paths).ok();
-    if held.as_ref().map(SigningKey::to_bytes) != Some(to.to_bytes()) {
+    let current = readable_key_before(paths)?;
+    if current.as_ref().map(SigningKey::to_bytes) != Some(to.to_bytes()) {
         persist::replace_device_key(paths, &to)?;
     }
     (branch.after)(Stage::Key)?;

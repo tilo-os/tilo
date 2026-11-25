@@ -743,6 +743,39 @@ fn founder_name(uid: u32) -> String {
 }
 
 impl DeviceOnly {
+    /// Answer `action`, one a person's programs ask with the device key
+    /// ([`super::key_use::FOR_A_PERSON`]): the device's own system and its person's accounts
+    /// alone, whose account could read the key before the daemon alone kept it. Answered in the
+    /// receipt and kept nowhere.
+    fn for_a_person(
+        &self,
+        invocation: InvocationId,
+        action: &str,
+        argument: &InvokeArgument,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        use tilo_api::daemon::admission::Admitted;
+        let theirs = self.1.as_ref().is_some_and(|seated| {
+            matches!(seated.seat.admitted, Admitted::Device | Admitted::Person(_))
+        });
+        if !theirs {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: "only this device's system and its person ask what the device key does"
+                    .into(),
+            }));
+        }
+        let InvokeArgument::Json(argument) = argument else {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: "a device action asks with its arguments".into(),
+            }));
+        };
+        let update =
+            match super::key_use::answer(action, &Value::Object(argument.clone()), &self.0.key) {
+                Ok(value) => succeeded(invocation, value),
+                Err(refusal) => failed_as(invocation, refusal.code, &refusal.message),
+            };
+        Pending::ready(Ok(InvocationState::new(invocation, update).receipt()))
+    }
+
     /// Answer `action`, one the device's own system asks with the device key: root, or the
     /// daemon's own account, alone.
     fn for_the_system(
@@ -912,6 +945,9 @@ impl ActionProvider for DeviceOnly {
         }
         if super::key_use::FOR_THE_SYSTEM.contains(&address.action.as_str()) {
             return self.for_the_system(invocation, &address.action, &request.argument);
+        }
+        if super::key_use::FOR_A_PERSON.contains(&address.action.as_str()) {
+            return self.for_a_person(invocation, &address.action, &request.argument);
         }
         match address.action.as_str() {
             INFO => Pending::ready(Ok(self.keep(

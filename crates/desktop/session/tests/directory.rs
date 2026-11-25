@@ -585,6 +585,9 @@ fn expired_throwaway_identity(
     let identity_dir =
         tilo_identity::store::account_identity_dir(&home.config().join("tilo").join("identity"));
     home.env().set("TILO_IDENTITY_ROOT", &system);
+    // This process stands in for the machine's daemon: it takes the device key first, so the
+    // identity is sealed with it.
+    crate::common::take_device_key(&tilo_identity::provisioning::collaboration_identity_paths());
     tilo_identity::provisioning::ensure_throwaway_test_identity(
         &identity_dir,
         &paths,

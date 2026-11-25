@@ -53,12 +53,16 @@ pub fn this_computer(
     tilo_identity::sources::test_trust::install();
     let personal =
         tilo_identity::store::account_identity_dir_from_env().expect("the test's identity store");
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        &personal,
-        &paths,
-        IdentityStorage::Files,
-    )
-    .expect("this computer's identity");
+    // Provisioned as the device's daemon provisions: with the device key taken, and let go
+    // of at once, for the daemon this test starts takes it itself.
+    drop(
+        tilo_identity::provisioning::provisioned_as_its_daemon(
+            &personal,
+            &paths,
+            IdentityStorage::Files,
+        )
+        .expect("this computer's identity"),
+    );
     env.set("TILO_IDENTITY_ROOT", root.path());
     let device = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
@@ -106,12 +110,16 @@ pub fn fixture() -> Fixture {
     tilo_identity::sources::test_trust::install();
     let personal = tilo_identity::store::account_identity_dir(&xdg.join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        &personal,
-        &paths,
-        IdentityStorage::Files,
-    )
-    .expect("this computer's identity");
+    // Provisioned as the device's daemon provisions: with the device key taken, and let go
+    // of at once, for the daemon this test starts takes it itself.
+    drop(
+        tilo_identity::provisioning::provisioned_as_its_daemon(
+            &personal,
+            &paths,
+            IdentityStorage::Files,
+        )
+        .expect("this computer's identity"),
+    );
     let device = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");
@@ -411,12 +419,16 @@ pub fn this_computer_with_an_identity(
     tilo_identity::sources::test_trust::install();
     let identity_dir =
         tilo_identity::store::account_identity_dir(&home.config().join("tilo").join("identity"));
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        &identity_dir,
-        &tilo_device_identity::IdentityPaths::under(&root),
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .expect("this computer's identity");
+    // Provisioned as the device's daemon provisions: with the device key taken, and let go
+    // of at once, for the daemon this test starts takes it itself.
+    drop(
+        tilo_identity::provisioning::provisioned_as_its_daemon(
+            &identity_dir,
+            &tilo_device_identity::IdentityPaths::under(&root),
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .expect("this computer's identity"),
+    );
     let person = tilo_identity::store::list_identities(&identity_dir)
         .expect("this computer's identities")
         .into_iter()

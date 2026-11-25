@@ -54,23 +54,7 @@ pub fn device_public_key(paths: &IdentityPaths) -> Result<[u8; 32], CertifiedIde
 
 /// [`device_public_key`] from the daemon at `actions`.
 fn device_public_key_of(actions: &DeviceActions) -> Result<[u8; 32], CertifiedIdentityError> {
-    let info = actions.ask("info", serde_json::json!({}))?;
-    let named = info
-        .get("device")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| no_device_key("the device service answered no device key"))?;
-    let key = hex::decode(named)
-        .map_err(|_| no_device_key("the device service answered a device key that is not hex"))?;
-    key.as_slice().try_into().map_err(|_| {
-        no_device_key(format!(
-            "the device service answered a device key of {} bytes, not 32",
-            key.len()
-        ))
-    })
-}
-
-fn no_device_key(message: impl Into<String>) -> CertifiedIdentityError {
-    CertifiedIdentityError::DeviceService(DeviceRefusal::said(message.into()))
+    Ok(actions.device_key()?)
 }
 
 /// The device certificate presented during collaborative-FS peer auth. The constructor is

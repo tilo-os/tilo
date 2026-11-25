@@ -43,6 +43,7 @@ mod chat;
 mod customer_workspaces;
 mod daemon_flows;
 mod desktop_page;
+mod device_carry;
 mod device_key;
 mod device_writes;
 mod files_collab;
