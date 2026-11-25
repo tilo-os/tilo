@@ -34,15 +34,30 @@ pub(super) async fn subscribed(
 /// The host's actions in `workspace`, asked as `device` over the device action service, from
 /// the device's own endpoint: a device with no copy of the workspace asks its host this way, and
 /// one with a copy asks through its link ([`Linked::asking_in`]).
+///
+/// The link is a device's session as much as its question: a host answers a request from a
+/// device the workspace holds no certificate for by asking that device which certificate it
+/// answers under, over this same link. The device answers, as one holding its identity does; a
+/// device that kept silent would hear the refusal only once the reply deadline passed.
 pub(super) async fn asking(server: &Server, device: &TestDevice, workspace: &str) -> RemoteDevice {
     let endpoint = device_endpoint(device).await;
     let dialer = Dialer::from_endpoint(ServerAddress::at(server.node_addr()), endpoint.clone());
-    let link = dialer
-        .link(Purpose::Actions)
-        .await
-        .expect("the host answers its actions link");
+    let link: Arc<dyn tilo_peer_state::transport::Transport> = Arc::new(
+        dialer
+            .link(Purpose::Actions)
+            .await
+            .expect("the host answers its actions link"),
+    );
     let service = ActionService::new(device.sk.clone(), Arc::new(NoActions));
-    service.remote_over(Arc::new(link), host_device(server), workspace)
+    service.answer_under(device.cert.clone());
+    let answering = service.clone();
+    let session = Arc::clone(&link);
+    tokio::spawn(async move {
+        let execution = tilo_actions::remote::ExecutionLease::mint();
+        let _ = answering.serve_transport(&*session, None, &execution).await;
+        execution.close();
+    });
+    service.remote_over(link, host_device(server), workspace)
 }
 
 /// The device `server` signs as: what an action addressed to it names.
@@ -137,13 +152,25 @@ pub(super) async fn host_action<T: serde::de::DeserializeOwned>(
     action: &str,
     argument: serde_json::Value,
 ) -> T {
+    host_action_in(actions, device, "", action, argument).await
+}
+
+/// [`host_action`] for the operation `device` asks inside `workspace`, which its signature
+/// names: a device asks its host the operations from within a workspace it holds there.
+pub(super) async fn host_action_in<T: serde::de::DeserializeOwned>(
+    actions: &RemoteDevice,
+    device: &TestDevice,
+    workspace: &str,
+    action: &str,
+    argument: serde_json::Value,
+) -> T {
     let RemoteActionMessage::Invoke(mut request) = host_operation(action, argument) else {
         panic!("a host operation is one invocation");
     };
     request.signed = None;
     request.signed = Some(Box::new(
         tilo_server_protocol::invocation::sign_invocation_now(
-            "",
+            workspace,
             &request,
             &device.cert,
             &device.sk,
@@ -327,7 +354,7 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
     drop(home);
 
     // Bob redeems the invitation the workspace was created with; a member, he is
-    // not offered the host's operations and runs none of them.
+    // told the workspaces he is in and runs none of the host's own operations.
     let first = created.invitation.expect("asked for").decode().unwrap();
     let verified = decode_and_verify_invitation(
         &first.signed_invitation,
@@ -352,19 +379,62 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
         .asking_in(&created.workspace.workspace)
         .await
         .expect("the host answers its actions link");
-    for (action, argument) in [
-        (LIST_WORKSPACES, serde_json::json!({})),
-        (CREATE_WORKSPACE, serde_json::json!({ "name": "Bob's" })),
-        (
-            ENTER_WORKSPACE,
-            serde_json::json!({ "workspace": created.workspace.workspace }),
-        ),
-    ] {
-        assert!(
-            outcome(ask(&member_actions, host_operation(action, argument)).await).is_err(),
-            "{action} ran for a member"
-        );
-    }
+    // The listing answers a member the workspaces of theirs the host holds, and
+    // no other: it names the workspace Bob was admitted to, as the role he holds.
+    let listed: Vec<WorkspaceListing> = serde_json::from_value(
+        outcome(
+            ask(
+                &member_actions,
+                host_operation(LIST_WORKSPACES, serde_json::json!({})),
+            )
+            .await,
+        )
+        .expect("a member is listed the workspaces they are in"),
+    )
+    .unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|workspace| (workspace.workspace.as_str(), workspace.role.as_deref()))
+            .collect::<Vec<_>>(),
+        [(created.workspace.workspace.as_str(), Some("editor"))],
+        "a member is listed the workspace they were admitted to, and it alone"
+    );
+    // Making a workspace here is the host's person's, and a member's ask for one runs nothing.
+    assert!(
+        outcome(
+            ask(
+                &member_actions,
+                host_operation(CREATE_WORKSPACE, serde_json::json!({ "name": "Bob's" })),
+            )
+            .await,
+        )
+        .is_err(),
+        "workspace.create ran for a member"
+    );
+    // Entering is no host operation: any device asks for the workspace it holds there, and is
+    // answered the invitation that is its own, at the role its person holds, never the owner's.
+    let entered: EnteredWorkspace = host_action_in(
+        &member_actions,
+        &phone,
+        &created.workspace.workspace,
+        ENTER_WORKSPACE,
+        serde_json::json!({ "workspace": created.workspace.workspace }),
+    )
+    .await;
+    let own = entered.invitation.decode().unwrap();
+    let verified = decode_and_verify_invitation(
+        &own.signed_invitation,
+        Some(bob.user_pk),
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .expect("the member's own invitation is its person's");
+    assert_eq!(
+        verified.grant().role,
+        Role::Editor,
+        "a member enters at the role they hold, never above it"
+    );
     let RemoteActionMessage::CatalogueResponse { result, .. } = ask(
         &member_actions,
         RemoteActionMessage::CatalogueRequest {
@@ -379,7 +449,17 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
     else {
         panic!("a catalogue request is answered with a page");
     };
-    assert!(result.unwrap().rows.is_empty());
+    let rows = result.unwrap().rows;
+    assert_eq!(
+        rows.iter()
+            .filter_map(|row| row
+                .action
+                .as_ref()
+                .map(|action| action.address.action.to_owned()))
+            .collect::<Vec<_>>(),
+        [LIST_WORKSPACES],
+        "a member is offered the listing, and none of the host's own operations"
+    );
     assert_eq!(server.workspaces().unwrap().list().await.len(), 1);
     drop(member);
     server.shutdown().await;

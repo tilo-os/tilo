@@ -70,18 +70,22 @@ async fn a_member_reads_the_devices_keeping_the_workspace() {
     );
 }
 
-/// A device of nobody in the workspace reads nothing of it.
+/// A further device of a member, one the workspace's signed member list does not name, reads
+/// nothing of it: a person is a member, and each of their devices is a way in of its own, which
+/// the list has only once the device wrote its row there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stranger_reads_no_copies() {
+async fn a_device_the_member_list_does_not_name_reads_no_copies() {
     let fixture = governed_workspace(Role::Editor).await;
-    let stranger = fixture.bob.enrol("stranger", DeviceCapabilities::member());
-    let actions = asking(&fixture.server, &stranger, &fixture.workspace.workspace).await;
+    let unlisted = fixture
+        .bob
+        .enrol("bob-tablet", DeviceCapabilities::member());
+    let actions = asking(&fixture.server, &unlisted, &fixture.workspace.workspace).await;
     let refused = outcome(ask(&actions, keeps(&fixture.workspace.workspace)).await);
     assert!(
         matches!(
             refused,
             Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
         ),
-        "a device of nobody in the workspace is told nothing of its copies: {refused:?}"
+        "a device the member list does not name is told nothing of its copies: {refused:?}"
     );
 }

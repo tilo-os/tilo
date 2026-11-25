@@ -1198,11 +1198,13 @@ pub fn in_own_process(test: &str) -> bool {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", test, "--nocapture", "--test-threads=1"])
         .env(OWN_PROCESS, test)
-        .stderr(std::process::Stdio::inherit())
         .output_locked()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     eprintln!("{stdout}");
+    // Why it failed is on its stderr, which this process keeps for it: the run reads it here or
+    // never, as a test that failed in this process would have printed it.
+    eprintln!("{}", String::from_utf8_lossy(&output.stderr));
     assert!(
         output.status.success() && stdout.contains("test result: ok. 1 passed"),
         "{test} did not pass in its own process: {}",
