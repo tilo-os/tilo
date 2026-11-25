@@ -248,7 +248,7 @@ impl Device {
     }
 
     /// Where this device is reached while its app is closed: the web push `endpoint` a phone's
-    /// UnifiedPush distributor gave it, with the P-256 key its pushes are encrypted for and the
+    /// `UnifiedPush` distributor gave it, with the P-256 key its pushes are encrypted for and the
     /// auth secret (`p256dh` and `auth`, in hex), handed over as one of the person's addresses.
     /// Answered with the addresses their devices are reached at.
     ///

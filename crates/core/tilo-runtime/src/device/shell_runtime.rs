@@ -114,7 +114,7 @@ pub(crate) struct Asked<'a, H> {
 
 /// Answer `request`, one the shell runtime asks ([`asks`]).
 pub(crate) fn answer<H>(
-    asked: Asked<'_, H>,
+    asked: &Asked<'_, H>,
     request: &InvokeRequest,
 ) -> Pending<Result<InvocationReceipt, ActionCallError>>
 where
@@ -142,7 +142,7 @@ where
             workspace,
             args,
         ),
-        _ => open_terminal(&asked, invocation, args),
+        _ => open_terminal(asked, invocation, args),
     }
 }
 

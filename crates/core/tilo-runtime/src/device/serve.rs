@@ -280,17 +280,18 @@ pub(crate) fn ending_step(
         return;
     }
     let bound = within.saturating_add(ENDING_SLACK);
-    match finished.recv_timeout(bound) {
-        Ok(()) => tracing::debug!(
+    if finished.recv_timeout(bound).is_ok() {
+        tracing::debug!(
             step = what,
             took_ms = started.elapsed().as_millis(),
             "a step of the person's part ending finished"
-        ),
-        Err(_) => tracing::error!(
+        );
+    } else {
+        tracing::error!(
             step = what,
             waited_ms = bound.as_millis(),
             "a step of the person's part ending did not finish in time; it is left behind"
-        ),
+        );
     }
 }
 

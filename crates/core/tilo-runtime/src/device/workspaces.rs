@@ -19,7 +19,7 @@ use std::{
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::invocation_record::Invocations;
-use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_identity::broker::WorkspaceMembership;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::StatePeer;

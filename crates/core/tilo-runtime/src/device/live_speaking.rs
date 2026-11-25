@@ -283,7 +283,8 @@ impl ShellSpeaking for Live {
     }
 
     fn gone(&self) {
-        if let Some(live) = self.weak().upgrade() {
+        let live = self.weak().upgrade();
+        if let Some(live) = live {
             tilo_rt::app().spawn(async move { live.shell_gone().await });
         }
     }

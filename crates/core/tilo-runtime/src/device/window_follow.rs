@@ -42,13 +42,13 @@ pub fn provide_window_steps(fanout: Arc<FanoutState>, providers: &Providers) {
 
 /// What a save the window's app did not answer ends in: its connection closed first, or no app
 /// shows that window.
-fn unanswered() -> Box<ActionFailure> {
-    Box::new(ActionFailure {
+fn unanswered() -> ActionFailure {
+    ActionFailure {
         code: "unanswered".to_owned(),
         message: "the window's app did not answer".to_owned(),
         details: None,
         retryable: false,
-    })
+    }
 }
 
 /// Step `action`, described for the dispatch's catalogue.
@@ -145,7 +145,7 @@ impl Admits for WindowFollow {
                 self.0
                     .save(workspace, &handoff.app, handoff.instance, token)
                     .then(move |answer| {
-                        done.complete(answer.ok_or_else(unanswered).map(|report| {
+                        done.complete(answer.ok_or_else(|| Box::new(unanswered())).map(|report| {
                             tilo_actions::ActionOutput {
                                 value: serde_json::to_value(report).ok(),
                                 ..tilo_actions::ActionOutput::default()

@@ -869,10 +869,10 @@ std::thread_local! {
 /// ([`connection_hand`]). A session is made on its connection's own thread, before any of its
 /// requests is answered.
 pub(crate) fn making_for<T>(hand: Option<Hand>, make: impl FnOnce() -> T) -> T {
-    let before = MAKING_FOR.with(|making| making.replace(hand));
-    let made = make();
-    MAKING_FOR.with(|making| *making.borrow_mut() = before);
-    made
+    let before = MAKING_FOR.with(|slot| slot.replace(hand));
+    let session = make();
+    MAKING_FOR.with(|slot| *slot.borrow_mut() = before);
+    session
 }
 
 /// The hand of the connection whose session is being made now ([`making_for`]): `None` for a

@@ -251,14 +251,14 @@ impl Frames {
 pub(crate) fn hand_to_connector(
     daemon: &Arc<Daemon>,
     connector: &runtime_portal::process_link::Descriptor,
-    at: crate::seats::AppAt,
+    at: &crate::seats::AppAt,
 ) -> io::Result<()> {
     let (ours, theirs) = tilo_socket::pair()?;
     runtime_portal::origin_connector::send_actions(
         connector,
         runtime_portal::packet::descriptor_of(theirs),
     )?;
-    let frames = Frames::of_an_app(daemon, &at);
+    let frames = Frames::of_an_app(daemon, at);
     std::thread::Builder::new()
         .name("tilo-connector-actions".into())
         .spawn(move || {

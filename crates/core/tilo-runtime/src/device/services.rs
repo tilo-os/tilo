@@ -206,7 +206,7 @@ impl Daemon {
                 super::local::hand_to_connector(
                     &daemon,
                     connector,
-                    crate::seats::AppAt {
+                    &crate::seats::AppAt {
                         app: app.to_owned(),
                         workspace: workspace.to_owned(),
                         pid,
@@ -261,7 +261,9 @@ impl Daemon {
                     serde_json::Value::Object(serde_json::Map::new()),
                 ),
             };
-            let until = tilo_clock::now() + JOIN_WAIT;
+            let until = tilo_clock::now()
+                .checked_add(JOIN_WAIT)
+                .ok_or("the join's wait reaches past what this clock holds")?;
             let receipt = tilo_actions::remote::ActionProvider::invoke(&tree, &caller, request)
                 .wait_timeout(JOIN_WAIT)
                 .ok()
@@ -5498,7 +5500,7 @@ impl ActionProvider for RuntimeActionProvider {
                 return Pending::ready(Err(ActionCallError::NotPermitted));
             };
             return super::shell_runtime::answer(
-                super::shell_runtime::Asked {
+                &super::shell_runtime::Asked {
                     workspaces: &self.workspaces,
                     dispatch: self.clone(),
                     person,
