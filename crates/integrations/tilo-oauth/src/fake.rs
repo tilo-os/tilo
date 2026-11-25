@@ -36,6 +36,13 @@ struct State {
     /// Gmail and the Microsoft shape, so one stand-in serves either.
     email: String,
     token_hold: Option<Arc<ExchangeHold>>,
+    /// Every access token issued, which `/me` takes as a bearer.
+    access_tokens: BTreeSet<String>,
+    /// The account `/me` answers, as `{"id", "username"}`.
+    account: (String, String),
+    /// Refuse every code exchange for its redirect, as an issuer does whose
+    /// client never registered the address the code came back to.
+    refuse_redirect: bool,
 }
 
 #[derive(Default)]
@@ -107,6 +114,7 @@ impl FakeAuthorizationServer {
         let state = Arc::new(Mutex::new(State {
             token_lifetime: 3600,
             email: "ada@example.test".to_owned(),
+            account: ("80351110224678912".to_owned(), "ada".to_owned()),
             ..State::default()
         }));
         let shared = Arc::clone(&state);
@@ -135,6 +143,34 @@ impl FakeAuthorizationServer {
             refresh: Refresh::RefreshToken,
             device_authorization_endpoint: None,
         }
+    }
+
+    /// This server as an issuer an app describes, with its redirect on
+    /// `redirect_port` and `/me` answering the account.
+    pub fn described_issuer(&self, redirect_port: u16) -> crate::described::DescribedIssuer {
+        let base = self.responder.url();
+        crate::described::DescribedIssuer {
+            id: "fake".into(),
+            label: "Fake Provider".into(),
+            authorization_endpoint: format!("{base}/authorize"),
+            token_endpoint: format!("{base}/token"),
+            identity_endpoint: format!("{base}/me"),
+            revocation_endpoint: Some(format!("{base}/revoke")),
+            id_field: "id".into(),
+            name_field: "username".into(),
+            scopes: vec!["identify".into()],
+            redirect_port,
+        }
+    }
+
+    /// The account `/me` answers to a token issued here.
+    pub fn set_account(&self, id: &str, name: &str) {
+        self.state.lock_recover().account = (id.to_owned(), name.to_owned());
+    }
+
+    /// Refuse code exchanges for their redirect from now on.
+    pub fn refuse_redirect(&self) {
+        self.state.lock_recover().refuse_redirect = true;
     }
 
     pub fn url(&self) -> String {
@@ -235,6 +271,19 @@ fn handle(shared: &Mutex<State>, request: &Request) -> Reply {
                 "mail": shared.lock_recover().email,
             }),
         ),
+        ("GET", "/me") => {
+            let state = shared.lock_recover();
+            let bearer = request
+                .header("authorization")
+                .and_then(|value| value.strip_prefix("Bearer "));
+            if !bearer.is_some_and(|token| state.access_tokens.contains(token)) {
+                return json(401, &serde_json::json!({"message": "401: Unauthorized"}));
+            }
+            json(
+                200,
+                &serde_json::json!({"id": state.account.0, "username": state.account.1}),
+            )
+        }
         ("POST", "/token") => token(shared, &query_of(&format!("?{}", request.body_text()))),
         ("POST", "/revoke") => {
             let form = query_of(&format!("?{}", request.body_text()));
@@ -302,6 +351,15 @@ fn token(shared: &Mutex<State>, form: &BTreeMap<String, String>) -> Reply {
     };
     match form.get("grant_type").map(String::as_str) {
         Some("authorization_code") => {
+            if state.refuse_redirect {
+                return json(
+                    400,
+                    &serde_json::json!({
+                        "error": "invalid_grant",
+                        "error_description": "Invalid \"redirect_uri\" in request.",
+                    }),
+                );
+            }
             let verifier = form.get("code_verifier").cloned().unwrap_or_default();
             state.verifiers.push(verifier.clone());
             let Some((challenge, redirect, client)) =
@@ -317,6 +375,7 @@ fn token(shared: &Mutex<State>, form: &BTreeMap<String, String>) -> Reply {
             }
             state.next = state.next.saturating_add(1);
             let access = issued(&state);
+            state.access_tokens.insert(access.clone());
             let refresh = format!("refresh-{}", state.next);
             state.refresh_tokens.insert(refresh.clone());
             json(
@@ -338,10 +397,12 @@ fn token(shared: &Mutex<State>, form: &BTreeMap<String, String>) -> Reply {
             }
             state.next = state.next.saturating_add(1);
             state.refreshes = state.refreshes.saturating_add(1);
+            let access = issued(&state);
+            state.access_tokens.insert(access.clone());
             json(
                 200,
                 &serde_json::json!({
-                    "access_token": issued(&state),
+                    "access_token": access,
                     "expires_in": state.token_lifetime,
                     "token_type": "Bearer",
                 }),

@@ -249,3 +249,89 @@ fn registered_ports_are_taken_in_order_and_the_code_can_be_pasted_when_all_are_b
     ));
     drop(first);
 }
+
+/// A port free on this computer now, for a described issuer's one redirect.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .and_then(|listener| listener.local_addr())
+        .expect("a free loopback port")
+        .port()
+}
+
+fn sign_in_described(issuer: &crate::described::DescribedIssuer) -> Result<TokenSet, OAuthError> {
+    let authorization =
+        Authorization::begin(&issuer.provider(), &issuer.registration("bridge-app"), None)?;
+    let url = authorization.url().to_string();
+    let browser = std::thread::spawn(move || browse(&url));
+    let result = authorization.complete(&OAuthClient::new()?, WAIT);
+    browser
+        .join()
+        .expect("browser thread")
+        .expect("browser round trip");
+    result
+}
+
+tilo_test_env::scenario! {
+    fn an_issuer_an_app_describes_confirms_the_account_a_person_signs_in_to;
+
+    phase the_account_is_the_one_the_identity_endpoint_answers_for_the_grant;
+    {
+        let server = FakeAuthorizationServer::start();
+        server.set_account("80351110224678912", "ada");
+        let issuer = server.described_issuer(free_port());
+        assert_eq!(issuer.check(), Ok(()));
+        let tokens = sign_in_described(&issuer).expect("sign-in");
+        let client = OAuthClient::new().unwrap();
+        assert_eq!(
+            issuer.confirm(&client, &tokens),
+            Ok(crate::described::ConfirmedAccount {
+                id: "80351110224678912".into(),
+                name: "ada".into(),
+            })
+        );
+        let requests = server.requests();
+        let authorize = requests
+            .iter()
+            .find(|request| request.target.starts_with("/authorize?"))
+            .expect("the browser visited the authorization endpoint");
+        let query: Vec<(String, String)> = url::form_urlencoded::parse(
+            authorize.target.split_once('?').unwrap().1.as_bytes(),
+        )
+        .into_owned()
+        .collect();
+        assert!(
+            query.contains(&("redirect_uri".into(), issuer.redirect_uri())),
+            "the code comes back to the one registered address: {query:?}"
+        );
+        assert!(query.contains(&("scope".into(), "identify".into())));
+        assert!(
+            requests
+                .iter()
+                .filter(|request| request.target == "/token")
+                .all(|request| !request.body_text().contains("client_secret")),
+            "a public client sends no secret"
+        );
+        let forged = crate::TokenSet {
+            access_token: "not-issued".into(),
+            ..tokens
+        };
+        assert_eq!(
+            issuer.confirm(&client, &forged),
+            Err(OAuthError::InvalidGrant),
+            "a token the issuer never gave confirms nobody"
+        );
+    }
+
+    phase an_exchange_refused_for_its_redirect_says_so;
+    {
+        let server = FakeAuthorizationServer::start();
+        server.refuse_redirect();
+        let issuer = server.described_issuer(free_port());
+        let error = sign_in_described(&issuer).unwrap_err();
+        assert_eq!(error, OAuthError::RedirectRefused);
+        assert!(
+            error.to_string().contains("add this address to your app's redirects"),
+            "{error}"
+        );
+    }
+}

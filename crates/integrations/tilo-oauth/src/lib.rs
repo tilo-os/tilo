@@ -23,6 +23,9 @@
 //! - `client` (feature `client`): [`client::OAuthClient`] for the code
 //!   exchange, refresh and revocation, and [`client::Authorization`] tying
 //!   the whole browser round trip together.
+//! - [`described::DescribedIssuer`]: an issuer an app describes as data, signed
+//!   in to as a public client on one registered redirect, and the account its
+//!   identity endpoint confirms.
 
 use std::fmt;
 
@@ -33,6 +36,7 @@ use sha2::{Digest as _, Sha256};
 
 #[cfg(feature = "client")]
 pub mod client;
+pub mod described;
 #[cfg(feature = "client")]
 pub mod device;
 #[cfg(any(test, feature = "fake"))]
@@ -385,6 +389,10 @@ pub enum OAuthError {
     /// The grant (authorization code or refresh token) is invalid, expired
     /// or revoked: the account must be signed in again.
     InvalidGrant,
+    /// The provider refused the code for the address the browser came back
+    /// to: that redirect is not one registered with the client, which its
+    /// owner adds where the provider keeps the client's redirects.
+    RedirectRefused,
     Network(String),
     Protocol(String),
 }
@@ -414,6 +422,10 @@ impl fmt::Display for OAuthError {
             Self::TimedOut => f.write_str("sign-in was not completed in time"),
             Self::Cancelled => f.write_str("sign-in was cancelled"),
             Self::InvalidGrant => f.write_str("the sign-in is no longer valid; sign in again"),
+            Self::RedirectRefused => f.write_str(
+                "the sign-in service refused this computer's return address: add this address \
+                 to your app's redirects",
+            ),
             Self::Network(error) => write!(f, "could not reach the sign-in service: {error}"),
             Self::Protocol(error) => {
                 write!(f, "the sign-in service answered unexpectedly: {error}")
@@ -435,6 +447,16 @@ pub fn parse_token_response(body: &str) -> Result<TokenSet, OAuthError> {
     let value: serde_json::Value = serde_json::from_str(body)
         .map_err(|_| OAuthError::Protocol("the token response is not JSON".into()))?;
     if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+        // Whether the description names the redirect is all that is read of it: a provider
+        // that does not take the address the code came back to says so there, under a code
+        // that otherwise means a code gone bad.
+        let about_redirect = value
+            .get("error_description")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|description| description.contains("redirect_uri"));
+        if about_redirect && matches!(error, "invalid_grant" | "invalid_request") {
+            return Err(OAuthError::RedirectRefused);
+        }
         return Err(token_error(error));
     }
     let access_token = value
@@ -655,6 +677,18 @@ mod tests {
                 panic!("expected a protocol error");
             };
             assert_eq!(message, "error invalid_client");
+            assert_eq!(
+                parse_token_response(
+                    r#"{"error":"invalid_grant","error_description":"Invalid \"redirect_uri\" in request."}"#
+                ),
+                Err(OAuthError::RedirectRefused)
+            );
+            assert_eq!(
+                parse_token_response(
+                    r#"{"error":"invalid_client","error_description":"redirect_uri"}"#
+                ),
+                Err(OAuthError::Protocol("error invalid_client".into()))
+            );
             assert!(parse_token_response("<html>").is_err());
             assert!(parse_token_response(r#"{"access_token":""}"#).is_err());
         }
