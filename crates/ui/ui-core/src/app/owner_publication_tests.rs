@@ -34,7 +34,9 @@ impl crate::collaboration::PeerTransport for PublicationTransport {
 #[test]
 fn owner_publication_blocked_checked_action_cannot_send_terminal() {
     for background in [false, true] {
-        let mut fixture = ActionFixture::broker();
+        // A store that writes for itself is its records' one path; the routes publish only
+        // for a store that reads.
+        let mut fixture = ActionFixture::over_reading_store();
         let sent = Rc::new(RefCell::new(vec![]));
         fixture.app.collaboration.manager =
             CollaborationManager::with_peer_transport(PublicationTransport(sent.clone()));

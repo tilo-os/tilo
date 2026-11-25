@@ -869,21 +869,27 @@ impl ActionFixture {
         separate: bool,
         queue: Option<&crate::owner_wake::OwnerWakeQueue>,
     ) -> Self {
-        Self::assemble(shared, separate, queue, None)
+        Self::assemble(shared, separate, queue, None, true)
     }
     /// The fixture's app woken through `scope`, as a running app is.
     fn scoped(scope: crate::wake::WakeScope) -> Self {
-        Self::assemble(false, false, None, Some(scope))
+        Self::assemble(false, false, None, Some(scope), true)
     }
     fn assemble(
         shared: bool,
         separate: bool,
         queue: Option<&crate::owner_wake::OwnerWakeQueue>,
         scope: Option<crate::wake::WakeScope>,
+        store_writes: bool,
     ) -> Self {
-        let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
-            crate::resource::MemoryWorkspace::default(),
-        ));
+        // A store that writes for itself sends its records' changes through its own writer; one
+        // that only reads leaves them to the window's routes to publish.
+        let workspace = Rc::new(crate::resource::MemoryWorkspace::default());
+        let mut owners = if store_writes {
+            crate::resource::ResourceOwners::writing(workspace)
+        } else {
+            crate::resource::ResourceOwners::reading(workspace)
+        };
         let records = owners
             .open(
                 "so.tilo.binding-probe",
@@ -976,7 +982,14 @@ impl ActionFixture {
         }
     }
     fn broker() -> Self {
-        let mut fixture = Self::with_same_resource(true);
+        Self::admitted(Self::with_same_resource(true))
+    }
+    /// [`Self::broker`], over a store that only reads, whose records' changes the window's routes
+    /// publish.
+    fn over_reading_store() -> Self {
+        Self::admitted(Self::assemble(true, false, None, None, false))
+    }
+    fn admitted(mut fixture: Self) -> Self {
         // This fixture captures broker submission and injects admitted delivery;
         // it does not exercise authenticated native document history.
         fixture.app.collaboration.manager =
@@ -2096,8 +2109,9 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
                 .iter()
                 .all(|label| label.starts_with("Allowed"))
         );
-        // The existing strict owner's follow-up enters the real confirmation
-        // field. A partially drained validation pass must pause behind it.
+        // The strict owner's follow-up, which asks first, leaves the palette
+        // as any other press does: the call goes out and the device asks the
+        // person, so the palette holds no question of its own.
         palette.set_query("");
         for tick in 0..20 {
             if !palette.advance_search_page().pending {
@@ -2107,14 +2121,18 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
         }
         assert!(step(palette).pending);
         assert!(palette.activate_bound(&confirmation));
-        assert!(palette.in_argument_mode());
-        assert!(palette.result_labels().is_empty());
-        for _ in 0..2 {
-            let progress = step(palette);
-            assert_eq!(progress.inspected, 0);
-            assert!(!progress.pending);
-            assert!(palette.result_labels().is_empty());
-        }
+        assert!(!palette.in_argument_mode());
+        assert!(!palette.is_open());
+        let pending = palette.take_operation().unwrap();
+        assert!(
+            pending
+                .bound
+                .as_ref()
+                .unwrap()
+                .binding
+                .same_component(&confirmation.binding)
+        );
+        assert_eq!(pending.address, confirmation.address.address);
         palette.open();
         for tick in 0..20 {
             if !palette.advance_search_page().pending {

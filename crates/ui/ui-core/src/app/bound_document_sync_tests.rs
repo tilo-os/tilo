@@ -95,21 +95,13 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
             .unwrap();
         let base = peer.get_heads();
         peer.set_actor(automerge::ActorId::from(b"foreign-record".as_slice()));
-        let meta = peer.get(ROOT, "tilo:record").unwrap().unwrap().1;
-        let mut mutations = vec![collab_types::DocumentMutation::Incremental(vec![1, 2, 3])];
-        for (field, value) in [
-            ("id", "uuid:00000000-0000-0000-0000-000000000099"),
-            ("kind", "foreign-kind"),
-            ("workspace", "00000000-0000-0000-0000-000000000099"),
-            ("home", "foreign-origin"),
-        ] {
-            let mut foreign = peer.clone();
-            foreign.put(&meta, field, value).unwrap();
-            mutations.push(collab_types::DocumentMutation::Snapshot(foreign.save()));
-            mutations.push(collab_types::DocumentMutation::Incremental(
-                foreign.save_after(&base),
-            ));
-        }
+        // A record's document holds its content only: its identity is the
+        // store's, so what arrives on its route can be malformed, never
+        // another record's.
+        let mut mutations = vec![
+            collab_types::DocumentMutation::Incremental(vec![1, 2, 3]),
+            collab_types::DocumentMutation::Snapshot(vec![1, 2, 3]),
+        ];
         peer.put(ROOT, "must-not-leak", "valid prefix of corrupt payload")
             .unwrap();
         let mut corrupt = peer.save_after(&base);
