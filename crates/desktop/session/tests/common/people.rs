@@ -2066,6 +2066,14 @@ impl Device {
         super::dev_apps::install_named(&self.store(), &["so.tilo.passwords"]);
     }
 
+    /// Install Chat in this device's store, as a device its person installed it on has it, with
+    /// the runtimes its window starts on: a second device of a workspace sends a message through
+    /// Chat's action here, without seeding a scenario of its own into the workspace.
+    pub fn install_chat(&self) {
+        super::dev_apps::install_named(&self.store(), &["so.tilo.chat"]);
+        super::dev_apps::install_runtimes(&self.home.path().join("data/tilo-runtime"));
+    }
+
     /// What this device lists for the running `app`'s `operation`, once the app published it: a
     /// provider the session names by the app's live connection.
     pub fn app_action(&self, app: &str, operation: &str) -> RemoteActionTarget {

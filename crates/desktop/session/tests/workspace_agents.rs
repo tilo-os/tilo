@@ -14,6 +14,8 @@
               its whole test"
 )]
 
+use std::time::{Duration, Instant};
+
 use crate::common::people::{Device, Person, Site};
 use serde_json::{Value, json};
 use tilo_server_protocol::workspaces::Role;
@@ -72,50 +74,125 @@ fn agents_in(value: &Value, agents: &mut Vec<(String, String)>) {
     }
 }
 
+/// How long a step of this test waits before it gives up: well inside the runner's own limit, so
+/// what the device and its site logged is printed rather than the runner stopping the test as
+/// hung first. A step that gave up here says what the device and the apps it runs logged, and the
+/// two devices' logs name a clash of the laptop's key where there is one.
+const WAIT_LIMIT: Duration = Duration::from_secs(120);
+
 /// Wait until Chat's record of the workspace on `device` holds every one of `wanted` : what a
 /// send landed as.
-fn wait_for_chat_holding(device: &Device, wanted: &[&str]) {
-    tilo_test_env::wait_until(Awaited(device, format!("holds {wanted:?} in Chat")), || {
-        let held = in_front(device, ("so.tilo.chat", ""))["records"].to_string();
-        wanted.iter().all(|needle| held.contains(needle))
-    });
+fn wait_for_chat_holding(device: &Device, site: &Site, wanted: &[&str]) {
+    wait_until(
+        device,
+        site,
+        WAIT_LIMIT,
+        &format!("held {wanted:?} in Chat"),
+        || {
+            let held = in_front(device, ("so.tilo.chat", ""))["records"].to_string();
+            wanted.iter().all(|needle| held.contains(needle))
+        },
+    );
 }
 
-/// What a wait on `device` waited for, told with what its session warned of once the wait gave up.
-struct Awaited<'a>(&'a Device, String);
-
-impl std::fmt::Display for Awaited<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "{} {}; what its session warned of:\n{}",
-            self.0.label,
-            self.1,
-            self.0.warnings()
-        )
+/// Wait until `probe` holds on `device`, giving up after `within` with what the device and its
+/// site logged: a key the site saw twice at one sequence number is refused there, and the
+/// refusal says so.
+fn wait_until(
+    device: &Device,
+    site: &Site,
+    within: Duration,
+    what: &str,
+    mut probe: impl FnMut() -> bool,
+) {
+    let deadline = Instant::now() + within;
+    loop {
+        if probe() {
+            return;
+        }
+        let now = Instant::now();
+        assert!(
+            now < deadline,
+            "{} never {what} within {within:?}; {}\nwhat its site refused:\n{}",
+            device.label,
+            logs(device),
+            site.refusals_report()
+        );
+        std::thread::sleep(deadline.saturating_duration_since(now).min(POLL));
     }
 }
 
+/// Wait until `probe` answers on `device`, giving up after `within` with what the device and its
+/// site logged.
+fn wait_for<T>(
+    device: &Device,
+    site: &Site,
+    within: Duration,
+    what: &str,
+    mut probe: impl FnMut() -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + within;
+    loop {
+        if let Some(answered) = probe() {
+            return answered;
+        }
+        let now = Instant::now();
+        assert!(
+            now < deadline,
+            "{} never {what} within {within:?}; {}\nwhat its site refused:\n{}",
+            device.label,
+            logs(device),
+            site.refusals_report()
+        );
+        std::thread::sleep(deadline.saturating_duration_since(now).min(POLL));
+    }
+}
+
+/// How long a wait on `device` pauses between looks.
+const POLL: Duration = Duration::from_millis(20);
+
+/// What `device` logged, read from its files: a step that never happened is told with what the
+/// device and the daemon it starts said, even where its session no longer answers.
+fn logs(device: &Device) -> String {
+    let log = device.log();
+    let lines: Vec<&str> = log.lines().collect();
+    let tail: Vec<&str> = lines.iter().rev().take(80).rev().copied().collect();
+    format!(
+        "what it warned of:\n{}\nlast lines of its log:\n{}",
+        device.warnings(),
+        tail.join("\n")
+    )
+}
+
 /// Wait until `device` 's copy of the workspace's agents holds `name` exactly once.
-fn wait_for_agent(device: &Device, name: &str) {
-    tilo_test_env::wait_until(Awaited(device, format!("holds the agent {name}")), || {
-        agents_held(device)
-            .iter()
-            .filter(|held| held.as_str() == name)
-            .count()
-            == 1
-    });
+fn wait_for_agent(device: &Device, site: &Site, name: &str) {
+    wait_until(
+        device,
+        site,
+        WAIT_LIMIT,
+        &format!("held the agent {name}"),
+        || {
+            agents_held(device)
+                .iter()
+                .filter(|held| held.as_str() == name)
+                .count()
+                == 1
+        },
+    );
 }
 
 /// Send `text` to `to` (one recipient, or a list of them) from the session's send-to action, as a
 /// window's box does, and answer how it ended.
-fn send(device: &Device, to: &Value, text: &str) -> Value {
+fn send(device: &Device, site: &Site, to: &Value, text: &str) -> Value {
     let to = match to {
         Value::Array(_) => to.clone(),
         one => Value::Array(vec![one.clone()]),
     };
-    let send = tilo_test_env::wait_for(
-        Awaited(device, "publishes the session's send".into()),
+    let send = wait_for(
+        device,
+        site,
+        WAIT_LIMIT,
+        "published the session's send",
         || device.offered("session:send-to", "send"),
     );
     let answered = device.act_wait(&send, &json!({ "to": to, "text": text }));
@@ -151,15 +228,22 @@ fn an_agent_another_device_makes_is_in_the_sessions_copy() {
     let site = Site::start(&ada, "Studio");
     let laptop = laptop_with_chat(&ada, &site);
     let mut phone = ada.device("Ada's phone");
+    // The phone sends its message through Chat's own action, so it carries the app too, without
+    // a scenario of its own seeded into the workspace.
+    phone.install_chat();
     let member = site.admit(ada.public);
     phone.join(&member);
     phone.wait_holding(&site.workspace);
     phone.wait_showing(&site.workspace);
+    // Chat's send is the app's own action: the phone opens it, as the laptop's box does.
+    phone.open("so.tilo.chat");
+    phone.wait_for_window("so.tilo.chat");
 
     // The phone makes an agent in the workspace's record of them, and the laptop's workspace holds
     // it.
     let made = send(
         &phone,
+        &site,
         &json!({ "kind": "new-agent", "name": "Ranger" }),
         "hello",
     );
@@ -167,18 +251,22 @@ fn an_agent_another_device_makes_is_in_the_sessions_copy() {
         made.get("err").is_none(),
         "the phone makes the agent: {made}"
     );
-    wait_for_agent(&laptop, "Ranger");
+    wait_for_agent(&laptop, &site, "Ranger");
 
     // The laptop's session took it into its own copy: an agent it makes under the same name is given
     // an id of its own, never the one the phone's agent holds.
     let again = send(
         &laptop,
+        &site,
         &json!({ "kind": "new-agent", "name": "Ranger" }),
         "hello again",
     );
     assert!(again.get("err").is_none(), "the laptop makes one: {again}");
-    tilo_test_env::wait_until(
-        Awaited(&laptop, "holds both agents called Ranger".into()),
+    wait_until(
+        &laptop,
+        &site,
+        WAIT_LIMIT,
+        "held both agents called Ranger",
         || {
             held_agents(&laptop)
                 .iter()
@@ -207,9 +295,9 @@ fn a_box_finds_one_agent_of_many_by_name() {
         .iter()
         .map(|name| json!({ "kind": "new-agent", "name": name }))
         .collect();
-    let made = send(&laptop, &Value::Array(to), "start");
+    let made = send(&laptop, &site, &Value::Array(to), "start");
     assert!(made.get("err").is_none(), "the agents are made: {made}");
-    tilo_test_env::wait_until(Awaited(&laptop, "holds fifty-five agents".into()), || {
+    wait_until(&laptop, &site, WAIT_LIMIT, "held fifty-five agents", || {
         held_agents(&laptop).len() >= 55
     });
     let (id, _) = held_agents(&laptop)
@@ -220,11 +308,12 @@ fn a_box_finds_one_agent_of_many_by_name() {
     // A box naming one of them alone reaches that one.
     let found = send(
         &laptop,
+        &site,
         &json!({ "kind": "agent", "name": "Helper 42" }),
         "find the forty-second",
     );
     assert!(found.get("err").is_none(), "the send is taken: {found}");
-    wait_for_chat_holding(&laptop, &[&id, "find the forty-second"]);
+    wait_for_chat_holding(&laptop, &site, &[&id, "find the forty-second"]);
 }
 
 #[test]
@@ -236,17 +325,25 @@ fn an_agent_the_session_makes_is_the_workspaces_and_found_by_name() {
     // Made as the Agents tab makes one: the session writes it into the workspace's record.
     let made = send(
         &laptop,
+        &site,
         &json!({ "kind": "new-agent", "name": "Scout" }),
         "look around",
     );
     assert!(made.get("err").is_none(), "the agent is made: {made}");
-    wait_for_agent(&laptop, "Scout");
+    wait_for_agent(&laptop, &site, "Scout");
     // The workspace's host holds it too: what the person's other devices read.
-    site.wait_for_record_of("so.tilo.chat", &laptop);
+    wait_until(
+        &laptop,
+        &site,
+        WAIT_LIMIT,
+        "the site held Chat's record",
+        || site.records().iter().any(|(app, _)| app == "so.tilo.chat"),
+    );
 
     // The send-to box finds it by its name alone: the search reads the workspace's record.
     let found = send(
         &laptop,
+        &site,
         &json!({ "kind": "agent", "name": "Scout" }),
         "again",
     );
@@ -259,9 +356,10 @@ fn an_agent_the_session_makes_is_the_workspaces_and_found_by_name() {
     laptop.stop();
     laptop.start();
     laptop.wait_holding(&site.workspace);
-    wait_for_agent(&laptop, "Scout");
+    wait_for_agent(&laptop, &site, "Scout");
     let again = send(
         &laptop,
+        &site,
         &json!({ "kind": "agent", "name": "Scout" }),
         "still there",
     );

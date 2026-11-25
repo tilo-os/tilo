@@ -393,6 +393,48 @@ fn a_desktop_the_daemon_did_not_start_says_so() {
     assert!(documents.workspaces().is_empty());
 }
 
+/// A desktop frames no device write itself: it holds no workspace and no key, so a write with no
+/// daemon to sign it is refused as the daemon's absence, and none is drafted or kept here. The
+/// daemon alone signs what the device writes, under its own sequence.
+#[test]
+fn a_desktop_the_daemon_did_not_start_frames_no_write_of_its_own() {
+    let runtime = runtime();
+    let (documents, writes, shell) = on_daemon(
+        Err(NOT_STARTED_BY_THE_DAEMON.to_owned()),
+        runtime.handle().clone(),
+    );
+    let refused = runtime
+        .block_on(writes.write(
+            WORKSPACE,
+            b"a moved window",
+            DocumentWriting {
+                app: "so.tilo.desktop",
+                document: "layout",
+                readers: None,
+                founding: false,
+                snapshot: false,
+                sealed: None,
+            },
+        ))
+        .err()
+        .expect("no daemon, no write");
+    assert_eq!(
+        refused,
+        WriteRefusal::Refused(NOT_STARTED_BY_THE_DAEMON.to_owned())
+    );
+    // A document the desktop would have founded is not founded here either, and nothing it read
+    // is kept: there is no copy to frame a write into.
+    assert!(!documents.holds(WORKSPACE, "so.tilo.desktop", "layout"));
+    assert!(documents.workspaces().is_empty());
+    // Nor does the shell reach any daemon to record one with.
+    assert!(
+        runtime
+            .block_on(shell.ask(runtime_collab::wire::shell::ShellCall::Workspaces))
+            .is_err(),
+        "the link is not there to ask"
+    );
+}
+
 #[test]
 fn a_link_is_taken_once() {
     let runtime = runtime();
