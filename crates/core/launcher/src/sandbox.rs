@@ -1348,11 +1348,9 @@ mod tests {
                     None,
                     "a package without a surface names none"
                 );
-                std::fs::write(
-                payload.path().join("surface.json"),
-                b"{\"resources\":[{\"kind\":\"com.example.notes\",\"label\":\"Notes\",\"version\":1}]}",
-            )
-            .unwrap();
+                let surface: &[u8] =
+                    b"{\"resources\":[{\"kind\":\"com.example.notes\",\"label\":\"Notes\",\"version\":1}]}";
+                std::fs::write(payload.path().join("surface.json"), surface).unwrap();
                 let with = build_bwrap_argv(
                     &m,
                     payload.path(),
@@ -1367,7 +1365,8 @@ mod tests {
                 );
                 assert_eq!(
                     named(&with, "TILO_SURFACE_HASH"),
-                    Some(blake3::hash(b"[[resources]]\n").to_hex().to_string())
+                    Some(blake3::hash(surface).to_hex().to_string()),
+                    "the hash of the compiled surface the package ships, byte for byte"
                 );
             }
             {
