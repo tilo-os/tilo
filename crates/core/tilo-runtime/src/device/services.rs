@@ -2935,6 +2935,14 @@ fn record_services(
         .workspaces
         .content_shelf()
         .map(tilo_workspace_service::content::shelf_puts);
+    // A `files#open` given content puts the files into the workspace's own folder, where this
+    // device holds its tree.
+    services.files_open = parts.workspaces.content_shelf().map(|shelf| {
+        Arc::new(tilo_workspace_service::files::OpenedFiles::new(
+            parts.workspaces.copies().clone(),
+            shelf,
+        )) as Arc<dyn tilo_workspace_service::apps::services::FilesTreePuts>
+    });
     // Who is present on which device, as this device's workspaces hear it: their links, and
     // the agent sessions this daemon serves.
     services.present_devices = Some(Arc::new(parts.workspaces.copies().clone())

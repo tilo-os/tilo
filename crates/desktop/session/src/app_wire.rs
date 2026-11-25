@@ -1247,6 +1247,11 @@ fn broker_services(
         // The resources this session's services publish, which the apps it
         // admits read, watch and invoke.
         published: BrokerService::served(link),
+        // The workspace's own folder is kept by the device's daemon, which is
+        // where `files#open` given content puts files; this session keeps none.
+        files_open: BrokerService::unserved(
+            "this session keeps no workspace's file tree: the device's daemon puts files into it",
+        ),
         // A workspace's grants are the session's: the person gives them on its
         // sheets, and the broker decides against the session it was started with.
         workspace_governance: BrokerService::unserved(

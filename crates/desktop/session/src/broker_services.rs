@@ -118,6 +118,7 @@ broker_services! {
     journal_root: Option<std::path::PathBuf> => default,
     launcher: Arc<dyn LauncherServices>,
     published: Arc<dyn PublishedResources>,
+    files_open: Arc<dyn tilo_workspace_service::apps::services::FilesTreePuts>,
     workspace_governance: Arc<dyn WorkspaceGovernanceServices>,
     shortcut_library: Arc<dyn ShortcutLibraryServices>,
     keyboard_shortcuts: Arc<dyn KeyboardShortcutServices>,

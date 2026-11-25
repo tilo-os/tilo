@@ -43,11 +43,13 @@ use tilo_peer_state::owner::WriteRefusal;
 
 pub mod access;
 mod folders;
+mod opened;
 pub mod paths;
 mod puts;
 pub mod socket;
 
 pub use folders::{FOLDERS_APP, Folder, FolderList, Folders};
+pub use opened::OpenedFiles;
 pub use paths::{Entry, EntryKind, Paths};
 pub use puts::Puts;
 

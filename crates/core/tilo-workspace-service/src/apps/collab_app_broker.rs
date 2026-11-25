@@ -79,6 +79,8 @@ mod staged_admission;
 pub use staged_admission::StagedJob;
 use staged_admission::{Admitted, DefiniteOutcome, Delivery};
 mod file_clipboard;
+#[cfg(feature = "files")]
+mod files_open;
 mod host_workers;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
