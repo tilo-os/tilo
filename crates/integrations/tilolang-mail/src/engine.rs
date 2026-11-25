@@ -242,8 +242,7 @@ impl From<AccountConfig> for MailAccount {
     }
 }
 
-/// Where the accounts come from: the session's account sign-ins ([`crate::sign_ins`]), or a
-/// test's.
+/// Where the accounts come from: the device's dispatch ([`crate::sign_ins`]), or a test's.
 pub type AccountSource = Box<dyn Fn() -> Vec<MailAccount>>;
 
 /// The connector over native Mail's engine, which runs requests one at a time on a worker

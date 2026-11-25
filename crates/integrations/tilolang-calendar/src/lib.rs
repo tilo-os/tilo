@@ -132,7 +132,7 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
     // The daemon hands the connector its connection to the one dispatch before any reader.
     let link = match origin_connector::receive(&socket) {
         Ok(Some(Handed::Actions(link))) => link,
-        Ok(Some(Handed::SignIns(_) | Handed::Reader(_))) => {
+        Ok(Some(Handed::Reader(_))) => {
             return Err(
                 "the daemon handed the calendar connector no connection to its dispatch".to_owned(),
             );

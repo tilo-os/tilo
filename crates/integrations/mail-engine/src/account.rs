@@ -8,8 +8,8 @@
 //! This module keeps the shape the rest of Mail works with, [`Account`], hydrates it from the
 //! record ([`accounts_of`]) and says what edits keep a list of them in it ([`edits_for`]). The
 //! connection settings are serialised into each account's opaque `config`. A password is never
-//! read here: the session releases it from the workspace's vault to whoever signs in
-//! (`accounts::sign_ins`).
+//! read here: the device releases it from the workspace's vault to the app that signs in,
+//! by the entry the account names.
 
 use accounts::person::AccountList;
 use accounts::{Account as StoredAccount, AccountId};

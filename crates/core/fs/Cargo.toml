@@ -194,7 +194,7 @@ tilo-test-relay = { path = "../../../tools/test-relay" }
 cloud-source-dav = { package = "tilo-cloud-source-dav", version = "0.1.0", path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
 cloud-source-gdrive = { package = "tilo-cloud-source-gdrive", version = "0.1.0", path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
 cloud-source-dropbox = { package = "tilo-cloud-source-dropbox", version = "0.1.0", path = "../../integrations/cloud-source-dropbox", features = ["fake-server"] }
-accounts = { package = "tilo-accounts", version = "0.1.0", path = "../../integrations/accounts", features = ["sign-ins-fixture"] }
+accounts = { package = "tilo-accounts", version = "0.1.0", path = "../../integrations/accounts" }
 
 [lints]
 workspace = true

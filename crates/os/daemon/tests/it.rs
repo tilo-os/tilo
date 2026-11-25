@@ -25,8 +25,6 @@
 // executable, which is the test binary here.
 tilo_automerge_isolate::test_worker!();
 
-#[path = "account_sign_ins.rs"]
-mod account_sign_ins;
 /// The daemon a test reaches, with what the program mounts on it.
 mod host;
 /// The workspace service with a language runtime mounted, as the daemon's program mounts one.

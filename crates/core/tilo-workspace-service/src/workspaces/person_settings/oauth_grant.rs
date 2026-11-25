@@ -25,7 +25,7 @@ use super::kept_sign_ins::sign_in_of;
 
 /// What an account whose provider will not renew its grant is told, in the words the model
 /// manager knows an ended Hugging Face sign-in by.
-const SIGN_IN_AGAIN: &str = accounts::sign_ins::SIGN_IN_AGAIN;
+const SIGN_IN_AGAIN: &str = "That account's sign-in needs renewing. Sign in again";
 
 /// The access token the grant `grant` that `account` names at `reference` holds, renewed
 /// through the one shared path when it expired, and kept renewed. Must be called holding

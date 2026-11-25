@@ -112,12 +112,6 @@ pub struct Apps {
     connectors: connectors::Connectors,
 }
 impl Apps {
-    /// Hand each origin connector this device starts whose manifest grants it its workspace's
-    /// account sign-ins through `sign_ins` from now on.
-    pub(crate) fn hand_sign_ins(&self, sign_ins: Box<connectors::SignIns>) {
-        self.connectors.hand_sign_ins(sign_ins);
-    }
-
     /// Hand each origin connector this device starts the connection to its dispatch through
     /// `actions` from now on.
     pub(crate) fn hand_actions(&self, actions: Box<connectors::Actions>) {
@@ -551,7 +545,7 @@ impl Apps {
         if !crate::device::package_runs::runs_in_process(app) {
             return Ok(None);
         }
-        let Some((origin, _)) = crate::device::package_runs::origin_of(app)? else {
+        let Some(origin) = crate::device::package_runs::origin_of(app)? else {
             return Ok(None);
         };
         let (instance, theirs) = runtime_portal::origin_connector::connection()
@@ -573,13 +567,14 @@ impl Apps {
         workspace: &str,
         connection: &runtime_portal::process_link::Descriptor,
     ) -> Result<(), String> {
-        let Some((_, signs_in)) =
-            crate::device::package_runs::origin_of(app)?.filter(|(declared, _)| declared == origin)
-        else {
+        let Some(declared) = crate::device::package_runs::origin_of(app)? else {
             return Err(format!("{app} reaches no outside service called {origin}"));
         };
+        if declared != origin {
+            return Err(format!("{app} reaches no outside service called {origin}"));
+        }
         self.connectors
-            .attach((app, origin, workspace), signs_in, connection, &|socket| {
+            .attach((app, origin, workspace), connection, &|socket| {
                 self.start_connector(app, workspace, origin, socket)
             })
     }
@@ -684,6 +679,16 @@ impl Apps {
     )]
     pub(crate) fn record_started(&self, pid: u32, app: &str, workspace: &str) {
         let _ = self.launched.record_started(pid, app, workspace);
+    }
+
+    /// Record `pid` as the process this runtime started as `app`'s held connection in
+    /// `workspace`, as a connector's launch is: what a test of an app that signs in serves its
+    /// connection through, rather than starting the app's process.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn record_connection_for_test(&self, pid: u32, app: &str, workspace: &str) {
+        let _ = self
+            .launched
+            .record_showing(pid, app, workspace, Shows::Connection, None);
     }
 
     /// Record `pid` as the tilolang process that runs `app`'s own instances in `workspace`, as the

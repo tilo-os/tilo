@@ -118,17 +118,19 @@ agent or host connection.
   entry's reference (`vault.item:<id>`), which the account names as its
   `passwordItem`. The secret is a `secret` parameter: kept out of logs,
   history and confirmations, and never readable back by Settings.
-- **Release** (`ReleaseAccountSecret { item }`): any app's engine asks for an
-  account's sign-in by the entry the account names, through
-  `collaboration::browser_service_sessions::AccountSecrets` (Mail for its
-  mail accounts). The session answers from
-  this device's copy of the workspace's vault, decided on the person's grants
-  on Passwords, only for an enabled account that names that entry, only for
-  the servers that account names now, and writes the use (which app signed in
-  to which account) into the entry first. The app keeps the secret in memory
-  for signing in and never writes it anywhere. No per-app list decides: an
-  app acting for its person may read what that person may, so the person's
-  role on Passwords is the boundary.
+- **Release**: an app's connector reads the accounts through the device's one
+  dispatch, as the app its launch record says it runs (`accounts#sign-ins`
+  names the account each vault login signs in for), and asks `vault#release`
+  for an entry's secret on that connection. The dispatch answers from this
+  device's copy of the workspace's vault, decided on the grants that name the
+  app and the person's rules on Passwords, only for an enabled account that
+  names that entry, only for the servers that account names now, and writes
+  the use (which app signed in to which account) into the entry first. Where
+  no grant lets the app read the entry, the person is asked, once, and the
+  release is refused until they answer. A sign-in a provider's own page left
+  is handed out as the access token the grant holds now, renewed where the
+  grant is; the refresh token never leaves the vault. The app keeps the secret
+  in memory for signing in and never writes it anywhere.
 - **Website sessions** (`List`, `Resolve`, `Forget`): only Browser. A website
   session is one of the workspace's accounts whose `passwordItem` names an
   entry of the workspace's vault holding the cookies the person selected for a
@@ -139,14 +141,13 @@ agent or host connection.
   the cookies leave the vault, then the account leaves the accounts record.
 
 File accounts are mounted by the person's cloud service (`fs cloud-service`),
-not by an app, so it asks on a socket of its own (`accounts::sign_ins`, below
-the runtime directory, served by the session and handed to no app). It reads
-the file accounts from the published accounts records of the workspaces this
-device holds, and a `WebDAV` or Nextcloud account signs in with the entry it
-names, released by the same path as an app's (`ReleaseAccountSecret`, decided
-on the person's grants on Passwords, with the use naming Files). The secret goes
-to the account's mount on its standard input and stays in memory. No password
-of such an account is handed off in a file. An account its provider's page
+not by an app: it asks the daemon that keeps each workspace for the one
+sign-in a mount uses, per request (`tilo.accounts#cloud-credential`), and
+keeps no vault and no sign-in of its own. A `WebDAV` or Nextcloud account
+signs in with the entry it names, decided on the person's grants on Passwords
+and on Files, with the use naming Files. The secret goes to the account's
+mount on its standard input and stays in memory. No password of such an
+account is handed off in a file. An account its provider's page
 signed in (Google Drive, OneDrive, Dropbox, iCloud Drive) keeps that grant on
 this device, and only its short-lived access token or session headers pass
 through the sealed handoff store, which Settings' credential helper fills.

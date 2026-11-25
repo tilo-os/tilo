@@ -1555,13 +1555,24 @@ impl Workspaces {
             device_actions::action_service(Arc::clone(&workspaces), signer);
         action_service.answer_under(answering);
         // The apps this host serves answer on the same action service its workspaces' devices
-        // reach it on, beside the work and governance it answers itself.
+        // reach it on, beside the work and governance it answers itself. The workspace's accounts
+        // and its vault are registered there too: an app's own connection reaches them through
+        // the broker, and this is the one service that answers them for the person's page.
         if let Some(apps) = host.apps.clone() {
-            answers.serve_apps(crate::app_serving::Served::new(
-                &apps,
-                Arc::clone(&workspaces),
-                &action_service,
-            ));
+            let served =
+                crate::app_serving::Served::new(&apps, Arc::clone(&workspaces), &action_service);
+            answers.serve_apps(served.clone());
+            for provider in [
+                tilo_actions::remote::person_accounts::PROVIDER,
+                tilo_actions::remote::person_vault::PROVIDER,
+            ] {
+                answers.work.providers.provide(
+                    provider,
+                    provider,
+                    providers::Reach::Devices,
+                    Arc::new(served.clone()),
+                );
+            }
         }
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;

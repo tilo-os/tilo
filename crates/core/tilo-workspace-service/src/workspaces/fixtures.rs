@@ -395,7 +395,11 @@ pub fn declare_built_in_app(host: &TestHost, app: &str) {
 ///
 /// # Errors
 /// This device declares no surface for `app`, or the workspace refused the install.
-pub async fn install_app(workspaces: &Workspaces, workspace: &str, app: &str) -> Result<(), String> {
+pub async fn install_app(
+    workspaces: &Workspaces,
+    workspace: &str,
+    app: &str,
+) -> Result<(), String> {
     let surface = collab_types::app_surface::hash_of(app)
         .ok_or_else(|| format!("this device declares no surface for {app}"))?;
     let release = tilo_peer_state::workspace_membership::AppRelease {

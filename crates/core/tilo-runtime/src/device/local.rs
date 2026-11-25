@@ -13,7 +13,7 @@
 //! own run, whose reader refuses what that workspace does not let them read.
 
 use std::collections::HashMap;
-use std::io::{self, BufRead, Write as _};
+use std::io::{self, BufRead, Read as _, Write as _};
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_socket::Stream;
@@ -282,9 +282,58 @@ pub(crate) fn hand_to_connector(
                     return;
                 }
             };
-            frames.serve(ours, &[], io::BufReader::new(reader));
+            serve_app_frames(&frames, ours, reader);
         })?;
     Ok(())
+}
+
+/// Serve `stream` as an app's own connection: its first line is read here, as the call the app
+/// makes first, and the rest follows. A line nobody sent never reaches the wire, and the first
+/// call is answered.
+fn serve_app_frames(frames: &Frames, stream: Stream, reader: Stream) {
+    let mut reader = io::BufReader::new(reader);
+    let mut first = Vec::new();
+    if let Err(error) = (&mut reader)
+        .take(crate::daemon::FIRST_LINE)
+        .read_until(b'\n', &mut first)
+    {
+        tracing::debug!(%error, "an app's connection");
+        return;
+    }
+    let line = first.strip_suffix(b"\n").unwrap_or(&first).to_vec();
+    frames.serve(stream, &line, reader);
+}
+
+#[cfg(feature = "test-support")]
+impl Daemon {
+    /// This process's own connection to the daemon's dispatch, answered as `app` in `workspace`
+    /// and admitted as the app's held connection there: what a test of an app that signs in
+    /// speaks the published actions over, instead of starting the app's process.
+    ///
+    /// # Errors
+    /// The connection cannot be made, or cannot be served.
+    pub fn app_connection_for_test(
+        self: &Arc<Self>,
+        app: &str,
+        workspace: &str,
+    ) -> io::Result<Stream> {
+        let pid = std::process::id();
+        self.apps().record_connection_for_test(pid, app, workspace);
+        let (ours, theirs) = tilo_socket::pair()?;
+        let frames = Frames::of_an_app(
+            self,
+            &crate::seats::AppAt {
+                app: app.to_owned(),
+                workspace: workspace.to_owned(),
+                pid,
+            },
+        );
+        let reader = ours.try_clone()?;
+        std::thread::Builder::new()
+            .name("tilo-test-app-connection".into())
+            .spawn(move || serve_app_frames(&frames, ours, reader))?;
+        Ok(theirs)
+    }
 }
 
 /// Whether `line` is an action frame rather than MCP or the daemon's own requests.

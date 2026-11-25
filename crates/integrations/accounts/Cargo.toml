@@ -58,7 +58,6 @@ tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 [features]
 person = ["dep:tilo-resource", "dep:automerge"]
 # A stand-in for the session's account sign-ins socket, for the cloud service's tests.
-sign-ins-fixture = []
 
 [dev-dependencies]
 # The record's actions are decided by the workspace's roles and grants.

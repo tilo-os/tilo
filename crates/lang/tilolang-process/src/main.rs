@@ -123,9 +123,9 @@ fn connector_of(library: &str, origin: &str) -> Result<(), String> {
 
 /// Run this process as the app's held connections of `kind` (`tilolang_tilo::held`): each
 /// instance the daemon hands over on the socket the launcher gave it reaches them, and a vault
-/// item a connection needs is released into this process alone, through the account sign-ins the
-/// daemon hands first when the app's package is granted them. The process ends when the daemon
-/// closes its socket, or once nothing is open and no instance is attached.
+/// item a connection needs is released into this process alone, through the connection to the
+/// device's dispatch the daemon hands first. The process ends when the daemon closes its socket,
+/// or once nothing is open and no instance is attached.
 #[cfg(all(unix, feature = "app-launch"))]
 fn run_held(kind: &str, code: std::sync::Arc<dyn tilolang_tilo::held::Kind>) -> Result<(), String> {
     use runtime_portal::origin_connector::{self, Handed};
@@ -136,12 +136,13 @@ fn run_held(kind: &str, code: std::sync::Arc<dyn tilolang_tilo::held::Kind>) -> 
         Arc::new(tilolang_tilo::held::Releases);
     let mut first = None;
     match origin_connector::receive(&socket) {
-        Ok(Some(Handed::SignIns(sign_ins))) => {
-            release = Arc::new(SignInRelease(std::sync::Mutex::new(sign_ins)));
+        Ok(Some(Handed::Actions(link))) => {
+            release = Arc::new(SignInRelease(std::sync::Mutex::new(
+                tilo_actions::remote::signing_in::SigningIn::over(link)
+                    .map_err(|error| format!("the {kind} connections' dispatch: {error}"))?,
+            )));
         }
         Ok(Some(Handed::Reader(reader))) => first = Some(reader),
-        // The held connections call no actions of their own: such a connection is no reader's.
-        Ok(Some(Handed::Actions(_))) => {}
         Ok(None) => return Ok(()),
         Err(error) => return Err(format!("the {kind} connections' socket: {error}")),
     }
@@ -169,45 +170,38 @@ fn run_held(kind: &str, code: std::sync::Arc<dyn tilolang_tilo::held::Kind>) -> 
     Ok(())
 }
 
-/// A vault item released into this process over the account sign-ins the daemon handed it: only
-/// an item an enabled account of the workspace names, for an app the person lets use it, as every
-/// account's sign-in is released.
+/// A vault item released into this process over the connection to the device's dispatch: the
+/// login whose entry the item is, released to this process alone.
 #[cfg(all(unix, feature = "app-launch"))]
-struct SignInRelease(std::sync::Mutex<tilo_socket::Stream>);
+struct SignInRelease(std::sync::Mutex<tilo_actions::remote::signing_in::SigningIn>);
 
 #[cfg(all(unix, feature = "app-launch"))]
 impl tilolang_tilo::held::Release for SignInRelease {
     fn release(&self, item: &str) -> Result<tilolang_tilo::held::Released, String> {
-        use accounts::sign_ins::{Answer, Ask, Client};
-        let stream = self
+        let mut signing = self
             .0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .try_clone()
-            .map_err(|error| format!("the account sign-ins: {error}"))?;
-        let mut client =
-            Client::over(stream).map_err(|error| format!("the account sign-ins: {error}"))?;
-        // The sign-ins are told only this app's workspace: the account that names the item says
-        // which one it is.
-        let workspace = match client.ask(&Ask::Accounts { after: None }) {
-            Ok(Answer::Accounts { accounts, .. }) => accounts
-                .into_iter()
-                .find(|held| accounts::email::password_item(&held.account.config) == Some(item))
-                .map(|held| held.workspace)
-                .ok_or_else(|| format!("no account of this workspace names {item}"))?,
-            Ok(Answer::Refused { error }) => return Err(error),
-            Ok(_) => return Err("the account sign-ins answered something else".to_owned()),
-            Err(error) => return Err(format!("the account sign-ins: {error}")),
-        };
-        match client.ask(&Ask::SignIn {
-            workspace,
-            item: item.to_owned(),
-        }) {
-            Ok(Answer::SignIn { secret }) => Ok(Box::new(secret)),
-            Ok(Answer::Refused { error }) => Err(error),
-            Ok(_) => Err("the account sign-ins answered something else".to_owned()),
-            Err(error) => Err(format!("the account sign-ins: {error}")),
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let told = signing
+            .sign_ins()
+            .map_err(|error| format!("the device's dispatch: {error}"))?;
+        // The account that names the item says which one it is: the login the dispatch lists
+        // with an account, whose entry is this item.
+        let login = told
+            .sign_ins
+            .iter()
+            .find(|login| login.id == item && login.account.is_some())
+            .ok_or_else(|| format!("no account of this workspace names {item}"))?;
+        let account = login
+            .account
+            .as_ref()
+            .map(|account| account.id.clone())
+            .unwrap_or_default();
+        let secret = signing
+            .secret(&account, login)
+            .map_err(|error| format!("the device's dispatch: {error}"))?;
+        let released: tilolang_tilo::held::Released = Box::new(zeroize::Zeroizing::new(secret));
+        Ok(released)
     }
 }
 

@@ -1819,7 +1819,7 @@ fn admit_within<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>
 
 /// The longest first line a native connection is read for before it is served: a forward to
 /// another device, or the first request of any other.
-const FIRST_LINE: u64 = 64 * 1024;
+pub(crate) const FIRST_LINE: u64 = 64 * 1024;
 
 /// Connections the native endpoint serves at once.
 const MAX_CONNECTIONS: usize = 64;

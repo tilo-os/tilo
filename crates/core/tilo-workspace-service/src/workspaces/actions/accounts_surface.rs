@@ -599,6 +599,12 @@ mod surface_tests {
                             "Whether nothing is ever written to its server.",
                         ),
                         ("enabled", FieldType::Bool, "Whether the account is in use."),
+                        (
+                            "settings",
+                            FieldType::Json,
+                            "The account's own settings as its type keeps them, which hold no \
+                             secret: the servers it signs in at and what it is.",
+                        ),
                     ],
                 ),
                 record(

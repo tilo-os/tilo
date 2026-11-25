@@ -4,16 +4,30 @@
 //!
 //! The connector is the app's own, run by the daemon beside its instances: its protocol code is
 //! the connector crate's, over the same mail server a person rents.
+//!
+//! Its sign-in is the workspace's: the connector reads the accounts the workspace keeps and the
+//! password each names from the workspace's vault, through the connection to the device's one
+//! dispatch it is handed as Mail.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::json;
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+use tilo_actions::remote::{Caller, person_vault};
+use tilo_workspace_service::work::{
+    HostConnections, Order, Turn, connection_holder, takes_turn_in,
+};
 use tilo_workspace_service::workspaces::MemberDevice;
-use tilo_workspace_service::workspaces::fixtures::{TestGroupKeys, governor, test_host_holding};
+use tilo_workspace_service::workspaces::fixtures::{
+    TestGroupKeys, governor, record_grants, test_host_holding,
+};
 use tilolang_mail::test_support::{Rig, served};
 
 const ADA: &str = "ada@example.test";
 const PASSWORD: &str = "the-password-her-vault-keeps";
+/// Mail's app, as its connector runs as it.
+const MAIL: &str = "so.tilo.mail";
 
 /// A workspace with a mail account kept in its accounts record, as Settings keeps one when its
 /// person adds it: the server and the sign-in name its sign-in is released for, and never the
@@ -143,4 +157,320 @@ fn a_mail_server_that_refuses_the_password_keeps_no_message() {
         rig.threads(&account).is_empty(),
         "nothing of the server's mail is kept"
     );
+}
+
+/// Mail, installed in this test's own package store as the app its connector runs as: a manifest
+/// that declares the workspace's account sign-ins and the actions it calls.
+fn install_mail() {
+    let catalog = package_store::Catalog::from_env().expect("the test's package store");
+    let payload = catalog.user().packages().join(MAIL);
+    std::fs::create_dir_all(&payload).expect("Mail's payload");
+    std::fs::write(payload.join("probe"), b"mail").expect("Mail's entrypoint");
+    let manifest = format!(
+        r#"[package]
+id = "{MAIL}"
+version = "0.1.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[actions]
+invoke = true
+
+[capabilities]
+optional = ["account-sign-ins"]
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "probe"
+type = "gui"
+"#
+    );
+    // What the catalogue reads: the manifest parses, names Mail, declares the sign-ins and the
+    // actions it calls.
+    let view = tilo_app_package::view::ManifestView::from_toml_str(&manifest)
+        .expect("Mail's manifest reads");
+    assert_eq!(view.package_id, MAIL);
+    assert!(
+        view.declares_capability(tilo_app_package::manifest::ACCOUNT_SIGN_INS),
+        "Mail declares the account sign-ins"
+    );
+    let manifest_path = payload.join("manifest.toml");
+    std::fs::write(&manifest_path, manifest).expect("Mail's manifest");
+    let row = format!(
+        "[[entry]]\nid = {MAIL:?}\npayload_root = {payload:?}\nmanifest_path = {manifest_path:?}\n\n"
+    );
+    std::fs::write(catalog.user().registry(), row).expect("the registry names Mail");
+}
+
+/// Mail, installed here and holding its long-lived connection: what the device's trigger runner
+/// asks about before it takes that connection's turn.
+struct MailInstalled;
+
+impl HostConnections for MailInstalled {
+    fn connections(&self) -> Vec<(String, Vec<String>)> {
+        vec![(MAIL.to_owned(), Vec::new())]
+    }
+    fn installed(&self, app: &str) -> bool {
+        app == MAIL
+    }
+    fn gives(&self, _: &str, _: &str, _: &str) -> bool {
+        true
+    }
+    fn on_power(&self) -> bool {
+        true
+    }
+    fn start(&self, _: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn runs(&self, _: &str, _: &str) -> bool {
+        true
+    }
+    fn stop(&self, _: &str, _: &str) {}
+}
+
+/// The order here: this is the only device that runs Mail's connection, so it waits for no
+/// other.
+const AT_ONCE: Order = Order {
+    server_grace: Duration::ZERO,
+    other_grace: Duration::ZERO,
+};
+
+/// The password the workspace's test support keeps for an account it adds, released to the app
+/// that signs in.
+const KEPT: &str = "kept-for-a-test";
+
+/// The grant that lets Mail read the one entry its account names, as "Approve and grant" on its
+/// asked release writes it.
+fn sign_in_grant(workspace: &str, person: &str, item: &person_vault::ItemRef) -> Grant {
+    Grant::new(
+        "test:mail-sign-in",
+        Grantee::app(MAIL),
+        TreePath::workspace(workspace)
+            .app(person_vault::PROVIDER)
+            .kind(person_vault::ITEM_KIND)
+            .resource(item.to_string())
+            .action(person_vault::RELEASE),
+        KindSet::READ,
+        Answer::Allow,
+        Grantee::person(person),
+    )
+}
+
+/// `address`'s mail account, kept with the sign-in its person typed, as Settings keeps one;
+/// answers the vault entry the account names.
+async fn add_mail_account(
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    workspace: &str,
+    address: &str,
+) -> person_vault::ItemRef {
+    workspaces
+        .keep_mail_account_as_added(workspace, address)
+        .await
+        .expect("the account and its sign-in are kept");
+    let held = workspaces.workspace_accounts(workspace).await.unwrap();
+    let account = held.account(address).expect("the account the person added");
+    let named =
+        accounts::email::password_item(&account.config).expect("the account names its sign-in");
+    person_vault::ItemRef::parse(named).expect("the sign-in is a vault entry")
+}
+
+/// This device running Mail's connection, its claim written: what a release is answered to.
+async fn mail_holds_its_connection(
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    workspace: &str,
+) {
+    workspaces.run_connections(Arc::new(MailInstalled));
+    takes_turn_in(
+        workspaces,
+        workspace,
+        &Turn::connection(MAIL, Vec::new()),
+        AT_ONCE,
+    )
+    .await
+    .expect("this device takes Mail's connection");
+    assert!(
+        connection_holder(workspaces, workspace, MAIL)
+            .await
+            .unwrap()
+            .is_some(),
+        "the claim is written"
+    );
+}
+
+/// Mail's connector signs in to the account Settings kept, over the connection to the device's
+/// dispatch it holds as Mail: the account's servers and sign-in name come from the workspace's
+/// accounts, and its password from the vault entry the account names, released to that
+/// connection alone. A disabled account signs in to nothing.
+#[test]
+fn the_mail_connector_signs_in_with_the_password_the_workspace_keeps() {
+    crate::host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let workspaces = host.daemon().workspaces().clone();
+        let cert = workspaces.device_cert().clone();
+        let person = hex::encode(cert.user_public_key);
+        let by = Caller::authenticated(cert.user_public_key, cert.device_public_key);
+        // The launcher names the connector's workspace, which its connection's calls are made in.
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("TILO_WORKSPACE_ID", &workspace);
+        install_mail();
+
+        // The person added the account on their device: the workspace's vault keeps its
+        // password, and the account names that entry.
+        let item = add_mail_account(&workspaces, &workspace, ADA).await;
+        // Another account, disabled, is no account the connector signs in to.
+        let off = "off@example.test";
+        add_mail_account(&workspaces, &workspace, off).await;
+        let held = workspaces.workspace_accounts(&workspace).await.unwrap();
+        let mut disabled = held.account(off).expect("the account the person added");
+        disabled.enabled = false;
+        workspaces
+            .keep_workspace_account((&workspace, &by.acting(), None), &disabled)
+            .await
+            .expect("the account is disabled");
+        record_grants(
+            &workspaces,
+            &workspace,
+            &[sign_in_grant(&workspace, &person, &item)],
+        )
+        .await;
+
+        mail_holds_its_connection(&workspaces, &workspace).await;
+
+        // What the dispatch answers Mail's own connection: the logins of its workspace, each
+        // with the account it signs in for.
+        {
+            let probe = tilo_actions::remote::signing_in::SigningIn::over(
+                host.daemon()
+                    .app_connection_for_test(MAIL, &workspace)
+                    .expect("the daemon hands Mail's connection"),
+            )
+            .expect("Mail's connection reads");
+            let told = probe.sign_ins().unwrap_or_else(|refused| {
+                panic!("the dispatch refused Mail's sign-ins: {refused}")
+            });
+            assert!(
+                told.sign_ins.iter().any(|login| login
+                    .account
+                    .as_ref()
+                    .is_some_and(|account| account.id == ADA && account.enabled)),
+                "Mail's account is listed with its sign-in: {told:?}"
+            );
+        }
+
+        // The connector's own code, on the connection the daemon answers as Mail.
+        let link = host
+            .daemon()
+            .app_connection_for_test(MAIL, &workspace)
+            .expect("the daemon hands Mail's connection");
+        let source = tilolang_mail::sign_ins::follow(link, || {});
+        tilo_test_env::within("the connector signs in", async {
+            while source().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        let signed = source();
+        assert_eq!(signed.len(), 1, "one mail account signs in");
+        let signed = &signed[0];
+        assert_eq!(signed.config.email, ADA);
+        assert_eq!(signed.config.username, ADA);
+        assert_eq!(
+            (signed.config.imap_host.as_str(), signed.config.imap_port),
+            ("imap.stand-in.test", 993)
+        );
+        assert_eq!(
+            (signed.config.smtp_host.as_str(), signed.config.smtp_port),
+            ("smtp.stand-in.test", 465)
+        );
+        assert_eq!(signed.config.password, KEPT, "the vault's password");
+        assert_eq!(signed.refused, None);
+    });
+}
+
+/// An account added after the connector started reaches it, and one whose entry it may not read
+/// yet is refused in the dispatch's words and asked for again: once the person's "Approve and
+/// grant" lets it read that entry, the account signs in.
+#[test]
+fn a_mail_account_added_later_signs_in_once_its_entry_is_allowed() {
+    crate::host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let workspaces = host.daemon().workspaces().clone();
+        let cert = workspaces.device_cert().clone();
+        let person = hex::encode(cert.user_public_key);
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("TILO_WORKSPACE_ID", &workspace);
+        install_mail();
+        mail_holds_its_connection(&workspaces, &workspace).await;
+
+        // Mail's own connection answers the accounts action.
+        {
+            let probe = tilo_actions::remote::signing_in::SigningIn::over(
+                host.daemon()
+                    .app_connection_for_test(MAIL, &workspace)
+                    .expect("the daemon hands Mail's connection"),
+            )
+            .expect("Mail's connection reads");
+            probe.sign_ins().unwrap_or_else(|refused| {
+                panic!("the dispatch refused Mail's sign-ins: {refused}")
+            });
+        }
+        let link = host
+            .daemon()
+            .app_connection_for_test(MAIL, &workspace)
+            .expect("the daemon hands Mail's connection");
+        let source = tilolang_mail::sign_ins::follow(link, || {});
+
+        // Nothing is kept yet: the connector reads no account. The account is added after it
+        // started, and reaches it on a later answer.
+        let item = add_mail_account(&workspaces, &workspace, ADA).await;
+
+        // No grant lets Mail read the entry, so the release is refused, in words, and asked for
+        // again on the next answer.
+        tilo_test_env::within("the refusal is said", async {
+            while source()
+                .first()
+                .is_none_or(|signed| signed.refused.is_none())
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert_eq!(source()[0].config.password, "", "nothing is released yet");
+        assert!(
+            source()[0]
+                .refused
+                .as_deref()
+                .is_some_and(|said| !said.contains(KEPT)),
+            "the refusal is in words"
+        );
+
+        // Their "Approve and grant" lets Mail read that one entry: the account is asked for
+        // again, and signs in.
+        record_grants(
+            &workspaces,
+            &workspace,
+            &[sign_in_grant(&workspace, &person, &item)],
+        )
+        .await;
+        tilo_test_env::within("the granted entry signs in", async {
+            while source()
+                .first()
+                .is_none_or(|signed| signed.refused.is_some() || signed.config.password != KEPT)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert_eq!(source()[0].config.email, ADA);
+    });
 }

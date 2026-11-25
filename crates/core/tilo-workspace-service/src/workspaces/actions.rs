@@ -2017,7 +2017,9 @@ impl Workspaces {
         // calendars finds what it may do with them here. A page asks
         // directly, and is offered no row.
         #[cfg(not(target_arch = "wasm32"))]
-        if wants(person_accounts::PROVIDER) && caller.acting().is_agent() {
+        if wants(person_accounts::PROVIDER)
+            && (caller.acting().is_agent() || caller.acting().app().is_some())
+        {
             let rows = self.mail_rows((workspace_id, caller, certificate)).await;
             if !rows.is_empty() {
                 offer.add(mail::MAIL, "", rows);

@@ -1015,7 +1015,7 @@ doc = false
 "tilo-accessibility-settings" = { path = "../../crates/desktop/tilo-accessibility-settings", default-features = false, features = ["model"] }
 "tilo-accesskit-winit-0_34_0" = { package = "tilo-accesskit-winit", path = "../../vendor/accesskit_winit", default-features = false, features = ["rwh_06"] }
 "tilo-account-probe" = { path = "../../crates/integrations/account-probe", default-features = false, features = ["test-support"] }
-"tilo-accounts" = { path = "../../crates/integrations/accounts", default-features = false, features = ["person", "sign-ins-fixture"] }
+"tilo-accounts" = { path = "../../crates/integrations/accounts", default-features = false, features = ["person"] }
 "tilo-action-policy" = { path = "../../crates/core/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../crates/core/actions", default-features = false, features = ["asks", "document-read", "off-worker", "test-support"] }
 "tilo-advisory-lock" = { path = "../../crates/platform/advisory-lock", default-features = false, features = [] }
@@ -1276,6 +1276,7 @@ doc = false
 "tilo-storage-scan" = { path = "../../crates/os/storage-scan", default-features = false, features = [] }
 "tilo-store-engine" = { path = "../../crates/engines/store-engine", default-features = false, features = [] }
 "tilo-subject" = { path = "../../crates/engines/tilo-subject", default-features = false, features = [] }
+"tilo-surface-compile" = { path = "../../crates/core/tilo-surface-compile", default-features = false, features = [] }
 "tilo-system-info" = { path = "../../crates/platform/tilo-system-info", default-features = false, features = [] }
 "tilo-system-resources" = { path = "../../crates/desktop/tilo-system-resources", default-features = false, features = [] }
 "tilo-system-service" = { path = "../../crates/os/system-service", default-features = false, features = [] }
@@ -2332,6 +2333,7 @@ doc = false
 "tilo-sort" = { path = "../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-spellcheck" = { path = "../../crates/ui/spellcheck", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../crates/core/tilo-startup-metrics", default-features = false, features = [] }
+"tilo-surface-compile" = { path = "../../crates/core/tilo-surface-compile", default-features = false, features = [] }
 "tilo-test-env" = { path = "../../tools/test-env", default-features = false, features = ["tokio"] }
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
 "tilo-ui-macros" = { path = "../../crates/ui/ui-macros", default-features = false, features = [] }
@@ -3496,7 +3498,7 @@ doc = false
 "tilo-accessibility-settings" = { path = "../../crates/desktop/tilo-accessibility-settings", default-features = false, features = ["model"] }
 "tilo-accesskit-winit-0_34_0" = { package = "tilo-accesskit-winit", path = "../../vendor/accesskit_winit", default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
 "tilo-account-probe" = { path = "../../crates/integrations/account-probe", default-features = false, features = ["test-support"] }
-"tilo-accounts" = { path = "../../crates/integrations/accounts", default-features = false, features = ["person", "sign-ins-fixture"] }
+"tilo-accounts" = { path = "../../crates/integrations/accounts", default-features = false, features = ["person"] }
 "tilo-action-policy" = { path = "../../crates/core/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../crates/core/actions", default-features = false, features = ["off-worker", "test-support"] }
 "tilo-advisory-lock" = { path = "../../crates/platform/advisory-lock", default-features = false, features = [] }
@@ -4765,7 +4767,7 @@ doc = false
 "thiserror-impl-2_0_21" = { package = "thiserror-impl", version = "^2.0.21", default-features = false, features = [] }
 "thread_local-1_1_9" = { package = "thread_local", version = "^1.1.9", default-features = false, features = [] }
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
-"tilo-accounts" = { path = "../../crates/integrations/accounts", default-features = false, features = ["person", "sign-ins-fixture"] }
+"tilo-accounts" = { path = "../../crates/integrations/accounts", default-features = false, features = ["person"] }
 "tilo-action-policy" = { path = "../../crates/core/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../crates/core/actions", default-features = false, features = ["off-worker", "test-support"] }
 "tilo-advisory-lock" = { path = "../../crates/platform/advisory-lock", default-features = false, features = [] }

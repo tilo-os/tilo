@@ -13,8 +13,12 @@ ignored = ["mail-test-support"]
 [dependencies]
 # Mail's model and its IMAP and SMTP engine.
 mail-engine = { path = "../mail-engine", optional = true }
-# The workspace's accounts and their sign-ins, as the session tells the connector them.
+# The workspace's accounts and their sign-ins, as the device's dispatch tells the connector
+# them.
 accounts = { package = "tilo-accounts", path = "../accounts", optional = true }
+# The app's own reading of the workspace's accounts and their secrets, over its connection to
+# the device's dispatch.
+tilo-actions = { path = "../../core/actions", optional = true }
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-content = { path = "../../core/content", optional = true }
@@ -56,6 +60,7 @@ engine = [
     "dep:tilo-net",
     "dep:runtime-portal",
     "dep:accounts",
+    "dep:tilo-actions",
     "dep:tokio",
 ]
 # The harness other tests of the connector run: a package's records over a real store, the

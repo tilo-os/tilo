@@ -1,6 +1,6 @@
 //! What the daemon's program mounts on this device beside the core: the services that answer
 //! on the daemon's dispatch, and what the machine does that only an optional subsystem knows how
-//! to do (hold suspend off, read a radio's wake setting, serve the account sign-ins).
+//! to do (hold suspend off, read a radio's wake setting).
 //!
 //! The core names none of those subsystems. The `tilo-runtime` program wires them in once, before
 //! the daemon starts ([`mount`]): each service is registered on the one table of providers the
@@ -9,17 +9,13 @@
 //! in process without them) runs the core alone: it serves none of those services, and says so
 //! where it would have used one.
 
-use std::any::Any;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-use tilo_actions::remote::{Caller, ResourceSearch};
-use tilo_workspace_service::workspaces::Workspaces;
+use tilo_actions::remote::ResourceSearch;
 use tilo_workspace_service::workspaces::providers::Providers;
-
-pub use crate::apps::connectors::SignIns;
 
 /// What the daemon's services are started with, as it starts them: where they register, and what
 /// of the device they read.
@@ -43,18 +39,8 @@ pub type RadioWakes = fn(&str) -> Result<bool, String>;
 /// Taking a hold on suspend: `None` where the machine cannot be held now.
 pub type Holding = Pin<Box<dyn Future<Output = Option<Awake>> + Send>>;
 
-/// The account sign-ins while they are served: what hands an origin connector its own, and the
-/// service itself, which stops when dropped.
-pub struct SignInsServed {
-    pub hands: Box<SignIns>,
-    pub served: Box<dyn Any + Send + Sync>,
-}
-
 /// Registers one service on the daemon's providers as the daemon starts.
 pub type Register = Box<dyn Fn(&Mounting<'_>) + Send + Sync>;
-
-/// Serves the account sign-ins of the workspaces it is handed, as the person it is handed.
-pub type ServeSignIns = Box<dyn Fn(&Workspaces, Caller) -> Option<SignInsServed> + Send + Sync>;
 
 /// What the daemon's program mounts.
 #[derive(Default)]
@@ -67,9 +53,6 @@ pub struct Capabilities {
     pub providers: Vec<Register>,
     /// Holds suspend off while another of the person's devices uses this machine.
     pub stay_awake: Option<Box<dyn Fn() -> Holding + Send + Sync>>,
-    /// The account sign-ins this login's cloud service, model manager and origin connectors
-    /// reach.
-    pub account_sign_ins: Option<ServeSignIns>,
     /// Whether the Wi-Fi radio named (`phy0`) wakes its machine on a magic packet.
     pub radio_wakes: Option<RadioWakes>,
     /// The platform's notifications, which keep a notification for a later moment and show it
@@ -119,18 +102,6 @@ pub(crate) fn alarms() -> Option<Arc<dyn tilo_workspace_service::apps::wakeups::
 pub(crate) async fn stay_awake() -> Option<Awake> {
     let stay_awake = mounted()?.stay_awake.as_ref()?;
     stay_awake().await
-}
-
-/// Serve the account sign-ins of `workspaces` as `person`, where something mounted does.
-pub(crate) fn account_sign_ins(workspaces: &Workspaces, person: Caller) -> Option<SignInsServed> {
-    let Some(serve) = mounted().and_then(|mounted| mounted.account_sign_ins.as_ref()) else {
-        tracing::warn!(
-            "this daemon serves no account sign-ins: the cloud service and origin connectors reach \
-             no account's sign-in"
-        );
-        return None;
-    };
-    serve(workspaces, person)
 }
 
 /// Whether the Wi-Fi radio `phy` wakes its machine on a magic packet.

@@ -100,6 +100,11 @@ pub const NOT_AN_ITEM: &str =
 /// What a release of an item the workspace's vault does not keep is refused with.
 pub const NOT_KEPT: &str = "This workspace's vault keeps no such item.";
 
+/// What a release of a provider's grant is refused with where no account of the workspace names
+/// it: the grant renews itself for an account, and is never handed out as it is.
+pub const NO_ACCOUNT_FOR_GRANT: &str = "This sign-in is a provider's grant that no account of the workspace names, so it is not \
+     released.";
+
 /// What an app's call that reached the vault from a process apps share is refused with: the
 /// desktop session, or code running inside this computer's daemon, such as a tilolang app's
 /// connector. Only the device's daemon vouches for a process of the app's own, on that process's
@@ -638,6 +643,36 @@ impl Workspaces {
             })
             .await
             .map_err(refused)?;
+        // A sign-in of an account this workspace keeps that its provider's page left is handed
+        // out as the access token the grant holds now, renewed here: never the grant itself,
+        // whose refresh token would sign in as the person for good.
+        let grant = accounts::Secret {
+            password: String::new(),
+            token: Some(released.secret.to_string()),
+        };
+        let released = if account_credentials::oauth_tokens(&grant).is_some() {
+            let account = self
+                .workspace_accounts(workspace)
+                .await
+                .ok()
+                .and_then(|held| {
+                    held.all().into_iter().find(|account| {
+                        super::person_settings::kept_sign_ins::sign_in_of(&account.config).as_ref()
+                            == Some(&item)
+                    })
+                })
+                .ok_or_else(|| refused(NO_ACCOUNT_FOR_GRANT.to_owned()))?;
+            super::person_settings::oauth_grant::signs_in_with(
+                self.vault_for(workspace, caller.acting()),
+                &self.workspace_root(workspace),
+                &account,
+                released,
+            )
+            .await
+            .map_err(refused)?
+        } else {
+            released
+        };
         let secret: Zeroizing<String> = released.secret;
         Ok(Released {
             secret: String::clone(&secret),

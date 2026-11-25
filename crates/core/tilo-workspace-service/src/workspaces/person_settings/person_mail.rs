@@ -759,6 +759,9 @@ fn signed_in_account(account: &accounts::Account) -> SignedInAccount {
             .and_then(Value::as_bool)
             .unwrap_or(false),
         enabled: account.enabled,
+        // The account's own settings hold no secret: its type keeps that in the vault, named by
+        // the entry the credentials below come from.
+        settings: account.config.clone(),
     }
 }
 

@@ -94,7 +94,9 @@ impl Platform {
 /// The targets of an app that does not declare `package.platforms`.
 pub const DEFAULT_PLATFORMS: &[Platform] = &[Platform::Linux, Platform::Macos, Platform::Web];
 
-/// The capability whose origin connector the session hands the workspace's account sign-ins.
+/// The capability that lets an app read the workspace's accounts and the sign-in each names,
+/// through the connection to the device's dispatch its connector runs on: the manifest
+/// declaration is the grant that names the app for the accounts.
 pub const ACCOUNT_SIGN_INS: &str = "account-sign-ins";
 
 /// The capability that lets an app open a file in the app that opens its kind (`File.open`),

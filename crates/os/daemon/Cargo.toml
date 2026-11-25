@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The `tilo-runtime` program: this computer's one Tilo daemon, the core's device daemon with the optional subsystems (image model, account sign-ins, suspend holds, radio wake reads) mounted on it."
+description = "The `tilo-runtime` program: this computer's one Tilo daemon, the core's device daemon with the optional subsystems (image model, suspend holds, radio wake reads) mounted on it."
 
 [lib]
 name = "tilo_daemon"
@@ -65,24 +65,12 @@ tilo-workspace-service = { path = "../../core/tilo-workspace-service" }
 tilolang-workspace = { path = "../../lang/tilolang-workspace" }
 # The device's image model, registered on the daemon's dispatch.
 tilo-vision-service = { path = "../../services/vision" }
-# The workspaces' accounts and their sign-ins, told on the account sign-ins socket, and the
-# secret's buffers wiped once sent.
-accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
-zeroize.workspace = true
 runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
-tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
-tilo-files = { path = "../../platform/tilo-files" }
-tilo-rt.workspace = true
 tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
-tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
-tilo-startup-metrics = { path = "../../core/tilo-startup-metrics" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # What a radio says of waking its machine, read as the OS actions read it.
@@ -95,11 +83,18 @@ zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The runtime's own seams for a test that serves a connector's connection as the app it runs.
+tilo-runtime = { path = "../../core/tilo-runtime", features = ["test-support"] }
+# The workspaces' accounts, as the tests keep one of their own.
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
+zeroize.workspace = true
 # The workspace service with the agents that read and change the built-in apps' records. Those
 # records are the language runtime's, so the tests that drive them run here, beside the daemon
 # that links the runtime and mounts it.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["test-support", "agents"] }
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
+# The catalogue an installed app's manifest is read from, as a connector's is.
+package-store = { package = "tilo-package-store", path = "../../core/package-store" }
 tilo-agent-session = { path = "../../core/agent-session" }
 tilo-automation = { path = "../../core/automation" }
 tilo-clock = { path = "../../platform/tilo-clock" }

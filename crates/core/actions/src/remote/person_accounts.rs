@@ -622,6 +622,10 @@ pub struct SignedInAccount {
     pub read_only: bool,
     /// Whether the account is in use.
     pub enabled: bool,
+    /// The account's own settings as its type keeps them, which hold no secret: the servers it
+    /// signs in at and what it is.
+    #[serde(default)]
+    pub settings: serde_json::Value,
 }
 
 /// Every login of the workspace's vault ([`SIGN_INS`]), each with the account it signs in for.

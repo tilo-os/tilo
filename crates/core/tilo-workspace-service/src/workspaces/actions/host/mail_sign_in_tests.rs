@@ -528,6 +528,190 @@ async fn reading(setup: &Setup) -> Value {
         .await
 }
 
+/// An iCloud account asked for calendars keeps them beside its mail: the calendar account is
+/// kept where the workspace's accounts are and signed in with the vault's entry its mail uses,
+/// the mail account names it, and turning its calendars off or removing the mail account takes
+/// it with them.
+#[cfg(feature = "agents")]
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey: add with calendars, turn them off, on again and remove the account"
+)]
+async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
+    const ADDRESS: &str = "ada@icloud.example";
+    const CALENDAR: &str = "https://caldav.example.test/";
+
+    let setup = Setup::new().await;
+    setup.workspaces.keep_icloud_calendars_at(CALENDAR);
+    setup
+        .workspaces
+        .find_mail_servers_through(move |asked, allowed| {
+            if asked != ADDRESS {
+                return Err(format!("No mail server was found for {asked}"));
+            }
+            let _ = allowed("imap.mail.me.com");
+            Ok(MailServers {
+                incoming: Server::new("imap.mail.me.com", 993),
+                outgoing: Server::new("smtp.mail.me.com", 587),
+                found: Found::Published,
+                username: Some(ADDRESS.to_owned()),
+                own_sign_in: None,
+            })
+        });
+
+    let kept = setup
+        .add_mail(json!({
+            "address": ADDRESS,
+            "password": "app-password",
+            "services": {"mail": true, "calendar": true},
+        }))
+        .await
+        .expect("its servers were found and took the sign-in");
+    assert_eq!(kept.provider, Provider::Icloud);
+    assert!(kept.services.calendar, "one connect feeds both");
+    let listed = setup.listed().await;
+    assert!(
+        listed
+            .accounts
+            .iter()
+            .any(|account| account.id == ADDRESS && account.services.calendar),
+        "Mail lists it too, feeding calendars: {listed:?}"
+    );
+
+    // The account is kept where the workspace's accounts are, and signed in with an entry of
+    // the vault: the password its person typed once.
+    let workspace = setup.workspace.to_string();
+    let held = setup
+        .workspaces
+        .workspace_accounts(&workspace)
+        .await
+        .unwrap();
+    let config = settings(&setup, ADDRESS).await;
+    let linked = config["calendar_account"]
+        .as_str()
+        .expect("the calendar account is named")
+        .to_owned();
+    assert_eq!(config["server"], json!(CALENDAR));
+    let calendar = held.account(&linked).expect("the calendar account is kept");
+    assert_eq!(calendar.type_id.as_str(), accounts::calendar::TYPE_ID);
+    assert_eq!(calendar.config["mail_account"], json!(ADDRESS));
+    let sign_in = accounts::email::password_item(&calendar.config)
+        .expect("the calendar account names its sign-in");
+    let sign_in = person_vault::ItemRef::parse(sign_in).expect("a vault entry");
+    assert!(
+        setup
+            .workspaces
+            .vault_keeps(&workspace, &sign_in)
+            .await
+            .unwrap(),
+        "the vault keeps the calendar account's sign-in"
+    );
+
+    // Turning its calendars off takes the calendar account with it.
+    setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::SET_SERVICES,
+            json!({"account": ADDRESS, "mail": true, "calendar": false, "files": false}),
+        )
+        .await
+        .expect("its member says what it feeds");
+    let config = settings(&setup, ADDRESS).await;
+    assert!(config.get("calendar_account").is_none());
+    let held = setup
+        .workspaces
+        .workspace_accounts(&workspace)
+        .await
+        .unwrap();
+    assert!(
+        held.account(&linked).is_none(),
+        "the calendar account went with its service"
+    );
+    assert_eq!(
+        reading(&setup).await["accounts"]
+            .as_array()
+            .and_then(|accounts| accounts
+                .iter()
+                .find(|account| account["id"] == json!(ADDRESS)))
+            .map(|account| account["services"].clone()),
+        Some(json!({"mail": true, "calendar": false, "files": false})),
+        "the row says its calendars are off"
+    );
+
+    // Turning them on again keeps them with the sign-in the vault holds.
+    setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::SET_SERVICES,
+            json!({"account": ADDRESS, "mail": true, "calendar": true, "files": false}),
+        )
+        .await
+        .expect("its member says what it feeds");
+    let config = settings(&setup, ADDRESS).await;
+    let linked = config["calendar_account"]
+        .as_str()
+        .expect("the calendar account is named again")
+        .to_owned();
+    let held = setup
+        .workspaces
+        .workspace_accounts(&workspace)
+        .await
+        .unwrap();
+    let calendar = held
+        .account(&linked)
+        .expect("the calendar account is kept again");
+    let sign_in =
+        accounts::email::password_item(&calendar.config).expect("it names its sign-in again");
+    let sign_in = person_vault::ItemRef::parse(sign_in).expect("a vault entry");
+    assert!(
+        setup
+            .workspaces
+            .vault_keeps(&workspace, &sign_in)
+            .await
+            .unwrap(),
+        "the sign-in the vault holds keeps it"
+    );
+    assert_eq!(
+        reading(&setup).await["accounts"]
+            .as_array()
+            .and_then(|accounts| accounts
+                .iter()
+                .find(|account| account["id"] == json!(ADDRESS)))
+            .map(|account| account["services"].clone()),
+        Some(json!({"mail": true, "calendar": true, "files": false})),
+        "the row says its calendars are on again"
+    );
+
+    // Removing the account takes the calendar account with it.
+    setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::REMOVE,
+            json!({"account": ADDRESS}),
+        )
+        .await
+        .expect("the account goes");
+    let held = setup
+        .workspaces
+        .workspace_accounts(&workspace)
+        .await
+        .unwrap();
+    assert!(held.account(&linked).is_none(), "the calendar account went");
+    assert!(held.account(ADDRESS).is_none(), "the mail account went");
+    assert!(
+        setup
+            .ask(
+                person_accounts::RESOURCE,
+                person_accounts::LIST,
+                Value::Null,
+            )
+            .await
+            .is_ok(),
+        "Mail lists its accounts after the removal"
+    );
+}
+
 /// The servers a person writes are kept as written, a port of their own decides how the
 /// connection starts, an edited account keeps the identities it had, and a written server that
 /// does not read is refused before anything is written.

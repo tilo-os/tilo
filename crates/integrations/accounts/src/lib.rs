@@ -65,8 +65,6 @@ pub mod thunderbird;
 pub mod vault;
 pub use vault::{Saved, Secret, SecretVault, VaultBackend};
 pub mod secrets;
-#[cfg(any(unix, windows))]
-pub mod sign_ins;
 pub mod typed_for;
 pub use secrets::{
     BrokerError, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind, SecretStore,

@@ -574,9 +574,9 @@ impl Connector {
     }
 }
 
-/// Run the connector for the accounts its account sign-ins `sign_ins` tell it, taking each
-/// attaching instance's socket from `attachments`, until that ends.
-pub fn serve(sign_ins: Stream, attachments: impl Iterator<Item = Stream> + Send + 'static) {
+/// Run the connector for the accounts its connection to the device's dispatch `link` tells it,
+/// taking each attaching instance's socket from `attachments`, until that ends.
+pub fn serve(link: Stream, attachments: impl Iterator<Item = Stream> + Send + 'static) {
     let (woken, wakeups) = std::sync::mpsc::channel::<Wakeup>();
     let engine_woken = woken.clone();
     let wake: mail_engine::engine::Wake = Arc::new(move || {
@@ -588,7 +588,7 @@ pub fn serve(sign_ins: Stream, attachments: impl Iterator<Item = Stream> + Send 
     crate::follow_the_network(Arc::clone(&online), Arc::clone(&wake));
     let accounts = {
         let wake = Arc::clone(&wake);
-        crate::sign_ins::follow(sign_ins, move || wake())
+        crate::sign_ins::follow(link, move || wake())
     };
     let (requests, events) = mail_engine::engine::spawn(tilo_content::ContentStore::memory(), wake);
     let attaching = woken.clone();

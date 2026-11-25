@@ -128,9 +128,6 @@ pub struct Daemon {
     /// workspace and read again as the store moves.
     #[cfg(not(windows))]
     _styles: super::styles::StylesShown,
-    /// The account sign-ins, while something mounted serves them
-    /// ([`super::capabilities::Capabilities::account_sign_ins`]).
-    account_sign_ins: Option<Box<dyn std::any::Any + Send + Sync>>,
     _media: profile::MediaHost,
     /// The endpoint's router, held so the workspace host, the device actions, the work this
     /// device takes and a ticket's certify call answer for as long as this runtime runs.
@@ -2326,21 +2323,6 @@ impl Daemon {
             identity_socket.clone(),
             (actor.clone(), identity.key.verifying_key().to_bytes()),
         );
-        // The workspaces' accounts and their sign-ins, for this login's cloud service and the
-        // origin connectors this daemon starts.
-        let account_sign_ins = super::capabilities::account_sign_ins(
-            workspaces.copies(),
-            Caller::authenticated(
-                identity.cert.user_public_key,
-                identity.cert.device_public_key,
-            ),
-        );
-        // The origin connectors this device starts are handed their workspace's account sign-ins
-        // by them.
-        let account_sign_ins = account_sign_ins.map(|sign_ins| {
-            apps.hand_sign_ins(sign_ins.hands);
-            sign_ins.served
-        });
         stage("publishing the styles the installed packages offer");
         #[cfg(not(windows))]
         let styles = super::styles::publish(&workspaces);
@@ -2351,7 +2333,6 @@ impl Daemon {
             _files_tree: files_tree,
             #[cfg(not(windows))]
             _styles: styles,
-            account_sign_ins,
             policy_origin,
             broker,
             shell_links,
@@ -6340,13 +6321,6 @@ pub(super) fn hold_files(
 }
 
 impl Daemon {
-    /// The account sign-ins this daemon serves, as the service mounted to serve them is
-    /// (`T`); `None` where nothing serves them, or they are not a `T`.
-    #[must_use]
-    pub fn account_sign_ins<T: std::any::Any>(&self) -> Option<&T> {
-        self.account_sign_ins.as_deref()?.downcast_ref()
-    }
-
     /// Told each time this device starts holding a workspace as a member: what a computer that
     /// just logged in waits on before anything is admitted to its workspace.
     pub(crate) fn entered(&self) -> Arc<tokio::sync::Notify> {

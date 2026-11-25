@@ -100,14 +100,16 @@ impl Workspaces {
         let id = accounts::AccountId::from(address.to_owned());
         let mut account = accounts::Account::new(id, accounts::email::TYPE_ID);
         // The stand-in is every server: the account names one of its own, which its password
-        // belongs to as an added account's does.
-        account.config = serde_json::json!({
-            "email": address,
-            "username": address,
-            "imap_host": "imap.stand-in.test",
-            "imap_port": 993,
-            "smtp_host": "smtp.stand-in.test",
-            "smtp_port": 465,
+        // belongs to as an added account's does, with every setting adding one writes.
+        account.set_config(&accounts::email::AccountConfig {
+            display_name: address.to_owned(),
+            email: address.to_owned(),
+            username: address.to_owned(),
+            imap_host: "imap.stand-in.test".into(),
+            imap_port: 993,
+            smtp_host: "smtp.stand-in.test".into(),
+            smtp_port: 465,
+            ..Default::default()
         });
         let asker = self.acting_or_own(None);
         let reference = self

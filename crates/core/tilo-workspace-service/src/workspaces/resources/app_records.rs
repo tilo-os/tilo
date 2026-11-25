@@ -28,9 +28,7 @@ pub(super) fn written_by_app(command: &Command, app: &str) -> bool {
         | Command::Checkpoint { stamp, .. }
         | Command::Undo { stamp, .. }
         | Command::Restore { stamp, .. } => by_app(stamp, app),
-        Command::Batch(commands) => commands
-            .iter()
-            .any(|command| written_by_app(command, app)),
+        Command::Batch(commands) => commands.iter().any(|command| written_by_app(command, app)),
         _ => false,
     }
 }

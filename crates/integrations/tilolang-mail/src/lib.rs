@@ -3,11 +3,11 @@
 //! types in step with it ([`origin`]).
 //!
 //! The accounts are the workspace's, and each one's password is the entry
-//! of the workspace's vault the account names, released by the session to the connector in
-//! native code ([`sign_ins`]): package code never sees them. An instance runs in a tilolang
-//! host, which holds no network and no credential; the connector runs in a process of its own
-//! that the system starts for the app ([`serve`]), and the instance's origin reaches it over a
-//! socket ([`remote`], [`wire`]).
+//! of the workspace's vault the account names, released by the device to the connector over
+//! the connection it holds as the app ([`sign_ins`]): package code never sees them. An
+//! instance runs in a tilolang host, which holds no network and no credential; the connector
+//! runs in a process of its own that the system starts for the app ([`serve`]), and the
+//! instance's origin reaches it over a socket ([`remote`], [`wire`]).
 
 pub mod connector;
 #[cfg(feature = "engine")]
@@ -118,11 +118,13 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
     }
     let socket = origin_connector::take_socket()
         .ok_or_else(|| "the launcher handed the connector no socket".to_owned())?;
-    // The session hands its account sign-ins before any reader.
-    let sign_ins = match origin_connector::receive(&socket) {
-        Ok(Some(Handed::SignIns(sign_ins))) => sign_ins,
-        Ok(Some(Handed::Reader(_) | Handed::Actions(_))) => {
-            return Err("the session handed the mail connector no account sign-ins".to_owned());
+    // The daemon hands the connector its connection to the one dispatch before any reader.
+    let link = match origin_connector::receive(&socket) {
+        Ok(Some(Handed::Actions(link))) => link,
+        Ok(Some(Handed::Reader(_))) => {
+            return Err(
+                "the daemon handed the mail connector no connection to its dispatch".to_owned(),
+            );
         }
         Ok(None) => return Ok(()),
         Err(error) => return Err(format!("the mail connector's socket: {error}")),
@@ -131,6 +133,6 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
         None => tracing::info!("the session closed the mail connector's socket"),
         Some(error) => tracing::error!(%error, "the mail connector's socket failed for good"),
     });
-    serve::serve(sign_ins, attachments);
+    serve::serve(link, attachments);
     Ok(())
 }

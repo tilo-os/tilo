@@ -45,11 +45,6 @@ struct Running {
     child: Process,
 }
 
-/// What hands a connector whose manifest grants it the workspace's account sign-ins those
-/// sign-ins, over its socket, before its first reader: the connector's socket, its app and the
-/// workspace.
-pub type SignIns = dyn Fn(&Descriptor, &str, &str) -> std::io::Result<()> + Send + Sync;
-
 /// What hands a started connector its connection to the device's dispatch, before any reader:
 /// the connector's socket, its app, its workspace and its pid.
 pub type Actions = dyn Fn(&Descriptor, &str, &str, u32) -> std::io::Result<()> + Send + Sync;
@@ -74,17 +69,10 @@ pub(crate) fn pid(process: &Process) -> Option<u32> {
 #[derive(Default)]
 pub(crate) struct Connectors {
     running: Mutex<HashMap<Key, Running>>,
-    sign_ins: std::sync::OnceLock<Box<SignIns>>,
     actions: std::sync::OnceLock<Box<Actions>>,
 }
 
 impl Connectors {
-    /// Hand each connector whose manifest grants it its workspace's account sign-ins through
-    /// `sign_ins` from now on.
-    pub(crate) fn hand_sign_ins(&self, sign_ins: Box<SignIns>) {
-        let _ = self.sign_ins.set(sign_ins);
-    }
-
     /// Hand each connector this device starts the connection to its dispatch through `actions`
     /// from now on.
     pub(crate) fn hand_actions(&self, actions: Box<Actions>) {
@@ -93,12 +81,10 @@ impl Connectors {
 
     /// Attach `theirs`, the connector's end of a reader's connection, to the connector of `app`'s
     /// `origin` in `workspace`, starting the connector when none runs for this app, origin and
-    /// workspace. `start` starts the connector's process, handed the socket given; `signs_in` says
-    /// whether its manifest grants it the workspace's account sign-ins.
+    /// workspace. `start` starts the connector's process, handed the socket given.
     ///
     /// # Errors
-    /// The connector cannot be started, takes no connection, or needs sign-ins this device hands
-    /// no connector yet.
+    /// The connector cannot be started, or takes no connection.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the lock is held across a start, so two readers never start two processes"
@@ -106,7 +92,6 @@ impl Connectors {
     pub(crate) fn attach(
         &self,
         (app, origin, workspace): (&str, &str, &str),
-        signs_in: bool,
         theirs: &Descriptor,
         start: &dyn Fn(&Descriptor) -> Result<Process, String>,
     ) -> Result<(), String> {
@@ -133,26 +118,17 @@ impl Connectors {
         #[cfg(not(target_os = "macos"))]
         let child_pid = pid(&child);
         let attached = (|| {
-            if signs_in {
-                // What a person sees when an app that signs in to their accounts is opened on a
-                // device that cannot give it those sign-ins yet.
-                let sign_ins = self.sign_ins.get().ok_or_else(|| {
-                    format!(
-                        "{app} cannot reach {origin} yet: it signs in with this workspace's \
-                         accounts, and this device cannot give an app account sign-ins yet"
-                    )
-                })?;
-                sign_ins(&ours, app, workspace).map_err(|error| {
-                    format!("{app}'s {origin} connector took no account sign-ins: {error}")
-                })?;
-            }
             // The connection to this device's dispatch comes before any reader's: what an app
             // that signs in calls the published actions over.
-            if let Some(actions) = self.actions.get() {
-                actions(&ours, app, workspace, child_pid).map_err(|error| {
-                    format!("{app}'s {origin} connector took no connection to this device: {error}")
-                })?;
-            }
+            let actions = self.actions.get().ok_or_else(|| {
+                format!(
+                    "{app} cannot reach {origin} yet: this device hands no app a connection to \
+                     its actions"
+                )
+            })?;
+            actions(&ours, app, workspace, child_pid).map_err(|error| {
+                format!("{app}'s {origin} connector took no connection to this device: {error}")
+            })?;
             origin_connector::send_attachment(&ours, theirs)
                 .map_err(|error| format!("{app}'s {origin} connector took no connection: {error}"))
         })();
@@ -276,6 +252,7 @@ mod tests {
     #[test]
     fn one_connector_runs_per_app_origin_and_workspace() {
         let connectors = Connectors::default();
+        connectors.hand_actions(Box::new(|_, _, _, _| Ok(())));
         let started = AtomicUsize::new(0);
         let start = |socket: &OwnedFd| {
             started.fetch_add(1, Ordering::SeqCst);
@@ -284,115 +261,32 @@ mod tests {
         for workspace in ["one", "one", "two"] {
             let (_reader, theirs) = origin_connector::connection().unwrap();
             connectors
-                .attach(("so.tilo.mail", "imap", workspace), false, &theirs, &start)
+                .attach(("so.tilo.mail", "imap", workspace), &theirs, &start)
                 .unwrap();
         }
         assert_eq!(started.load(Ordering::SeqCst), 2);
     }
 
-    /// A connector that needs its workspace's sign-ins does not start where nothing hands them,
-    /// and a launch that fails starts nothing.
+    /// A connector does not start where this device hands no app its actions, and a launch that
+    /// fails starts nothing.
     #[test]
     fn a_connector_that_cannot_start_runs_nowhere() {
         let connectors = Connectors::default();
         let (_reader, theirs) = origin_connector::connection().unwrap();
         let refused = connectors
-            .attach(
-                ("so.tilo.mail", "imap", "one"),
-                true,
-                &theirs,
-                &connector_process,
-            )
+            .attach(("so.tilo.mail", "imap", "one"), &theirs, &connector_process)
             .unwrap_err();
         assert!(
-            refused.contains("cannot give an app account sign-ins"),
+            refused.contains("hands no app a connection to its actions"),
             "{refused}"
         );
+        connectors.hand_actions(Box::new(|_, _, _, _| Ok(())));
         let refused = connectors
-            .attach(("so.tilo.mail", "imap", "one"), false, &theirs, &|_| {
+            .attach(("so.tilo.mail", "imap", "one"), &theirs, &|_| {
                 Err("so.tilo.mail is not installed here".to_owned())
             })
             .unwrap_err();
         assert!(refused.contains("not installed"), "{refused}");
         assert!(connectors.running.lock_recover().is_empty());
-    }
-
-    /// A vault item released for a held connection reaches the app's own connection process and
-    /// nothing else: the sign-ins it is released over are handed to the process of the app whose
-    /// manifest grants them, before any instance attaches, and never to another app's process or
-    /// to an instance's end, which is the shared host's.
-    #[test]
-    fn a_released_secret_reaches_only_its_apps_own_connection_process() {
-        use std::io::{Read as _, Write as _};
-        use std::os::fd::AsFd as _;
-        const SECRET: &str = "bot-token-7f3a";
-        let connectors = Connectors::default();
-        connectors.hand_sign_ins(Box::new(|connector, app, workspace| {
-            // As the daemon answers them: a connection of the sign-ins, scoped to this app and
-            // workspace, on which it releases what the app is granted.
-            let (ours, theirs) = tilo_socket::pair()?;
-            origin_connector::send_sign_ins(
-                connector,
-                runtime_portal::packet::descriptor_of(theirs),
-            )?;
-            let mut ours = ours;
-            ours.write_all(format!("{SECRET} for {app} in {workspace}\n").as_bytes())
-        }));
-        // Each held connection's process end, as the launcher hands it over.
-        let ends: Mutex<Vec<(String, OwnedFd)>> = Mutex::default();
-        let mut instances = Vec::new();
-        for (app, signs_in) in [("so.tilo.discord", true), ("so.tilo.notes", false)] {
-            let start = |socket: &OwnedFd| {
-                let end = socket
-                    .as_fd()
-                    .try_clone_to_owned()
-                    .map_err(|e| e.to_string())?;
-                ends.lock_recover().push((app.to_owned(), end));
-                std::process::Command::new("/bin/sh")
-                    .args(["-c", "exec sleep 600"])
-                    .stdin(std::process::Stdio::null())
-                    .spawn()
-                    .map_err(|error| error.to_string())
-            };
-            let (instance, theirs) = origin_connector::connection().unwrap();
-            connectors
-                .attach((app, "held", "one"), signs_in, &theirs, &start)
-                .unwrap();
-            instances.push(instance);
-        }
-        let ends = ends.into_inner().unwrap();
-        let end = |app: &str| &ends.iter().find(|(of, _)| of == app).unwrap().1;
-        // The granted app's process is handed the sign-ins first, and reads its secret there.
-        let Some(origin_connector::Handed::SignIns(mut sign_ins)) =
-            origin_connector::receive(end("so.tilo.discord")).unwrap()
-        else {
-            panic!("the granted app's process is handed its sign-ins before any instance");
-        };
-        let mut released = [0; 64];
-        let read = sign_ins.read(&mut released).unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&released[..read]),
-            format!("{SECRET} for so.tilo.discord in one\n")
-        );
-        // Another app's process is handed its instance and nothing to sign in with.
-        assert!(matches!(
-            origin_connector::receive(end("so.tilo.notes")).unwrap(),
-            Some(origin_connector::Handed::Reader(_))
-        ));
-        // An instance's end, in the host every app's instances share, is told nothing.
-        for instance in instances {
-            let mut instance = std::os::unix::net::UnixStream::from(instance);
-            instance.set_nonblocking(true).unwrap();
-            let mut heard = [0; 64];
-            let heard = match instance.read(&mut heard) {
-                Ok(read) => String::from_utf8_lossy(&heard[..read]).into_owned(),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => String::new(),
-                Err(error) => panic!("an instance's end: {error}"),
-            };
-            assert!(
-                !heard.contains(SECRET),
-                "an instance hears no secret: {heard}"
-            );
-        }
     }
 }

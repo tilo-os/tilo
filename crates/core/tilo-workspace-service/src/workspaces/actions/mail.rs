@@ -58,9 +58,33 @@ impl super::super::Workspaces {
         {
             rows.extend(assistant_rows());
         }
+        // The logins the workspace's vault keeps, with the account each signs in for: what an app
+        // that signs in reads over its own connection, and a person's agent may read too.
+        if self
+            .reaching(
+                asked,
+                Store::MAIL,
+                person_accounts::SIGN_INS,
+                ActionKind::Read,
+            )
+            .await
+            .is_ok()
+        {
+            rows.push(SIGN_INS_VERB.row(MAIL, person_accounts::RESOURCE, "Mail"));
+        }
         rows
     }
 }
+
+/// Reading the vault's logins and the account each signs in for ([`person_accounts::SIGN_INS`]):
+/// the read an app that signs in makes.
+const SIGN_INS_VERB: Verb = Verb {
+    id: person_accounts::SIGN_INS,
+    label: "Read the logins the vault keeps",
+    check: "",
+    kind: ActionKind::Read,
+    params: Vec::new,
+};
 
 /// A workspace's mail accounts in its governance tree
 /// (`workspace/mail-accounts`): listing them, adding one, and adding one whose sign-in the
