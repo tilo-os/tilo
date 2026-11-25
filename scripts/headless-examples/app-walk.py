@@ -1357,7 +1357,7 @@ class Walk:
 
     def __init__(self, spec: dict, variant: str, out: Path, state: Path,
                  discover: bool = False, session: Session | None = None,
-                 devices: Devices | None = None):
+                 devices: Devices | None = None, machine: "MachineFiles | None" = None):
         self.spec = spec
         self.variant = variant
         self.v = spec[variant]
@@ -1384,7 +1384,7 @@ class Walk:
         # The machine's files daemon and its device daemon, when this walk started its own
         # session on a machine it roots (a check's VM): a family's are the family's, stopped
         # with its session.
-        self.machine: MachineFiles | None = None
+        self.machine: MachineFiles | None = machine
         self.daemon: MachineDaemon | None = None
         # What the run answered and a later step may name: a stand-in's address,
         # a provider's id (`{"served": "provider.id"}`), a page server's address.
@@ -2895,16 +2895,48 @@ class Walk:
         self.close_window()
         return {"closed": True}
 
+    def files(self) -> Path:
+        """Where a person's files are: the workspace the machine serves the signed-in
+        person's session at (`TILO_WORKSPACE_ROOTS`, as a device's login gives it), or the
+        session's own home where the walk runs on a machine that serves none (a
+        developer's own desktop). A step's fixture is written in the one tree the apps
+        read, never in a second beside it."""
+        if self.machine is not None and self.machine.account is not None:
+            return self.machine.WORKSPACE
+        return self.session.state / "home"
+
+    def place(self, source: Path, name: str) -> Path:
+        """`source`'s bytes at `name` where the person's files are, written as the session
+        account's own when a machine serves them (the workspace's mount admits the write
+        as the person's), and recorded as the path a step names."""
+        destination = self.files() / name
+        account = self.session.account
+        if account is None or source == destination:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if source != destination:
+                shutil.copyfile(source, destination)
+            return self.session.own(destination)
+        run([*as_account(account), "install", "-d", "-m", "0755", "--",
+             str(destination.parent)])
+        run([*as_account(account), "install", "-m", "0644", "--", str(source),
+             str(destination)])
+        return destination
+
+    def fixture(self, name: str) -> Path:
+        """The scratch file a fixture is made in before [`place`](Self::place) writes it
+        where a person's files are: the walk's own state, which the account may write."""
+        path = self.state / "fixtures" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
     def op_file(self, value) -> dict:
         """Write the step's fixture file where a person's file chooser reaches
         it, and record its path: a Markdown file the app imports."""
         name, text = value["name"], value["text"]
-        folder = self.session.state / "home"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-        return {"file": str(self.session.own(path))}
+        made = self.fixture(name)
+        made.write_text(text)
+        path = self.place(made, name)
+        return {"file": str(path)}
 
     def op_image(self, value) -> dict:
         """Write a picture where a person's file chooser reaches it, and record
@@ -2913,11 +2945,10 @@ class Walk:
         that shows photographs can import."""
         name = pick(value["name"], self.variant) if isinstance(value["name"], dict) \
             else value["name"]
-        folder = self.state / "home"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / name
-        path.write_bytes(FIXTURE_PICTURE_PNG)
-        return {"image": str(self.session.own(path))}
+        made = self.fixture(name)
+        made.write_bytes(FIXTURE_PICTURE_PNG)
+        path = self.place(made, name)
+        return {"image": str(path)}
 
     def op_fixture(self, value) -> dict:
         """Put a step's fixture file where a person's file chooser reaches it,
@@ -2925,10 +2956,9 @@ class Walk:
         bytes a step file cannot say. The step names the file under the walk's
         `fixtures/` and the name it is reached by."""
         name, source = value["name"], value["from"]
-        folder = self.state / "home"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / name
-        shutil.copyfile(WALKS / "fixtures" / source, path)
+        made = self.fixture(name)
+        shutil.copyfile(WALKS / "fixtures" / source, made)
+        path = self.place(made, name)
         return {"file": str(path), "bytes": path.stat().st_size}
 
     def op_clip(self, value) -> dict:
@@ -2936,12 +2966,10 @@ class Walk:
         needs no committed media. The clip is generated once per walk (GStreamer, else
         ffmpeg), a few hundred kilobytes, and contains no third-party media."""
         name = value["name"]
-        folder = self.state / "home"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / name
+        made_path = self.fixture(name)
         gst = [
             "gst-launch-1.0", "-e", "-q",
-            "mp4mux", "name=mux", "!", "filesink", f"location={path}",
+            "mp4mux", "name=mux", "!", "filesink", f"location={made_path}",
             "videotestsrc", "num-buffers=50", "pattern=ball", "!",
             "video/x-raw,width=160,height=120,framerate=25/1", "!",
             "videoconvert", "!", "vp9enc", "!", "queue", "!", "mux.video_0",
@@ -2953,7 +2981,7 @@ class Walk:
             "ffmpeg", "-y", "-loglevel", "error",
             "-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=2",
             "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=48000",
-            "-shortest", "-c:v", "libvpx-vp9", "-b:v", "64k", "-c:a", "aac", str(path),
+            "-shortest", "-c:v", "libvpx-vp9", "-b:v", "64k", "-c:a", "aac", str(made_path),
         ]
         made = None
         for program in (gst, ffmpeg):
@@ -2963,11 +2991,12 @@ class Walk:
                 run(program)
             except Failed:
                 continue
-            if path.is_file() and path.stat().st_size > 0:
+            if made_path.is_file() and made_path.stat().st_size > 0:
                 made = program[0]
                 break
         if made is None:
             raise Failed("no gst-launch-1.0 or ffmpeg to make the walk's clip")
+        path = self.place(made_path, name)
         return {"file": str(path), "bytes": path.stat().st_size, "made_by": made}
 
     def op_tone(self, value) -> dict:
@@ -2981,30 +3010,28 @@ class Walk:
         name = value["name"]
         seconds = float(value.get("seconds", 4))
         hertz = float(value.get("hz", 440))
-        folder = self.state / "home"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / name
+        made = self.fixture(name)
         rate = 8000
         frames = bytearray()
         for index in range(int(rate * seconds)):
             at = index / rate
             sample = 0.7 * math.sin(2 * math.pi * hertz * at)
             frames += struct.pack("<h", int(sample * 9000))
-        with wave.open(str(path), "wb") as song:
+        with wave.open(str(made), "wb") as song:
             song.setnchannels(1)
             song.setsampwidth(2)
             song.setframerate(rate)
             song.writeframes(bytes(frames))
+        path = self.place(made, name)
         return {"file": str(path), "bytes": path.stat().st_size}
 
     def op_pdf(self, value) -> dict:
         """Write a one-page PDF drawing `text` in Helvetica where a person's files
         are, so a walk opens a document a reader can actually read."""
         name, text = value["name"], value.get("text", "A page")
-        folder = self.session.state / "home"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / name
-        path.write_bytes(one_page_pdf(text))
+        made = self.fixture(name)
+        made.write_bytes(one_page_pdf(text))
+        path = self.place(made, name)
         return {"file": str(path), "bytes": path.stat().st_size}
 
     def op_epub(self, value) -> dict:
@@ -3016,9 +3043,7 @@ class Walk:
         title = value.get("title", "A book")
         author = value.get("author", "Ada Ferrer")
         chapter = value.get("chapter", "The first chapter.")
-        folder = self.session.state / "home"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / name
+        made = self.fixture(name)
         container = (
             '<?xml version="1.0"?>\n'
             '<container version="1.0" '
@@ -3046,25 +3071,22 @@ class Walk:
             '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
             f"<h1>{title}</h1><p>{chapter}</p></body></html>"
         )
-        with zipfile.ZipFile(path, "w") as book:
+        with zipfile.ZipFile(made, "w") as book:
             book.writestr("mimetype", "application/epub+zip")
             book.writestr("META-INF/container.xml", container)
             book.writestr("OEBPS/content.opf", package)
             book.writestr("OEBPS/c1.xhtml", page)
+        path = self.place(made, name)
         return {"file": str(path), "bytes": path.stat().st_size}
 
     def op_package(self, value) -> dict:
         """Sign the package `apps/tl/<name>` as a `.tapp` where a person's files are:
         a package the Store reviews when it is opened."""
-        import shutil as copy
 
         name = value["name"] if isinstance(value, dict) else value
         shown = value.get("as") if isinstance(value, dict) else None
         built = build_tapp(name, self.out / "build" / self.variant / "package", self.state)
-        folder = self.session.state / "home"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / (shown or f"{name}.tapp")
-        copy.copyfile(built, path)
+        path = self.place(built, shown or f"{name}.tapp")
         return {"file": str(path), "bytes": path.stat().st_size}
 
     def chooser_question(self) -> dict | None:
@@ -3092,15 +3114,15 @@ class Walk:
 
     def op_choose(self, value) -> dict:
         """Choose the file a person's chooser offers: the sheet the app's request
-        opens is answered by its own steps. `{"name": ..}` names a fixture under
-        the person's home; `{"path": ..}` names a file anywhere the chooser
+        opens is answered by its own steps. `{"name": ..}` names a fixture where
+        the person's files are; `{"path": ..}` names a file anywhere the chooser
         reaches, such as a workspace's own tree. The file is selected through the
         chooser's published step, which waits for it to have listed the file;
         then its confirm button is pressed as a person's pointer does. Giving an
         app a file is the person's alone: the chooser refuses its confirm step to
         any caller that is not at the computer, so the walk never invokes it."""
         path = Path(value["path"]).resolve() if "path" in value \
-            else (self.state / "home" / value["name"]).resolve()
+            else (self.files() / value["name"]).resolve()
         question = until_value("the file chooser to ask for a file",
                                self.chooser_question, 60)
         handle = question["handle"]
@@ -3979,7 +4001,8 @@ def main() -> int:
                 for index, (path, spec) in enumerate(mine):
                     print(f"==> {path.stem}: walking the {variant} version", file=sys.stderr)
                     walk = Walk(spec, variant, out_of[path.stem], state,
-                                discover=options.discover, session=session, devices=devices)
+                                discover=options.discover, session=session, devices=devices,
+                                machine=machine)
                     found = walk.walk()
                     if family:
                         found["session_start_ms"] = started
