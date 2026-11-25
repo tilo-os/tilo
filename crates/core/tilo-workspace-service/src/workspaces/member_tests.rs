@@ -607,6 +607,7 @@ async fn record_change_of(
     (key, value): (&str, &str),
 ) -> Vec<u8> {
     use automerge::transaction::Transactable as _;
+    use collab_types::claim::CommitNamed as _;
 
     // The serving device's record reaches the copy by sync, after the workspace's history.
     let bytes = tilo_test_env::within("the copy holds the record", async {
@@ -622,15 +623,14 @@ async fn record_change_of(
         }
     })
     .await;
+    let person = copies.signing_device().cert.user_public_key;
     let mut opened = automerge::AutoCommit::load(&bytes).expect("the record opens");
     let heads = opened.get_heads();
     opened
         .put(automerge::ROOT, key, value)
         .expect("the record's field");
-    opened.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
-    );
+    // A change names who made it: the store refuses one that names nobody.
+    opened.commit_edit(app, key, &person);
     opened.save_after(&heads)
 }
 
@@ -665,6 +665,30 @@ async fn served_value(
         Some((automerge::Value::Scalar(value), _)) => value.as_str().map(str::to_owned),
         _ => None,
     }
+}
+
+/// Wait until the serving device's copy of a record holds `expected` under `key`: the answer it
+/// gives keeps the write, and its copy takes it in from the link's reader beside that answer.
+async fn served_value_became(
+    workspaces: &super::Workspaces,
+    workspace: &str,
+    (app, document): (&str, &str),
+    key: &str,
+    expected: &str,
+) {
+    tilo_test_env::within("the serving device's copy holds the write", async {
+        loop {
+            if served_value(workspaces, workspace, (app, document), key)
+                .await
+                .as_deref()
+                == Some(expected)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
 }
 
 /// A member copy writes a record the serving device founds; `served` answers only once that
@@ -713,18 +737,14 @@ async fn served_answers_once_the_serving_device_holds_the_write() {
             .expect("the serving device answers the write");
     })
     .await;
-    assert_eq!(
-        served_value(
-            serving.workspaces(),
-            &workspace,
-            ("test.app", "record"),
-            "value"
-        )
-        .await
-        .as_deref(),
-        Some("written"),
-        "the serving device held the write served answered for"
-    );
+    served_value_became(
+        serving.workspaces(),
+        &workspace,
+        ("test.app", "record"),
+        "value",
+        "written",
+    )
+    .await;
     drop(copies);
     member.shutdown().await;
 }
@@ -944,17 +964,14 @@ async fn a_write_made_while_the_serving_device_is_away_is_kept_and_reaches_it_la
         },
     )
     .await;
-    assert_eq!(
-        served_value(
-            serving.workspaces(),
-            &workspace,
-            ("test.app", "record"),
-            "value"
-        )
-        .await
-        .as_deref(),
-        Some("written-while-away")
-    );
+    served_value_became(
+        serving.workspaces(),
+        &workspace,
+        ("test.app", "record"),
+        "value",
+        "written-while-away",
+    )
+    .await;
     drop(copies);
     member.shutdown().await;
     serving.shutdown().await;
@@ -1132,17 +1149,14 @@ async fn a_write_before_the_workspace_is_held_here_waits_and_lands_once_it_is() 
             .expect("the serving device keeps the write");
     })
     .await;
-    assert_eq!(
-        served_value(
-            serving.workspaces(),
-            &workspace,
-            ("test.app", "record"),
-            "value"
-        )
-        .await
-        .as_deref(),
-        Some("written-while-joining")
-    );
+    served_value_became(
+        serving.workspaces(),
+        &workspace,
+        ("test.app", "record"),
+        "value",
+        "written-while-joining",
+    )
+    .await;
     drop(copies);
     member.shutdown().await;
     serving.shutdown().await;

@@ -16,6 +16,8 @@ use super::super::fixtures::{
 };
 
 const NOTES: &str = "tilo.notes";
+/// The kind Notes' records here are of: the one the app manifests in these tests declare.
+const NOTES_KIND: &str = "tilo.notes.Note";
 /// Someone no workspace here admitted.
 const STRANGER: [u8; 32] = [9; 32];
 
@@ -172,17 +174,6 @@ async fn an_app_acting_for_someone_reads_no_more_than_they_may() {
     server.shutdown().await;
 }
 
-/// A document holding `value` under `key`.
-fn snapshot(key: &str, value: &str) -> Vec<u8> {
-    use automerge::transaction::Transactable as _;
-
-    let mut document = automerge::AutoCommit::new();
-    document
-        .put(automerge::ROOT, key, value)
-        .expect("the record's field");
-    document.save()
-}
-
 fn document(read: &Result<ResourceCopy, ActionCallError>) -> bool {
     matches!(read, Ok(ResourceCopy::Document(bytes)) if !bytes.is_empty())
 }
@@ -239,17 +230,22 @@ impl Host {
         self.server.workspaces()
     }
 
-    /// This device founds `record` of Notes in `workspace`.
+    /// This device founds `record` of Notes in `workspace`, in the workspace's store, of the
+    /// kind the app manifests here declare a read of.
     async fn write(&self, workspace: &str, record: &str) {
-        Box::pin(self.workspaces().own_write(
+        super::super::fixtures::write_record_of_kind(
+            self.workspaces(),
             workspace,
-            (NOTES, record),
-            None,
-            &snapshot("text", "milk"),
-            true,
-            true,
-            None,
-        ))
+            (NOTES, NOTES_KIND),
+            record,
+            |document| {
+                use automerge::transaction::Transactable as _;
+                document
+                    .put(automerge::ROOT, "text", "milk")
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            },
+        )
         .await
         .expect("the device writes its record");
     }

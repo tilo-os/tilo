@@ -68,6 +68,12 @@ fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
     let records = owners
         .open(definition.app_id(), workspace)
         .map_err(|e| e.to_string())?;
+    // The record's type is declared by the app that holds it: what founds the containers its
+    // first value fills, alike on every device.
+    records.declare_type(
+        <test_document_app::Document as tilo_resource::Resource>::KIND,
+        <test_document_app::Document as tilo_resource::Resource>::surface,
+    );
     records
         .reserve_resource(&checkout)
         .map_err(|e| e.to_string())?

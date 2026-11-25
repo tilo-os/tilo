@@ -429,6 +429,36 @@ pub async fn write_record(
 /// running the app's package does. Answers the kind.
 pub fn declare_record_kind(workspaces: &Workspaces, app: &str) -> String {
     let kind = record_kind(app);
+    declare_record_kind_named(workspaces, app, &kind);
+    kind
+}
+
+/// Declare `kind`, a record of `app` whose fields the tests write, on `workspaces`.
+pub fn declare_record_kind_named(workspaces: &Workspaces, app: &str, kind: &str) {
+    let surface = record_surface(kind);
+    workspaces.declare_package_surface(app, surface.as_bytes());
+}
+
+/// Change `app`'s record `record` of `workspace` with `edit`, its kind `kind` declared on
+/// `workspaces` first.
+///
+/// # Errors
+/// The workspace is not kept here, or its store refused the write.
+pub async fn write_record_of_kind(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (app, kind): (&str, &str),
+    record: &str,
+    edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
+) -> Result<(), String> {
+    declare_record_kind_named(workspaces, app, kind);
+    workspaces
+        .author_record(workspace, (app, kind, record), edit)
+        .await
+}
+
+/// The compiled surface of `kind`, a record whose fields the tests write anything into.
+fn record_surface(kind: &str) -> String {
     let fields: Vec<serde_json::Value> = [
         "attachment",
         "attachments",
@@ -447,7 +477,7 @@ pub fn declare_record_kind(workspaces: &Workspaces, app: &str) -> String {
     .iter()
     .map(|field| serde_json::json!({ "path": field, "type": "any" }))
     .collect();
-    let surface = collab_types::surface::canonical(&serde_json::json!({
+    collab_types::surface::canonical(&serde_json::json!({
         "format": 2,
         "resources": [{
             "kind": kind,
@@ -456,9 +486,7 @@ pub fn declare_record_kind(workspaces: &Workspaces, app: &str) -> String {
             "fields": fields,
             "verbs": [{ "id": "type", "kind": "undoable" }],
         }],
-    }));
-    workspaces.declare_package_surface(app, surface.as_bytes());
-    kind
+    }))
 }
 
 /// Name `app`'s `surface`, the `surface.toml` its package ships, on `host`, as running that
