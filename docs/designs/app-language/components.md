@@ -106,9 +106,10 @@ view contact_row(c: Contact) {
 
 Some components *attach*: `ui.ContextMenu`, `ui.HoverToolbar` and `ui.Swipe` draw nothing where
 a view puts them and give the view they stand in a menu, a toolbar shown on hover and focus, or
-a swipe. A list item holds those of its row wherever the row's layout puts them — through its
-stacks, rows, grids and calls — while what a component of its own meaning holds (a card, a
-section) stays that component's. Its menu ends with each of the item's actions the row's menu
+a swipe. A layout runs the menu a view places in it, anywhere in that layout and wherever nothing
+the press landed on took it; a list item holds its row's three wherever the row's layout puts
+them — through its stacks, rows, grids and calls — while what a component of its own meaning holds
+(a card, a section) stays that component's. Its menu ends with each of the item's actions the row's menu
 did not place, so every action stays reachable, and then the system's Export and Copy link, on
 every resource's row, menu and window bar, so no app writes its own. Export saves the resource
 as a file where the person says: the Markdown its app says it exports as (a `fn export(x: T) ->

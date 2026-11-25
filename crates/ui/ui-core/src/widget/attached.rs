@@ -1,7 +1,8 @@
 //! What a view gives the element it stands in to do, besides drawing it: a context menu, a toolbar
 //! shown on hover and focus, and a swipe. Each is a described component that *attaches*
 //! ([`crate::component::Semantics::attaches`]): it draws nothing where the view puts it, and belongs to
-//! the view it stands in.
+//! the view it stands in. A layout runs the menu a view places in it, around the whole layout
+//! ([`crate::widget::ContextMenuArea`]); a list item runs its row's menu, toolbar and swipe.
 
 use crate::component::{Accepts, Component, Event, PartType, Source};
 use crate::widget::{Element, MenuEntry, MenuItemProps, SwipeActionProps};
@@ -133,6 +134,8 @@ impl PartType for Vec<MenuPart> {
 }
 
 /// A context menu of the view it stands in: a right-click, the Menu key or a long press opens it.
+/// A layout runs the menu a view places in it, anywhere in that layout; a list item runs its row's,
+/// wherever the row's layout puts it.
 #[derive(Component, Default)]
 #[component(name = "ContextMenu", role = "Menu", attaches)]
 pub struct ContextMenuProps {

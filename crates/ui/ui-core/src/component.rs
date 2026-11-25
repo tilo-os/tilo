@@ -1425,6 +1425,12 @@ pub struct Registry {
     entries: Vec<Entry>,
 }
 
+/// The components a layout itself runs for the view it shows: a view's menu opens from the area
+/// around the layout, wherever nothing the press landed on took it
+/// ([`crate::widget::ContextMenuArea`]). The other attachments belong to a row, which a part of
+/// another component hands them to.
+const LAYOUT_RUNS: [&str; 1] = ["ContextMenu"];
+
 impl Registry {
     /// The widgets of `sets`, in that order.
     #[must_use]
@@ -1449,7 +1455,7 @@ impl Registry {
 
     /// Build the component `name` of `source`.
     pub fn build(&self, name: &str, source: &mut dyn Source) -> Result<Element, Error> {
-        let entry = self.get(name).ok_or_else(|| Error::unknown(name))?;
+        let entry = self.get(name).ok_or_else(|| self.cannot_stand(name))?;
         let built = (entry.build)(source)?;
         // What the control does is part of the control: it says so however the window composes
         // around it, so a person, an assistive technology and an agent that names it reach the one
@@ -1468,8 +1474,44 @@ impl Registry {
         widget: &mut Element,
         source: &mut dyn Source,
     ) -> Result<bool, Error> {
-        let entry = self.get(name).ok_or_else(|| Error::unknown(name))?;
+        let entry = self.get(name).ok_or_else(|| self.cannot_stand(name))?;
         (entry.update)(widget, source)
+    }
+
+    /// Why no widget builds where `name` stands: nothing describes it, or it is one a view places
+    /// only inside another — the components whose parts read it, or, for one that attaches to the
+    /// element it stands in, that element.
+    #[must_use]
+    pub fn cannot_stand(&self, name: &str) -> Error {
+        let catalogue = self.catalogue();
+        let Some(description) = catalogue
+            .components
+            .iter()
+            .find(|description| description.name == name)
+        else {
+            return Error::unknown(name);
+        };
+        // Where it may stand. A component a view attaches asks the element it stands in to run it:
+        // a layout runs a view's menu ([`crate::widget::ContextMenuArea`]), and the other
+        // attachments belong to a row, which a part of another component takes. One a part reads
+        // stands in the parts whose owner reads it.
+        let mut places: Vec<String> = Vec::new();
+        if description.semantics.attaches && LAYOUT_RUNS.contains(&name) {
+            places.push("a layout".to_owned());
+        }
+        places.extend(
+            catalogue
+                .components
+                .iter()
+                .filter(|owner| owner.parts.iter().any(|part| part.accepts.takes(name)))
+                .map(|owner| format!("`ui.{}`", owner.name)),
+        );
+        let inside = match places.split_last() {
+            None => "in a part of another component".to_owned(),
+            Some((last, [])) => format!("inside {last}"),
+            Some((last, first)) => format!("inside {} or {last}", first.join(", ")),
+        };
+        Error::value(name, "", format!("can only stand {inside}"))
     }
 
     /// The views its part `part` has for the item `key`, in that item's part `of`, built for an

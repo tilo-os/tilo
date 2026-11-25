@@ -10001,7 +10001,7 @@
     },
     {
       "name": "ContextMenu",
-      "doc": "A context menu of the view it stands in: a right-click, the Menu key or a long press opens it.",
+      "doc": "A context menu of the view it stands in: a right-click, the Menu key or a long press opens it. A layout runs the menu a view places in it, anywhere in that layout; a list item runs its row's, wherever the row's layout puts it.",
       "parts": [
         {
           "name": "items",

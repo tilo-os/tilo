@@ -38,6 +38,8 @@ const HEIGHT: i32 = 800;
 /// shows them all, so a test presses one below the fold where a person would after scrolling.
 const TALL: i32 = 4000;
 const BTN_LEFT: u32 = 0x110;
+/// The right button, which points at a thing.
+const BTN_RIGHT: u32 = 0x111;
 const PERSON: &str = "Pat";
 
 fn options() -> Options {
@@ -515,6 +517,89 @@ fn the_workspaces_menu_stands_while_the_change_feed_under_it() {
         "the workspace chosen under the menu in front",
         |session| shell(session).workspace == first,
     );
+}
+
+/// Right-click the screen point `at`.
+fn right_click(session: &mut Session, at: (f64, f64)) {
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: at.0, y: at.1 })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_RIGHT,
+                pressed,
+            })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+}
+
+/// A point on the shell where nothing of it stands: under the bar and off every control drawn, so
+/// a press there is the shell's own ground.
+fn shell_ground(session: &Session) -> (f64, f64) {
+    let controls: Vec<(f64, f64, f64, f64)> = session
+        .controls()
+        .into_iter()
+        .map(|control| control.rect)
+        .collect();
+    let covered = |(x, y): (f64, f64)| {
+        controls
+            .iter()
+            .any(|(cx, cy, cw, ch)| x >= *cx && x <= cx + cw && y >= *cy && y <= cy + ch)
+    };
+    for (across, down) in [
+        (0.5, 0.85),
+        (0.5, 0.7),
+        (0.15, 0.9),
+        (0.85, 0.9),
+        (0.5, 0.5),
+    ] {
+        let at = (f64::from(WIDTH) * across, f64::from(HEIGHT) * down);
+        if !covered(at) {
+            return at;
+        }
+    }
+    panic!("the shell draws a control everywhere: {controls:?}");
+}
+
+/// A secondary press on the shell, where nothing of it took the press, opens the workspaces' menu
+/// at the pointer — the rows the bar's workspace button opens — and the row chosen runs what it
+/// names.
+#[test]
+fn a_right_click_on_the_shell_opens_the_workspaces_menu() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| {
+        says(session, &shell(session).workspace)
+    });
+    let before = shell(&session).workspaces.len();
+    assert!(
+        session.shell_control("New workspace").is_none(),
+        "no menu stands on the shell at rest"
+    );
+    let at = shell_ground(&session);
+    right_click(&mut session, at);
+    until(&mut session, |session| {
+        session
+            .shell_control("New workspace")
+            .is_some_and(|(_, _, w, h)| w > 0.0 && h > 0.0)
+    });
+    let row = session
+        .shell_control("New workspace")
+        .expect("the menu's row");
+    assert!(
+        row.1 >= at.1 - 200.0 && row.1 <= at.1 + 200.0,
+        "the menu stands where the right-click landed: {row:?} at {at:?}"
+    );
+    keep(&mut session, "shell-workspaces-menu-at-pointer");
+    press(&mut session, "New workspace");
+    until(&mut session, |session| {
+        shell(session).workspaces.len() == before + 1
+    });
 }
 
 #[test]

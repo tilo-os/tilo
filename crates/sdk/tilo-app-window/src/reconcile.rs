@@ -286,6 +286,7 @@ fn feel(node: &UiNode) -> Option<ui::motion::Feel> {
 pub fn normalize(node: &UiNode) -> UiNode {
     let mut out = page_once(node);
     crate::attach::hoist_in(&mut out);
+    crate::attach::raise_menus(&mut out);
     crate::date::under_headings(crate::shell::titled_lists(out))
 }
 
@@ -757,7 +758,41 @@ impl Reconciler {
         if let Some(feel) = feel(node) {
             with_part_container(&mut element, |container| container.set_feel(feel));
         }
-        element
+        self.with_menu(node, element)
+    }
+
+    /// The layout `node` stands in, in the area its view's `ui.ContextMenu` opens from
+    /// ([`ui::widget::ContextMenuArea`]): a secondary press anywhere in the layout, where nothing
+    /// the press lands on took it, opens the menu at the pointer, and the Menu key or Shift+F10
+    /// opens it on what has the keyboard. A component keeps what it holds: a menu in a card or a
+    /// section's own view is not the card's, and builds as the component that it cannot.
+    fn with_menu(&mut self, node: &UiNode, content: Element) -> Element {
+        if !crate::attach::arranges(&node.kind) {
+            return content;
+        }
+        let Some(menu) = crate::attach::menu_of(node) else {
+            return content;
+        };
+        match self.menu_parts(menu) {
+            Ok(parts) => Box::new(ui::widget::ContextMenuArea::of_menu(content, parts)),
+            Err(error) => {
+                self.note_broken(menu, &error);
+                content
+            }
+        }
+    }
+
+    /// The rows the menu component `node` offers, as the window reads them: each is the action the
+    /// view bound to it, so choosing one runs that action as every other press of it does.
+    fn menu_parts(
+        &mut self,
+        node: &UiNode,
+    ) -> Result<Vec<ui::widget::MenuPart>, ui::component::Error> {
+        use ui::component::Component as _;
+        let description = crate::adapter::description_of(node)
+            .ok_or_else(|| ui::component::Error::unknown(&node.kind))?;
+        let mut source = NodeSource::new(node, description, self);
+        ui::widget::ContextMenuProps::from_source(&mut source).map(|props| props.items)
     }
 
     fn build_kind(&mut self, node: &UiNode) -> Element {
@@ -1226,6 +1261,9 @@ impl Reconciler {
             self.navigation = Some(split.navigation());
         }
         for child in &node.children {
+            if crate::attach::is_menu(child) {
+                continue;
+            }
             let mut part = Part::new(self.build(child));
             part.fit = Fit::hug();
             split = split.push_part(part);
@@ -1812,6 +1850,14 @@ impl Reconciler {
             let previous = std::mem::replace(widget, Box::new(Spacer::fixed(0.0)));
             return Some(self.swap(previous, new_node));
         }
+        // A layout its view gave a menu ([`Self::with_menu`]): what it stands for changes where it
+        // stands, and the menu it offers is read again when the view gave it another.
+        if let Some(area) = widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<ui::widget::ContextMenuArea>())
+        {
+            return self.update_menu_area(area, old_node, new_node);
+        }
         if let Some(description) = crate::adapter::description_of(new_node) {
             return self.update_component(widget, old_node, new_node, description);
         }
@@ -1888,6 +1934,41 @@ impl Reconciler {
             kind if is_container(kind) => Some(self.rebuild_shell(widget, old_node, new_node)),
             _ => Some(self.build(new_node)),
         }
+    }
+
+    /// A layout's menu area met again ([`Self::with_menu`]): the layout it wraps takes what the
+    /// view changed where it stands, and the menu it offers is read again when the view gave it
+    /// another.
+    fn update_menu_area(
+        &mut self,
+        area: &mut ui::widget::ContextMenuArea,
+        old_node: &UiNode,
+        new_node: &UiNode,
+    ) -> Option<Element> {
+        let (Some(before), Some(after)) = (
+            crate::attach::menu_of(old_node),
+            crate::attach::menu_of(new_node),
+        ) else {
+            // The view gives the layout a menu now, or took it away: another element around it.
+            return Some(self.build(new_node));
+        };
+        if before != after {
+            match self.menu_parts(after) {
+                Ok(parts) => area.set_menu(parts),
+                Err(error) => {
+                    self.note_broken(after, &error);
+                    return Some(self.build(new_node));
+                }
+            }
+        }
+        // The layout is the area's content, and what it holds changes where it stands. A layout the
+        // view builds around again (its own arguments changed, or one the window reaches only by
+        // building it anew) is built again with its menu.
+        if is_container(&new_node.kind) && same_shell(old_node, new_node) {
+            let kept = self.reconcile_children(area.content_element_mut(), old_node, new_node);
+            return (!kept).then(|| self.build(new_node));
+        }
+        Some(self.build(new_node))
     }
 
     /// The view `previous`, built for the page a stage showed, swapped for what `new_node` shows:
@@ -2139,11 +2220,22 @@ fn placed(node: &UiNode) -> Vec<Placed<'_>> {
     // items share the row's spans one by one. Every other container keeps a fragment as a part of
     // its own: a view call is a box where the view put it, and what the view asks for is
     // asked of that box.
-    fn flatten<'a>(node: &'a UiNode, through: &mut Vec<&'a UiNode>, out: &mut Vec<Placed<'a>>) {
+    // A layout's menu is no part of it: the area it opens from stands around the layout, so the
+    // menu takes no place of its own ([`Reconciler::with_menu`]).
+    let holds_menu = crate::attach::arranges(&node.kind);
+    fn flatten<'a>(
+        node: &'a UiNode,
+        holds_menu: bool,
+        through: &mut Vec<&'a UiNode>,
+        out: &mut Vec<Placed<'a>>,
+    ) {
         for child in &node.children {
+            if holds_menu && crate::attach::is_menu(child) {
+                continue;
+            }
             if child.kind == "fragment" {
                 through.push(child);
-                flatten(child, through, out);
+                flatten(child, holds_menu, through, out);
                 through.pop();
             } else {
                 out.push(Placed {
@@ -2155,12 +2247,17 @@ fn placed(node: &UiNode) -> Vec<Placed<'_>> {
     }
     let mut out = Vec::new();
     if matches!(node.kind.as_str(), "grid" | "row") {
-        flatten(node, &mut Vec::new(), &mut out);
+        flatten(node, holds_menu, &mut Vec::new(), &mut out);
     } else {
-        out.extend(node.children.iter().map(|child| Placed {
-            node: child,
-            through: Vec::new(),
-        }));
+        out.extend(
+            node.children
+                .iter()
+                .filter(|child| !(holds_menu && crate::attach::is_menu(child)))
+                .map(|child| Placed {
+                    node: child,
+                    through: Vec::new(),
+                }),
+        );
     }
     out
 }

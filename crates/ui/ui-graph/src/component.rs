@@ -390,8 +390,8 @@ pub struct Semantics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presents: Option<String>,
     /// The component draws nothing: it gives the view it stands in something to do (a context menu,
-    /// a toolbar on hover, a swipe). Wherever a view's body puts it, it belongs to that view; a list
-    /// item holds those of its row.
+    /// a toolbar on hover, a swipe). Wherever a view's body puts it, it belongs to that view; a
+    /// layout runs the menu a view places in it, and a list item holds its row's.
     #[serde(default, skip_serializing_if = "is_false")]
     pub attaches: bool,
     /// Why the gallery cannot show it (`#[component(not_in_gallery = "…")]` at the component's

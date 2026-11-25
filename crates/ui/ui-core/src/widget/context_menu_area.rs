@@ -459,6 +459,21 @@ impl ContextMenuArea {
         Self::over_content(content, move |_, at| entries(at))
     }
 
+    /// `content` with the menu `menu` offers, the rows a view placed in a `ui.ContextMenu` on it:
+    /// built each time it opens, so they say what is true then, as a row's menu does.
+    #[must_use]
+    pub fn of_menu(content: Element, menu: Vec<super::attached::MenuPart>) -> Self {
+        Self::new(content, move |_| {
+            super::attached::menu_entries(menu.clone())
+        })
+    }
+
+    /// The menu it offers, replaced: what a view that gave the element it summarizes another menu
+    /// offers now, the element kept where it stands.
+    pub fn set_menu(&mut self, menu: Vec<super::attached::MenuPart>) {
+        self.entries = Box::new(move |_, _| super::attached::menu_entries(menu.clone()));
+    }
+
     /// `content` with a menu of what `entries` offers when it opens, asked
     /// with the content itself, so one menu can serve every row of a list.
     pub fn over_content(
@@ -504,6 +519,11 @@ impl ContextMenuArea {
     /// What the menu is over, to update in place.
     pub fn content_mut(&mut self) -> &mut dyn Widget {
         self.content.as_mut()
+    }
+
+    /// What the menu is over, as the element a host keeps and hands back changed.
+    pub fn content_element_mut(&mut self) -> &mut Element {
+        &mut self.content
     }
 
     pub fn is_open(&self) -> bool {
@@ -936,7 +956,10 @@ impl super::Decorator for ContextMenuArea {
     }
 
     fn concrete_type_name(&self) -> &'static str {
-        "ContextMenuArea"
+        // It stands for what it wraps, as a wrapper with an identity does: what reads the laid out
+        // tree — an assistive technology, the layout check — meets the layout or the control, not
+        // the area around it.
+        self.content.concrete_type_name()
     }
 
     /// The content's change is the area's: the menu adds no structure of

@@ -4244,3 +4244,69 @@ fn a_media_card_given_on_its_own_is_drawn_as_a_card() {
         "its cover stands square with its title and meta under it: {bounds:?}"
     );
 }
+
+/// A layout a view gave a `ui.ContextMenu`: a right-click anywhere in the layout opens the menu at
+/// the pointer, and the row chosen runs the action the view bound to it, as a row's own menu does,
+/// from the same shared area. The menu takes no place of its own in the layout.
+#[test]
+fn a_right_click_on_a_layout_opens_the_menu_its_view_placed() {
+    use wire::Event;
+    let mut choose = UiNode::empty("ui.MenuItem", "new");
+    choose
+        .props
+        .insert("label".to_owned(), Value::text("New workspace"));
+    choose.events.insert("choose".to_owned(), Event::default());
+    let mut menu = UiNode::empty("ui.ContextMenu", "menu");
+    menu.children.push(choose);
+    let mut held = UiNode::empty("stack", "held");
+    held.props.insert("fill".to_owned(), Value::Float(1.0));
+    let mut layout = UiNode::empty("layers", "layers");
+    layout.props.insert("fill".to_owned(), Value::Float(1.0));
+    layout.children = vec![menu, held];
+    let (mut app, mut harness) = drawn(&page_of(vec![layout]));
+    assert!(
+        !harness
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.label().is_some_and(|label| label == "New workspace")),
+        "the menu stands closed until it is opened"
+    );
+    harness.right_click_at(640.0, 400.0);
+    harness.relayout();
+    let row = node_named(&harness, "New workspace");
+    let bounds = harness
+        .a11y_node(row)
+        .and_then(|node| node.bounds())
+        .expect("the row stands at the pointer");
+    assert!(
+        bounds.x0 >= 400.0 && bounds.y0 >= 200.0 && bounds.x1 <= 1000.0 && bounds.y1 <= 800.0,
+        "the menu opens where the right-click landed: {bounds:?}"
+    );
+    let (x, y) = ((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
+    harness.click_at(x, y);
+    drawn_window(&mut harness).flush();
+    assert!(
+        matches!(&fired(&mut app)[..], [ToApp::Fire { key, event, .. }] if key == "new" && event == "choose"),
+        "choosing the row runs the action the view bound to it: {:?}",
+        sent(&mut app)
+    );
+}
+
+/// A component that holds its own content (a card, a section) is no layout: a menu standing in its
+/// view is not the card's, and the window says where a menu may stand instead of calling the
+/// component undescribed.
+#[test]
+fn a_menu_in_a_components_own_view_says_where_it_may_stand() {
+    let mut menu = UiNode::empty("ui.ContextMenu", "menu");
+    menu.children.push(UiNode::empty("ui.MenuItem", "new"));
+    let mut card = UiNode::empty("ui.Card", "card");
+    card.props.insert("title".to_owned(), Value::text("Notes"));
+    card.children = vec![menu];
+    let (_app, mut harness) = drawn(&page_of(vec![card]));
+    let broken = drawn_window(&mut harness).broken_components();
+    assert!(
+        broken.iter().any(|said| said
+            == "ui.ContextMenu (menu): ContextMenu can only stand inside a layout or `ui.ListItem`"),
+        "the window names where a menu may stand: {broken:?}"
+    );
+}
