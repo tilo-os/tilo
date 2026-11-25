@@ -180,7 +180,7 @@ fn a_persons_own_agent_lists_a_stopped_app_into_running_writes_and_reads_as_one_
 /// and an action that asks first waits for the person, answered on their laptop.
 #[test]
 fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first() {
-    host::run(|host| async move {
+    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
         let agent = host.agent();
         // Terminal: what it lists, it runs, as listed.
         let (terminal, failed) = ls(&agent, Some("terminal")).await;

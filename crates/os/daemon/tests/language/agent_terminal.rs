@@ -15,7 +15,7 @@ use crate::language::host;
 /// sees both recorded on the session as the agent's run.
 #[test]
 fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
-    host::run(|host| async move {
+    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
         let agent = host.agent();
         let (ran, failed) = act(
             &agent,
@@ -41,7 +41,7 @@ fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
 /// and is recorded on that session.
 #[test]
 fn an_agents_command_lands_after_another_devices_terminal_closed() {
-    host::run(|host| async move {
+    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
         // The person's other device opened the Terminal once, as a window of theirs does.
         let workspace = host.workspace().to_owned();
         let laptop = host.member("Ada's laptop", &workspace).await;
@@ -86,7 +86,7 @@ fn an_agents_command_lands_after_another_devices_terminal_closed() {
 /// the run it stopped.
 #[test]
 fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
-    host::run(|host| async move {
+    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
         let agent = host.agent();
         let invocation = "3f6b8c0e-0000-4000-8000-000000000009";
         let (ran, failed) = said(
@@ -139,7 +139,7 @@ fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
 /// computer is recorded on the session by the host, as the commands it runs are, once each.
 #[test]
 fn a_command_typed_on_a_terminal_the_agent_opened_is_recorded_on_the_session() {
-    host::run(|host| async move {
+    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
         let agent = host.agent();
         let (opened, failed) = act(
             &agent,
@@ -207,7 +207,7 @@ async fn recorded_command(agent: &host::Agent, command: &str) -> Value {
 /// on, which its members are answered with.
 #[test]
 fn a_commands_output_is_kept_on_its_record() {
-    host::run(|host| async move {
+    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
         let agent = host.agent();
         let short = "echo test result: ok. 1 passed";
         let (ran, failed) = act(&agent, "terminal#run", json!({"command": short})).await;
