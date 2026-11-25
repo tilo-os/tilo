@@ -487,7 +487,7 @@ fn from_bo() -> Shortcut {
 /// What the mail heard so far was made from: for each, who wrote and what about, and the message
 /// itself as the run is made from it.
 fn heard_mail(started: &Started) -> Vec<(String, String, String, String)> {
-    started
+    let mut heard: Vec<(String, String, String, String)> = started
         .0
         .lock()
         .unwrap()
@@ -503,7 +503,10 @@ fn heard_mail(started: &Started) -> Vec<(String, String, String, String)> {
                 from["ty"].as_str().unwrap_or_default().to_owned(),
             )
         })
-        .collect()
+        .collect();
+    // The firings' order is the store's, which is no part of what a trigger answers.
+    heard.sort();
+    heard
 }
 
 /// A message arriving after the trigger was set up fires it once, a message the filter leaves
