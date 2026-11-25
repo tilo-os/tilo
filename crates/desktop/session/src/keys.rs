@@ -432,13 +432,12 @@ impl SessionKeys {
     }
 
     /// The surface `press` closes, by the stack's dismissal table: Escape, for the topmost surface
-    /// that answers it. The surface is drawn elsewhere, so this surface is the one that hears it.
+    /// that answers it. The surface is drawn elsewhere, so this surface is the one that hears it:
+    /// the claim decides, and the answer runs the one close action that takes it down.
     fn closes_the_top_surface(&self, press: &Press) -> Option<Part> {
-        let part = (press.bare == Key::Named(NamedKey::Escape))
+        (press.bare == Key::Named(NamedKey::Escape))
             .then(|| self.overlays.escape())
-            .flatten()?;
-        self.overlays.close(part);
-        Some(part)
+            .flatten()
     }
 
     /// Whether `press` puts away the surface the shell draws over its windows: Escape, when no
@@ -1252,15 +1251,38 @@ mod tests {
 
         phase escape_closes_the_quick_settings;
         {
-            // The shell draws the quick settings: Escape closes the surface.
+            // The shell draws the quick settings: Escape closes the surface. The compositor
+            // offers the press to the claim first, and the surface that claimed it hears it: the
+            // claim only decides, the answer runs the one close action.
             let overlays = Overlays::new();
             overlays.open(Part::QuickSettings, None);
             let escape = key(keysyms::Escape, None, KeyModifiers::default());
             let mut shell = over(ShellKeys::new(overlays));
+            assert_eq!(shell.claim_key(&escape, false, false), KeyClaim::Take);
             shell.key(&escape);
             assert_eq!(
                 asked(&shell),
                 vec![Invocation::new(OVERLAYS, "close-surface").with("part", "quick-settings")]
+            );
+        }
+
+        phase escape_closes_the_window_menu_through_the_one_close_action;
+        {
+            // A menu of the stack is cited by the reading the view draws from, so Escape must
+            // reach the close action: a claim that closed it itself would leave the reading up.
+            let overlays = Overlays::new();
+            overlays.open(Part::WindowMenu, None);
+            let escape = key(keysyms::Escape, None, KeyModifiers::default());
+            let mut shell = over(ShellKeys::new(overlays));
+            assert_eq!(shell.claim_key(&escape, false, false), KeyClaim::Take);
+            assert!(
+                shell.keys.overlays.is_open(Part::WindowMenu),
+                "the claim leaves the surface up for the answer to close"
+            );
+            shell.key(&escape);
+            assert_eq!(
+                asked(&shell),
+                vec![Invocation::new(OVERLAYS, "close-surface").with("part", "window-menu")]
             );
         }
 
