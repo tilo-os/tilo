@@ -2141,8 +2141,7 @@ fn an_edit_reports_the_text_and_no_choice() {
     use crate::testing::dispatch;
 
     let queue = crate::Intents::default();
-    let mut ac = Autocomplete::new().with_id("search");
-    ac.on_edit(
+    let mut ac = Autocomplete::new().with_id("search").on_edit(
         Bound::default(),
         Event::View(Intent::new(&queue, "search", "accept")),
     );
