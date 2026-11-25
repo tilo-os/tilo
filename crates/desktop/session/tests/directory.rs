@@ -1639,8 +1639,11 @@ fn wait_until_the_roster_holds(
     let mut roster = Vec::new();
     crate::common::until(session, what, |session| {
         roster = session
-            .roster(workspace)
-            .expect("the workspace's roster is known here");
+            .roster_devices(workspace)
+            .expect("the workspace's roster is known here")
+            .iter()
+            .map(publisher_key)
+            .collect();
         roster.len() == devices
     });
     roster
@@ -1716,7 +1719,12 @@ fn page_publisher(lounge: &Lounge) -> String {
 
 /// The publisher a device's session is known by.
 fn publisher_of(cert: &tilo_user_identity::DeviceCert) -> String {
-    iroh::EndpointId::from_bytes(&cert.device_public_key)
+    publisher_key(&cert.device_public_key)
+}
+
+/// The publisher a device key is known by.
+fn publisher_key(device: &[u8; 32]) -> String {
+    iroh::EndpointId::from_bytes(device)
         .expect("a device key is a publisher")
         .to_string()
 }

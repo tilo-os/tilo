@@ -104,6 +104,7 @@ mod telling;
 mod vault;
 
 use super::authority::WorkspaceOp;
+use super::resources::place;
 use super::weak::WeakWorkspaces;
 #[cfg(not(target_arch = "wasm32"))]
 use super::workspace_stores::Store;
@@ -1698,19 +1699,6 @@ impl Args {
         Role::parse(text)
             .filter(|role| role.assignable())
             .ok_or_else(|| ActionCallError::invalid_request(format!("no role `{text}`")))
-    }
-}
-
-/// A pending invitation, as listing invitations reports it.
-/// The one place a person holds in the workspace, or an invitation gives: an owner is an
-/// administrator and holds a role beneath, and is named by the highest of them alone.
-fn place(owner: bool, administrator: bool, role: Option<&str>) -> Option<&str> {
-    if owner {
-        Some("owner")
-    } else if administrator {
-        Some("administrator")
-    } else {
-        role
     }
 }
 
@@ -3441,32 +3429,16 @@ impl Workspaces {
         rows
     }
 
-    /// The people in `workspace`, one row each: who they are, their role,
-    /// and whether they own or administer it.
+    /// The people in `workspace`, one row each, as the members' resource's one builder lists
+    /// them ([`crate::workspaces::resources::member_rows`]).
     pub(super) async fn members(&self, workspace: &str) -> Result<Vec<Value>, CollaborationError> {
+        let host = self
+            .own()
+            .map(|_| hex::encode(self.inner.host.cert.user_public_key));
         let governed = self.workspace(workspace).await?;
         let governed = governed.lock().await;
-        // The workspace's governance names its one owner, on every device.
-        let owner = governed.peer().owner();
-        let owns = |root: [u8; 32]| root == owner;
-        let people = self.people(&governed);
-        drop(governed);
-        Ok(people
-            .members
-            .iter()
-            .filter(|member| !member.removed)
-            .map(|member| {
-                let owner = member.root().is_some_and(owns);
-                json!({
-                    "member": member.id,
-                    "name": (!member.name.is_empty()).then_some(&member.name),
-                    "role": member.role.map(Role::key),
-                    "owner": owner,
-                    "administrator": member.administrator,
-                    "place": place(owner, member.administrator, member.role.map(Role::key)),
-                })
-            })
-            .collect())
+        crate::workspaces::resources::member_rows(&governed.peer(), host.as_deref())
+            .map_err(CollaborationError::new)
     }
 
     /// An invitation, answered with the link that hands it over.

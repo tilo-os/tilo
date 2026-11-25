@@ -1742,6 +1742,47 @@ fn read_from(
     Ok(answer)
 }
 
+/// The one place a person holds in the workspace, an owner over an administrator and a role it
+/// gives beneath them.
+pub(super) fn place(owner: bool, administrator: bool, role: Option<&str>) -> Option<&str> {
+    if owner {
+        Some("owner")
+    } else if administrator {
+        Some("administrator")
+    } else {
+        role
+    }
+}
+
+/// The workspace's members as its governance lists them, one row each: their actor, what it calls
+/// them, their role, and whether they own or administer it. `without` is the one person a listing
+/// leaves out where this host runs workspaces of people's own and is no person of theirs.
+pub(super) fn member_rows(
+    peer: &tilo_peer_state::StatePeer,
+    without: Option<&str>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let owner = peer.owner();
+    let list = peer.governance().governed_members(tilo_clock::wall())?;
+    Ok(list
+        .members
+        .iter()
+        .filter(|member| !member.removed)
+        .filter(|member| member.id.person_id() != without)
+        .map(|member| {
+            let owns = member.root().is_some_and(|root| root == owner);
+            let role = member.role.map(tilo_peer_state::join::Role::key);
+            serde_json::json!({
+                "member": member.id,
+                "name": (!member.name.is_empty()).then_some(&member.name),
+                "role": role,
+                "owner": owns,
+                "administrator": member.administrator,
+                "place": place(owns, member.administrator, role),
+            })
+        })
+        .collect())
+}
+
 /// The workspace's members' resource as its governance has them: its owner and its members,
 /// none who are blocked (they hold nothing), each as the actor a view reads them as.
 fn workspace_members(peer: &tilo_peer_state::StatePeer) -> Result<serde_json::Value, String> {

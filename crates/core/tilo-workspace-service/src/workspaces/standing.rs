@@ -48,16 +48,6 @@ pub fn reading(
         .filter(|device| admitted.contains(*device))
         .copied()
         .collect();
-    let roster = roster_devices
-        .iter()
-        .filter_map(|device| {
-            tilo_failure::ignored!(
-                "a key no endpoint can have is no device the roster names",
-                iroh::EndpointId::from_bytes(device).ok()
-            )
-        })
-        .map(|device| device.to_string())
-        .collect();
     let holders = holders(peer);
     let people = members.members.clone();
     let alone = people
@@ -85,7 +75,6 @@ pub fn reading(
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty()),
         owner,
-        roster,
         roster_devices,
         people,
         members,

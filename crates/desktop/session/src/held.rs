@@ -55,20 +55,19 @@ impl Session {
             .people(workspace)
     }
 
-    /// The devices `workspace` admits, by the publisher each of their
-    /// sessions is known by: everyone whose windows this computer shares with
-    /// the workspace sees and is seen, and no one else, each until the
-    /// certificate the workspace holds of it expires. A device the workspace
-    /// removed leaves the roster.
+    /// The devices `workspace` admits, by key: everyone whose windows this
+    /// computer shares with the workspace sees and is seen, and no one else,
+    /// each until the certificate the workspace holds of it expires. A device
+    /// the workspace removed leaves the roster.
     ///
     /// # Errors
     /// The workspace is not held here, or its governance cannot be read.
-    pub fn roster(&self, workspace: &str) -> Result<Vec<String>, String> {
+    pub fn roster_devices(&self, workspace: &str) -> Result<Vec<[u8; 32]>, String> {
         self.shared
             .view
             .as_ref()
             .ok_or_else(|| "this session holds no workspaces".to_owned())?
-            .roster(workspace)
+            .roster_devices(workspace)
     }
 
     /// What a held workspace has of the app `app`'s document `record`, as

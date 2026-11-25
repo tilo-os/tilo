@@ -201,8 +201,6 @@ pub struct WorkspaceReading {
     pub name: Option<String>,
     /// Who governs it, as the person id its membership names.
     pub owner: Option<String>,
-    /// Its members' person ids.
-    pub roster: Vec<String>,
     /// The devices its roster admits, by key.
     pub roster_devices: Vec<[u8; 32]>,
     pub people: Vec<Member>,

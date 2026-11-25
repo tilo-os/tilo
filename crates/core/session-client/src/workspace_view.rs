@@ -297,12 +297,6 @@ impl WorkspaceView {
 
     /// # Errors
     /// `workspace` names no workspace this device holds.
-    pub fn roster(&self, workspace: &str) -> Result<Vec<String>, String> {
-        self.with_named(workspace, |reading| reading.roster.clone())
-    }
-
-    /// # Errors
-    /// `workspace` names no workspace this device holds.
     pub fn roster_devices(&self, workspace: &str) -> Result<Vec<[u8; 32]>, String> {
         self.with_named(workspace, |reading| reading.roster_devices.clone())
     }
