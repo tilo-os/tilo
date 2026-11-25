@@ -17,8 +17,9 @@ tilo_test_env::scenario! {
             let mut fixture = ActionFixture::broker();
             let revision = capture_bound_directory(&mut fixture);
             assert_eq!(capture_bound_directory(&mut fixture), revision);
-            // The alias the window published under, and the app's own id the
-            // directory offers the same resource at.
+            // The alias the window published under, which the directory
+            // offers the resource at: the other component publishes the same
+            // own id.
             let alias = fixture
                 .app
                 .actions
@@ -173,12 +174,13 @@ tilo_test_env::scenario! {
         assert!(!each.is_empty(), "the fixture discloses a probe explicitly");
         assert_eq!(batched, each);
         capture_bound_directory(&mut fixture);
-        let logical = fixture
+        // Both components publish `bound:probe`, which then names neither:
+        // the directory offers each at the alias it is published under.
+        let alias = fixture
             .app
             .actions
             .bound_publication
             .alias(&fixture.bindings[1], "bound:probe")
-            .map(|alias| tilo_actions::selection::logical_resource_id(&alias).into_owned())
             .unwrap();
         let snapshot = fixture
             .app
@@ -186,10 +188,11 @@ tilo_test_env::scenario! {
             .action_directory_snapshot
             .clone()
             .unwrap();
+        assert!(snapshot.roots.iter().all(|row| row.resource != "bound:probe"));
         let row = snapshot
             .roots
             .iter()
-            .find(|row| row.resource == logical && row.action.is_none())
+            .find(|row| row.resource == alias && row.action.is_none())
             .unwrap();
         assert_eq!(
             row.visibility

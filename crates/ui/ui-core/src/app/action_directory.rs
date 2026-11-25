@@ -108,7 +108,7 @@ impl App {
                 // and so does another read of the record. An explicit
                 // disclosure action still takes precedence.
                 .min_by_key(|action| action.contract.disclosure_rank())
-                .map(|action| App::directory_descriptor(resource, action))
+                .map(|action| App::directory_descriptor(resource, action, resource.id.as_str()))
                 .or_else(|| {
                     resource
                         .children
@@ -120,7 +120,7 @@ impl App {
         let visibility = visibility(resource, explicit.as_ref())?;
         Some(runtime_collab::ActionDirectoryRow {
             parent_resource: parent_resource.to_owned(),
-            resource: resource.domain_name().to_owned(),
+            resource: self.directory_name(resource).to_owned(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             presentation: resource
@@ -139,7 +139,27 @@ impl App {
         })
     }
 
+    /// Which own ids more than one component publishes ([`Self::directory_name`]) is learnt as the
+    /// window publishes its components. A window asked for its directory before it published
+    /// anything reads what each component publishes first, so a page names what it lists as every
+    /// later page does.
+    fn learn_shared_ids(&mut self) {
+        if self.actions.action_directory_snapshot.is_none()
+            && self.actions.last_published_actions.is_none()
+        {
+            let _ = self.publication_resources();
+        }
+    }
+
+    /// The name the directory offers `resource` at: its own id, unless more than one component of
+    /// this window publishes that id, which then names none of them and each is offered at the
+    /// alias it is published under, as the snapshot names it.
+    fn directory_name<'r>(&self, resource: &'r tilo_actions::ResourceSpec) -> &'r str {
+        directory_name(&self.actions.bound_publication, resource)
+    }
+
     fn directory_action_row(
+        &self,
         resource: &tilo_actions::ResourceSpec,
         action_id: &str,
     ) -> Option<runtime_collab::ActionDirectoryRow> {
@@ -147,11 +167,13 @@ impl App {
             .actions
             .iter()
             .find(|action| action.id == action_id)?;
-        let descriptor = Self::directory_descriptor(resource, action);
-        let exported = ::collaboration::action_directory::exported_directory_action(&descriptor);
+        let name = self.directory_name(resource);
+        let descriptor = Self::directory_descriptor(resource, action, name);
+        let exported =
+            ::collaboration::action_directory::exported_directory_action(&descriptor, name);
         Some(runtime_collab::ActionDirectoryRow {
-            parent_resource: resource.domain_name().to_owned(),
-            resource: resource.domain_name().to_owned(),
+            parent_resource: name.to_owned(),
+            resource: name.to_owned(),
             resource_kind: exported.resource_kind.clone(),
             resource_label: exported.resource_label.clone(),
             presentation: None,
@@ -216,7 +238,7 @@ impl App {
                 .iter()
                 .filter(|resource| {
                     ::collaboration::action_directory::is_named(
-                        resource.domain_name(),
+                        self.directory_name(resource),
                         &resource.kind,
                         &resource.label,
                         name,
@@ -226,17 +248,18 @@ impl App {
                 .collect()
         } else {
             fn find<'a>(
+                publication: &crate::bound_dispatch::BoundPublication,
                 resources: &'a [tilo_actions::ResourceSpec],
                 id: &str,
             ) -> Option<&'a tilo_actions::ResourceSpec> {
                 resources.iter().find_map(|resource| {
-                    (resource.domain_name() == id)
+                    (directory_name(publication, resource) == id)
                         .then_some(resource)
-                        .or_else(|| find(&resource.children, id))
+                        .or_else(|| find(publication, &resource.children, id))
                 })
             }
             let published = self.publication_resources();
-            let children = match find(&published, parent) {
+            let children = match find(&self.actions.bound_publication, &published, parent) {
                 Some(resource) => resource.children.clone(),
                 None => self
                     .resolve_publication_resource(parent, "")
@@ -247,7 +270,7 @@ impl App {
                 .iter()
                 .filter(|child| {
                     ::collaboration::action_directory::is_named(
-                        child.domain_name(),
+                        self.directory_name(child),
                         &child.kind,
                         &child.label,
                         name,
@@ -288,6 +311,7 @@ impl App {
         query: runtime_collab::ActionDirectoryQuery,
         revision: String,
     ) -> runtime_collab::ActionDirectoryPage {
+        self.learn_shared_ids();
         if !query.resource_name.is_empty() {
             return self.action_directory_named(&query, revision);
         }
@@ -438,7 +462,7 @@ impl App {
                     let before_cursor = provider_cursor.clone();
                     if let Some(resource) = page.resources.first()
                         && !self.actions.action_directory_snapshot.as_ref().is_some_and(
-                            |snapshot| snapshot.nodes.contains_key(resource.domain_name()),
+                            |snapshot| snapshot.nodes.contains_key(self.directory_name(resource)),
                         )
                         && let Some(row) = self.directory_resource_row(resource, "", max_depth > 0)
                     {
@@ -566,7 +590,7 @@ impl App {
                     } else {
                         parent
                             .as_ref()
-                            .and_then(|resource| Self::directory_action_row(resource, action))
+                            .and_then(|resource| self.directory_action_row(resource, action))
                     }
                 } else {
                     let resource = &direct[provider_offset - parent_actions.len()];
@@ -574,7 +598,9 @@ impl App {
                         .actions
                         .action_directory_snapshot
                         .as_ref()
-                        .is_some_and(|snapshot| snapshot.nodes.contains_key(resource.domain_name()))
+                        .is_some_and(|snapshot| {
+                            snapshot.nodes.contains_key(self.directory_name(resource))
+                        })
                     {
                         None
                     } else {
@@ -698,7 +724,7 @@ impl App {
                 {
                     continue;
                 }
-                let Some(row) = Self::directory_action_row(&resource, &address.action) else {
+                let Some(row) = self.directory_action_row(&resource, &address.action) else {
                     continue;
                 };
                 let before = estimated_bytes;
@@ -744,7 +770,7 @@ impl App {
                 if rows.len() >= max_results {
                     break;
                 }
-                if let Some(row) = Self::directory_action_row(resource, action) {
+                if let Some(row) = self.directory_action_row(resource, action) {
                     add(row, &mut rows, &mut estimated_bytes);
                     if estimated_bytes > max_bytes {
                         rows.pop();
@@ -865,6 +891,7 @@ impl App {
         if !revision.is_empty() && revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
+        self.learn_shared_ids();
         let found = |row| runtime_collab::ActionDirectoryResolution::Found {
             row: Box::new(row),
             revision: Some(current.clone()),
@@ -884,7 +911,7 @@ impl App {
         let resource = self.resolve_publication_resource(resource_id, action_id);
         resource
             .as_ref()
-            .and_then(|resource| Self::directory_action_row(resource, action_id))
+            .and_then(|resource| self.directory_action_row(resource, action_id))
             .map_or(runtime_collab::ActionDirectoryResolution::NotFound, found)
     }
 
@@ -1003,5 +1030,19 @@ impl App {
                 }),
             }
         }
+    }
+}
+
+#[cfg(feature = "model")]
+/// [`App::directory_name`], for a walk that holds no `App`.
+fn directory_name<'r>(
+    publication: &crate::bound_dispatch::BoundPublication,
+    resource: &'r tilo_actions::ResourceSpec,
+) -> &'r str {
+    let name = resource.domain_name();
+    if name != resource.id.as_str() && publication.shared(name) {
+        resource.id.as_str()
+    } else {
+        name
     }
 }

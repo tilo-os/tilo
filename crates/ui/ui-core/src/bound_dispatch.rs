@@ -835,10 +835,11 @@ pub(crate) struct BoundPublication {
     host: uuid::Uuid,
     owners: RefCell<HashMap<uuid::Uuid, CallbackBinding>>,
     /// The alias each live component's resource is published under now, by
-    /// the resource's own id: a caller that names the app's id — its
-    /// directory, its palette, what the broker delivers — resolves it here
-    /// ([`Self::target`]).
-    aliases: RefCell<HashMap<String, (uuid::Uuid, String)>>,
+    /// the resource's own id and the component publishing it: a caller that
+    /// names the app's id — its directory, its palette, what the broker
+    /// delivers — resolves it here ([`Self::target`]) while one component
+    /// publishes it.
+    aliases: RefCell<HashMap<String, Vec<(uuid::Uuid, String)>>>,
     /// Bumped every time a component published a resource here: a host that could not reach a
     /// destination yet watches it and asks again when it moves, instead of asking again frame after
     /// frame.
@@ -866,7 +867,10 @@ impl BoundPublication {
         let mut owners = self.owners.borrow_mut();
         owners.retain(|_, binding| !binding.closing.get() && binding.lifetime.is_active());
         let mut aliases = self.aliases.borrow_mut();
-        aliases.retain(|_, (owner, _)| owners.contains_key(owner));
+        aliases.retain(|_, carriers| {
+            carriers.retain(|(owner, _)| owners.contains_key(owner));
+            !carriers.is_empty()
+        });
         if owners
             .get(&binding.lifetime_id)
             .is_some_and(|old| !old.same_component(binding))
@@ -891,7 +895,9 @@ impl BoundPublication {
         }
         let mut alias = prefix;
         alias.push_str(&hex::encode(resource));
-        aliases.insert(resource.to_owned(), (binding.lifetime_id, alias.clone()));
+        let carriers = aliases.entry(resource.to_owned()).or_default();
+        carriers.retain(|(owner, _)| *owner != binding.lifetime_id);
+        carriers.push((binding.lifetime_id, alias.clone()));
         owners.insert(binding.lifetime_id, binding.clone());
         self.published.set(self.published.get().wrapping_add(1));
         Ok(alias)
@@ -901,6 +907,30 @@ impl BoundPublication {
         address: &tilo_actions::ActionAddress,
     ) -> Result<Option<BoundActionTarget>, BoundActionError> {
         self.target_within(address, &mut HeldScope::default())
+    }
+
+    /// The live aliases resource `id` (the app's own id) is published under, one per component
+    /// publishing it.
+    fn live_aliases(&self, id: &str) -> Vec<String> {
+        let owners = self.owners.borrow();
+        self.aliases
+            .borrow()
+            .get(id)
+            .into_iter()
+            .flatten()
+            .filter(|(owner, _)| {
+                owners
+                    .get(owner)
+                    .is_some_and(|binding| !binding.closing.get() && binding.lifetime.is_active())
+            })
+            .map(|(_, alias)| alias.clone())
+            .collect()
+    }
+
+    /// Whether more than one live component publishes resource `id` (the app's own id): the
+    /// id then names none of them, and each is addressed by its alias.
+    pub(crate) fn shared(&self, id: &str) -> bool {
+        self.live_aliases(id).len() > 1
     }
 
     /// [`Self::target`] within a walk that resolves many addresses of one surface: the scope
@@ -914,20 +944,17 @@ impl BoundPublication {
         // published under a transport alias: the directory offers it that
         // way, and so does what the broker delivers. Resolve it through the
         // identity the publication recorded to the alias carrying it now.
+        // An id more than one component publishes names none of them.
         let recorded = if address.resource.starts_with(PUBLICATION_PREFIX) {
             None
         } else {
-            let owners = self.owners.borrow();
-            let live = |owner: &uuid::Uuid| {
-                owners
-                    .get(owner)
-                    .is_some_and(|binding| !binding.closing.get() && binding.lifetime.is_active())
-            };
-            self.aliases
-                .borrow()
-                .get(&address.resource)
-                .filter(|(owner, _)| live(owner))
-                .map(|(_, alias)| alias.clone())
+            let mut aliases = self.live_aliases(&address.resource);
+            if aliases.len() > 1 {
+                return Err(BoundActionError::AmbiguousTarget {
+                    address: address.clone(),
+                });
+            }
+            aliases.pop()
         };
         let resource = recorded.as_deref().unwrap_or(address.resource.as_str());
         if !resource.starts_with(PUBLICATION_PREFIX) {

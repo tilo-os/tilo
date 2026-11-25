@@ -1850,15 +1850,17 @@ impl App {
     }
 
     #[cfg(feature = "model")]
+    /// The descriptor of `action` of `resource`, which the directory names `name`.
     fn directory_descriptor(
         resource: &tilo_actions::ResourceSpec,
         action: &tilo_actions::ActionSpec,
+        name: &str,
     ) -> tilo_actions::ActionDescriptor {
         tilo_actions::ActionDescriptor {
             did: action.did.clone(),
             state: action.state.clone(),
             semantic_identity: resource.semantic_identity.clone(),
-            address: tilo_actions::ActionAddress::new(resource.domain_name(), &action.id),
+            address: tilo_actions::ActionAddress::new(name, &action.id),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             action_label: action.label.clone(),

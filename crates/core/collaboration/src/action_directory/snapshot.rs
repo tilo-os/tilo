@@ -2,7 +2,7 @@
 //! It never retains `ResourceSpec`/`ActionSpec` values or executable callbacks.
 use super::effective;
 use runtime_collab::ActionDirectoryRow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tilo_actions::{ActionAddress, ActionDescriptor, OperationKind, ResourceSpec};
 
 /// One resource's directory level: its actions' rows, then its children's.
@@ -45,27 +45,81 @@ impl PartialEq for ActionDirectorySnapshot {
 }
 impl Eq for ActionDirectorySnapshot {}
 
-/// The descriptor a directory row carries. Directory pages have never
-/// carried a resource view: the broker proves a view's mount and range
-/// bindings against the actions on the same page, which a bounded page
-/// cannot promise, so views reach the shell through the published
-/// surface instead. The row names the resource by its own id, not the
-/// transport alias a window published it under, so a caller addresses what
-/// it finds as the app and the broker do.
+/// The descriptor a directory row carries for an action of the resource the
+/// directory names `resource`: the resource's own id, or its alias where that
+/// id is shared. Directory pages have never carried a resource view: the
+/// broker proves a view's mount and range bindings against the actions on the
+/// same page, which a bounded page cannot promise, so views reach the shell
+/// through the published surface instead.
 #[must_use]
-pub fn exported_directory_action(descriptor: &ActionDescriptor) -> runtime_collab::ExportedAction {
+pub fn exported_directory_action(
+    descriptor: &ActionDescriptor,
+    resource: &str,
+) -> runtime_collab::ExportedAction {
     let mut exported = runtime_collab::ExportedAction::from(descriptor);
     exported.resource.clear();
-    exported.resource.push_str(descriptor.domain_resource());
+    exported.resource.push_str(resource);
     exported.view = None;
     exported
+}
+
+/// The own ids more than one resource of `resources` carries, at any depth: a
+/// window that shows two components publishing the same resource id (two
+/// views of one record, or two records of the same name) publishes each under
+/// its own transport alias, and the own id names neither of them.
+#[must_use]
+fn shared_names(resources: &[ResourceSpec]) -> HashSet<String> {
+    fn visit<'a>(
+        resources: &'a [ResourceSpec],
+        seen: &mut HashMap<&'a str, &'a str>,
+        shared: &mut HashSet<String>,
+    ) {
+        for resource in resources {
+            let name = resource.domain_name();
+            match seen.get(name) {
+                Some(id) if *id != resource.id.as_str() => {
+                    shared.insert(name.to_owned());
+                }
+                Some(_) => {}
+                None => {
+                    seen.insert(name, resource.id.as_str());
+                }
+            }
+            visit(&resource.children, seen, shared);
+        }
+    }
+    let mut shared = HashSet::new();
+    visit(resources, &mut HashMap::new(), &mut shared);
+    shared
+}
+
+/// The name a directory offers `resource` at: its own id, not the transport
+/// alias a window published it under, so a caller addresses what it finds as
+/// the app and the broker do; but the alias where another resource of the
+/// same publication carries the same own id (`shared`, [`shared_names`]),
+/// since the own id then names more than one, and the broker resolves it to
+/// none of them.
+#[must_use]
+fn directory_name<'r>(shared: &HashSet<String>, resource: &'r ResourceSpec) -> &'r str {
+    let name = resource.domain_name();
+    if shared.contains(name) {
+        resource.id.as_str()
+    } else {
+        name
+    }
 }
 
 struct Builder<'a, F> {
     effective: effective::Builder,
     snapshot: ActionDirectorySnapshot,
     descriptors: &'a [ActionDescriptor],
+    /// Each descriptor by the address it was published at.
     by_address: HashMap<ActionAddress, usize>,
+    /// Each descriptor by its resource's own id: what an explicit
+    /// disclosure names, one of several where that id is shared.
+    by_own_id: HashMap<ActionAddress, Vec<usize>>,
+    /// [`shared_names`] of the publication.
+    shared: HashSet<String>,
     offset: usize,
     visibility: F,
 }
@@ -77,13 +131,16 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
         depth: usize,
     ) -> (Vec<ActionDirectoryRow>, Option<usize>) {
         self.effective.resource(resource);
-        let name = resource.domain_name();
+        let name = directory_name(&self.shared, resource);
         let start = self.offset;
         let mut actions = Vec::new();
         let mut first_view: Option<usize> = None;
         for action in &resource.actions {
             let address = ActionAddress::new(name, &action.id);
-            if let Some(index) = self.by_address.get(&address).copied()
+            if let Some(index) = self
+                .by_address
+                .get(&ActionAddress::new(resource.id.as_str(), &action.id))
+                .copied()
                 && let Some(descriptor) = self.descriptors.get(index)
             {
                 if descriptor.kind == OperationKind::View
@@ -98,10 +155,10 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
                     first_view = Some(index);
                 }
                 self.effective.action(name, action);
-                let exported = exported_directory_action(descriptor);
+                let exported = exported_directory_action(descriptor, name);
                 let row = ActionDirectoryRow {
                     parent_resource: name.to_owned(),
-                    resource: descriptor.domain_resource().to_owned(),
+                    resource: name.to_owned(),
                     resource_kind: descriptor.resource_kind.clone(),
                     resource_label: descriptor.resource_label.clone(),
                     presentation: resource
@@ -131,11 +188,14 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
         }
         let explicit = (self.visibility)(resource);
         let visible = match explicit {
-            Some(address) => self
-                .by_address
-                .get(&address)
-                .copied()
-                .filter(|index| *index >= start && *index < self.offset),
+            // The disclosure names the resource by its own id: the one action of
+            // this subtree it names.
+            Some(address) => self.by_own_id.get(&address).and_then(|indices| {
+                indices
+                    .iter()
+                    .copied()
+                    .find(|index| *index >= start && *index < self.offset)
+            }),
             None => first_view,
         };
         let exposed =
@@ -297,16 +357,22 @@ impl ActionDirectorySnapshot {
             by_address: descriptors
                 .iter()
                 .enumerate()
-                .map(|(index, descriptor)| {
-                    (
-                        ActionAddress::new(
+                .map(|(index, descriptor)| (descriptor.address.clone(), index))
+                .collect(),
+            by_own_id: descriptors.iter().enumerate().fold(
+                HashMap::new(),
+                |mut by_own_id: HashMap<ActionAddress, Vec<usize>>, (index, descriptor)| {
+                    by_own_id
+                        .entry(ActionAddress::new(
                             descriptor.domain_resource(),
                             &descriptor.address.action,
-                        ),
-                        index,
-                    )
-                })
-                .collect(),
+                        ))
+                        .or_default()
+                        .push(index);
+                    by_own_id
+                },
+            ),
+            shared: shared_names(resources),
             offset: 0,
             visibility,
         };
