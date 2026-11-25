@@ -403,7 +403,7 @@ impl Workspaces {
                     id: id.to_string(),
                     title: entry.title.clone(),
                     username: entry.username.clone(),
-                    places: entry.origins.clone(),
+                    places: entry.origins.iter().cloned().collect(),
                 })
             })
             .collect();
