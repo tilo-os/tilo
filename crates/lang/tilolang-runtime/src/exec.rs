@@ -3652,7 +3652,8 @@ fn target_of(
         .iter()
         .find(|declared| declared.id == reference.target.ty)?;
     Some(crate::authority::ActionTarget {
-        resource: format!("tl:{}:{}", meta.app, reference.target.id_string()),
+        document: format!("tl:{}:{}", meta.app, reference.target.doc),
+        item: reference.target.item.clone(),
         kind: format!("tl.{}.{}", meta.app, ty.name),
     })
 }

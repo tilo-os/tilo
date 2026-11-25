@@ -280,7 +280,15 @@ impl Authority for TiloAuthority {
             .app(action.app.to_string())
             .kind(kind);
         let node = match &action.target {
-            Some(target) => node.resource(target.resource.clone()),
+            // A resource stands where its own node stands: the document it is in, or, for an
+            // item of it, the item under the app's resources, which is the node a share of that
+            // item names. An action and the grant that lets a person write there read one node.
+            Some(target) => match &target.item {
+                Some(item) => node
+                    .any(tilo_action_policy::Level::Resource)
+                    .item(item.clone()),
+                None => node.resource(target.document.clone()),
+            },
             None if access.is_some()
                 && tilo_action_policy::roles::requires_document_keys(action.app.as_str(), "") =>
             {

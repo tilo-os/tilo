@@ -1371,6 +1371,91 @@ tilo_test_env::scenario! {
     }
 }
 
+/// A grant that lets a person write a channel is the grant that lets them post in it: the call
+/// and the change read one node, the channel's own.
+#[test]
+fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(
+        &ada,
+        "new_channel",
+        vec![all.clone(), Value::text("design")],
+    );
+    let random = call(&ada, "new_channel", vec![all, Value::text("random")]);
+    ada.commit();
+
+    // Ben is a Viewer of the workspace, granted edit on `design` alone: the grant a share of the
+    // channel writes, on the channel's own node.
+    let share = |channel: &tilolang_runtime::ResourceRef, access| {
+        let node = tilo_action_policy::TreePath::workspace("workspace")
+            .app(APP)
+            .kind("tl.so.tilo.chat.TextChannel")
+            .any(tilo_action_policy::Level::Resource)
+            .item(
+                channel
+                    .item
+                    .clone()
+                    .expect("a channel is an item of its document"),
+            );
+        let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace", "ada");
+        policy
+            .members
+            .insert("ben".to_owned(), tilo_action_policy::Role::Viewer);
+        policy.grants.extend(
+            tilo_action_policy::share::share_grants("workspace", "ada", "share-1", &node, access)
+                .unwrap(),
+        );
+        policy
+    };
+    let access: std::rc::Rc<std::cell::RefCell<Option<tilo_action_policy::MemberAccess>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (ben, _) = Replica::following("ben", ada.doc.fork(), &[(CHAT, &loaded[0].ids)], {
+        let access = std::rc::Rc::clone(&access);
+        move || access.borrow().clone()
+    });
+    let plan = |channel: &tilolang_runtime::ResourceRef| {
+        let meta = ben.host.package(APP).unwrap().meta;
+        let send = meta.actions.iter().find(|a| a.name == "send").unwrap();
+        let kind = tilolang_tilo::meta::MetaExt::kind_of(&meta, "TextChannel");
+        ben.host.plan(&tilolang_tilo::publish::PlanRequest {
+            app: APP,
+            kind: &kind,
+            action_id: &send.id,
+            resource: Some(&channel.id_string()),
+            args: serde_json::json!({ "body": "Hello there" })
+                .as_object()
+                .unwrap(),
+            caller: None,
+            from: None,
+        })
+    };
+
+    // Edit on the channel: ben posts there, and nowhere he holds nothing.
+    let design_ref = target(&design);
+    let random_ref = target(&random);
+    *access.borrow_mut() = Some(tilo_action_policy::MemberAccess::person(
+        share(&design_ref, tilo_action_policy::share::ShareAccess::Edit),
+        "ben",
+    ));
+    assert!(
+        plan(&design_ref).is_ok(),
+        "the grant that writes the channel posts in it: {:?}",
+        plan(&design_ref).err()
+    );
+    let elsewhere = plan(&random_ref).err().expect("no grant, no post");
+    assert!(elsewhere.contains("not allowed"), "{elsewhere}");
+
+    // Viewing it is no writing it: a share to read refuses the post.
+    *access.borrow_mut() = Some(tilo_action_policy::MemberAccess::person(
+        share(&design_ref, tilo_action_policy::share::ShareAccess::View),
+        "ben",
+    ));
+    let reading_only = plan(&design_ref).err().expect("viewing is not posting");
+    assert!(reading_only.contains("not allowed"), "{reading_only}");
+}
+
 /// How many ways the view offers to make a channel: the bar's primary, and any empty state's
 /// own call to action. The host reads the bar's off the action's declaration, and its header
 /// rules only ever drop a control that repeats one the content or the sidebar offers, so a view
