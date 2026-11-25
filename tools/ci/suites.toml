@@ -812,13 +812,9 @@ readers = ["crates/core/tilo-app-id/src/chat.rs"]
 
 [[cargo]]
 package = "tilo-runtime"
-# The host tests install the tilolang apps and the Rust apps from their sources, and the customer
-# workspace test holds the tilo.sh book to the pages it lists.
-inputs = ["apps/", "dist/macos/collection_local_runtime.py", "docs/tilo-sh/pages.toml"]
+# The app listing test builds Notes from its sources.
+inputs = ["apps/"]
 readers = [
-  "crates/core/tilo-runtime/tests/customer_workspaces.rs",
-  "crates/core/tilo-runtime/tests/host/apps.rs",
-  # The app listing test builds Notes from its sources.
   "crates/core/tilo-runtime/src/device/app_listing_tests.rs",
 ]
 
@@ -1615,17 +1611,12 @@ readers = ["crates/lang/tilolang-workspace/src/records.rs"]
 [[cargo]]
 package = "tilo-daemon"
 # The agents', triggers' and wakeups' tests run Chat, Tasks, Mail and Clocks from their sources, through the
-# language runtime the daemon links and mounts.
-inputs = [
-  "apps/tl/chat/",
-  "apps/tl/clocks/",
-  "apps/tl/contacts/",
-  "apps/tl/discussion/",
-  "apps/tl/mail/",
-  "apps/tl/notes/",
-  "apps/tl/tasks/",
-]
+# language runtime the daemon links and mounts; the host tests also install the Rust apps and hold the
+# tilo.sh book to the pages it lists.
+inputs = ["apps/", "dist/macos/collection_local_runtime.py", "docs/tilo-sh/pages.toml"]
 readers = [
+  "crates/os/daemon/tests/language/host/apps.rs",
+  "crates/os/daemon/tests/language/customer_workspaces.rs",
   "crates/os/daemon/tests/language/task_work_tests.rs",
   "crates/os/daemon/tests/language/triggers_tests.rs",
   "crates/os/daemon/tests/language/wakeups_tests.rs",

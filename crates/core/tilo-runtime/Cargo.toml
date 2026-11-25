@@ -241,8 +241,6 @@ package-store = { package = "tilo-package-store", path = "../package-store", fea
 [dev-dependencies]
 # The workspace's account list a cloud mount's sign-in is kept for.
 accounts = { package = "tilo-accounts", path = "../../integrations/accounts" }
-# A test takes the changes a placed view wrote into the layout the one way the workspace does.
-tilo-automerge.workspace = true
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # The action provider the workspace tests answer with.
 tilo-actions = { path = "../actions", features = ["test-support"] }
@@ -257,17 +255,12 @@ ed25519-dalek.workspace = true
 registry-types = { package = "tilo-registry-types", path = "../registry-types" }
 # The cluster of a person's own records, which their store's key is.
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }
-# Reads what the API answers a test's key, whole or as a stream of events.
-http-body-util = "0.1.3"
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # The Thunderbird profile a migration test's home holds.
 tilo-migrate = { path = "../../import/migrate", features = ["fixture"] }
 # Builds the tilolang apps a test's device has installed, and the runtime bundles they run on.
 tilolang-cli = { path = "../../lang/tilolang-cli" }
-# The language runtime a test's in-process daemon mounts, as the `tilo-runtime` program mounts
-# the one it links: the built-in apps' records and the styles the store's packages declare.
-tilolang-records = { path = "../../../tools/tilolang-records" }
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 # A server on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../../tools/test-server" }

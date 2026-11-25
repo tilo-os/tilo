@@ -1255,7 +1255,7 @@ doc = false
 "tilo-server-client" = { path = "../../crates/core/tilo-server-client", default-features = false, features = ["default", "dial"] }
 "tilo-server-protocol" = { path = "../../crates/core/tilo-server-protocol", default-features = false, features = [] }
 "tilo-service" = { path = "../../crates/desktop/service", default-features = false, features = [] }
-"tilo-session" = { path = "../../crates/desktop/session", default-features = false, features = [] }
+"tilo-session" = { path = "../../crates/desktop/session", default-features = false, features = ["test-support"] }
 "tilo-session-actions" = { path = "../../crates/core/session-actions", default-features = false, features = [] }
 "tilo-session-client" = { path = "../../crates/core/session-client", default-features = false, features = ["default", "test-support", "toolkit"] }
 "tilo-session-core" = { path = "../../crates/desktop/session-core", default-features = false, features = [] }
@@ -1339,7 +1339,6 @@ doc = false
 "tilolang-mail" = { path = "../../crates/integrations/tilolang-mail", default-features = false, features = ["default", "engine", "test-support"] }
 "tilolang-music" = { path = "../../crates/integrations/tilolang-music", default-features = false, features = ["connector", "default", "live"] }
 "tilolang-process" = { path = "../../crates/lang/tilolang-process", default-features = false, features = ["app-launch", "test-support"] }
-"tilolang-records" = { path = "../../tools/tilolang-records", default-features = false, features = [] }
 "tilolang-runtime" = { path = "../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
 "tilolang-service" = { path = "../../crates/lang/tilolang-service", default-features = false, features = [] }
 "tilolang-tilo" = { path = "../../crates/lang/tilolang-tilo", default-features = false, features = ["test-support"] }

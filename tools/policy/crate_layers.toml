@@ -100,3 +100,8 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   package = "tilo-portal"
   why = "the desktop portal answers a device's permission questions from the grants a workspace keeps, naming the DeviceGrants a person's answer holds; it holds no engine state and acts only through published actions"
 
+  [[rule.allow]]
+  package = "tilo-daemon"
+  tests = true
+  why = "the daemon's tests are the person's other devices and their workspace's guests, each asking the daemon over the device link as a laptop does, signed by its own key; the client holds no workspace state and every change it writes is an action the daemon's host decides"
+

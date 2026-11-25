@@ -138,6 +138,38 @@ runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-c
 tilolang-calendar = { path = "../../integrations/tilolang-calendar", features = ["test-support"] }
 # The mail bridge the daemon runs, and the mail server a test keeps on loopback.
 tilolang-mail = { path = "../../integrations/tilolang-mail", features = ["test-support"] }
+# The tilolang packages a test's device installs, built from the tree's sources, and the
+# runtimes they run on.
+tilolang-cli = { path = "../../lang/tilolang-cli" }
+# Another of the person's devices, asking the daemon over the device link as their laptop does.
+tilo-peer-state = { path = "../../core/tilo-peer-state" }
+# A second computer's endpoint, reached through the relays this machine's devices use.
+tilo-endpoint-reachability = { path = "../../core/endpoint-reachability" }
+# The daemon's own log, handed the layers the harness writes.
+tilo-startup-metrics = { path = "../../core/tilo-startup-metrics" }
+# The MCP session a test's agent runs on the daemon, as `tilo mcp` serves its client.
+tilo-mcp = { path = "../../core/tilo-mcp", features = ["test-support"] }
+# A device's shell session, which the daemon's shell runs attach to.
+tilo-session-client = { path = "../../core/session-client" }
+# The desktop layout and its ownership, which the session's windows are read as.
+tilo-desktop-model = { path = "../../desktop/desktop-model" }
+# The Files record a test's device keeps, and the tree its writes are read back from.
+fs-protocol = { package = "tilo-fs-protocol", path = "../../core/fs-protocol" }
+# A migration's fixture profile, which the migration tests read.
+tilo-migrate = { path = "../../import/migrate", features = ["fixture"] }
+# The keys a moved device's secrets are sealed with, written as a device writes them.
+tilo-seal = { path = "../../core/tilo-seal" }
+# The content store's chunks, which a file's content is read back from.
+tilo-fs = { path = "../../core/fs" }
+launcher = { path = "../../core/launcher" }
+# ush's shell is Linux's, so the daemon's shell runs are driven where it builds.
+ush = { path = "../../vm/ush", features = ["quic"] }
+iroh.workspace = true
+automerge.workspace = true
+tilo-automerge.workspace = true
+getrandom.workspace = true
+http-body-util = "0.1.3"
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [lints]
 workspace = true

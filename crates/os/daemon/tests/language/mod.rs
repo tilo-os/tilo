@@ -1,6 +1,7 @@
-//! The workspace service with a language runtime mounted on it, as the daemon's program mounts
-//! the one it links: the agents and triggers that read and change the records of the built-in
-//! apps are driven here, and the packages those records are of compile from their sources.
+//! The language runtime the daemon's program mounts, driven as the program mounts it: the
+//! agents and triggers that read and change the records of the built-in apps, the packages those
+//! records are of compiled from their sources, and the daemon itself through its API, its
+//! dispatch and the device link, each test on a daemon of its own.
 
 mod app_records_tests;
 mod calendar_bridge_tests;
@@ -14,6 +15,73 @@ mod served_notices_tests;
 mod task_work_tests;
 mod triggers_tests;
 mod wakeups_tests;
+
+/// A daemon of its own, in a process of its own, with the language mounted as the program
+/// mounts the one it links.
+mod host;
+
+mod agent_fixture;
+mod agent_keys;
+mod agent_machine;
+mod agent_member;
+mod agent_models;
+mod agent_on_device;
+mod agent_presence;
+mod agent_scheduling;
+mod agent_terminal;
+mod agent_turns;
+mod agent_windows;
+mod api_admin;
+mod api_beside_import;
+mod api_hosted;
+mod api_key;
+mod api_model_asks;
+mod api_records;
+mod api_workspaces;
+mod app_views;
+mod chat;
+mod customer_workspaces;
+mod daemon_flows;
+mod desktop_page;
+mod device_key;
+mod device_writes;
+mod files_collab;
+mod files_content;
+mod files_paths;
+/// What the Files tests read of what a daemon keeps.
+mod files_support;
+mod files_views;
+/// A person who is not the device's own, admitted by an invitation and asking over the link.
+mod guests;
+mod hosted_agent_terminal;
+mod hosted_mail_accounts;
+mod hosted_terminal_fresh_tab;
+mod hosted_turns;
+mod hosted_web_call;
+mod import_rate;
+mod invocations;
+mod joining;
+mod keeping_pages;
+mod machine_secrets;
+mod migrate_engine;
+mod migrate_walk;
+mod migrate_window;
+mod nearby_send;
+mod provided;
+mod refresh_reads;
+mod search;
+mod shared_workspace;
+mod shell_link;
+// ush's shell is Linux's, so the daemon's shell runs are driven where it builds.
+#[cfg(target_os = "linux")]
+mod shell_runtime;
+#[cfg(target_os = "linux")]
+mod terminal_streams;
+mod throughput;
+mod tracker;
+mod workspace_list;
+mod workspace_members;
+mod workspace_records;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

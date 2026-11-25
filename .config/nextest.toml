@@ -249,19 +249,19 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-runtime) and binary(it) and (test(app_views::) or test(keeping_pages::) or test(chat::) or test(hosted_turns::))"
+filter = "package(tilo-daemon) and binary(it) and (test(language::app_views::) or test(language::keeping_pages::) or test(language::chat::) or test(language::hosted_turns::))"
 setup = "view-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-runtime) and binary(it) and (test(app_views::) or test(keeping_pages::) or test(chat::) or test(hosted_turns::))"
+filter = "package(tilo-daemon) and binary(it) and (test(language::app_views::) or test(language::keeping_pages::) or test(language::chat::) or test(language::hosted_turns::))"
 setup = "view-siblings"
 
 # The sizes the throughput test fills workspaces to, for that test alone: the same values the
 # family's run would give the job, kept out of the job's environment so they key no build.
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-runtime) and binary(it) and test(throughput::)"
+filter = "package(tilo-daemon) and binary(it) and test(language::throughput::)"
 setup = "throughput"
 
 # The native NTFS images the helper's integration tests read are generated once
@@ -335,7 +335,7 @@ success-output = "final"
 # only has to catch a run that stopped. Printed on a pass too, so the table
 # shows in every log.
 [[profile.default.overrides]]
-filter = 'package(tilo-runtime) and binary(it) and test(throughput::)'
+filter = 'package(tilo-daemon) and binary(it) and test(language::throughput::)'
 success-output = "final"
 slow-timeout = { period = "60s", terminate-after = 60 }
 

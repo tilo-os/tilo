@@ -27,7 +27,8 @@ tilo_automerge_isolate::test_worker!();
 
 /// The daemon a test reaches, with what the program mounts on it.
 mod host;
-/// The workspace service with a language runtime mounted, as the daemon's program mounts one.
+/// The daemon with the language runtime the program mounts: its records, agents and triggers,
+/// driven through its API, its dispatch and the device link.
 mod language;
 #[path = "runtime_daemon_process.rs"]
 mod runtime_daemon_process;

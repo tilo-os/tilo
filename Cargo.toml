@@ -190,7 +190,6 @@ members = [
     "tools/test-app-registry",
     "tools/test-document-app",
     "tools/test-http",
-    "tools/tilolang-records",
     "tools/test-server",
     "tools/layout-check",
     "crates/lang/tilo-app-builder",

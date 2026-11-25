@@ -156,7 +156,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
 # end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
-starts = { tilo-daemon = ["launcher:tilo-launcher=dev-overrides"], tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher=dev-overrides", "tilo-daemon:tilo-runtime=test-support,agents", "example-shared-checklist:example-shared-checklist", "poker:poker", "tilolang-process:tilolang-process@test=app-launch"], tilo-session-client = ["tilo-daemon:tilo-runtime=test-support,agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "poker:poker", "terminal:terminal"] }
+starts = { tilo-daemon = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "poker:poker", "terminal:terminal"], tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher=dev-overrides", "tilo-daemon:tilo-runtime=test-support,agents", "example-shared-checklist:example-shared-checklist", "poker:poker", "tilolang-process:tilolang-process@test=app-launch"], tilo-session-client = ["tilo-daemon:tilo-runtime=test-support,agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "poker:poker", "terminal:terminal"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -1769,7 +1769,7 @@ on = ["dispatch", "idle"]
 requires = ["arch=x86_64"]
 
 # A workspace taking records and files at the same speed however full, as one nextest run of
-# `tilo-runtime`'s `it` binary with `--run-ignored only`: the same binary, the same units and
+# `tilo-daemon`'s `it` binary with `--run-ignored only`: the same binary, the same units and
 # the same nextest path as `test-x86_64`'s build of that package, so the compiler cache serves its
 # compiles instead of resolving a `cargo nextest -p` command's own graph and compiling them again.
 # It is a family of its own because its tests are `#[ignore]`d, which the plain `test-x86_64` run
@@ -1784,13 +1784,13 @@ tool = "nextest"
 on = ["dispatch", "idle"]
 requires = ["arch=x86_64"]
 wrapper = ["bash", "tools/ci/nextest.sh"]
-args = ["--locked", "--profile", "ci", "--tests", "--run-ignored", "only", "-E", "test(=throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full) | test(=import_rate::an_import_lands_at_its_floor_while_the_person_works_beside_it) | test(=api_beside_import::an_import_into_another_app_never_slows_a_keys_listings)", "--test-threads", "1"]
+args = ["--locked", "--profile", "ci", "--tests", "--run-ignored", "only", "-E", "test(=language::throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full) | test(=language::import_rate::an_import_lands_at_its_floor_while_the_person_works_beside_it) | test(=language::api_beside_import::an_import_into_another_app_never_slows_a_keys_listings)", "--test-threads", "1"]
 unify = "workspace-unify"
-packages = ["tilo-runtime"]
+packages = ["tilo-daemon"]
 # Its tests start the workspace's apps as a person's daemon does: the launcher in its sandbox, and
 # the tilolang process the apps run in, built for the job as the `test` family builds them.
-isolation = { nested = ["tilo-runtime"] }
-starts = { tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "poker:poker", "terminal:terminal"] }
+isolation = { nested = ["tilo-daemon"] }
+starts = { tilo-daemon = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "poker:poker", "terminal:terminal"] }
 # The sizes it runs at are the ci profile's `throughput` setup step, not this family's environment:
 # there they would key every build script's and proc macro's cache entry by them.
 
