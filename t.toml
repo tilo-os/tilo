@@ -5993,7 +5993,6 @@ requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-dev/{arch}/**"]
 timeout_secs = 3600
-default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
