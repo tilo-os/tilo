@@ -154,7 +154,7 @@ impl ChangeLog {
         let mut versions: Vec<serde_json::Value> = Vec::new();
         let mut last_invocation: Option<String> = None;
         for (change, message, time) in named {
-            let Some(stamp) = collab_types::Stamp::of_message(message) else {
+            let Some(stamp) = crate::Stamp::of_message(message) else {
                 continue;
             };
             if stamp.verb.is_empty() {
