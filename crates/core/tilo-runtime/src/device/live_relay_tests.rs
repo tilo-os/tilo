@@ -269,3 +269,52 @@ tilo_test_env::scenario! {
         assert_eq!(name_of(&devices, [7; 32]), "");
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_relay_that_comes_back_is_asked_again_soon_and_the_devices_ask_it_one_after_another;
+
+    phase a_relay_that_was_missed_is_asked_again_ever_less_often_and_always;
+    // A workspace whose relay did not take this device in asks it again within a second, then
+    // ever less often, and never stops asking: the relay it waits for may come back at any time,
+    // and says nothing when it does.
+    {
+        assert_eq!(retry_schedule(1), RETRY_FIRST);
+        assert_eq!(retry_schedule(2), RETRY_FIRST * 2);
+        assert_eq!(retry_schedule(3), RETRY_FIRST * 4);
+        let waits: Vec<Duration> = (1..40).map(retry_schedule).collect();
+        assert!(waits.windows(2).all(|pair| pair[0] <= pair[1]), "{waits:?}");
+        assert_eq!(waits.last(), Some(&RETRY_LONGEST));
+        assert_eq!(retry_schedule(u32::MAX), RETRY_LONGEST);
+        assert!(RETRY_LONGEST < REREAD, "a relay that is away is asked more often than the reread");
+        let first_steps: Duration = (1..=4).map(retry_schedule).sum();
+        assert!(
+            first_steps <= Duration::from_secs(15),
+            "a relay back within a few seconds is rejoined within the first steps: {first_steps:?}"
+        );
+    }
+
+    phase devices_that_missed_a_relay_together_do_not_ask_it_again_together;
+    // The devices of a workspace that missed its relay in one moment do not ask it again in one
+    // moment: each takes up to a quarter off the schedule's wait, by its own key, and none waits
+    // longer than the schedule.
+    {
+        let workspace = WorkspaceId::new();
+        for missed in 1..=6 {
+            let schedule = retry_schedule(missed);
+            let waits: BTreeSet<Duration> = (0..64_u8)
+                .map(|device| retry_wait([device; 32], workspace, missed))
+                .collect();
+            assert!(
+                waits
+                    .iter()
+                    .all(|wait| *wait <= schedule && *wait >= schedule.saturating_sub(schedule / 4)),
+                "after {missed} misses every device waits within a quarter of {schedule:?}: {waits:?}"
+            );
+            assert!(
+                waits.len() > 56,
+                "sixty-four devices wait {} different times after {missed} misses",
+                waits.len()
+            );
+        }
+    }
+}
