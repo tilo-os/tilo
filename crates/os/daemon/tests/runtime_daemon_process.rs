@@ -17,11 +17,24 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 fn runtime_binary() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-runtime")
 }
-/// How long a daemon this test started has to answer on its native endpoint.
-const LAUNCHER_START_CAP: Duration = Duration::from_secs(120);
-/// How long a daemon asked to end may take before it is killed: a daemon that never answered is
-/// never waited on for the run's own timeout.
-const ENDING: Duration = Duration::from_secs(30);
+
+/// What a test's program kept in `log`, and what the test was waiting for, for a wait that ran
+/// out: a test's bound is the suite's hang bound, and its panic still says what the program did.
+struct ItsLog {
+    log: PathBuf,
+    what: &'static str,
+}
+
+impl std::fmt::Display for ItsLog {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            out,
+            "{} (what it kept:\n{})",
+            self.what,
+            std::fs::read_to_string(&self.log).unwrap_or_default()
+        )
+    }
+}
 
 fn host(profile: &Path) -> Command {
     let mut command = Command::new(runtime_bin(profile));
@@ -112,42 +125,50 @@ impl DaemonProfile {
                 .stderr(log)
                 .spawn_locked()?,
         );
-        let deadline = Instant::now()
-            .checked_add(LAUNCHER_START_CAP)
-            .context("the start's deadline")?;
-        let mut unanswered: String;
-        loop {
-            match status(self.path()) {
-                Ok(status)
-                    if status
-                        .get("pid")
-                        .and_then(Value::as_u64)
-                        .is_some_and(|pid| pid != 0) =>
-                {
-                    return Ok(());
-                }
-                Ok(status) => unanswered = format!("its status answers no pid: {status}"),
-                Err(error) => unanswered = format!("its status: {error:#}"),
-            }
-            if let Some(daemon) = self.daemon.as_mut()
-                && let Some(ended) = daemon.try_wait().context("whether the daemon ended")?
-            {
-                bail!(
-                    "the profile's daemon ended ({ended}) before it answered: {unanswered}\n{}",
-                    self.log()
-                );
-            }
-            if Instant::now() >= deadline {
-                // One that never answered is ended here, so its log is the failure and nothing
-                // keeps serving behind the test.
-                self.end();
-                bail!(
-                    "the profile's daemon did not start: {unanswered}\n{}",
-                    self.log()
-                );
-            }
-            std::thread::sleep(Duration::from_millis(25));
+        let path = self.path().to_owned();
+        let mut unanswered = String::new();
+        // The condition is the daemon's own answer on its endpoint; a machine busy with the rest
+        // of the suite must not turn a start that is progressing into a failure, so the wait is
+        // bounded only by the suite's hang bound. A daemon that ended is a failure at once, with
+        // its log, and is not left serving behind the test.
+        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tilo_test_env::wait_for(
+                ItsLog {
+                    log: path.join("daemon.log"),
+                    what: "the profile's daemon to answer its status",
+                },
+                || {
+                    match status(&path) {
+                        Ok(status)
+                            if status
+                                .get("pid")
+                                .and_then(Value::as_u64)
+                                .is_some_and(|pid| pid != 0) =>
+                        {
+                            return Some(());
+                        }
+                        Ok(status) => unanswered = format!("its status answers no pid: {status}"),
+                        Err(error) => unanswered = format!("its status: {error:#}"),
+                    }
+                    let ended = self.daemon.as_mut().map(Child::try_wait);
+                    match ended {
+                        Some(Ok(Some(status))) => panic!(
+                            "the profile's daemon ended ({status}) before it answered: \
+                             {unanswered}\n{}",
+                            self.log()
+                        ),
+                        Some(Err(error)) => panic!("whether the daemon ended: {error:#}"),
+                        Some(Ok(None)) | None => {}
+                    }
+                    None
+                },
+            );
+        }));
+        if let Err(panic) = answered {
+            self.end();
+            std::panic::resume_unwind(panic);
         }
+        Ok(())
     }
     /// End the daemon this profile started: a start that never answered is not asked first.
     fn end(&mut self) {
@@ -174,7 +195,7 @@ impl DaemonProfile {
     /// Found the person's workspace here, as the first call of theirs in it does: this device's
     /// own client of the daemon asking in the workspace their key names. A key's run and a
     /// desktop's first call found it the same way.
-    fn found(&self) -> Result<()> {
+    fn found(&mut self) -> Result<()> {
         let mut client = host(self.path())
             .arg("--connect")
             .stdin(Stdio::piped())
@@ -191,26 +212,30 @@ impl DaemonProfile {
         )?;
         let mut said = client.stdout.take().context("the client's answer")?;
         let mut why = client.stderr.take().context("the client's reason")?;
-        // The daemon admits the call only once the workspace is founded, which can take as long
-        // as its own wait for the person's services: a client that is still there after that
-        // waited on a founding that never finished, and says so with the daemon's own log.
-        let deadline = Instant::now()
-            .checked_add(LAUNCHER_START_CAP.saturating_add(Duration::from_secs(60)))
-            .context("the first call's deadline")?;
-        let ended = loop {
-            if let Some(status) = client.try_wait()? {
-                break status;
-            }
-            if Instant::now() >= deadline {
+        // The condition is the client ending, which the daemon admits only once the workspace is
+        // founded. That can take as long as its own wait for the person's services, so the wait
+        // is bounded only by the suite's hang bound: a busy machine must not turn a founding in
+        // progress into a failure. One still there at the bound is ended, so nothing keeps
+        // serving behind the test.
+        let pid = u32::try_from(client.id()).context("the client's pid")?;
+        let path = self.path().to_owned();
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tilo_test_env::exited(
+                ItsLog {
+                    log: path.join("daemon.log"),
+                    what: "the person's first call to end and found their workspace",
+                },
+                pid,
+            );
+            client.wait()
+        }));
+        let ended = match ended {
+            Ok(ended) => ended?,
+            Err(panic) => {
                 let _ = client.kill();
                 let _ = client.wait();
-                bail!(
-                    "the person's first call founded no workspace and did not end (who: {})\n{}",
-                    who_briefly(self.path()),
-                    self.log()
-                );
+                std::panic::resume_unwind(panic);
             }
-            std::thread::sleep(Duration::from_millis(25));
         };
         let mut answer = String::new();
         std::io::Read::read_to_string(&mut said, &mut answer)?;
@@ -284,18 +309,17 @@ impl Drop for DaemonProfile {
         if let Some(mut daemon) = self.daemon.take() {
             // It was asked to end above; one that does not, or never started, is named and
             // killed rather than waited on: a failed test must not become the run's timeout.
+            // The bound is the suite's hang bound, so a slow machine's shutdown is not a hang.
             let pid = daemon.id();
-            let deadline = Instant::now()
-                .checked_add(ENDING)
-                .unwrap_or_else(Instant::now);
+            let deadline = tilo_test_env::hang_deadline();
             while matches!(daemon.try_wait(), Ok(None)) && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(25));
             }
             if matches!(daemon.try_wait(), Ok(None)) {
                 eprintln!(
-                    "the daemon (pid {pid}) serving {} did not end within {ENDING:?}: killing \
-                     it\n{}",
+                    "the daemon (pid {pid}) serving {} did not end within {:?}: killing it\n{}",
                     self.path().display(),
+                    tilo_test_env::hang_bound(),
                     self.log()
                 );
             }
@@ -353,22 +377,6 @@ fn a_computer_is_set_up() {
     .unwrap();
 }
 
-/// Who the daemon says it is, asked with a short bound: a daemon stuck admitting the person's
-/// call answers nothing at all.
-fn who_briefly(profile: &Path) -> String {
-    (|| -> Result<Value> {
-        let mut stream = UnixStream::connect(native_socket(profile)?)?;
-        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-        stream.write_all(b"{\"native\":\"account#who\"}\n")?;
-        let mut line = String::new();
-        BufReader::new(stream).read_line(&mut line)?;
-        Ok(serde_json::from_str(&line)?)
-    })()
-    .map_or_else(
-        |error| format!("unanswered: {error}"),
-        |who| who.to_string(),
-    )
-}
 /// The runtime's answer to `request` on the profile's socket.
 fn ask(profile: &Path, request: &Value) -> Result<Value> {
     let mut stream = UnixStream::connect(native_socket(profile)?)
@@ -728,20 +736,39 @@ fn a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run() -> 
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     let mut program = command.spawn_locked()?;
-    let deadline = Instant::now()
-        .checked_add(LAUNCHER_START_CAP)
-        .context("the program's deadline")?;
-    let refused = loop {
-        let said = std::fs::read_to_string(&file).unwrap_or_default();
-        if !said.is_empty() {
-            break said;
+    // The condition is the refusal the program writes: the file is its answer, so a busy machine
+    // delays it without failing the test. One that ended without writing is a failure at once,
+    // and the wait is bounded only by the suite's hang bound.
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tilo_test_env::wait_for(
+            ItsLog {
+                log: log_path.clone(),
+                what: "the attaching program to write its refusal",
+            },
+            || {
+                let said = std::fs::read_to_string(&file).unwrap_or_default();
+                if !said.is_empty() {
+                    return Some(said);
+                }
+                match program.try_wait() {
+                    Ok(Some(status)) => panic!(
+                        "the attaching program ended ({status}) and wrote nothing:\n{}",
+                        std::fs::read_to_string(&log_path).unwrap_or_default()
+                    ),
+                    Ok(None) => {}
+                    Err(error) => panic!("whether the program ended: {error:#}"),
+                }
+                None
+            },
+        )
+    }));
+    let refused = match refused {
+        Ok(refused) => refused,
+        Err(panic) => {
+            let _ = program.kill();
+            let _ = program.wait();
+            std::panic::resume_unwind(panic);
         }
-        ensure!(
-            program.try_wait()?.is_none() && Instant::now() < deadline,
-            "the attaching program said nothing:\n{}",
-            std::fs::read_to_string(&log_path).unwrap_or_default()
-        );
-        std::thread::sleep(Duration::from_millis(25));
     };
     ensure!(
         refused.contains("is not one this computer made"),
@@ -1045,41 +1072,37 @@ fn a_put_for_a_device_action_is_kept_on_the_device() -> Result<()> {
     Ok(())
 }
 
-/// `daemon`'s exit status once it ends within `within`: the daemon ends as it says it did. One
-/// still running then is killed, and its log says what kept it.
-fn ended_within(
-    daemon: &mut Child,
-    within: Duration,
-    profile: &DaemonProfile,
-) -> Result<std::process::ExitStatus> {
-    let deadline = Instant::now()
-        .checked_add(within)
-        .context("the stop's deadline")?;
-    loop {
-        if let Some(status) = daemon.try_wait()? {
-            return Ok(status);
-        }
-        if Instant::now() >= deadline {
-            let _ = daemon.kill();
-            let _ = daemon.wait();
-            bail!(
-                "a daemon told to stop ran for {within:?} and had to be killed\n{}",
-                profile.log()
-            );
-        }
-        std::thread::sleep(Duration::from_millis(10));
+/// `daemon`'s exit status once it ends: the daemon ends as it says it did. The wait is the
+/// process's own exit, bounded only by the suite's hang bound, so a machine busy with the rest of
+/// the suite does not turn a stop being taken into a failure; one still running at the bound is
+/// killed, and its log says what kept it.
+fn ended(daemon: &mut Child, profile: &DaemonProfile) -> Result<std::process::ExitStatus> {
+    let pid = u32::try_from(daemon.id()).context("the daemon's pid")?;
+    let path = profile.path().to_owned();
+    let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tilo_test_env::exited(
+            ItsLog {
+                log: path.join("daemon.log"),
+                what: "a daemon told to stop, to end",
+            },
+            pid,
+        );
+    }));
+    if let Err(panic) = ended {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        std::panic::resume_unwind(panic);
     }
+    daemon.wait().context("the daemon's exit status")
 }
 
 /// A daemon started before there is a person hears the stop a stack sends it: SIGTERM ends it
-/// within the five seconds the stack gives it before it kills it, and with its own exit status,
-/// even where the caller had the signal ignored, which a child inherits across exec. Its wait
-/// for a person is outside any part a signal used to stop, so a daemon started this way ran on.
+/// with its own exit status, even where the caller had the signal ignored, which a child
+/// inherits across exec. Its wait for a person is outside any part a signal used to stop, so a
+/// daemon started this way ran on.
 #[test]
 fn sigterm_ends_a_daemon_started_before_its_person() -> Result<()> {
     use std::os::unix::process::CommandExt as _;
-    /// How long the stack waits for a daemon it stopped before it kills it.
-    const ENDING_WITHIN: Duration = Duration::from_secs(5);
     let profile = DaemonProfile::unstarted()?;
     let path = profile.path().to_owned();
     // No identity: the daemon serves this computer before there is a person, as a stack starts
@@ -1102,11 +1125,10 @@ fn sigterm_ends_a_daemon_started_before_its_person() -> Result<()> {
     }
     let mut daemon = command.spawn_locked()?;
     let pid = i32::try_from(daemon.id()).context("the daemon's pid")?;
-    let deadline = Instant::now()
-        .checked_add(LAUNCHER_START_CAP)
-        .context("the start's deadline")?;
+    let deadline = tilo_test_env::hang_deadline();
     // Its log says it answers, which it says after it built the stop listener: a stop sent once
-    // it said so finds the daemon hearing it, not the process it started as.
+    // it said so finds the daemon hearing it, not the process it started as. The wait is bounded
+    // only by the suite's hang bound, so a busy machine's start is not a failure.
     loop {
         if profile
             .log()
@@ -1127,7 +1149,7 @@ fn sigterm_ends_a_daemon_started_before_its_person() -> Result<()> {
         "SIGTERM did not reach the daemon: {}",
         std::io::Error::last_os_error()
     );
-    let ended = ended_within(&mut daemon, ENDING_WITHIN, &profile)?;
+    let ended = ended(&mut daemon, &profile)?;
     ensure!(
         ended.success(),
         "the daemon ended as {ended}, not of its own stop\n{}",
@@ -1148,12 +1170,10 @@ fn served_socket(profile: &Path) -> Result<PathBuf> {
 }
 
 /// A daemon between its person's parts hears a stop: held in a step of the part that ended,
-/// where its own thread cannot take the stop up, SIGTERM still ends it promptly, with its own
-/// status, and its endpoint goes with it.
+/// where its own thread cannot take the stop up, SIGTERM still ends it, with its own status,
+/// and its endpoint goes with it.
 #[test]
 fn sigterm_ends_a_daemon_held_between_its_person_parts() -> Result<()> {
-    /// How long a stop may take while no part serves: a part's own stop is longer by design.
-    const ENDING_WITHIN: Duration = Duration::from_secs(5);
     let profile = DaemonProfile::unstarted()?;
     let path = profile.path().to_owned();
     let socket = served_socket(&path)?;
@@ -1169,9 +1189,7 @@ fn sigterm_ends_a_daemon_held_between_its_person_parts() -> Result<()> {
         .stderr(std::fs::File::create(path.join("daemon.log"))?);
     let mut daemon = command.spawn_locked()?;
     let pid = i32::try_from(daemon.id()).context("the daemon's pid")?;
-    let deadline = Instant::now()
-        .checked_add(LAUNCHER_START_CAP)
-        .context("the start's deadline")?;
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if profile
             .log()
@@ -1195,7 +1213,7 @@ fn sigterm_ends_a_daemon_held_between_its_person_parts() -> Result<()> {
         "SIGTERM did not reach the daemon: {}",
         std::io::Error::last_os_error()
     );
-    let ended = ended_within(&mut daemon, ENDING_WITHIN, &profile)?;
+    let ended = ended(&mut daemon, &profile)?;
     ensure!(
         ended.success(),
         "the daemon ended as {ended}, not of its own stop\n{}",

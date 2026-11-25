@@ -101,11 +101,13 @@ async fn a_connected_mail_account_is_kept_where_the_bridge_reads_it() {
 fn the_app_shows_its_servers_mail_and_sends_one() {
     let server = served(ADA, PASSWORD);
     let mut rig = Rig::new(&server, ADA, PASSWORD);
-    rig.settle_until(|rig| rig.accounts().len() == 1);
+    rig.settle_until("her account", |rig| rig.accounts().len() == 1);
 
     // The person sees her account, standing well, and the mail her server holds.
     let account = rig.accounts().remove(0);
-    rig.settle_until(|rig| !rig.threads(&account).is_empty());
+    rig.settle_until("the mail her server holds", |rig| {
+        !rig.threads(&account).is_empty()
+    });
     assert_eq!(rig.text("Account", &account, "key"), ADA);
     assert_eq!(rig.text("Account", &account, "trouble"), "");
     let threads = rig.threads(&account);
@@ -133,7 +135,9 @@ fn the_app_shows_its_servers_mail_and_sends_one() {
     );
     let draft = rig.drafts().remove(0);
     rig.run("Draft", "send", Some(&draft), &[]);
-    rig.settle_until(|_| !server.sent().is_empty());
+    rig.settle_until("the message to leave through the server", |_| {
+        !server.sent().is_empty()
+    });
     let sent = server.sent();
     assert_eq!(sent.len(), 1, "one message left");
     let said = String::from_utf8_lossy(&sent[0]).to_string();
@@ -147,10 +151,12 @@ fn the_app_shows_its_servers_mail_and_sends_one() {
 fn a_mail_server_that_refuses_the_password_keeps_no_message() {
     let server = served(ADA, PASSWORD);
     let mut rig = Rig::new(&server, ADA, "not-what-the-server-knows");
-    rig.settle_until(|rig| rig.accounts().len() == 1);
+    rig.settle_until("her account", |rig| rig.accounts().len() == 1);
 
     let account = rig.accounts().remove(0);
-    rig.settle_until(|rig| !rig.text("Account", &account, "trouble").is_empty());
+    rig.settle_until("the refusal on the account", |rig| {
+        !rig.text("Account", &account, "trouble").is_empty()
+    });
     assert!(
         !rig.text("Account", &account, "trouble").is_empty(),
         "the refusal is said in the account's words"
