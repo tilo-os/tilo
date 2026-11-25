@@ -356,12 +356,18 @@ fn a_channels_menu_exports_its_messages_as_markdown_in_order() {
         ],
     );
     instance.update();
-    let (file, menu) = export(&mut instance, &mut far, &device, &target(&design));
+    let (file, menu) = export_format(
+        &mut instance,
+        &mut far,
+        &device,
+        &target(&design),
+        "Markdown",
+    );
     assert!(
         !menu
             .iter()
-            .any(|label| label.contains("Export") && label != "Export…"),
-        "Chat writes no export of its own beside the system's: {menu:?}"
+            .any(|label| label.contains("Export") && label != "Markdown"),
+        "Chat publishes its one format and keeps no export of its own beside it: {menu:?}"
     );
     assert_eq!(file.name, "design.md");
     assert_eq!(file.media, "text/markdown");

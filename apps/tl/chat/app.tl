@@ -1548,14 +1548,36 @@ action copy_text(m: Message) uses clipboard (icon: .copy, label: "Copy text") {
     clipboard.copy(m.body.text)
 }
 
-/// How a conversation exports, which the system's Export on its menu saves: every message in
-/// order, as Markdown, each under the name it shows with and the time it was written.
-fn export(conversation: TextChannel | Thread | Direct) -> Text {
+/// A conversation as a Markdown file, which the system's one Export… lists and saves where the
+/// person says: every message in order, each under the name it shows with and the time it was
+/// written.
+action export_markdown(conversation: TextChannel | Thread | Direct) -> File (
+    icon: .download,
+    export: "Markdown",
+) {
+    File.of_text("{conversation_name(conversation)}.md", transcript(conversation))
+}
+
+/// How a conversation reads as Markdown: every message in order, each under the name it shows
+/// with and the time it was written.
+fn transcript(conversation: TextChannel | Thread | Direct) -> Text {
     match conversation {
         ch: TextChannel => std.transcript_markdown("#{ch.name}", ch.messages.map(m -> entry(m))),
         t: Thread => std.transcript_markdown(t.name, t.messages.map(m -> entry(m))),
         d: Direct => std.transcript_markdown(d.name, d.messages.map(m -> entry(m))),
     }
+}
+
+/// What a conversation's exported file is called: its name, or the people a direct
+/// conversation's id names when it has none.
+fn conversation_name(conversation: TextChannel | Thread | Direct) -> Text {
+    let name = match conversation {
+        ch: TextChannel => ch.name,
+        t: Thread => t.name,
+        d: Direct => d.name,
+    }
+    let trimmed = name.trim()
+    if trimmed == "" { "conversation" } else { trimmed }
 }
 
 /// One message as an exported conversation says it.
@@ -2142,7 +2164,9 @@ view sidebar(all: Conversations) {
                                                                 }
                                                             }
                                                             on select: set(shown, ch.id())
-                                                                .then(open(ch))
+                                                                .then(
+                                                                    open(ch),
+                                                                )
                                                         }
                                                     }
                                                 }
@@ -2338,9 +2362,7 @@ view channel(c: TextChannel) {
             // began it.
             if not c.threads.is_empty() {
                 section(
-                    if c.threads.len() == 1 {
-                        "1 thread"
-                    } else { "{c.threads.len()} threads" },
+                    if c.threads.len() == 1 { "1 thread" } else { "{c.threads.len()} threads" },
                     collapsible: true,
                 ) {
                     for t in c.threads {

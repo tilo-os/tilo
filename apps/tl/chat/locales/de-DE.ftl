@@ -1192,3 +1192,9 @@ d-v4cscgro = Über die Person
 
 d-c2oflalz = Karte der Person
     .w-message = Nachricht
+
+d-msyomsn6 = Unterhaltung exportieren
+    .export = Markdown
+    .doc = Eine Unterhaltung als Markdown-Datei, die das eine Export… anbietet und dort speichert, wo die Person es sagt: jede Nachricht in ihrer Reihenfolge, unter dem Namen, unter dem sie erscheint, und der Zeit, zu der sie geschrieben wurde.
+
+d-msyomsn6-conversation = Unterhaltung
