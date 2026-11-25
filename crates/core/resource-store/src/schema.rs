@@ -34,6 +34,14 @@ pub const CREATE_VERB: &str = "create";
 /// else. Every schema has it, as it has the move, and no app declares it.
 pub const BRANCH_VERB: &str = tilo_actions::stamp::Stamp::BRANCH_VERB;
 
+/// The verb of the store's origin write ([`collab_types::Stamp::ORIGIN_VERB`]): data brought in
+/// from outside — a service's messages, a device's records — taken into the resources of the
+/// kinds an app declares. It writes what any field or content of a declared kind holds, as the
+/// move places one of any kind. The platform's own write alone makes it, and no app action names
+/// it: its change names no action, where an app's change names the action that made it. Every
+/// schema has it, as it has the move.
+pub const ORIGIN_VERB: &str = collab_types::Stamp::ORIGIN_VERB;
+
 /// The most bytes the arguments of a history verb's change take, as JSON.
 pub const MAX_MARK_ARGS: usize = 4096;
 
@@ -59,6 +67,11 @@ static HISTORY: std::sync::LazyLock<Vec<Verb>> = std::sync::LazyLock::new(|| {
             Verb {
                 name: BRANCH_VERB.to_owned(),
                 branches: true,
+                ..Verb::default()
+            },
+            Verb {
+                name: ORIGIN_VERB.to_owned(),
+                origins: true,
                 ..Verb::default()
             },
         ])
@@ -107,6 +120,9 @@ pub struct Verb {
     /// It tells a person something (`notify(...)`): a change writing a notice of the host's
     /// `Notice` kind is admitted only from such a verb.
     pub notice: bool,
+    /// The origin's write ([`ORIGIN_VERB`]): it writes any field and content of a declared kind,
+    /// as the move places one of any kind.
+    pub origins: bool,
 }
 
 /// What a verb writes in a resource of one kind.
@@ -349,15 +365,20 @@ impl Schema {
     /// declared by a prefix ending in `*` (`set-*`, a typed setter per field of a kind whose
     /// fields another table lists) that `name` starts with.
     /// The verbs of history ([`HISTORY_VERBS`]), the move ([`MOVE_VERB`]), the creation
-    /// ([`CREATE_VERB`]) and the branch ([`BRANCH_VERB`]) are declared in every schema.
+    /// ([`CREATE_VERB`]), the branch ([`BRANCH_VERB`]) and the origin's write ([`ORIGIN_VERB`])
+    /// are declared in every schema. The origin's write is the platform's alone: a surface that
+    /// names it declares nothing under it, so no app action is admitted by the name.
     pub fn verbs_naming<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Verb> + 'a {
-        self.verbs.iter().chain(HISTORY.iter()).filter(move |verb| {
-            verb.name == name
-                || verb
-                    .name
-                    .strip_suffix('*')
-                    .is_some_and(|prefix| name.len() > prefix.len() && name.starts_with(prefix))
-        })
+        self.verbs
+            .iter()
+            .filter(|verb| verb.name != ORIGIN_VERB)
+            .chain(HISTORY.iter())
+            .filter(move |verb| {
+                verb.name == name
+                    || verb.name.strip_suffix('*').is_some_and(|prefix| {
+                        name.len() > prefix.len() && name.starts_with(prefix)
+                    })
+            })
     }
 
     /// The type named `name`.

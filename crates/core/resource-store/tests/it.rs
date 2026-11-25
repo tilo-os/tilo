@@ -2728,13 +2728,13 @@ mod store {
             .put("Comment", "c2", empty(), &stamp(MOVE_VERB, "i1"))
             .unwrap();
         send(&placed, &mut there);
-        let ((), content) = here
+        let ((), carried) = here
             .edit_content("Comment", "c2", &entered, |tx, root| {
                 tx.put(root, "text", "Ada").map(drop)
             })
             .unwrap();
         assert_eq!(
-            deliver(&[content.expect("a change")], &mut there, &anyone),
+            deliver(&[carried.expect("a change")], &mut there, &anyone),
             []
         );
         // A field of the store's own is no step of a branch's.
@@ -2795,6 +2795,81 @@ mod store {
         assert!(matches!(
             deliver(&unnamed, &mut there, &anyone).as_slice(),
             [Refusal::Undeclared(why)] if why.contains("verb")
+        ));
+    }
+
+    /// The store's origin write names no app: what an outside service said lands as a change of
+    /// the platform's, writing any field or content of a declared kind, as the move places one
+    /// of any kind. It is declared once, in every schema, and a surface that names it adds
+    /// nothing to it: a change whose entry names an action is an app action's, and is refused,
+    /// so no app gets the platform's write by declaring the verb its own.
+    #[test]
+    fn the_origins_write_lands_in_a_declared_kind_and_no_app_action_makes_it() {
+        use tilo_resource_store::{ORIGIN_VERB, Refusal};
+        let anyone = |_: &Proposal<'_>| true;
+        // A store judging verbs, whose surface names the origin's verb its own: what an app
+        // declaring it would publish.
+        let mut there = issues();
+        there.declare(Schema {
+            verbs: vec![tilo_resource_store::Verb {
+                name: ORIGIN_VERB.to_owned(),
+                writes: BTreeMap::from([(ISSUE.to_owned(), tilo_resource_store::Writes::default())]),
+                ..tilo_resource_store::Verb::default()
+            }],
+            ..Schema::default()
+        });
+        // What the origin says lands: a declared kind, its declared fields.
+        let landed = issues()
+            .put(
+                ISSUE,
+                "o1",
+                resource("board", "o0", "Imported", "open"),
+                &stamp(ORIGIN_VERB, "i1"),
+            )
+            .unwrap();
+        assert_eq!(deliver(&landed, &mut there, &anyone), []);
+        assert!(
+            there.get(ISSUE, "o1", &|_: &str| true).is_some(),
+            "the import is a record of the store"
+        );
+        // An ordinary app action names the action it is, in its entry: a change that does is no
+        // origin's, whichever name it stamps, and the surface declaring the verb adds nothing.
+        let mut app_action = stamp(ORIGIN_VERB, "i2");
+        app_action.context = Some(Box::new(tilo_actions::ActionContext {
+            what: Some(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new(
+                    "so.tilo.tasks",
+                    "tl.so.tilo.tasks.Task",
+                    ORIGIN_VERB,
+                ),
+                [],
+            )),
+            ..tilo_actions::ActionContext::default()
+        }));
+        let smuggled = issues()
+            .put(
+                ISSUE,
+                "o2",
+                resource("board", "o1", "Smuggled", "open"),
+                &app_action,
+            )
+            .unwrap();
+        assert!(matches!(
+            deliver(&smuggled, &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("no action makes it")
+        ));
+        // A kind the store does not declare is no origin's to write.
+        let unknown = issues()
+            .put(
+                "gallery.Item",
+                "o3",
+                resource("board", "o2", "Elsewhere", "open"),
+                &stamp(ORIGIN_VERB, "i3"),
+            )
+            .unwrap();
+        assert!(matches!(
+            deliver(&unknown, &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("gallery.Item")
         ));
     }
 

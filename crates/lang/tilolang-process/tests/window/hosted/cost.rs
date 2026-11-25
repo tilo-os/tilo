@@ -590,6 +590,38 @@ pub(super) fn seed_into(bus: &Rc<tilolang_process::testing::Bus>, n: usize) {
     drop(seeder);
 }
 
+/// An import lands as the store's origin write: the tasks a person brings in are records of the
+/// workspace's store, stamped `$origin`, of the kind their package declares.
+#[test]
+fn a_tasks_import_lands_in_the_workspace_store() {
+    let bus = seeded_tasks(3);
+    assert!(
+        bus.workspace()
+            .written()
+            .iter()
+            .any(|stamp| stamp.verb == collab_types::Stamp::ORIGIN_VERB),
+        "the import is the store's origin write"
+    );
+    let listed = bus
+        .workspace()
+        .command(
+            collab_types::store::wire::Command::Query(collab_types::store::Query::of(
+                "tl.so.tilo.tasks.Task",
+                100,
+            )),
+            "ada",
+        )
+        .expect("the workspace answers its tasks");
+    let collab_types::store::wire::Reply::Page(page) = listed else {
+        panic!("a query answers a page: {listed:?}");
+    };
+    assert_eq!(
+        page.resources.len(),
+        3,
+        "every imported task is a record of the workspace's store"
+    );
+}
+
 /// A person at a Tasks window over `bus`'s workspace, its first frame not run yet.
 fn launched_in(bus: &Rc<tilolang_process::testing::Bus>, route: &RouteSpec) -> Session {
     super::Session::opened_on_bus(bus, route, spec_of(route, "ada"))

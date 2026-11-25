@@ -248,8 +248,38 @@ fn marks(stamp: &Stamp, operations: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether the origin's write, `verb`, admits a write of a resource of `kind`: any field or
+/// content of a declared kind, as the move places one of any kind. The platform's own write
+/// alone makes it: a change whose entry names what it did is an action's, never the origin's.
+fn origin_admits(
+    schema: &Schema,
+    verb: &crate::schema::Verb,
+    stamp: &Stamp,
+    kind: &str,
+) -> Result<(), String> {
+    schema
+        .get(kind)
+        .ok_or_else(|| format!("no type `{kind}` is declared"))?;
+    if stamp
+        .context
+        .as_deref()
+        .and_then(|context| context.what.as_ref())
+        .is_some()
+    {
+        return Err(format!(
+            "`{}` is the platform's write, and no action makes it",
+            verb.name
+        ));
+    }
+    Ok(())
+}
+
 /// Whether `verb` admits what `touch` does to the resource `id` of `kind`, by the step `stamp`
 /// names.
+#[expect(
+    clippy::too_many_lines,
+    reason = "each kind of verb a store declares and what it admits, told together"
+)]
 fn verb_admits(
     schema: &Schema,
     verb: &crate::schema::Verb,
@@ -314,6 +344,12 @@ fn verb_admits(
         } else {
             Err(format!("`{}` only carries `{id}` across", verb.name))
         };
+    }
+    // The origin's write takes what an outside service said into a declared kind: any field or
+    // content the kind declares, as the move places one of any kind. It is the platform's own
+    // write, and no app action makes it.
+    if verb.origins {
+        return origin_admits(schema, verb, stamp, kind);
     }
     let Some(writes) = verb.writes.get(kind) else {
         // A record's verb writes the kinds its type nests that another surface declares, and
