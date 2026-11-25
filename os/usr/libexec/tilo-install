@@ -1290,8 +1290,6 @@ fi
 # copy now follows preparation so its scratch cannot fill the live staging root.
 validate_disk_identity
 
-validate_home_target_capacity
-
 # --- 2. install the base system ----------------------------------------------
 # Unencrypted: `bootc install to-disk` owns the whole layout.
 # Encrypted: we build the layout ourselves (tilo-disk-encrypt prepare) and hand
@@ -2275,9 +2273,6 @@ if [ "$ENCRYPT" -eq 1 ]; then
   fi
   step "Closing the encrypted root"
   "$DISK_ENCRYPT" finish "$ENC_LUKS" "${FINISH_ARGS[@]}" 2>&1
-elif [ "$ALONGSIDE" -eq 1 ]; then
-  cleanup_alongside
-  trap - EXIT
 else
   umount "$MOUNTED" 2>/dev/null || true
   MOUNTED=""
