@@ -350,9 +350,11 @@ fn at_rest(session: &mut Session, drawn_before: u64) -> Rest {
         let wall = ui::time::Instant::now();
         let changed = session.host.turn();
         rest.instance_us += since(start, wall.elapsed());
-        // What the tree itself owes a frame: the work of the step, or of the turn just taken.
-        let sources = session.window.harness().queued_work_sources();
-        let step_frame = changed || !sources.is_empty();
+        // What the tree itself owes a frame: the work of the step, or of the turn just taken. A
+        // frame the window's own clock asks for, a glide or a fade going on, is owed as well, but
+        // it is no work of the step's: how many of them run is how far the machine got through
+        // the motion while the step was measured.
+        let step_frame = changed || session.window.harness().frame_schedule().queued_work;
         let drawn_round = session.window.harness().drawn_commands();
         let start = ui::rt::thread_cpu_time();
         let wall = ui::time::Instant::now();
