@@ -771,6 +771,44 @@ tilo_test_env::scenario! {
         assert_eq!(std::fs::read_to_string(dir.join("app.tl")).unwrap(), source);
     }
 
+    phase a_development_build_imports_packages_under_their_development_ids;
+    // A development build is compiled as the id its device installs it under, and the packages it
+    // imports are staged as development builds too. The importer's `use` of the id its sources
+    // declare still resolves, and what it references is the id the imported package was compiled as.
+    {
+        let scratch = Scratch::new("dev-ids");
+        scratch.package(
+            "playback",
+            &[(
+                "app.tl",
+                "app t.playback \"Playback\"\n\ntype Track {\n    plays: Int merge counter\n}\n\ntype Player {\n    tracks: Collection<Track>\n}\n\nroot player: Player\n\ndefault view player for Player\n\n/// Play the next track.\naction next(p: Player) {\n    p.tracks.insert(Track(plays: 0))\n}\n\nview player(p: Player) {\n    page {\n        for t in p.tracks {\n            text(\"{t.plays}\")\n        }\n    }\n}\n",
+            )],
+        );
+        let app = scratch.package(
+            "tube",
+            &[(
+                "app.tl",
+                "app t.tube \"Tube\"\n\nuse t.playback as playback\n\n/// Play the next track.\naction play() {\n    playback.next(playback.player)\n}\n",
+            )],
+        );
+        let library_dev = "t.playback.dev.0123456789abcdef".to_owned();
+        let app_dev = "t.tube.dev.0123456789abcdef".to_owned();
+        let compile_as = [
+            ("t.playback".to_owned(), library_dev.clone()),
+            ("t.tube".to_owned(), app_dev.clone()),
+        ];
+        let built = compile_package_for(&app, &[], &[], &compile_as, &mut SeededEntropy(1))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(built[0].compiled.meta.app, library_dev);
+        let tube = &built[1].compiled;
+        assert_eq!(tube.meta.app, app_dev);
+        assert_eq!(
+            tube.meta.uses,
+            [library_dev.as_str(), "tilo.std"],
+            "the import is named by the id it was compiled as, which it runs under"
+        );
+    }
+
     phase an_id_a_package_still_has_is_its_own_not_a_renamed_ones;
     {
         let scratch = Scratch::new("still-there");

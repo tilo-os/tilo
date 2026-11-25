@@ -4,7 +4,7 @@
 
 use tilolang_cli::package::{self, BuildOptions};
 
-use crate::support::{copy_package, packages};
+use crate::support::{copy_package, packages, with_used};
 
 #[test]
 fn a_saved_build_is_staged_unsigned_for_the_device() {
@@ -121,6 +121,57 @@ fn a_build_for_the_device_is_compiled_as_the_id_it_runs_under() {
             .any(|kind| kind.starts_with(&format!("tl.{dev}."))),
         "the build declares its own kinds: {:?}",
         manifest.resources.kinds
+    );
+}
+
+/// A development build of an app that imports another tilolang app resolves that import, which is
+/// staged as a development build too: the importer names the id the imported package is installed
+/// under, while its `use` names the id the sources declare.
+#[test]
+fn a_development_build_resolves_imports_under_their_development_ids() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl");
+    for name in with_used(&["tube"]) {
+        copy_package(&packages().join(&name), &source.join(&name));
+    }
+    let dir = source.join("tube");
+    let options = BuildOptions {
+        dir: dir.clone(),
+        search: Vec::new(),
+        out: scratch.path().join("out"),
+        tilo_runtime: package::DEFAULT_TILO_RUNTIME.into(),
+        tilolang_runtime: package::default_tilolang_runtime(),
+        version: "0.1.0".into(),
+        locked: false,
+    };
+    // What `tilolang build --dev` asks the device: the id it installs each package's development
+    // build under.
+    let compile_as: Vec<(String, String)> = tilolang_cli::package_dirs(&dir, &[])
+        .unwrap()
+        .iter()
+        .filter_map(|package| {
+            let source = tilolang::source::PackageSource::read_dir(package).ok()?;
+            let app = source.header().0?;
+            Some((app.clone(), format!("{app}.dev.0123456789abcdef")))
+        })
+        .collect();
+    assert!(
+        compile_as.iter().any(|(app, _)| app == "so.tilo.playback"),
+        "tube imports playback: {compile_as:?}"
+    );
+    let staged = package::stage_dev(&options, &compile_as).unwrap_or_else(|error| panic!("{error}"));
+    let tube = staged
+        .iter()
+        .find(|app| app.app == "so.tilo.tube")
+        .expect("tube is staged");
+    assert_eq!(tube.dev, "so.tilo.tube.dev.0123456789abcdef");
+    assert!(
+        tube.meta
+            .uses
+            .iter()
+            .any(|used| used == "so.tilo.playback.dev.0123456789abcdef"),
+        "tube's use of playback names the id playback is staged under: {:?}",
+        tube.meta.uses
     );
 }
 

@@ -571,7 +571,7 @@ fn compile_in_order_as(
     for package in packages {
         let (dir, source, ids) = package?;
         let mut imports = extra.to_vec();
-        imports.extend(out.iter().map(|b| b.compiled.meta.clone()));
+        imports.extend(out.iter().map(import_meta));
         let app = compile_as
             .iter()
             .find(|(of, _)| source.header().0.as_deref() == Some(of.as_str()))
@@ -597,6 +597,20 @@ fn compile_in_order_as(
         });
     }
     Ok(out)
+}
+
+/// The metadata a package built before is imported by. A package compiled as another id answers to
+/// the id its sources declare as well: an importer's `use` of that id resolves, while every
+/// reference through it names the id the package was compiled as, which is the id it runs under.
+fn import_meta(built: &BuiltPackage) -> PackageMeta {
+    let mut meta = built.compiled.meta.clone();
+    if let Some(declared) = built.source.header().0
+        && declared != meta.app
+        && !meta.previously.contains(&declared)
+    {
+        meta.previously.push(declared);
+    }
+    meta
 }
 
 /// Where a package keeps the catalogue of `locale`: `locales/<locale>.ftl`.
