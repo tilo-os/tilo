@@ -372,18 +372,6 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                         on press: decline(key)
                     }
                 } else {
-                    if here and can_always {
-                        ui.Button(
-                            "Always let {asker_name(a)} {a.verb} {a.plural ?? ""}",
-                            size: .small,
-                            role: .plain,
-                        ) {
-                            on press: host.resolve(
-                                resource(key, of: host.Invocation),
-                                resolution: "approve_and_grant",
-                            )
-                        }
-                    }
                     spacer
                     if here and not a.form.is_empty() and not changing {
                         ui.Button("Change", icon: .pencil, size: .small, role: .plain) {
@@ -417,6 +405,22 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                                 edits: changes_of(a.form, written),
                             )
                         }
+                    }
+                }
+            }
+            // Answering for good is its own line under the answers: the card is as wide as what
+            // the call does and its answers, never padded out to this longer sentence.
+            if here and can_always and (a.choices.is_empty() or a.many) {
+                row {
+                    ui.Button(
+                        "Always let {asker_name(a)} {a.verb} {a.plural ?? ""}",
+                        size: .small,
+                        role: .plain,
+                    ) {
+                        on press: host.resolve(
+                            resource(key, of: host.Invocation),
+                            resolution: "approve_and_grant",
+                        )
                     }
                 }
             }
