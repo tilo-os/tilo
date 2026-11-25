@@ -1117,7 +1117,7 @@ mod tests {
         tilo_rt::app().spawn(async move {
             let hydrator = Hydrator::new(store);
             let mistake = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                hydrator.block_on(async {})
+                hydrator.block_on(async {});
             }))
             .expect_err("waiting on a task of the runtime is refused");
             let said = mistake
