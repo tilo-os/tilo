@@ -478,8 +478,9 @@ pub struct Tree<P> {
     asker: Option<Asker<P>>,
     /// The directory levels read, by the provider that serves them and the resource they hold.
     dirs: Mutex<HashMap<String, Levels>>,
-    /// What each name meant when this tree last looked it up: the app, or the workspace's
-    /// decision that there is none this caller may run.
+    /// Where each name was found: the provider a call found or started the app on, the app an
+    /// installed name means, or a decision no grant can change — never what this caller may
+    /// open, which the workspace decides on every call.
     apps: Mutex<HashMap<String, Looked>>,
     /// The paths listings resolved, by the path as written and the directory revision they
     /// were resolved at.
@@ -671,11 +672,21 @@ impl AppRef {
     }
 }
 
-/// What looking a name up came to, as this tree keeps it: the app, or the workspace's decision
-/// that there is none this caller may run.
+/// What looking a name up came to, as this tree keeps it.
+///
+/// Only where an app was found or started is kept, and a decision about a name that is no
+/// permission answer (no app by it, or several). What this caller may open is never kept: the
+/// workspace decides that on every call, so a grant withdrawn since the last call is refused by
+/// the next one, and one given since is not refused from here.
 #[derive(Clone)]
 enum Looked {
+    /// The app runs on this provider: a call found it there, or a start this session made put it
+    /// there.
     Found(AppRef),
+    /// The name means this installed app. Where the app is, never what this caller may do with
+    /// it: every call that starts it is admitted by the workspace as it makes it.
+    Named(String),
+    /// A decision about the name that no grant can change.
     Refused(Unresolved),
 }
 
@@ -854,12 +865,13 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     /// Forget the app `app_id` the session found, after the workspace refused a
     /// call as one the app does not offer: the app or its directory moved
     /// since, so the next call looks both up again. What the workspace decided
-    /// about other names — an app installed and not running, or none it offers
-    /// — is dropped with it: the catalogue moved, and the calls that follow
-    /// read it once more.
+    /// about other names — a name several apps carry, or none — is dropped with
+    /// it: the catalogue moved, and the calls that follow read it once more.
     pub fn forget_app(&self, app_id: &str) {
         self.apps.lock_recover().retain(|_, looked| match looked {
             Looked::Found(app) => app.app_id() != app_id,
+            // The binding is where the app was looked up: an app that moved is looked up again.
+            Looked::Named(known) => known != app_id,
             Looked::Refused(_) => false,
         });
         self.dirs.lock_recover().clear();
@@ -868,44 +880,62 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     /// The app `name` means: a running one by its id or last part, else an
     /// installed one the workspace offers to open.
     ///
-    /// What a name meant is kept: every call in an app names it again, and
+    /// Where a name was found is kept: every call in an app names it again, and
     /// looking it up asks the workspace which apps run and which are installed
-    /// — two catalogue reads, for each call. So a running app, an installed one
-    /// and one the workspace says runs nowhere are all answered from here after
-    /// the first call. A call the app refuses drops what was kept
-    /// ([`McpServer::forget_app`]), and a start this session makes
-    /// ([`Self::saw_running`]) replaces it, so an app that closed, moved or
-    /// started is looked up again.
+    /// — two catalogue reads, for each call. So a running app is answered from
+    /// here after the first call, as a name that means an installed app is, and
+    /// so is a start this session made ([`Self::saw_running`]) and a decision
+    /// about a name no grant can change. What this caller may open is not kept:
+    /// an app that is not known to run here is looked up on every call, so a
+    /// grant given or withdrawn is decided by the call it reaches. A call the
+    /// app refuses drops what was kept ([`McpServer::forget_app`]), so an app
+    /// that moved is looked up again.
     pub async fn app_ref(&self, name: &str) -> Result<AppRef, Unresolved> {
-        let known = { self.apps.lock_recover().get(name).cloned() };
+        let known = {
+            let apps = self.apps.lock_recover();
+            match apps.get(name) {
+                Some(Looked::Found(app)) => Some(Ok(app.clone())),
+                Some(Looked::Refused(why)) => Some(Err(why.clone())),
+                // Where the name's app runs, if a call in this session found it running.
+                Some(Looked::Named(app_id)) => apps.get(app_id).and_then(|found| match found {
+                    Looked::Found(app) => Some(Ok(app.clone())),
+                    _ => None,
+                }),
+                None => None,
+            }
+        };
         if let Some(known) = known {
-            return match known {
-                Looked::Found(app) => Ok(app),
-                Looked::Refused(why) => Err(why),
-            };
+            return known;
         }
-        let found = match self.app_ref_live(name).await {
-            Ok(app) => Looked::Found(app),
-            // A decision the workspace made about the name is kept as a running app is: an
-            // installed app that runs nowhere, one this caller may not open, a name several
-            // apps carry, and one no app answers to. What could not be read now — a catalogue
-            // that did not answer, a directory that kept moving — is asked again next time.
-            Err(
-                why @ (Unresolved::NotRunning { .. }
-                | Unresolved::MayNotOpen { .. }
-                | Unresolved::Said(_)),
-            ) => Looked::Refused(why),
+        let looked;
+        let answer = match self.app_ref_live(name).await {
+            // Where the app runs, and nothing this caller may do with it.
+            Ok(app @ AppRef::Running { .. }) => {
+                looked = Looked::Found(app.clone());
+                Ok(app)
+            }
+            // Where the name's app is installed. What this caller may open is not kept: every
+            // call that starts the app is admitted by the workspace as it makes it.
+            Ok(app @ AppRef::Installed { .. }) => {
+                looked = Looked::Named(app.app_id().to_owned());
+                Ok(app)
+            }
+            // A decision about the name that no grant can change: several apps carry it, or no
+            // app answers to it. Kept, as a running app is. What could not be read now — a
+            // catalogue that did not answer, a directory that kept moving — is asked again next
+            // time.
+            Err(why @ Unresolved::Said(_)) => {
+                looked = Looked::Refused(why.clone());
+                Err(why)
+            }
             Err(other) => return Err(other),
         };
         let mut apps = self.apps.lock_recover();
         if apps.len() >= RESOLVED_PATHS && !apps.contains_key(name) {
             apps.clear();
         }
-        apps.insert(name.to_owned(), found.clone());
-        match found {
-            Looked::Found(app) => Ok(app),
-            Looked::Refused(why) => Err(why),
-        }
+        apps.insert(name.to_owned(), looked);
+        answer
     }
 
     /// Keep `app_id` as running on `provider`: what a start this session made, or a call an app
@@ -924,6 +954,7 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
                 // app found by its own names is what a start or a call says runs.
                 Looked::Found(AppRef::Running { pinned: true, .. }) => false,
                 Looked::Found(app) => app.app_id() == app_id,
+                Looked::Named(known) => known == app_id,
                 Looked::Refused(_) => false,
             };
             if known {
@@ -1458,6 +1489,7 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         // An app this tree found running is kept for the calls after this one, which is only
         // right while it still answers: one that stopped since is looked up again, so the call
         // after this refusal asks the workspace where the app is instead of failing here again.
+        let about = reference.app_id().to_owned();
         let resolved = match reference {
             AppRef::Running {
                 app_id,
@@ -1491,7 +1523,7 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         if let Err(why) = &resolved
             && why.app_gone()
         {
-            self.forget_app(reference.app_id());
+            self.forget_app(&about);
         }
         resolved
     }
