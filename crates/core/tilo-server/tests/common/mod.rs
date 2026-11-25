@@ -1227,3 +1227,103 @@ pub async fn own_service(
     .expect("the laptop's own service opens");
     (service, keys)
 }
+
+/// The keys of `workspace`'s group that reads `record` of `app`, as `at`'s device holds them.
+/// Keys are shared only among one person's own devices: a member device of that person seals
+/// with these, and a holder of anyone else carries what it seals without them.
+pub async fn keys_of(
+    at: &Hosted,
+    workspace: WorkspaceId,
+    (app, record): (&str, &str),
+) -> key_group::ContentKeys {
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: app.into(),
+        cluster_id: workspace.to_string(),
+        document: record.into(),
+    };
+    tilo_test_env::within("the person's device holds the record's keys", async {
+        loop {
+            match at.host.workspaces().own_route_keys(&route, true).await {
+                Some(Ok(keys)) => return keys,
+                Some(Err(error)) => panic!("the record's keys do not open: {error}"),
+                None => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+            }
+        }
+    })
+    .await
+}
+
+/// Write `document` as the whole of `record` of `app`, sealed with `keys`, as `linked`'s device
+/// writes it: a member device's first sealed write of a record is the record itself. Answers the
+/// sealed write, the bytes every holder carries whether or not it reads them.
+pub fn write_sealed(
+    linked: &Linked,
+    keys: &key_group::ContentKeys,
+    (app, record): (&str, &str),
+    document: Vec<u8>,
+) -> collab_types::SignedOp {
+    let workspace = linked.read(|peer| peer.workspace_id().to_string());
+    let artifact = collab_types::document_artifact_id(app, &workspace, record);
+    let mut seal = |plaintext: &[u8]| {
+        keys.seal_content(
+            artifact,
+            collab_types::ContentRetention::Checkpoint,
+            plaintext,
+        )
+        .map_err(|error| error.to_string())
+    };
+    let written = linked
+        .publish(|peer| {
+            peer.publication_mut().publish_sealed_checkpoint(
+                app,
+                record,
+                document,
+                &mut seal,
+                &linked.sk,
+                std::time::SystemTime::now(),
+            )
+        })
+        .expect("the member's sealed write is kept");
+    let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = written else {
+        panic!("a record write is a document frame: {written:?}")
+    };
+    *envelope
+}
+
+/// Whether `peer` holds every one of `writes` to `record` of `app` as itself: what a holder
+/// carries of a sealed record, read or not.
+#[must_use]
+pub fn holds_writes(
+    peer: &tilo_peer_state::StatePeer,
+    (app, record): (&str, &str),
+    writes: &[collab_types::SignedOp],
+) -> bool {
+    writes
+        .iter()
+        .all(|write| peer.publication().holds_sealed(app, record, write))
+}
+
+/// Wait until `at`'s own copy of `workspace` holds every one of `writes` to `record` of `app`.
+pub async fn host_holds(
+    at: &Hosted,
+    workspace: WorkspaceId,
+    route: (&str, &str),
+    writes: &[collab_types::SignedOp],
+) {
+    let what = format!("the host holds the carried writes of {}", route.1);
+    tilo_test_env::within(&what, async {
+        loop {
+            if at
+                .host
+                .workspaces()
+                .state(&workspace.to_string())
+                .await
+                .is_some_and(|state| holds_writes(&state, route, writes))
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+}

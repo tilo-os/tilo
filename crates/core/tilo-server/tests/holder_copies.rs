@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
+use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
@@ -18,12 +18,15 @@ use tilo_actions::remote::{
     workspace_governance_child, workspace_governance_resource,
 };
 use tilo_peer_state::actions::RemoteDevice;
-use tilo_peer_state::{CopyPolicy, CopyRole, CopyStatus, Missing, Shortfall, StatePeer};
+use tilo_peer_state::{CopyPolicy, CopyRole, CopyStatus, Missing, Shortfall};
 use tilo_server::workspaces::WorkspaceSummary;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Hosted, Linked, TestDevice, TestUser, receives, serve_in, serve_on};
+use crate::common::{
+    Hosted, Linked, TestDevice, TestUser, holds_writes, keys_of, receives, serve_in, serve_on,
+    write_sealed,
+};
 use tilo_server::WorkspaceId;
 
 /// The app the tests write records in. Each step writes a record of its own, so a change is read
@@ -48,40 +51,6 @@ async fn copies_once(
         }
     })
     .await
-}
-
-/// Write `body` into `record` as `device`, through `linked`.
-fn write(linked: &Linked, device: &TestDevice, record: &str, body: &str) -> Result<(), String> {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "body", body).unwrap();
-    let bytes = doc.save();
-    linked
-        .publish(|peer| {
-            peer.publication_mut().publish_document(
-                APP,
-                record,
-                bytes,
-                &device.sk,
-                std::time::SystemTime::now(),
-            )
-        })
-        .map(|_| ())
-}
-
-/// Whether the record `bytes` carries `body`.
-fn says(bytes: &[u8], body: &str) -> bool {
-    AutoCommit::load(bytes).is_ok_and(|doc| {
-        doc.get(ROOT, "body")
-            .ok()
-            .flatten()
-            .is_some_and(|(said, _)| said.to_str() == Some(body))
-    })
-}
-
-/// Whether `peer`'s copy of `record` carries `body`.
-fn copy_says(peer: &StatePeer, record: &str, body: &str) -> bool {
-    peer.document(APP, record)
-        .is_some_and(|bytes| says(&bytes, body))
 }
 
 /// Wait until `hosted` admits `device` to `workspace`: the link it opens.
@@ -172,7 +141,23 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
     let away = server.device_pubkey();
     let state = holders[2].take().unwrap().stop_keeping().await;
     let on_laptop = member_at(holders[0].as_ref().unwrap(), &phone, workspace.workspace_id).await;
-    write(&on_laptop, &phone, "note:away", "while the server was away").unwrap();
+    // The phone seals the change with the keys Alice's devices share.
+    let keys = keys_of(
+        holders[0].as_ref().unwrap(),
+        workspace.workspace_id,
+        (APP, "note:away"),
+    )
+    .await;
+    let mut document = AutoCommit::new();
+    document
+        .put(ROOT, "body", "while the server was away")
+        .unwrap();
+    let written = [write_sealed(
+        &on_laptop,
+        &keys,
+        (APP, "note:away"),
+        document.save(),
+    )];
     for holder in holders.iter().flatten() {
         let status = copies_once(
             holder,
@@ -211,8 +196,10 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
         workspace.workspace_id,
     )
     .await;
+    // A member that reaches only the returned server gets the sealed write made while it was
+    // away, as the bytes the other holders carried to it.
     receives(&mut on_server, |peer| {
-        copy_says(peer, "note:away", "while the server was away")
+        holds_writes(peer, (APP, "note:away"), &written)
     })
     .await;
     for holder in holders.iter().flatten() {
