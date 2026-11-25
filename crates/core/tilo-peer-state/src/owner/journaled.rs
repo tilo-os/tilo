@@ -280,16 +280,16 @@ impl Journaled {
         }
         let mut whole = true;
         let mut appended = 0;
-        let mut newest = None;
+        let mut journal_revision = None;
         let log = journal_name(workspace, snapshot_revision);
         if let Some(entries) = parts.read_part(&log)? {
             self.written.insert(log);
             whole = journal::read_whole(&entries);
             appended = entries.len();
-            let (replayed, last) = journal::replay(stored, &entries, WORKSPACE_VERSION, None)
+            let (replayed, newest) = journal::replay(stored, &entries, WORKSPACE_VERSION, None)
                 .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
             stored = replayed;
-            newest = last;
+            journal_revision = newest;
         }
         if stored.workspace != workspace {
             return Err(format!("{workspace}'s record holds another workspace"));
@@ -308,7 +308,7 @@ impl Journaled {
                 },
             );
         }
-        Ok((stored, newest))
+        Ok((stored, journal_revision))
     }
 
     /// Write each workspace whose snapshot was brought up as one snapshot of this build's version
