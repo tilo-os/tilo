@@ -791,7 +791,7 @@ fn serve_device(
             &mut stage,
             dev,
             (device_key, entered.take()),
-            Arc::clone(&founding),
+            &founding,
         ) {
             Ok(session) => Arc::new(session),
             // The identity went away before its services could start: keep answering the

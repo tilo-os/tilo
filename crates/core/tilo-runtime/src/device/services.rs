@@ -1734,12 +1734,11 @@ impl Daemon {
         stage: &mut dyn FnMut(&str),
         serving: Serving,
         (locked, entered): (Option<[u8; 32]>, Option<Device>),
-        founding: Option<Arc<super::unclaimed::Founding>>,
+        founding: Option<&Arc<super::unclaimed::Founding>>,
     ) -> io::Result<Self> {
         // The calls the device took before this person's services ran: they answer them too, so
         // a founding call followed after they start reads its state where it was kept.
         let inherited = founding
-            .as_ref()
             .map(|founding| founding.calls())
             .unwrap_or_default();
         // A server keeps the workspaces placed on it: it takes no other server's work. A node
@@ -2112,7 +2111,7 @@ impl Daemon {
         // on: the tickets, the endpoint they name and what serves it are up, and nothing the
         // rest of the part opens is needed to issue one. The founder waits for a start, not for
         // every service of it.
-        if let Some(founding) = founding.as_ref() {
+        if let Some(founding) = founding {
             founding.serving(identity.cert.user_public_key, Arc::clone(&tickets));
         }
         // What is the person's alone is kept in their own workspace, read and written here on
@@ -3513,7 +3512,7 @@ impl Daemon {
         stage: &mut dyn FnMut(&str),
         dev: bool,
         (device, entered): ([u8; 32], Option<Device>),
-        founding: Arc<super::unclaimed::Founding>,
+        founding: &Arc<super::unclaimed::Founding>,
     ) -> io::Result<Self> {
         let serving = if dev { Serving::Dev } else { Serving::Profile };
         Self::start(
@@ -5587,6 +5586,110 @@ impl RuntimeActionProvider {
                 result
             })
     }
+
+    /// Whether the person stopped the session `caller` acts in: it is ended for good, and what
+    /// its connection asks next reaches nothing.
+    fn session_stopped(&self, caller: &Caller) -> bool {
+        caller.execution_id().is_some_and(|execution| {
+            self.workspaces
+                .copies()
+                .agent_stopped(&execution.to_string())
+        })
+    }
+
+    /// What this device answers itself, before the person's services run. The person stops one
+    /// of the agents it serves, or lets a stopped one go on, as their card asks: a Deny in every
+    /// workspace the agent works in, and what it is running here cancelled. Then its own
+    /// records, its settings written through the same actions before the person's services ran
+    /// and after, once the device is theirs, and its machines.
+    fn the_device_answers(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
+        self.stop_or_go_on(caller, request)
+            .or_else(|| self.device_records(caller, request))
+            .or_else(|| self.machines(caller, request))
+    }
+
+    /// What this device answers for a ticket it issues: whether this run may be answered one at
+    /// all, and the answer dispatched beside the runtime, or the refusal of a call this device
+    /// publishes but may not answer here.
+    fn ticket_answer(
+        &self,
+        caller: &Caller,
+        tickets: &Arc<Tickets>,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let answered = Tickets::asks_for_a_person(&request)
+            || self.is_the_person(caller)
+            // The person's own programs on this computer ask the daemon to seal, prove and
+            // sign with the device key, as their account read the key before the daemon
+            // alone kept it: never an agent that runs elsewhere or for a turn.
+            || (Tickets::uses_the_device_key(&request) && self.is_own_client(caller))
+            // What only the person's root signs, asked by their own programs on this
+            // computer: the device signs it with the root it keeps, and hands the ask to a
+            // device of theirs that keeps it otherwise. A session reaches its daemon as the
+            // person's own agent ([`Self::agent_session`]), so this is the one way their
+            // session was ever to certify a key, take a recovery backup or answer a sign-in.
+            || (Tickets::root_only(&request) && self.is_own_client(caller))
+            || (self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.admits(caller))
+                && (Tickets::only_reads(&request)
+                    // A ticket is the person's own to issue. An agent acting for them that
+                    // asks for one hands the ask on to a device of theirs that keeps their
+                    // root ([`device_action`]), which asks them once: it is never answered
+                    // the ticket itself. Waiting for the ticket served last to be taken
+                    // issues nothing, and tells which computer took what they let in. A key
+                    // naming their device acts as them, and is answered neither.
+                    || ((Tickets::adds_a_device(&request) || Tickets::only_waits(&request))
+                        && caller.acting().is_agent())));
+        if !answered {
+            // This device publishes the action whatever this run may do with one: the answer is
+            // the device's own refusal, never the broker's that its resource offers no such
+            // action.
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
+        // What the dispatch runs is blocking work: a root-signed answer reads and writes
+        // the person's workspace. Every session of this endpoint shares one
+        // current-thread runtime, so it is answered beside that runtime, as the
+        // catalogue the broker assembles is, and the answer it settles with is handed
+        // on.
+        let (invocations, asked, tickets, caller, request, workspace) = (
+            Arc::clone(&self.invocations),
+            self.asked.clone(),
+            Arc::clone(tickets),
+            caller.clone(),
+            request,
+            self.workspace.clone(),
+        );
+        let device_call = move || {
+            device_action(
+                (&invocations, asked.as_ref()),
+                &tickets,
+                &caller,
+                request,
+                &workspace,
+            )
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return device_call();
+        };
+        let (done, answer) = tilo_actions::remote::pending();
+        drop(runtime.spawn(async move {
+            match tokio::task::spawn_blocking(device_call).await {
+                Ok(made) => made.then(move |settled| {
+                    done.complete(settled.unwrap_or(Err(ActionCallError::Unanswered)));
+                }),
+                Err(error) => done.complete(Err(ActionCallError::Unavailable {
+                    reason: format!("the device's answer did not run: {error}"),
+                })),
+            }
+        }));
+        answer
+    }
 }
 
 // These existing alias forms may eventually dispatch into a published app.
@@ -5830,31 +5933,14 @@ impl ActionProvider for RuntimeActionProvider {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
-        // The device's own actions: what it is, to the person and the agents acting for them;
-        // what lets another device in, to the person alone.
-        //
         // A session the person stopped is ended for good: what its connection asks next reaches
         // nothing.
-        if let Some(execution) = caller.execution_id()
-            && self
-                .workspaces
-                .copies()
-                .agent_stopped(&execution.to_string())
-        {
+        if self.session_stopped(caller) {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
-        // The person stops one of the agents this device serves, or lets a stopped one go on,
-        // as their card asks: a Deny in every workspace the agent works in, and what it is
-        // running here cancelled.
-        if let Some(answered) = self.stop_or_go_on(caller, &request) {
-            return answered;
-        }
-        // The device's own records: its settings, written through the same actions before the
-        // person's services ran and after, once the device is theirs.
-        if let Some(answered) = self.device_records(caller, &request) {
-            return answered;
-        }
-        if let Some(answered) = self.machines(caller, &request) {
+        // The device's own actions: what it is, to the person and the agents acting for them;
+        // what lets another device in, to the person alone.
+        if let Some(answered) = self.the_device_answers(caller, &request) {
             return answered;
         }
         if let Some(tickets) = &self.tickets
@@ -5871,74 +5957,7 @@ impl ActionProvider for RuntimeActionProvider {
         if let Some(tickets) = &self.tickets
             && Tickets::answers(&request)
         {
-            let answered = Tickets::asks_for_a_person(&request)
-                || self.is_the_person(caller)
-                // The person's own programs on this computer ask the daemon to seal, prove and
-                // sign with the device key, as their account read the key before the daemon
-                // alone kept it: never an agent that runs elsewhere or for a turn.
-                || (Tickets::uses_the_device_key(&request) && self.is_own_client(caller))
-                // What only the person's root signs, asked by their own programs on this
-                // computer: the device signs it with the root it keeps, and hands the ask to a
-                // device of theirs that keeps it otherwise. A session reaches its daemon as the
-                // person's own agent ([`Self::agent_session`]), so this is the one way their
-                // session was ever to certify a key, take a recovery backup or answer a sign-in.
-                || (Tickets::root_only(&request) && self.is_own_client(caller))
-                || (self
-                    .session
-                    .as_ref()
-                    .is_some_and(|session| session.admits(caller))
-                    && (Tickets::only_reads(&request)
-                        // A ticket is the person's own to issue. An agent acting for them that
-                        // asks for one hands the ask on to a device of theirs that keeps their
-                        // root ([`device_action`]), which asks them once: it is never answered
-                        // the ticket itself. Waiting for the ticket served last to be taken
-                        // issues nothing, and tells which computer took what they let in. A key
-                        // naming their device acts as them, and is answered neither.
-                        || ((Tickets::adds_a_device(&request) || Tickets::only_waits(&request))
-                            && caller.acting().is_agent())));
-            if answered {
-                // What the dispatch runs is blocking work: a root-signed answer reads and writes
-                // the person's workspace. Every session of this endpoint shares one
-                // current-thread runtime, so it is answered beside that runtime, as the
-                // catalogue the broker assembles is, and the answer it settles with is handed
-                // on.
-                let (invocations, asked, tickets, caller, request, workspace) = (
-                    Arc::clone(&self.invocations),
-                    self.asked.clone(),
-                    Arc::clone(tickets),
-                    caller.clone(),
-                    request,
-                    self.workspace.clone(),
-                );
-                let device_call = move || {
-                    device_action(
-                        (&invocations, asked.as_ref()),
-                        &tickets,
-                        &caller,
-                        request,
-                        &workspace,
-                    )
-                };
-                let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                    return device_call();
-                };
-                let (done, answer) = tilo_actions::remote::pending();
-                drop(runtime.spawn(async move {
-                    match tokio::task::spawn_blocking(device_call).await {
-                        Ok(made) => made.then(move |settled| {
-                            done.complete(settled.unwrap_or(Err(ActionCallError::Unanswered)));
-                        }),
-                        Err(error) => done.complete(Err(ActionCallError::Unavailable {
-                            reason: format!("the device's answer did not run: {error}"),
-                        })),
-                    }
-                }));
-                return answer;
-            }
-            // This device publishes the action whatever this run may do with one: the answer is
-            // the device's own refusal, never the broker's that its resource offers no such
-            // action.
-            return Pending::ready(Err(ActionCallError::NotPermitted));
+            return self.ticket_answer(caller, tickets, request);
         }
         // An action of the person's own device, asked by them on their own daemon connection:
         // this device answers it, as it does before their services run, because what the action

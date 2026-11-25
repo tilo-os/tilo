@@ -2438,6 +2438,46 @@ fn a_deployment_given_its_owner_root_founds_its_kept_workspace_with_its_entry() 
 const OWN_INSTALL_TEST: &str =
     "device::services::tests::a_development_build_installs_on_the_persons_own_connection";
 
+/// The manifest of a development build for this computer's architecture, as the install action
+/// reads it from the device's own content store.
+fn development_build_manifest() -> String {
+    let isa = match std::env::consts::ARCH {
+        "x86_64" => "x86_64 = \"v3\"",
+        other if other.starts_with("aarch64") => "aarch64 = \"aarch64\"",
+        other => panic!("no package for the architecture {other}"),
+    };
+    format!(
+        r#"[package]
+id = "dev.tilo.own"
+name = "Own"
+version = "0.1.0"
+kind = "app"
+
+[package.isa]
+{isa}
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.services]
+collab = "optional@51"
+
+[entrypoint]
+bin = "app"
+type = "gui"
+"#
+    )
+}
+
 /// The person on their own daemon connection asks this device to install a development build,
 /// with no rule set for it: the workspace decides it may run unasked, and the cache reads the
 /// build's manifest and program from the device's own content store.
@@ -2473,42 +2513,7 @@ fn a_development_build_installs_on_the_persons_own_connection() {
         put.append(0, bytes).expect("the device keeps the bytes");
         put.finish().expect("the device stores the bytes")
     };
-    let isa = match std::env::consts::ARCH {
-        "x86_64" => "x86_64 = \"v3\"",
-        other if other.starts_with("aarch64") => "aarch64 = \"aarch64\"",
-        other => panic!("no package for the architecture {other}"),
-    };
-    let manifest = format!(
-        r#"[package]
-id = "dev.tilo.own"
-name = "Own"
-version = "0.1.0"
-kind = "app"
-
-[package.isa]
-{isa}
-
-[publisher]
-identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
-signature = ""
-
-[sandbox]
-namespaces = ["user", "pid", "uts", "ipc", "mount"]
-seccomp = "tilo-default"
-landlock = "strict"
-
-[sandbox.net]
-mode = "off"
-
-[sandbox.services]
-collab = "optional@51"
-
-[entrypoint]
-bin = "app"
-type = "gui"
-"#
-    );
-    let manifest = put(manifest.as_bytes());
+    let manifest = put(development_build_manifest().as_bytes());
     let program = put(b"a development build's own program");
     let request = InvokeRequest {
         on_behalf_of: None,

@@ -355,6 +355,7 @@ impl Inner {
             None => Vec::new(),
         };
         patches.extend(window.pointer(event).map_err(unavailable)?);
+        drop(held);
         Ok(patches)
     }
 
@@ -373,6 +374,7 @@ impl Inner {
             return Ok(None);
         };
         let (title, css, body) = window.appearance(dark).map_err(unavailable)?;
+        drop(held);
         Ok(Some(OpenedPage {
             page,
             title,
