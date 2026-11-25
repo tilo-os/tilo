@@ -100,6 +100,39 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase admission_evidence_names_the_member_the_intent_records;
+    {
+        let key = InvocationKey {
+            workspace: uuid::Uuid::nil().to_string(),
+            host: uuid::Uuid::nil(),
+            owner: InvocationOwner::AuthenticatedLocal {
+                root: [1; 32],
+                device: [2; 32],
+                agent: None,
+            },
+            invocation: tilo_actions::InvocationId::new(),
+        };
+        let intent = json!({
+            "actor": {"member": {"person": "person"}},
+            "app_id": "notes",
+            "document_id": "record",
+            "resource": "document/body",
+            "action": "append"
+        });
+        let facts = evidence_facts(&key, &intent).unwrap();
+        assert_eq!(facts.actor_id, tilo_actions::MemberId::person("person"));
+        // An app acting by itself is no member, so no member's evidence names it.
+        let mut by_itself = intent;
+        by_itself["actor"] = serde_json::to_value(tilo_actions::Actor::App(
+            tilo_app_id::AppId::from("so.tilo.chat"),
+        ))
+        .unwrap();
+        assert!(
+            evidence_facts(&key, &by_itself).is_err(),
+            "an app acting by itself mints no member's evidence"
+        );
+    }
+
     phase authenticated_local_journal_failed_upgrade_never_returns_dispatch_permission;
     {
         for failure in [BarrierFailure::File, BarrierFailure::Directory] {
