@@ -109,8 +109,18 @@ case "$mode" in
     seed_windows_sdk_manifests "$XWIN_CACHE_DIR"
     # `cargo xwin env` sets up the toolchain (downloading the CRT and SDK
     # into XWIN_CACHE_DIR, from the manifests seeded above) and prints the
-    # environment it would build with.
-    cargo xwin env --target "$target" >/dev/null
+    # environment it would build with. It runs in an empty crate of its own:
+    # in the checkout cargo would read every member of the workspace, and the
+    # download would then depend on all of them rather than on the pins alone.
+    probe="${TMPDIR:-/tmp}/xwin-probe-$arch"
+    rm -rf -- "$probe"
+    mkdir -p "$probe/src"
+    printf '[package]\nname = "xwin-probe"\nversion = "0.0.0"\nedition = "2021"\n\n[workspace]\n' >"$probe/Cargo.toml"
+    : >"$probe/src/lib.rs"
+    # The same toolchain the checkout builds with, which is all of it the probe reads.
+    cp "$here/../../../rust-toolchain.toml" "$probe/"
+    (cd "$probe" && cargo xwin env --target "$target" >/dev/null)
+    rm -rf -- "$probe"
     test -f "$XWIN_CACHE_DIR/xwin/DONE"
     tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -C "$XWIN_CACHE_DIR" -cf - . \
       | zstd -T4 -10 --quiet -o "$out/sdk-$arch.tar.zst" -f

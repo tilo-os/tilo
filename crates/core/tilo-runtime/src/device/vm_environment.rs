@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use serde_json::Value;
-use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec, PlacedAction};
-use tilo_actions::contract::{ActionContract, ActionKind, ConfirmationPolicy, RiskLevel};
+use tilo_actions::api::PlacedAction;
+use tilo_actions::contract::ActionKind;
 use tilo_actions::remote::environment_device::{self, ItemUse, ItemUsed, WindowShare};
 use tilo_actions::remote::environment_window::{
     self as wire, Holds, ItemLent, Launch, Report, Session, Share, Shown, Window,
@@ -30,8 +30,9 @@ use tilo_actions::remote::{
     ActionCallError, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,
     ReceiptStatus,
 };
-use tilo_actions::{ActionFailure, ActionOutput, ExecutionLocus, OperationKind};
 use tilo_lock::MutexRecover as _;
+
+use super::confined::{argument, descriptor, output, refused};
 
 /// The entry of the session holding a workspace's Browser, as the guest image ships it.
 pub const BROWSER_ENTRY: &str = "/usr/libexec/tilo/browser-session";
@@ -319,62 +320,6 @@ fn watch(environment: &Weak<VmEnvironment>) {
         if environment.keep_limits(tilo_clock::unix_now_ms()) {
             return;
         }
-    }
-}
-
-/// `value` as an action's answer.
-pub(super) fn output(value: &impl serde::Serialize) -> Outcome {
-    serde_json::to_value(value)
-        .map(|value| ActionOutput {
-            value: Some(value),
-            ..ActionOutput::default()
-        })
-        .map_err(|error| Box::new(refused(error.to_string())))
-}
-
-fn refused(message: String) -> ActionFailure {
-    ActionFailure {
-        code: "refused".to_owned(),
-        message,
-        details: None,
-        retryable: false,
-    }
-}
-
-/// The argument `request` carries, read as `T`.
-pub(super) fn argument<T: serde::de::DeserializeOwned>(
-    request: &InvokeRequest,
-) -> Result<T, String> {
-    let InvokeArgument::Json(named) = &request.argument else {
-        return Err("a VM session's action takes its arguments as an object".to_owned());
-    };
-    serde_json::from_value(Value::Object(named.clone())).map_err(|error| error.to_string())
-}
-
-/// `action`, as the device's dispatch lists it.
-pub(super) fn descriptor(action: &str, label: &str, kind: ActionKind) -> ActionDescriptor {
-    ActionDescriptor {
-        did: None,
-        state: tilo_actions::ActionState::default(),
-        semantic_identity: None,
-        address: ActionAddress::new(wire::RESOURCE, action),
-        resource_kind: wire::PROVIDER.to_owned(),
-        resource_label: "Workspace machine".to_owned(),
-        action_label: label.to_owned(),
-        keywords: Vec::new(),
-        icon: None,
-        description: None,
-        locus: ExecutionLocus::ClientLocal,
-        kind: OperationKind::Effect,
-        contract: ActionContract {
-            kind,
-            risk: RiskLevel::Low,
-            confirmation: ConfirmationPolicy::None,
-            ..ActionContract::default()
-        },
-        input: InputSpec::None,
-        params: Vec::new(),
-        view: None,
     }
 }
 

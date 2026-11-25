@@ -12,9 +12,13 @@
 use std::sync::{Arc, Weak};
 
 use iroh::EndpointAddr;
+use serde_json::Value;
 use tilo_actions::contract::ActionKind;
 use tilo_actions::remote::environment_window::{self as wire, Renewal};
-use tilo_actions::remote::{ActionProvider, Admitted, Caller, InvokeRequest, Outcome, Pending};
+use tilo_actions::remote::{
+    ActionProvider, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,
+};
+use tilo_actions::{ActionFailure, ActionOutput};
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity::sources::{DevicesSeen, DevicesTrust};
 use tilo_user_identity::DeviceCert;
@@ -97,7 +101,7 @@ impl tilo_actions::remote::Admits for Renewals {
     const APP: &'static str = wire::PLACEMENT;
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
-        tilo_actions::remote::admitted::top_level(vec![super::vm_environment::descriptor(
+        tilo_actions::remote::admitted::top_level(vec![descriptor(
             wire::RENEW,
             "Certify the workspace's machine again",
             ActionKind::Outside,
@@ -113,7 +117,7 @@ impl tilo_actions::remote::Admits for Renewals {
         if request.target.address != tilo_actions::ActionAddress::new(wire::RESOURCE, wire::RENEW) {
             return Err("this machine takes its certificate again, and nothing else, here".into());
         }
-        let Renewal { certificate } = super::vm_environment::argument(request)?;
+        let Renewal { certificate } = argument(request)?;
         let renewed: DeviceCert =
             serde_json::from_str(&certificate).map_err(|error| error.to_string())?;
         let workspaces = self
@@ -121,9 +125,7 @@ impl tilo_actions::remote::Admits for Renewals {
             .upgrade()
             .ok_or("this machine's daemon is stopping")?;
         take_renewal(&workspaces, renewed)?;
-        Ok(Pending::ready(super::vm_environment::output(
-            &serde_json::json!({}),
-        )))
+        Ok(Pending::ready(output(&serde_json::json!({}))))
     }
 }
 
@@ -211,6 +213,67 @@ pub(crate) fn placed_cert_until(
     );
     tilo_user_identity::sign_device_cert(&mut cert, &issuer).expect("its issuer signs");
     cert
+}
+
+/// `value` as an action's answer.
+pub(super) fn output(value: &impl serde::Serialize) -> Outcome {
+    serde_json::to_value(value)
+        .map(|value| ActionOutput {
+            value: Some(value),
+            ..ActionOutput::default()
+        })
+        .map_err(|error| Box::new(refused(error.to_string())))
+}
+
+pub(super) fn refused(message: String) -> ActionFailure {
+    ActionFailure {
+        code: "refused".to_owned(),
+        message,
+        details: None,
+        retryable: false,
+    }
+}
+
+/// The argument `request` carries, read as `T`.
+pub(super) fn argument<T: serde::de::DeserializeOwned>(
+    request: &InvokeRequest,
+) -> Result<T, String> {
+    let InvokeArgument::Json(named) = &request.argument else {
+        return Err("a workspace machine's action takes its arguments as an object".to_owned());
+    };
+    serde_json::from_value(Value::Object(named.clone())).map_err(|error| error.to_string())
+}
+
+/// `action` of the workspace machine, as the device's dispatch lists it: the confined device's
+/// renewal and a VM session's actions alike.
+pub(super) fn descriptor(
+    action: &str,
+    label: &str,
+    kind: ActionKind,
+) -> tilo_actions::api::ActionDescriptor {
+    tilo_actions::api::ActionDescriptor {
+        did: None,
+        state: tilo_actions::ActionState::default(),
+        semantic_identity: None,
+        address: tilo_actions::api::ActionAddress::new(wire::RESOURCE, action),
+        resource_kind: wire::PROVIDER.to_owned(),
+        resource_label: "Workspace machine".to_owned(),
+        action_label: label.to_owned(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        locus: tilo_actions::ExecutionLocus::ClientLocal,
+        kind: tilo_actions::OperationKind::Effect,
+        contract: tilo_actions::contract::ActionContract {
+            kind,
+            risk: tilo_actions::contract::RiskLevel::Low,
+            confirmation: tilo_actions::contract::ConfirmationPolicy::None,
+            ..tilo_actions::contract::ActionContract::default()
+        },
+        input: tilo_actions::api::InputSpec::None,
+        params: Vec::new(),
+        view: None,
+    }
 }
 
 #[cfg(test)]
