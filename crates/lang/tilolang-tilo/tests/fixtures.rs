@@ -707,11 +707,41 @@ pub fn call(
 }
 
 /// What Settings compiles against, as `tilolang check` and `build` find it: the platform's
-/// packages and the fleet's native ones beside it (the device's migrations, which its account
-/// rows ask).
+/// packages, the fleet's native ones beside it (the device's migrations, which its account rows
+/// ask), and the fleet's own packages it `use`s compiled as `build` compiles them (Files' access
+/// list, a template view whose text travels in the imported package's metadata and expands in
+/// Settings' view).
 pub fn settings_packages() -> Result<Vec<tilolang::PackageMeta>, String> {
-    let fleet = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl");
-    tilolang_tilo::catalogue::published_packages(&[fleet])
+    static PACKAGES: std::sync::OnceLock<Result<Vec<tilolang::PackageMeta>, String>> =
+        std::sync::OnceLock::new();
+    PACKAGES
+        .get_or_init(|| {
+            let fleet = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl");
+            let mut published = tilolang_tilo::catalogue::published_packages(&[fleet.clone()])?;
+            let settings = fleet.join("settings");
+            let dirs = tilolang::source::dependency_order_with(
+                &settings,
+                &[],
+                &tilolang::source::apps_of(&published),
+            )?;
+            // The packages before Settings itself, dependencies first: its own source the caller
+            // compiles.
+            let used = &dirs[..dirs.len().saturating_sub(1)];
+            let built = tilolang::source::compile_dirs(
+                used,
+                &published,
+                &mut tilolang::OsEntropy::default(),
+            )
+            .map_err(|error| error.to_string())?;
+            for package in built {
+                let meta = package.compiled.meta;
+                if !published.iter().any(|known| known.app == meta.app) {
+                    published.push(meta);
+                }
+            }
+            Ok(published)
+        })
+        .clone()
 }
 
 /// Hand `host` each of Settings' sections, empty: a host with no session publishes none of
