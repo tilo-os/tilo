@@ -275,8 +275,7 @@ impl Stop {
     /// Wait up to `within` for the daemon to be told to stop: whether it was.
     pub(crate) fn wait(&self, within: Duration) -> bool {
         let told = self.0.told.lock_recover();
-        *self
-            .0
+        self.0
             .waiting
             .wait_timeout_while(told, within, |told| !told.0)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
