@@ -636,16 +636,17 @@ impl ActionService {
     fn content_puts(
         &self,
         dispatcher: &Arc<dyn ActionProvider + Send + Sync>,
+        target: Option<&tilo_actions::remote::RemoteActionTarget>,
     ) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         if let Some(alone) = self.alone(dispatcher) {
-            return alone.content_puts();
+            return alone.content_puts_for(target);
         }
-        self.0.dispatcher.content_puts().or_else(|| {
+        dispatcher.content_puts_for(target).or_else(|| {
             self.0
                 .providers
                 .lock_recover()
                 .iter()
-                .find_map(tilo_actions::remote::ActionProvider::content_puts)
+                .find_map(|provider| provider.content_puts_for(target))
         })
     }
 
@@ -657,14 +658,11 @@ impl ActionService {
         caller: &Caller,
         step: &tilo_actions::remote::ContentPutStep,
     ) -> Result<tilo_actions::remote::ContentPutAnswer, tilo_actions::remote::ActionCallError> {
-        let Some(puts) = self.content_puts(dispatcher) else {
-            return Err(tilo_actions::remote::ActionCallError::Unavailable {
-                reason: tilo_actions::remote::CONTENT_PUTS_UNAVAILABLE.into(),
-            });
-        };
-        self.0
-            .content_puts
-            .step(puts.as_ref(), caller, step.clone())
+        self.0.content_puts.step(
+            &|target| self.content_puts(dispatcher, target),
+            caller,
+            step.clone(),
+        )
     }
 
     /// What owns invocation `id` for `caller`: the dispatcher where it keeps the invocation,

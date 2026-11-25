@@ -25,6 +25,8 @@ dev-overrides = ["package-store/dev-overrides"]
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
+# A change from a terminal goes over the daemon's action wire, as far as its own person's calls.
+tilo-actions = { path = "../../core/actions" }
 # `tilo-install check` is run with a bounded deadline and bounded output.
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 tilo-formats = { path = "../../ui/tilo-formats" }

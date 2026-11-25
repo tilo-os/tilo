@@ -9,7 +9,9 @@
 //! A put is invisible to everyone until an action at its own node
 //! references it: storing content is never authority over any document.
 
-use super::{ActionCallError, Caller};
+use std::sync::Arc;
+
+use super::{ActionCallError, Caller, RemoteActionTarget};
 
 /// The most raw bytes one append carries. MCP requests are bounded at
 /// 1 MiB; 512 KiB is about 683 KiB of base64, leaving room for the rest of
@@ -154,8 +156,14 @@ pub const MAX_HOSTED_CONTENT_PUTS: usize = 64;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContentPutStep {
-    /// Open an upload of exactly `size` bytes.
-    Begin { size: u64 },
+    /// Open an upload of exactly `size` bytes, `target` being the action their arguments are for
+    /// when the caller knows it: an action of the caller's own device keeps what it reads on that
+    /// device, and everything else a workspace's store.
+    Begin {
+        size: u64,
+        #[serde(default)]
+        target: Option<RemoteActionTarget>,
+    },
     /// Accept the next bytes at `offset`, hex-encoded so the frame stays
     /// self-describing text.
     Append {
@@ -166,8 +174,13 @@ pub enum ContentPutStep {
     /// Store what the upload holds.
     Finish { upload: u64 },
     /// Store several whole files at once, each hex-encoded: the answer names
-    /// each one's reference in order ([`ContentPutAnswer::Many`]).
-    Many { files: Vec<String> },
+    /// each one's reference in order ([`ContentPutAnswer::Many`]), `target`
+    /// naming the action they are for as [`Self::Begin`] does.
+    Many {
+        files: Vec<String>,
+        #[serde(default)]
+        target: Option<RemoteActionTarget>,
+    },
     /// Ask which of these hashes (lowercase BLAKE3 hex) the store already
     /// holds ([`ContentPutAnswer::Have`]).
     Have { hashes: Vec<String> },
@@ -215,9 +228,23 @@ pub struct HostedContentPuts {
 #[derive(Default)]
 struct HostedOpen {
     last: u64,
-    /// By id: who began it, when it was last touched, and the upload.
-    uploads: std::collections::BTreeMap<u64, (Caller, u64, Box<dyn ContentPut>)>,
+    /// By id: who began it, when it was last touched, the upload, and the store it was begun in,
+    /// which finishes it.
+    uploads: std::collections::BTreeMap<u64, OpenUpload>,
     touched: u64,
+}
+
+/// Where a step's bytes go: the store the action its arguments are for reads, or the caller's own
+/// when it names none.
+pub type PutsFor<'a> =
+    dyn Fn(Option<&RemoteActionTarget>) -> Option<Arc<dyn ContentPuts>> + Send + Sync + 'a;
+
+/// One upload a provider keeps open, and the store it was begun in.
+struct OpenUpload {
+    caller: Caller,
+    touched: u64,
+    put: Box<dyn ContentPut>,
+    store: Arc<dyn ContentPuts>,
 }
 
 impl HostedContentPuts {
@@ -228,10 +255,59 @@ impl HostedContentPuts {
             .lock_recover()
             .uploads
             .get(&upload)
-            .filter(|(owner, _, _)| owner == caller)
-            .map(|(_, _, put)| ContentPutAnswer::Appended {
-                written: put.written(),
+            .filter(|open| open.caller == *caller)
+            .map(|open| ContentPutAnswer::Appended {
+                written: open.put.written(),
             })
+    }
+
+    /// Open `size` bytes of `caller`'s in `store`, answering its id here.
+    fn begin(
+        &self,
+        store: Arc<dyn ContentPuts>,
+        caller: &Caller,
+        size: u64,
+    ) -> Result<ContentPutAnswer, ActionCallError> {
+        use tilo_lock::MutexRecover as _;
+        let mut open = self.open.lock_recover();
+        let mine = open
+            .uploads
+            .values()
+            .filter(|open| open.caller == *caller)
+            .count();
+        if mine >= MAX_OPEN_CONTENT_PUTS {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!(
+                    "this session already has {MAX_OPEN_CONTENT_PUTS} uploads open: finish one first"
+                ),
+            });
+        }
+        let put = store.begin(caller, size)?;
+        while open.uploads.len() >= MAX_HOSTED_CONTENT_PUTS {
+            let Some(stalest) = open
+                .uploads
+                .iter()
+                .min_by_key(|(_, open)| open.touched)
+                .map(|(id, _)| *id)
+            else {
+                break;
+            };
+            open.uploads.remove(&stalest);
+        }
+        open.last = open.last.saturating_add(1);
+        open.touched = open.touched.saturating_add(1);
+        let (upload, touched) = (open.last, open.touched);
+        open.uploads.insert(
+            upload,
+            OpenUpload {
+                caller: caller.clone(),
+                touched,
+                put,
+                store,
+            },
+        );
+        drop(open);
+        Ok(ContentPutAnswer::Begun { upload })
     }
 
     /// Store the files of a [`ContentPutStep::Many`].
@@ -298,15 +374,16 @@ impl HostedContentPuts {
             .map(|present| ContentPutAnswer::Have { present })
     }
 
-    /// Answer `step` from `caller`, putting into `puts`.
+    /// Answer `step` from `caller`, putting into the store `store_for` answers for the action the
+    /// step names, or the one it names for none.
     ///
     /// # Errors
     ///
-    /// What `puts` refused, an upload the caller has no such open, or bytes
+    /// What the store refused, an upload the caller has no such open, or bytes
     /// that are not hex.
     pub fn step(
         &self,
-        puts: &dyn ContentPuts,
+        store_for: &PutsFor<'_>,
         caller: &Caller,
         step: ContentPutStep,
     ) -> Result<ContentPutAnswer, ActionCallError> {
@@ -314,40 +391,13 @@ impl HostedContentPuts {
         let gone = |upload: u64| ActionCallError::InvalidRequest {
             reason: format!("no upload {upload} is open in this session"),
         };
+        let no_store = || ActionCallError::Unavailable {
+            reason: "no content store is open here".into(),
+        };
         match step {
-            ContentPutStep::Begin { size } => {
-                let mut open = self.open.lock_recover();
-                let mine = open
-                    .uploads
-                    .values()
-                    .filter(|(owner, _, _)| owner == caller)
-                    .count();
-                if mine >= MAX_OPEN_CONTENT_PUTS {
-                    return Err(ActionCallError::InvalidRequest {
-                        reason: format!(
-                            "this session already has {MAX_OPEN_CONTENT_PUTS} uploads open: finish one first"
-                        ),
-                    });
-                }
-                let begun = puts.begin(caller, size)?;
-                while open.uploads.len() >= MAX_HOSTED_CONTENT_PUTS {
-                    let Some(stalest) = open
-                        .uploads
-                        .iter()
-                        .min_by_key(|(_, (_, touched, _))| *touched)
-                        .map(|(id, _)| *id)
-                    else {
-                        break;
-                    };
-                    open.uploads.remove(&stalest);
-                }
-                open.last = open.last.saturating_add(1);
-                open.touched = open.touched.saturating_add(1);
-                let (upload, touched) = (open.last, open.touched);
-                open.uploads
-                    .insert(upload, (caller.clone(), touched, begun));
-                drop(open);
-                Ok(ContentPutAnswer::Begun { upload })
+            ContentPutStep::Begin { size, target } => {
+                let store = store_for(target.as_ref()).ok_or_else(no_store)?;
+                self.begin(store, caller, size)
             }
             ContentPutStep::Append {
                 upload,
@@ -371,10 +421,10 @@ impl HostedContentPuts {
                 let entry = open
                     .uploads
                     .get_mut(&upload)
-                    .filter(|(owner, _, _)| owner == caller)
+                    .filter(|open| open.caller == *caller)
                     .ok_or_else(|| gone(upload))?;
-                entry.1 = now;
-                let appended = entry.2.append(offset, &chunk);
+                entry.touched = now;
+                let appended = entry.put.append(offset, &chunk);
                 if matches!(appended, Err(ActionCallError::Refused { .. })) {
                     // The store refused the bytes: the upload is over.
                     open.uploads.remove(&upload);
@@ -385,29 +435,36 @@ impl HostedContentPuts {
             ContentPutStep::Progress { upload } => {
                 self.progress(caller, upload).ok_or_else(|| gone(upload))
             }
-            ContentPutStep::Many { files } => Self::many(puts, caller, &files),
-            ContentPutStep::Have { hashes } => Self::have(puts, caller, &hashes),
+            ContentPutStep::Many { files, target } => {
+                let puts = store_for(target.as_ref()).ok_or_else(no_store)?;
+                Self::many(puts.as_ref(), caller, &files)
+            }
+            ContentPutStep::Have { hashes } => {
+                let puts = store_for(None).ok_or_else(no_store)?;
+                Self::have(puts.as_ref(), caller, &hashes)
+            }
             ContentPutStep::Finish { upload } => {
                 let mut open = self.open.lock_recover();
-                let (_, _, put) = open
+                let found = open
                     .uploads
                     .get(&upload)
-                    .filter(|(owner, _, _)| owner == caller)
+                    .filter(|open| open.caller == *caller)
                     .ok_or_else(|| gone(upload))?;
                 // Short of its size, the upload stays open to be completed.
-                if put.written() != put.size() {
+                let (written, size) = (found.put.written(), found.put.size());
+                if written != size {
                     return Err(ActionCallError::InvalidRequest {
                         reason: format!(
-                            "the upload has {} of {} bytes: append the rest at offset {}",
-                            put.written(),
-                            put.size(),
-                            put.written()
+                            "the upload has {written} of {size} bytes: append the rest at offset \
+                             {written}"
                         ),
                     });
                 }
-                let (_, _, put) = open.uploads.remove(&upload).ok_or_else(|| gone(upload))?;
+                let OpenUpload { put, store, .. } =
+                    open.uploads.remove(&upload).ok_or_else(|| gone(upload))?;
                 drop(open);
-                puts.finish(caller, put)
+                store
+                    .finish(caller, put)
                     .map(|content| ContentPutAnswer::Finished { content })
             }
         }
@@ -451,6 +508,15 @@ mod tests {
         }
     }
 
+    /// The store every step of these tests goes to.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a step asks where its bytes go, and this store is always there"
+    )]
+    fn store(_: Option<&RemoteActionTarget>) -> Option<Arc<dyn ContentPuts>> {
+        Some(Arc::new(Memory))
+    }
+
     /// An upload over a session answers only the caller that began it,
     /// finishes only once whole, and is gone once finished.
     #[test]
@@ -458,54 +524,61 @@ mod tests {
         let puts = HostedContentPuts::default();
         let (ada, eve) = (Caller::local_person("ada"), Caller::local_person("eve"));
         let ContentPutAnswer::Begun { upload } = puts
-            .step(&Memory, &ada, ContentPutStep::Begin { size: 4 })
+            .step(
+                &store,
+                &ada,
+                ContentPutStep::Begin {
+                    size: 4,
+                    target: None,
+                },
+            )
             .unwrap()
         else {
             panic!("begun")
         };
         assert!(
-            puts.step(&Memory, &eve, ContentPutStep::append(upload, 0, b"ab"))
+            puts.step(&store, &eve, ContentPutStep::append(upload, 0, b"ab"))
                 .is_err(),
             "another caller's upload is not there for it"
         );
         assert_eq!(
-            puts.step(&Memory, &ada, ContentPutStep::append(upload, 0, b"ab"))
+            puts.step(&store, &ada, ContentPutStep::append(upload, 0, b"ab"))
                 .unwrap(),
             ContentPutAnswer::Appended { written: 2 }
         );
         assert!(
-            puts.step(&Memory, &ada, ContentPutStep::Finish { upload })
+            puts.step(&store, &ada, ContentPutStep::Finish { upload })
                 .is_err(),
             "half an upload does not finish"
         );
         assert_eq!(
-            puts.step(&Memory, &ada, ContentPutStep::append(upload, 0, b"ab"))
+            puts.step(&store, &ada, ContentPutStep::append(upload, 0, b"ab"))
                 .ok(),
             None,
             "a piece sent again is refused"
         );
         assert_eq!(
-            puts.step(&Memory, &ada, ContentPutStep::Progress { upload })
+            puts.step(&store, &ada, ContentPutStep::Progress { upload })
                 .unwrap(),
             ContentPutAnswer::Appended { written: 2 },
             "the upload says where to resume"
         );
         assert!(
-            puts.step(&Memory, &eve, ContentPutStep::Progress { upload })
+            puts.step(&store, &eve, ContentPutStep::Progress { upload })
                 .is_err(),
             "nobody else learns where it stands"
         );
-        puts.step(&Memory, &ada, ContentPutStep::append(upload, 2, b"cd"))
+        puts.step(&store, &ada, ContentPutStep::append(upload, 2, b"cd"))
             .unwrap();
         assert_eq!(
-            puts.step(&Memory, &ada, ContentPutStep::Finish { upload })
+            puts.step(&store, &ada, ContentPutStep::Finish { upload })
                 .unwrap(),
             ContentPutAnswer::Finished {
                 content: "4 bytes".into()
             }
         );
         assert!(
-            puts.step(&Memory, &ada, ContentPutStep::Finish { upload })
+            puts.step(&store, &ada, ContentPutStep::Finish { upload })
                 .is_err(),
             "a finished upload is closed"
         );
@@ -519,7 +592,14 @@ mod tests {
         let ada = Caller::local_person("ada");
         let whole = vec![String::new(); MAX_PUT_MANY_FILES];
         let ContentPutAnswer::Many { contents } = puts
-            .step(&Memory, &ada, ContentPutStep::Many { files: whole })
+            .step(
+                &store,
+                &ada,
+                ContentPutStep::Many {
+                    files: whole,
+                    target: None,
+                },
+            )
             .unwrap()
         else {
             panic!("many")
@@ -527,8 +607,15 @@ mod tests {
         assert_eq!(contents.len(), MAX_PUT_MANY_FILES);
         let past = vec![String::new(); MAX_PUT_MANY_FILES.saturating_add(1)];
         assert!(
-            puts.step(&Memory, &ada, ContentPutStep::Many { files: past })
-                .is_err(),
+            puts.step(
+                &store,
+                &ada,
+                ContentPutStep::Many {
+                    files: past,
+                    target: None
+                }
+            )
+            .is_err(),
             "a step of more files is refused rather than made to wait"
         );
     }

@@ -32,7 +32,7 @@ use tilo_lock::MutexRecover as _;
 use super::control::DeviceContent;
 
 /// The provider the cache's actions are published under.
-pub const PROVIDER: &str = "so.tilo.packages";
+pub use package_actions::PROVIDER;
 
 /// The device's package cache as an [`ActionProvider`].
 pub struct PackageCache {

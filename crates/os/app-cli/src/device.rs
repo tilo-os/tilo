@@ -166,6 +166,40 @@ pub fn registries(action: &str, arguments: &Value) -> Result<Value, String> {
     Daemon::reach()?.workspace(&format!("workspace/registries#{verb}"), arguments)
 }
 
+/// The connection to the daemon serving `socket`, or what to tell the person when none does.
+///
+/// # Errors
+/// No daemon answers on `socket`.
+fn stream_at(socket: &Path) -> Result<tilo_files::native::socket::Stream, String> {
+    tilo_files::native::socket::connect(socket).map_err(|error| {
+        format!(
+            "Tilo's background service isn't answering on this computer ({}: {error}): \
+             changes to what it runs go through it. Run `tilo status` to see how it \
+             stands. An image build writes its store with `--offline-store DIR` instead",
+            socket.display()
+        )
+    })
+}
+
+/// The action wire to the daemon serving `socket`: what a change from this computer's own
+/// account asks it over, so the daemon decides it as that person's own call and never as an
+/// agent's.
+///
+/// # Errors
+/// No daemon answers on `socket`.
+pub fn line_at(socket: &Path) -> Result<tilo_actions::remote::LineClient, String> {
+    let stream = stream_at(socket)?;
+    tilo_actions::remote::LineClient::of_stream(stream).map_err(|error| error.to_string())
+}
+
+/// The action wire to this computer's daemon ([`line_at`] at its socket).
+///
+/// # Errors
+/// No daemon answers on this computer.
+pub fn line() -> Result<tilo_actions::remote::LineClient, String> {
+    line_at(&tilo_paths::machine::daemon_native()?)
+}
+
 /// One connection to the daemon's native endpoint, as MCP.
 pub struct Daemon {
     reader: BufReader<tilo_files::native::socket::Stream>,
@@ -191,14 +225,7 @@ impl Daemon {
     /// # Errors
     /// No daemon answers on `socket`.
     pub fn at(socket: &Path) -> Result<Self, String> {
-        let stream = tilo_files::native::socket::connect(socket).map_err(|error| {
-            format!(
-                "Tilo's background service isn't answering on this computer ({}: {error}): \
-                 changes to what it runs go through it. Run `tilo status` to see how it \
-                 stands. An image build writes its store with `--offline-store DIR` instead",
-                socket.display()
-            )
-        })?;
+        let stream = stream_at(socket)?;
         Ok(Self {
             reader: BufReader::new(stream.try_clone().map_err(|error| error.to_string())?),
             writer: stream,

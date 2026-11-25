@@ -4784,6 +4784,23 @@ impl RuntimeActionProvider {
             .map(|session| session.admission.caller().clone())
     }
 
+    /// The store the provider that answers `target` keeps what its actions read, when it keeps
+    /// one of its own: the device's own providers do, so their bytes stay here rather than in a
+    /// workspace every member's device carries. `None` for an action answered by a provider that
+    /// reads a workspace's store, which is where [`Self::content_puts`] puts it.
+    fn device_content_puts(
+        &self,
+        target: &RemoteActionTarget,
+    ) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        let registered = self.workspaces.copies().providers().get(&target.provider)?;
+        let content = registered.answers.content_puts()?;
+        Some(Arc::new(AdmittedContent {
+            session: Arc::clone(self.session.as_ref()?),
+            workspaces: Arc::clone(&self.workspaces),
+            content,
+        }))
+    }
+
     /// Whether `caller` acts in the run of the person's own plain client on this computer: what
     /// a connection from their account to the daemon's own socket is admitted as
     /// ([`Self::session_factory`]), never a run of an agent elsewhere, of a roster turn, or of
@@ -5941,6 +5958,20 @@ impl ActionProvider for RuntimeActionProvider {
             workspaces: Arc::clone(&self.workspaces),
             content: self.broker.state().content_puts()?,
         }))
+    }
+
+    /// Where the bytes a put for the action `target` names go: the store the provider that
+    /// answers it keeps, which for one of this device's actions is the device's own, so a
+    /// development build's files never reach a workspace every member's device carries.
+    /// Everything else a put is for stays where [`Self::content_puts`] puts it.
+    fn content_puts_for(
+        &self,
+        target: Option<&RemoteActionTarget>,
+    ) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        if let Some(content) = target.and_then(|target| self.device_content_puts(target)) {
+            return Some(content);
+        }
+        self.content_puts()
     }
 
     /// Records read through the device's one record reader, the workspace's invocations with

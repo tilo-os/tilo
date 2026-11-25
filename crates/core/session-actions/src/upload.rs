@@ -139,7 +139,7 @@ pub async fn put(
     stopped: &dyn Fn() -> bool,
 ) -> Result<String, UploadError> {
     let size = source.size();
-    let upload = match answered(steps.put_step(ContentPutStep::Begin { size }).await)
+    let upload = match answered(steps.put_step(ContentPutStep::Begin { size, target: None }).await)
         .map_err(UploadError::Refused)?
     {
         ContentPutAnswer::Begun { upload } => upload,

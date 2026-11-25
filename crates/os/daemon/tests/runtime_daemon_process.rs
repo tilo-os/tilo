@@ -993,6 +993,47 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() -> Result
     Ok(())
 }
 
+/// A file the person puts for one of this device's own actions is kept on the device, where that
+/// action reads it, and never in the workspace's store every member's device carries.
+#[test]
+fn a_put_for_a_device_action_is_kept_on_the_device() -> Result<()> {
+    use tilo_actions::remote::{Caller, ContentGets as _, ContentPut as _, LineClient};
+    let profile = DaemonProfile::new()?;
+    let line = LineClient::connect(&native_socket(profile.path())?)?;
+    let caller = Caller::local_person("");
+    let keys = tilo_device_identity::persist::IdentityPaths::under(profile.path().join("identity"));
+    let device = tilo_device_identity::persist::load_device_key(&keys)
+        .context("the profile's device key")?;
+    // The action the put is for: this device's development build, whose arguments name
+    // `tilo.content:` references its own store answers.
+    let target = tilo_actions::remote::RemoteActionTarget {
+        provider: package_actions::PROVIDER.to_owned(),
+        address: tilo_actions::ActionAddress::new(
+            format!(
+                "devices/{}/packages",
+                hex::encode(device.verifying_key().to_bytes())
+            ),
+            "install-dev",
+        ),
+    };
+    let bytes = b"a development build's own file";
+    let mut put = line.begin_put_for(u64::try_from(bytes.len())?, Some(target))?;
+    put.append(0, bytes)?;
+    let content = Box::new(put).finish()?;
+    let hash = content
+        .strip_prefix("tilo.content:")
+        .context("a content reference")?;
+    ensure!(
+        profile.path().join("apps/content").join(hash).is_file(),
+        "the device keeps the bytes its own action reads: {content}"
+    );
+    ensure!(
+        line.get(&caller, &content, 0, 0).is_err(),
+        "the workspace's store, which every member's device carries, keeps none of it: {content}"
+    );
+    Ok(())
+}
+
 /// `daemon`'s exit status once it ends within `within`: the daemon ends as it says it did. One
 /// still running then is killed, and its log says what kept it.
 fn ended_within(

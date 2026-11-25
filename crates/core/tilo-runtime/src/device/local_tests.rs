@@ -433,7 +433,7 @@ fn a_folder_put_again_sends_none_of_its_bytes() {
     let many: Vec<usize> = steps
         .iter()
         .filter_map(|step| match step {
-            ContentPutStep::Many { files } => Some(files.len()),
+            ContentPutStep::Many { files, .. } => Some(files.len()),
             _ => None,
         })
         .collect();

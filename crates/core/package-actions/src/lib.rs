@@ -22,7 +22,7 @@ mod offered;
 mod published;
 pub mod rows;
 
-pub use published::{Published, published, reading};
+pub use published::{PROVIDER, Published, published, reading};
 pub use rows::{PackageAbout, PackageRow, RowState};
 
 /// A file a change names: a path in an image build, `tilo.content:<hash>` for bytes a caller

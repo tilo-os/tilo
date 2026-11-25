@@ -1959,6 +1959,18 @@ pub trait ActionProvider {
         None
     }
 
+    /// Where this provider's callers put content the action `target` names reads: an action of
+    /// the caller's own device keeps what it reads there, and its provider says so with a store
+    /// of its own. Everything else a put is for reads the store [`Self::content_puts`] names,
+    /// which is what a provider that keeps no store of its own answers.
+    fn content_puts_for(
+        &self,
+        target: Option<&RemoteActionTarget>,
+    ) -> Option<std::sync::Arc<dyn ContentPuts>> {
+        let _ = target;
+        self.content_puts()
+    }
+
     /// Where this provider's callers read content back out of their workspace's
     /// content store ([`ContentGets`]); `None` for a provider without one.
     fn content_gets(&self) -> Option<std::sync::Arc<dyn ContentGets>> {

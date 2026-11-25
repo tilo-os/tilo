@@ -1536,7 +1536,7 @@ mod tests {
             };
             let append = matches!(&step, ContentPutStep::Append { .. });
             let answer = match step {
-                ContentPutStep::Many { files } => {
+                ContentPutStep::Many { files, .. } => {
                     self.many.lock_recover().push(files.len());
                     ContentPutAnswer::Many {
                         contents: (0..files.len())
@@ -1544,7 +1544,7 @@ mod tests {
                             .collect(),
                     }
                 }
-                ContentPutStep::Begin { size } => {
+                ContentPutStep::Begin { size, .. } => {
                     let upload = {
                         let mut next = self.next_upload.lock_recover();
                         *next = next.saturating_add(1);

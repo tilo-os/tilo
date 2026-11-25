@@ -6,6 +6,9 @@ use serde_json::{Map, Value};
 
 use crate::Change;
 
+/// The provider a device's package cache answers its actions as.
+pub const PROVIDER: &str = "so.tilo.packages";
+
 /// One published action: its id and the change its arguments make.
 pub struct Published {
     pub id: &'static str,

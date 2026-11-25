@@ -85,6 +85,13 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
         (**self).content_puts()
     }
 
+    fn content_puts_for(
+        &self,
+        target: Option<&super::RemoteActionTarget>,
+    ) -> Option<std::sync::Arc<dyn ContentPuts>> {
+        (**self).content_puts_for(target)
+    }
+
     fn content_gets(&self) -> Option<std::sync::Arc<dyn ContentGets>> {
         (**self).content_gets()
     }

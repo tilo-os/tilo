@@ -120,10 +120,8 @@ pub fn serve_lines_with<H: ActionProvider + Clone + Send + Sync + 'static>(
         let (provider, caller) = (&provider, &caller);
         let answer = match frame.message {
             RemoteActionMessage::ContentPutRequest { correlation, step } => {
-                let result = provider
-                    .content_puts()
-                    .ok_or_else(no_content_store)
-                    .and_then(|store| uploads.step(store.as_ref(), caller, step));
+                let result =
+                    uploads.step(&|target| provider.content_puts_for(target), caller, step);
                 frame_line(RemoteActionMessage::ContentPutResponse {
                     correlation,
                     result,

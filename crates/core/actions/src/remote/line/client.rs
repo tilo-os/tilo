@@ -20,7 +20,8 @@ use crate::remote::{
     ContentPutStep, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest,
     MAX_CONTENT_FRAME_BYTES, MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES,
     MAX_REMOTE_ACTION_FRAME_BYTES, MAX_REMOTE_WAIT, Pending, RemoteActionFrame,
-    RemoteActionMessage, ResourceReadRequest, ResourceReads, UpdateMark, WatchScope, pending,
+    RemoteActionMessage, RemoteActionTarget, ResourceReadRequest, ResourceReads, UpdateMark,
+    WatchScope, pending,
 };
 
 /// How long past the longest remote wait an answer is waited for before the ask is given up.
@@ -527,6 +528,18 @@ impl ActionProvider for LineClient {
         Some(Arc::new(self.clone()))
     }
 
+    /// This connection's puts for the action `target` names, so a host that walks a provider at
+    /// the other end of it passes the action on.
+    fn content_puts_for(
+        &self,
+        target: Option<&RemoteActionTarget>,
+    ) -> Option<Arc<dyn ContentPuts>> {
+        Some(Arc::new(TargetedPuts {
+            client: self.clone(),
+            target: target.cloned(),
+        }))
+    }
+
     fn content_gets(&self) -> Option<Arc<dyn ContentGets>> {
         Some(Arc::new(self.clone()))
     }
@@ -575,6 +588,29 @@ impl ChangeFeed for LineClient {
     }
 }
 
+/// One connection's content puts for the action `target` names
+/// ([`ActionProvider::content_puts_for`]).
+struct TargetedPuts {
+    client: LineClient,
+    target: Option<RemoteActionTarget>,
+}
+
+impl ContentPuts for TargetedPuts {
+    fn begin(&self, _caller: &Caller, size: u64) -> Answered<Box<dyn ContentPut>> {
+        Ok(Box::new(
+            self.client.begin_put_for(size, self.target.clone())?,
+        ))
+    }
+
+    fn put_many(&self, _caller: &Caller, files: &[Vec<u8>]) -> Answered<Vec<String>> {
+        self.client.put_many_for(files, self.target.as_ref())
+    }
+
+    fn have(&self, caller: &Caller, hashes: &[String]) -> Answered<Vec<bool>> {
+        self.client.have(caller, hashes)
+    }
+}
+
 /// What the other end answered for an upload step where it should have answered something else.
 fn unexpected_step(answer: &ContentPutAnswer) -> ActionCallError {
     ActionCallError::Unavailable {
@@ -589,7 +625,21 @@ impl LineClient {
     /// # Errors
     /// The other end refused it, or stopped answering.
     pub fn begin_put(&self, size: u64) -> Answered<LinePut> {
-        match self.put_step(ContentPutStep::Begin { size })? {
+        self.begin_put_for(size, None)
+    }
+
+    /// Open an upload of `size` bytes for the action `target` names: the store the provider that
+    /// answers that action keeps, which is the device's own one for an action of the caller's own
+    /// device.
+    ///
+    /// # Errors
+    /// The other end refused it, or stopped answering.
+    pub fn begin_put_for(
+        &self,
+        size: u64,
+        target: Option<RemoteActionTarget>,
+    ) -> Answered<LinePut> {
+        match self.put_step(ContentPutStep::Begin { size, target })? {
             ContentPutAnswer::Begun { upload } => Ok(LinePut {
                 client: self.clone(),
                 upload,
@@ -692,14 +742,46 @@ impl ContentPuts for LineClient {
         Ok(Box::new(self.begin_put(size)?))
     }
 
-    fn put_many(&self, caller: &Caller, files: &[Vec<u8>]) -> Answered<Vec<String>> {
+    fn put_many(&self, _caller: &Caller, files: &[Vec<u8>]) -> Answered<Vec<String>> {
+        self.put_many_for(files, None)
+    }
+
+    fn have(&self, _caller: &Caller, hashes: &[String]) -> Answered<Vec<bool>> {
+        let mut present = Vec::with_capacity(hashes.len());
+        for chunk in hashes.chunks(MAX_HAVE_HASHES) {
+            match self.put_step(ContentPutStep::Have {
+                hashes: chunk.to_vec(),
+            })? {
+                ContentPutAnswer::Have { present: answered } if answered.len() == chunk.len() => {
+                    present.extend(answered);
+                }
+                other => return Err(unexpected_step(&other)),
+            }
+        }
+        Ok(present)
+    }
+}
+
+impl LineClient {
+    /// [`ContentPuts::put_many`] for the action `target` names, as [`Self::begin_put_for`] does.
+    ///
+    /// # Errors
+    /// What [`Self::begin_put`] or the other end's store refused.
+    pub fn put_many_for(
+        &self,
+        files: &[Vec<u8>],
+        target: Option<&RemoteActionTarget>,
+    ) -> Answered<Vec<String>> {
         let mut contents = Vec::with_capacity(files.len());
         let mut group: Vec<String> = Vec::new();
         let mut bytes = 0_usize;
         let send = |group: &mut Vec<String>, contents: &mut Vec<String>| {
             let files = std::mem::take(group);
             let count = files.len();
-            match self.put_step(ContentPutStep::Many { files })? {
+            match self.put_step(ContentPutStep::Many {
+                files,
+                target: target.cloned(),
+            })? {
                 ContentPutAnswer::Many { contents: answered } if answered.len() == count => {
                     contents.extend(answered);
                     Ok(())
@@ -714,9 +796,12 @@ impl ContentPuts for LineClient {
                     send(&mut group, &mut contents)?;
                     bytes = 0;
                 }
-                let mut put = self.begin(caller, u64::try_from(file.len()).unwrap_or(u64::MAX))?;
+                let mut put = self.begin_put_for(
+                    u64::try_from(file.len()).unwrap_or(u64::MAX),
+                    target.cloned(),
+                )?;
                 put.append(0, file)?;
-                contents.push(put.finish()?);
+                contents.push(Box::new(put).finish()?);
                 continue;
             }
             if !group.is_empty()
@@ -733,21 +818,6 @@ impl ContentPuts for LineClient {
             send(&mut group, &mut contents)?;
         }
         Ok(contents)
-    }
-
-    fn have(&self, _caller: &Caller, hashes: &[String]) -> Answered<Vec<bool>> {
-        let mut present = Vec::with_capacity(hashes.len());
-        for chunk in hashes.chunks(MAX_HAVE_HASHES) {
-            match self.put_step(ContentPutStep::Have {
-                hashes: chunk.to_vec(),
-            })? {
-                ContentPutAnswer::Have { present: answered } if answered.len() == chunk.len() => {
-                    present.extend(answered);
-                }
-                other => return Err(unexpected_step(&other)),
-            }
-        }
-        Ok(present)
     }
 }
 
