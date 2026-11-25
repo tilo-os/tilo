@@ -22,6 +22,9 @@ use tilo_resource_store::history::words::HistoryWords;
 
 use crate::device_documents::ServiceDocuments;
 
+#[cfg(test)]
+mod tests;
+
 /// One record as a round of the feed read it: where it stands, and the record whole when it
 /// moved; `None` for a record that cannot be read now.
 type Read = (DocumentKey, Option<([u8; 32], Option<Vec<u8>>)>);
