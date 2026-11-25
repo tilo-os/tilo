@@ -102,10 +102,7 @@ fn refused_on_the_loop(asking: &dyn Fn() -> String) -> Result<(), String> {
     let asking = asking();
     let from = std::backtrace::Backtrace::force_capture();
     tracing::error!(asking = %asking, from = %from, "{READ_ON_THE_LOOP}");
-    assert!(
-        !cfg!(debug_assertions),
-        "{READ_ON_THE_LOOP}: {asking}\n{from}"
-    );
+    debug_assert!(false, "{READ_ON_THE_LOOP}: {asking}\n{from}");
     Err(READ_ON_THE_LOOP.to_owned())
 }
 

@@ -90,7 +90,7 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
             welcome.clone(),
             &say(
                 &mut automerge::AutoCommit::new(),
-                person_of(&carol),
+                person_of(carol),
                 "welcome to the lounge",
             ),
         )

@@ -162,8 +162,8 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
     // The daemon holds the person's workspace and keeps its desktop's layout there, written as
     // the device, as its daemon writes what its desktop changes.
     workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key.clone()),
+        cert,
+        signer: Arc::new(key),
     }));
     runtime
         .block_on(workspaces.create_workspace("Ada's", Some(WORKSPACE)))
@@ -440,7 +440,7 @@ fn an_ask_on_the_thread_that_carries_the_link_is_refused_and_the_link_keeps_answ
         });
     });
     let secret = daemon.links.make(daemon.person());
-    let socket = daemon.socket.clone();
+    let socket = daemon.socket;
     let (opened, link) = std::sync::mpsc::channel();
     handle.spawn(async move {
         use tokio::io::AsyncWriteExt as _;
@@ -504,7 +504,7 @@ fn a_read_asked_on_the_sessions_loop_stops_there_and_one_off_it_is_answered() {
     );
 
     // The same thread once its pass ended, and every other thread meanwhile, reads as before.
-    let after = shell.clone();
+    let after = shell;
     let answered = std::thread::spawn(move || {
         drop(super::OnTheLoop::mark());
         after.read_blocking(read())

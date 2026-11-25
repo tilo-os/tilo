@@ -36,7 +36,13 @@ enum Keys {
     AfterTheWrites,
 }
 
+/// What both tests do: the flow keeps a host, a peer and every answer it waits on, so it is
+/// boxed where it is written rather than carried whole on a test's stack.
 async fn handed_keys_then_writes(keys: Keys) {
+    Box::pin(writes_reaching_the_host(keys)).await;
+}
+
+async fn writes_reaching_the_host(keys: Keys) {
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let (bob, _) = UserIdentity::generate("Bob", 1);
