@@ -1607,35 +1607,6 @@ impl PeopleOverlay {
         let index: usize = target.strip_prefix("people:")?.parse().ok()?;
         self.focus_order().get(index).copied()
     }
-
-    pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
-        match path {
-            [] | [0] => Some(self.panel_rect()),
-            [0, row] => self.rows.get(*row).map(|place| self.view_rect(place.rect)),
-            [control] if *control > 0 => self
-                .focus_order()
-                .get(control.saturating_sub(1))
-                .and_then(|hit| self.rect_for_hit(*hit))
-                .map(|rect| self.view_rect(rect)),
-            _ => None,
-        }
-    }
-
-    pub fn focus_accessibility_path(&mut self, path: &[usize]) -> bool {
-        let [control] = path else {
-            return false;
-        };
-        if *control == 0 {
-            return false;
-        }
-        let Some(hit) = self.focus_order().get(control.saturating_sub(1)).copied() else {
-            return false;
-        };
-        self.keyboard_focus = Some(hit);
-        self.reveal_focus();
-        self.register_targets(self.host);
-        true
-    }
 }
 
 /// How wide `label` is as a quiet button's label.

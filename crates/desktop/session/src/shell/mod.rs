@@ -1144,14 +1144,6 @@ impl Shell {
             .find_map(|(_, part)| part.borrow_mut().drawn_text_bounds(text))
     }
 
-    /// The clip a shown part's scroll view draws the content holding `text` through.
-    pub(crate) fn scroll_clip(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
-        self.parts
-            .iter()
-            .filter(|(_, part)| part.borrow().placement().is_some())
-            .find_map(|(_, part)| part.borrow_mut().scroll_clip(text))
-    }
-
     /// Where every shown part lays out `text` for assistive technology: every node of every part
     /// whose label, description or value holds it.
     pub(crate) fn text_bounds_all(&self, text: &str) -> Vec<(f64, f64, f64, f64)> {
@@ -2099,13 +2091,6 @@ impl crate::Session {
     #[must_use]
     pub fn shell_drawn_text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.drawn_text_bounds(text)
-    }
-
-    /// The clip the shell's scroll view holding `text` draws its content through, logical
-    /// `(x, y, w, h)` : the room a transcript has under the header above it.
-    #[must_use]
-    pub fn shell_scroll_clip(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
-        self.shell.as_ref()?.scroll_clip(text)
     }
 
     /// Where every node the shell lays out that says `text` stands, logical `(x, y, w, h)`: every

@@ -634,10 +634,6 @@ pub struct ContextMenu {
     /// The owner hands what its box sends to the session itself, with no app
     /// runner behind it: a shell part's menu, whose host is the session.
     owner_sends: bool,
-    /// The owner takes typing although the gesture that opened the menu
-    /// happened in another process (the window menu, whose reading says a
-    /// secondary press opened it).
-    owned_typing: bool,
     /// A sentence asked, for an owner that answers it.
     asked: Option<String>,
     /// While a query narrows the rows, the panel's top edge stays where it
@@ -703,7 +699,6 @@ impl ContextMenu {
             shown: Vec::new(),
             owner_asks: false,
             owner_sends: false,
-            owned_typing: false,
             asked: None,
             pinned_top: None,
             dirty: true,
@@ -1381,29 +1376,6 @@ impl ContextMenu {
     /// deeper still, the nested row is the one whose menu held it.
     pub fn take_submenu_selection(&mut self) -> Option<(usize, usize)> {
         self.submenu_selection.take()
-    }
-
-    /// Choose row `nested` of the submenu row `row` opens, as a click on it
-    /// does, without the pointer the open submenu would need: what a test,
-    /// a script or a host that lists the rows itself chooses by.
-    ///
-    /// Returns whether `row` opens such a submenu and `nested` is a row of
-    /// it that can be chosen.
-    pub fn choose_submenu_item(&mut self, row: usize, nested: usize) -> bool {
-        let Some(item) = self
-            .items
-            .get(row)
-            .and_then(MenuItem::submenu_items)
-            .and_then(|items| items.get(nested))
-        else {
-            return false;
-        };
-        if !item.is_enabled() {
-            return false;
-        }
-        self.submenu_selection = Some((row, nested));
-        self.close();
-        true
     }
 
     /// Give `event` to the open nested menu when it is the pointer's or the

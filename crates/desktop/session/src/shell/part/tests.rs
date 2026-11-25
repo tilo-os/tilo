@@ -379,11 +379,13 @@ fn the_bars_faces_are_who_is_here_and_the_button_opens_the_roster() {
         );
     }
     click(&mut part, "Mia Clayton and Sam Okafor are here");
-    assert_eq!(
-        link.asked.borrow_mut().pop_front().map(|ask| ask.action),
-        Some("toggle-people".to_owned()),
-        "refusals {:?}",
-        part.refusals()
+    let ask = link.asked.borrow_mut().pop_front();
+    let ask = ask.unwrap_or_else(|| panic!("the press asks; refusals {:?}", part.refusals()));
+    assert_eq!(ask.action, "show", "the button shows who is here");
+    assert!(
+        ask.resource.contains("people"),
+        "it shows the people list: {}",
+        ask.resource
     );
 }
 
@@ -967,10 +969,32 @@ fn a_surface_of_the_shells_stands_over_the_windows() {
     );
 }
 
-/// The overview over a window on each of `strips`, the first window's on the first strip.
+/// The overview over a window on each of `strips`, the first window's on the first strip. Each
+/// strip stands in a row of its own, named as the strip is.
 fn overview_with(strips: &[&str]) -> super::tests_support::Staged {
+    let mut shell = reading();
+    shell.rows = strips
+        .iter()
+        .enumerate()
+        .map(|(at, name)| LayoutRowReading {
+            key: format!("r{at}"),
+            workspace: "1".to_owned(),
+            name: (*name).to_owned(),
+            current: at == 0,
+            ..LayoutRowReading::default()
+        })
+        .collect();
+    shell.strips = (0..strips.len())
+        .map(|at| LayoutStripReading {
+            key: at.to_string(),
+            workspace: "1".to_owned(),
+            row: format!("r{at}"),
+            placed: true,
+            ..LayoutStripReading::default()
+        })
+        .collect();
     super::tests_support::Staged {
-        shell: reading(),
+        shell,
         here: "overview".to_owned(),
         revealed: false,
         windows: strips
@@ -979,6 +1003,7 @@ fn overview_with(strips: &[&str]) -> super::tests_support::Staged {
             .map(|(at, strip)| {
                 serde_json::json!({
                     "key": (at + 7).to_string(),
+                    "group_key": format!("g{at}"),
                     "title": format!("Window {at}"),
                     "origin_app": "so.tilo.notes",
                     "app_key": "so.tilo.notes",
@@ -1018,9 +1043,9 @@ fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
         assert_eq!(
             link.asked.borrow().front().cloned(),
             Some(Ask {
-                resource: "desktop:tab:7".to_owned(),
-                action: "close-tab".to_owned(),
-                arguments: BTreeMap::new(),
+                resource: "desktop:chrome".to_owned(),
+                action: "close-window".to_owned(),
+                arguments: BTreeMap::from([("group".to_owned(), "g0".into())]),
                 from: None,
             }),
             "with strips {strips:?}"
@@ -1032,10 +1057,10 @@ fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
     }
 }
 
-/// A window's menu carries it to another strip of its workspace by the chrome's `move-tab`,
-/// the strip named by its id in the destination the chrome reads.
+/// A window's menu carries it to another row of its workspace by its place's own `move`, the row
+/// named as the layout publishes it.
 #[test]
-fn moving_a_window_to_another_strip_names_the_strip_by_its_id() {
+fn moving_a_window_to_another_row_moves_its_place_there() {
     let _settled = ui::motion::testing::settled();
     let (mut part, link) = part_with(overview_with(&["Main", "Research"]));
     for _ in 0..6 {
@@ -1047,48 +1072,28 @@ fn moving_a_window_to_another_strip_names_the_strip_by_its_id() {
         part.prepare_frame();
         part.draw();
     }
-    // The menu open is either window's: each offers the other's strip.
+    // The menu open is either window's: each offers the other's row.
     let labels = tilo_session_core::surfaces::Published::accessible_labels(&mut part);
-    let (item, tab, strip) = if labels.iter().any(|label| label == "Move to Research") {
-        ("Move to Research", "7", "1")
+    let (item, place, row) = if labels.iter().any(|label| label == "Move to Research") {
+        ("Move to Research", "7", "r1")
     } else {
         assert!(
             labels.iter().any(|label| label == "Move to Main"),
-            "the menu offers the other strip: {labels:?}"
+            "the menu offers the other row: {labels:?}"
         );
-        ("Move to Main", "8", "0")
+        ("Move to Main", "8", "r0")
     };
     click(&mut part, item);
     assert!(part.refusals().is_empty(), "{:?}", part.refusals());
-    let asked = link.asked.borrow().front().cloned().unwrap_or_else(|| {
-        let refusals = format!("{:?}", part.refusals());
-        panic!(
-            "the move is asked: refusals {refusals}, showing {:?}",
-            part.accessible_labels()
-        )
-    });
+    let asked = link.asked.borrow().front().cloned();
     assert_eq!(
-        (asked.resource.as_str(), asked.action.as_str()),
-        ("desktop:chrome", "move-tab")
-    );
-    assert_eq!(
-        asked
-            .arguments
-            .get("tab")
-            .and_then(serde_json::Value::as_str),
-        Some(tab)
-    );
-    let to: tilo_session_core::desktop::navigation::Destination =
-        serde_json::from_value(asked.arguments.get("to").cloned().expect("the destination"))
-            .unwrap_or_else(|why| {
-                panic!("the destination reads as the chrome's: {why}: {asked:?}")
-            });
-    assert_eq!(
-        to,
-        tilo_session_core::desktop::navigation::Destination {
-            strip: Some(strip.to_owned()),
-            ..Default::default()
-        }
+        asked,
+        Some(Ask {
+            resource: format!("shell:place:{place}"),
+            action: "move".to_owned(),
+            arguments: BTreeMap::from([("row".to_owned(), format!("shell:row:{row}").into())]),
+            from: None,
+        })
     );
 }
 
@@ -1319,6 +1324,41 @@ fn a_wide_bar_shows_the_strip_and_the_person_with_nothing_touched() {
         labels.iter().any(|label| label == "Pat: open your card"),
         "the bar shows the person: {labels:?}"
     );
+}
+
+/// The person's own face is pressed where it is drawn on every width of bar: it stands inside the
+/// display, and a pointer's press on it opens their own card.
+#[test]
+fn the_persons_face_is_pressed_by_the_pointer_on_a_narrow_bar() {
+    let _settled = ui::motion::testing::settled();
+    let packages = compiled();
+    for width in [360, 480, 640, 1280] {
+        let (mut part, link) = part_of(&packages, reading(), (width, 800));
+        for _ in 0..8 {
+            part.prepare_frame();
+            part.draw();
+        }
+        let (x, y, w, h) = part
+            .control_bounds("Pat: open your card")
+            .unwrap_or_else(|| {
+                panic!(
+                    "a {width} wide bar shows the face: {:?}",
+                    part.accessible_labels()
+                )
+            });
+        assert!(
+            x >= 0.0 && y >= 0.0 && x + w <= f64::from(width) && y + h <= 800.0,
+            "a {width} wide bar draws the face on the display: {:?}",
+            (x, y, w, h)
+        );
+        click(&mut part, "Pat: open your card");
+        let asked = link.asked.borrow().front().cloned();
+        assert!(
+            asked.as_ref().is_some_and(|ask| ask.action == "show-person"
+                && ask.arguments.get("person") == Some(&"self".into())),
+            "a press on a {width} wide bar's face opens the person's own card: {asked:?}"
+        );
+    }
 }
 
 /// The switcher pictures each window it walks: the compositor is told to draw the window's own

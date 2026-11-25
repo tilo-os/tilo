@@ -92,19 +92,20 @@ impl ContextMenu {
         }
         let below = floating_surface::anchored_extent(anchor, PopoverSide::Below, gap, viewport);
         let above = floating_surface::anchored_extent(anchor, PopoverSide::Above, gap, viewport);
-        // Taller than the height on its side, a menu opened from a control or
-        // a row takes the taller side and scrolls its rows, so what
-        // it stands against stays in view. A menu opened at the pointer has
-        // no control to keep clear: it opens from the point, covers it where
-        // the window's edge leaves no width, and never jumps to the point's
-        // other side.
+        // A menu opened from a control or a row stands beside it, on the side with room for it.
+        // Taller than either side but not than the window, it stands whole in the window over
+        // what opened it: every row stays where a press reaches it. Only a menu taller than the
+        // window takes the taller side and scrolls its rows. A menu opened at the pointer has
+        // no control to keep clear: it opens from the point, covers it where the window's edge
+        // leaves no width, and never jumps to the point's other side.
         let spare = if below >= full {
             below
         } else {
             below.max(above)
         };
         let one_row = (self.row_height + PADDING * 2.0).min(full);
-        let beside = gap > 0.0 && spare >= one_row;
+        let fits_window = full <= viewport.height() + 0.5;
+        let beside = gap > 0.0 && spare >= one_row && (spare >= full || !fits_window);
         let rect = if beside {
             let height = full.min(spare).min(viewport.height().max(0.0));
             floating_surface::place_aligned(

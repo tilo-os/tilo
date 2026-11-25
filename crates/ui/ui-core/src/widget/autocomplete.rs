@@ -729,13 +729,6 @@ impl Autocomplete {
         self
     }
 
-    pub fn set_suggester<F>(&mut self, f: F)
-    where
-        F: Fn(&str) -> Vec<Suggestion> + 'static,
-    {
-        self.suggester = Some(Box::new(f));
-    }
-
     /// Rows beyond this scroll rather than growing the panel without bound.
     #[must_use]
     pub fn with_max_visible(mut self, n: usize) -> Self {

@@ -143,6 +143,32 @@ tilo_test_env::scenario! {
         assert!(shown >= 1, "the menu shows rows");
     }
 
+    // Taller than the room on either side of its control but not than the window, a menu stands
+    // whole in the window over the control, so its last row is pressed where it is drawn.
+    phase a_menu_with_room_in_the_window_shows_every_row;
+    {
+        let _settled = crate::motion::testing::settled();
+        let mut m = ContextMenu::with_items(
+            (0..12)
+                .map(|i| MenuItem::action(format!("Row {i}"), || {}))
+                .collect(),
+        );
+        let window = Rect::new(0.0, 0.0, 400.0, 560.0);
+        let control = Rect::new(10.0, 260.0, 42.0, 292.0);
+        m.open_anchored(control, window);
+        let rect = m.get_rect();
+        assert!(!m.list.overflows(), "no row scrolls away: {rect:?}");
+        assert!(
+            rect.y0 >= window.y0 && rect.y1 <= window.y1 + 0.5,
+            "the menu stands in the window: {rect:?}"
+        );
+        let last = m.item_rect(11).expect("the last row is laid out");
+        assert!(
+            rect.contains(last.center()) && last.y1 <= window.y1,
+            "the last row is drawn where a press reaches it: {last:?} in {rect:?}"
+        );
+    }
+
     // A menu a row opens follows the row it stands against: the same call that
     // opens it places it again wherever the row is now.
     phase a_reanchored_menu_follows_its_row_to_its_new_box;

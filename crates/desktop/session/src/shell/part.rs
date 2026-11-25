@@ -910,22 +910,6 @@ impl ShellPart {
         })
     }
 
-    /// The clip a scroll view draws its content through, as the room a transcript has under a
-    /// page's header: where the first scroll on screen whose content says `text` draws. `None`
-    /// where nothing says it or no scroll holds it.
-    pub fn scroll_clip(&mut self, text: &str) -> Option<(f64, f64, f64, f64)> {
-        let (ox, oy) = self.widgets.placement().origin;
-        let root = self.widgets.host_mut().root_widget_mut();
-        let found = drawn_text(root, text)?;
-        let clip = found.clip?;
-        Some((
-            f64::from(ox) + clip.x0,
-            f64::from(oy) + clip.y0,
-            clip.width(),
-            clip.height(),
-        ))
-    }
-
     /// Where every node that says `text` (its name, description or value holds it) stands, in the
     /// desktop's logical layout `(x, y, width, height)`. A name more than one thing on the shell
     /// carries — a strip's name, which the bar's pill and nothing on the shell says — is read by all
