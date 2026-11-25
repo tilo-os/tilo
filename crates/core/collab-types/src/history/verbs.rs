@@ -1322,7 +1322,8 @@ fn stamped_verb(doc: &AutoCommit, version: &Version) -> Option<String> {
 /// What `version` did to the resource it is a change of, and that resource's id, as the store
 /// reads the change in its document `doc_id` (`""` where the document is not named): it made the
 /// resource, removed it, or edited it. A content document names the resource whose content it
-/// holds, so its changes are edits of that resource. `None` for a document
+/// holds: its first change made that content, as the action that made the resource wrote it, and
+/// every later one edits it. `None` for a document
 /// whose changes are not resources kept in the store: a change with no word for what it did is
 /// a fault to a watcher, never an edit.
 fn happened(
@@ -1333,7 +1334,12 @@ fn happened(
     let committed = doc.committed_document();
     let change = committed.get_change_by_hash(&version.hash)?;
     let touched = crate::touch::touches(committed, doc_id, &change)?;
-    let made = touched.resources.iter().find(|(_, touch)| touch.made);
+    let first_content =
+        change.deps().is_empty() && crate::touch::content_resource(doc_id).is_some();
+    let made = touched
+        .resources
+        .iter()
+        .find(|(_, touch)| touch.made || (first_content && touch.content));
     let removed = touched.resources.iter().find(|(_, touch)| touch.removed);
     let what = if made.is_some() {
         What::Created
@@ -2185,22 +2191,31 @@ mod tests {
         assert_eq!(entries[1]["verb"], Value::Null, "{entries:?}");
     }
 
-    /// A change to a resource's content, kept in a document of its own, is an edit of that
-    /// resource: the document's name says whose content it holds.
+    /// A resource's content, kept in a document of its own, is that resource's: the document's
+    /// name says whose content it holds. Its first change made the content, as the action that
+    /// made the resource wrote it; a later one edits it.
     #[test]
-    fn a_change_to_a_resources_content_edits_that_resource() {
+    fn a_resources_content_is_made_then_edited() {
         let mut doc = AutoCommit::new();
         let body = doc
             .put_object(ROOT, "body", automerge::ObjType::Text)
             .unwrap();
         doc.splice_text(&body, 0, 0, "first words").unwrap();
         doc.commit();
+        doc.splice_text(&body, 0, 5, "second").unwrap();
+        doc.commit();
 
         let entries = entries_after((&doc, "*/tl.test.Message/m1~0"), &[], &TestWords);
-        assert_eq!(entries.len(), 1, "{entries:?}");
+        let told: Vec<_> = entries
+            .iter()
+            .map(|entry| (&entry["happened"], &entry["item"]))
+            .collect();
         assert_eq!(
-            (&entries[0]["happened"], &entries[0]["item"]),
-            (&json!("edited"), &json!("m1")),
+            told,
+            [
+                (&json!("created"), &json!("m1")),
+                (&json!("edited"), &json!("m1"))
+            ],
             "{entries:?}"
         );
     }
