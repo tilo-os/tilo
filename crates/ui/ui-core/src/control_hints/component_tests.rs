@@ -11,7 +11,7 @@ use vello::kurbo::Rect;
 use super::performed::{self, Performed};
 use super::{ControlHints, ControlHintsProps};
 use crate::component::{Described, Event, Fired, Intent, Value};
-use crate::headless::FrameHarness;
+use crate::headless::Driver;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::widget::arrange::{Fit, Length, Sizing, Stack};
@@ -84,7 +84,7 @@ fn measured(rect: Rect) -> taffy::Size<MeasureConstraint> {
 /// the whole area, and the pointer's events reaching what it points at, as the platform delivers
 /// them. Each frame draws at the instant it is asked for.
 struct Shell {
-    host: FrameHarness,
+    host: Driver,
     queue: crate::Intents<Fired>,
     start: Instant,
 }
@@ -133,7 +133,7 @@ impl Shell {
             reason = "the display's size, in whole pixels"
         )]
         let viewport = (AREA.width() as u32, AREA.height() as u32);
-        let host = FrameHarness::for_root(crate::State::new(), root, viewport, Theme::dark());
+        let host = Driver::for_root(crate::State::new(), root, viewport, Theme::dark());
         Self { host, queue, start }
     }
 

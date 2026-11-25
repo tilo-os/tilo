@@ -183,7 +183,7 @@ fn view_call(key: &str, fill: i64) -> UiNode {
 }
 
 /// The window under `harness`.
-fn window_of(harness: &mut ui::headless::FrameHarness) -> &mut AppWindow {
+fn window_of(harness: &mut ui::headless::Driver) -> &mut AppWindow {
     harness
         .root_widget_mut()
         .as_any_mut()
@@ -224,7 +224,7 @@ fn people_bar(compact: bool) -> Vec<ToUi> {
 /// `space` is run again for each room it reads: whether it ends folded, with the last room it was
 /// told and the room the window's root was told, in rem.
 fn follow_people(
-    harness: &mut ui::headless::FrameHarness,
+    harness: &mut ui::headless::Driver,
     app: &mut local::End,
     compact: &mut bool,
 ) -> (f32, f32) {
@@ -258,8 +258,7 @@ fn a_call_packed_by_its_content_is_told_the_room_it_is_offered_not_what_it_drew(
     let (mut app, mut window) = window();
     send(&mut app, &people_bar(false));
     window.receive();
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (1200, 600));
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1200, 600));
     let rem = ui::widget::arrange::rem_of(harness.theme());
     let mut compact = false;
     let (people, root) = follow_people(&mut harness, &mut app, &mut compact);

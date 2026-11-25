@@ -203,7 +203,7 @@ fn choosing_a_face_on_a_described_strip_reports_who_reacted() {
             ..ReactionsProps::default()
         },
     );
-    let mut frame = crate::headless::FrameHarness::new_with_theme(
+    let mut frame = crate::headless::Driver::new_with_theme(
         crate::State::new(),
         Box::new(strip),
         (420, 80),
