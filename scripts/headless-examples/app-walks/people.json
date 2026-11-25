@@ -67,11 +67,10 @@
           "key": "Escape"
         },
         {
-          "do": [
-            "so.tilo.session",
-            "session:invite",
-            "show-invite"
-          ]
+          "use": {
+            "resource": "session:invite",
+            "action": "show-invite"
+          }
         },
         {
           "must": [

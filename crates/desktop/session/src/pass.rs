@@ -595,6 +595,11 @@ impl Session {
         // Everything from here to the first frame is what the person waits for after the session is
         // built.
         tilo_startup_metrics::mark("render-worker-start");
+        // The session's own actions are offered before the loop answers anything: a control
+        // socket, an agent or a program that reaches the session as soon as it is ready finds
+        // them, not a session that has drawn nothing yet. A pass offers them again whenever what
+        // they offer moves.
+        self.follow_session_actions();
         let measured = tilo_frame_metrics::run_seconds_from_env()
             .and_then(|seconds| std::time::Instant::now().checked_add(seconds));
         let measured_over = || measured.is_some_and(|over| std::time::Instant::now() >= over);

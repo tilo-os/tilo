@@ -1050,8 +1050,10 @@ def hover(session: Session, selector: str, deadline: float = 20.0) -> dict:
 
 # --- a person's other devices -----------------------------------------------------------------
 
-# The sheet a device of the person's is added from, and what its requester prints for the person
-# to compare with what the device they already have shows.
+# The sheet a device of the person's is added from, on the resource the device publishes its
+# invitations on, and what its requester prints for the person to compare with the device they
+# already have shows. The walk names the address and the desktop says which provider lists it: a
+# session a device's daemon runs need not answer it as the session's own provider.
 SHOW_PAIR_DEVICE = ("session:invite", "show-pair-device")
 ADD_DEVICE_CODE = "Pairing code: "
 
@@ -1223,7 +1225,9 @@ class Devices:
         logs = out / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         began = time.monotonic()
-        first.invoke(SHELL, *SHOW_PAIR_DEVICE, {})
+        adding = until_value("the desktop to offer adding a device",
+                             lambda: row_for(first.actions(""), *SHOW_PAIR_DEVICE), 15)
+        first.invoke_row(adding, {})
         until_value("the Add a device sheet's Copy link", lambda: control(first, "Copy link"), 15)
         first.click_named("Copy link")
         link = until_value("the device link on the clipboard",

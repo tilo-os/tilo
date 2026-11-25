@@ -24,10 +24,11 @@ import json
 from pathlib import Path
 from typing import Callable, Iterator
 
-from real_apps import BUILD, Failed, Session, build, prepare, until
+from real_apps import BUILD, Failed, Session, address, build, prepare, until
 
-# The session's own provider, the resource it publishes the workspace's commands as, and the one
-# its invitations are made through.
+# The session's own provider, and the resource it publishes the workspace's commands as. The
+# invitations into a workspace are the device's, published on the resource below: the desktop says
+# which provider lists them, which a session a device's daemon runs may answer as its own.
 SHELL = "so.tilo.session"
 WORKSPACE_COMMANDS = "desktop:chrome"
 INVITATIONS = "session:invite"
@@ -77,9 +78,12 @@ def members_of(workspace: dict) -> list[str]:
 
 
 def invitation(host: Session) -> str:
-    """The link the host makes into the workspace in front, through its own shell action."""
-    answer = host.invoke(SHELL, INVITATIONS, "issue-invitation",
-                         {"role": "editor", "expires_in_seconds": 3600})
+    """The link the host makes into the workspace in front, through the device's own action: the
+    invitation resource's verb, named by its address and found in the catalogue whoever lists it."""
+    row = until("the desktop to offer making an invitation",
+                lambda: next((row for row in host.actions("")
+                              if address(row) == (INVITATIONS, "issue-invitation")), None))
+    answer = host.invoke_row(row, {"role": "editor", "expires_in_seconds": 3600})
     issued = (answer.get("Completed") or {}).get("output", {}).get("value") or {}
     link = issued.get("link")
     if not link:
