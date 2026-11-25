@@ -1389,11 +1389,7 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
     mount(workspaces);
     workspaces.run_agents(Arc::new(ActsAsScout));
     let workspace = workspaces.create("Chat").await.unwrap().workspace;
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: CHAT.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
+    let route = super::record_route(&workspace, CHAT);
     let _ = workspaces.own_route_keys(&route, true).await.unwrap();
     save_signed(
         workspaces,

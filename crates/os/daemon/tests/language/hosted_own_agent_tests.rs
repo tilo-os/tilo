@@ -200,6 +200,7 @@ struct Hosted {
 }
 
 async fn hosted() -> Hosted {
+    super::set_surfaces();
     let (ada_state, bea_state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let keys = Arc::new(TestGroupKeys::default());
     let bea_root = SigningKey::from_bytes(&[0xbe; 32]);
@@ -479,13 +480,16 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
 
     // Her mention reaches the server, which fires her trigger and takes the firing.
     let deadline = tilo_test_env::hang_deadline();
+    let (mut seen_writes, mut announced) = (0_usize, 0_usize);
     let firing = loop {
         let mut since = Vec::new();
         while let Ok(write) = writes.try_recv() {
             since.push(write);
         }
+        seen_writes += since.len();
         while governance.try_recv().is_ok() {
             changed = true;
+            announced += 1;
         }
         if std::mem::take(&mut changed) {
             runner.arm().await;
@@ -494,10 +498,36 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         if let Some(firing) = started.0.lock().unwrap().first().cloned() {
             break firing;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the server never fired Bea's trigger"
-        );
+        if std::time::Instant::now() >= deadline {
+            // A test asserting the firing says what the server held instead: the agent, the
+            // shortcut, and what the shortcut's proof names.
+            let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+            let roster = adas
+                .read_resource::<WorkspaceAgents>(&workspace, (OWNER, record.as_str()))
+                .await
+                .ok()
+                .flatten();
+            let saved: Vec<String> = adas
+                .described()
+                .await
+                .iter()
+                .flat_map(|held| held.shortcuts.iter().map(|saved| saved.id().to_owned()))
+                .collect();
+            let hers: Vec<String> = beas
+                .described()
+                .await
+                .iter()
+                .flat_map(|held| held.shortcuts.iter().map(|saved| saved.id().to_owned()))
+                .collect();
+            panic!(
+                "the server never fired Bea's trigger: agent {:?}, the server's shortcuts \
+                 {saved:?}, Bea's {hers:?}, writes read {since_len}, changes announced \
+                 {announced}",
+                roster.map(|roster| roster.agents.len()),
+                since_len = seen_writes,
+                announced = announced,
+            );
+        }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };
     assert_eq!(firing.saver, bea_person, "the trigger is Bea's");

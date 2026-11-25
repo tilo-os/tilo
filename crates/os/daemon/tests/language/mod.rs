@@ -102,6 +102,22 @@ impl Device {
     }
 }
 
+/// The app surfaces this process decides its changes against, kept once for the whole test
+/// binary as a program keeps them: a host decides every change it receives against the surface
+/// the change's app publishes, before it opens a workspace, and one it has not kept yet holds
+/// the change back.
+pub(crate) fn set_surfaces() {
+    static KEPT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let kept = KEPT.get_or_init(|| {
+        let kept = tempfile::TempDir::new().expect("a directory for the process's surfaces");
+        tilo_workspace_service::surfaces::decide_receipt(&kept.path().join("surfaces"));
+        kept
+    });
+    // Kept for the life of the process, as a program keeps it: dropping it would take the
+    // surfaces away from a test still running.
+    let _ = kept.path();
+}
+
 /// The route a record of `app` is opened, written and read by in `workspace`: where its frames
 /// travel and the address the record reads and writes name it at.
 pub(crate) fn record_route(workspace: &str, app: &str) -> DocumentRoute {

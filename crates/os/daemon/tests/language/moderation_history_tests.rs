@@ -323,8 +323,7 @@ fn posted(
 /// turn whose saver may not records nothing at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_run() {
-    let surfaces = tempfile::tempdir().unwrap();
-    tilo_workspace_service::surfaces::decide_receipt(&surfaces.path().join("surfaces"));
+    super::set_surfaces();
     let device = moderation_device().await;
     let cert = &device.cert;
     let workspaces = device.workspaces();
@@ -423,8 +422,7 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
 /// nothing is taken back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
-    let surfaces = tempfile::tempdir().unwrap();
-    tilo_workspace_service::surfaces::decide_receipt(&surfaces.path().join("surfaces"));
+    super::set_surfaces();
     let device = moderation_device().await;
     let cert = &device.cert;
     let workspaces = device.workspaces();
