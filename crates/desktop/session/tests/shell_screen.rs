@@ -2020,9 +2020,12 @@ fn the_walked_card_wears_the_accent_at_its_edge() {
     // bounds are where its edge's pixels are.
     let cards = switcher::page_of(&session);
     let frame = shot(&mut session, "switcher-ring");
-    // The shell draws the reached card's edge in the person's accent of the theme it draws with:
-    // these sessions draw in Tilo dark, as the headless runner's inputs say.
+    // The shell draws the reached card's edge in the accent of the theme it draws with: Tilo dark,
+    // as the headless runner's inputs say, worn in the colour of the person at this machine. They
+    // chose none, so it is the one their identity derives.
+    let person = Options::default().person;
     let ring = ui::theme::Theme::dark()
+        .with_your_colour(ui::tokens::PresenceHue::of_identity(&person))
         .tokens
         .colors
         .intent
