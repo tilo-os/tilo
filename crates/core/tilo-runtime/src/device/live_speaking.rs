@@ -298,12 +298,8 @@ impl Admits for LiveCalls {
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
         top_level(vec![
-            descriptor(
-                JOIN,
-                "Join",
-                "Join a call of this workspace on this device.",
-            ),
-            descriptor(LEAVE, "Leave", "Leave the call this device is in here."),
+            descriptor(JOIN, "live-call-join", "live-call-join-detail"),
+            descriptor(LEAVE, "live-call-leave", "live-call-leave-detail"),
         ])
     }
 
@@ -372,19 +368,21 @@ fn answered(joined: Result<Option<(String, u64)>, String>) -> Outcome {
     }
 }
 
-/// `action` of the device's live sessions, as a catalogue lists it.
+/// `action` of the device's live sessions, as a catalogue lists it: `label` and `detail` are the
+/// keys of its words in the runtime's catalogue.
 fn descriptor(action: &str, label: &str, detail: &str) -> ActionDescriptor {
+    use crate::i18n::t;
     ActionDescriptor {
         did: None,
         semantic_identity: None,
         address: tilo_actions::ActionAddress::new(tilo_live::link::SESSIONS, action),
         resource_kind: tilo_live::link::SESSIONS.to_owned(),
-        resource_label: "Live session".to_owned(),
-        action_label: label.to_owned(),
+        resource_label: t("live-call-resource"),
+        action_label: t(label),
         keywords: Vec::new(),
         state: tilo_actions::ActionState::default(),
         icon: None,
-        description: Some(detail.to_owned()),
+        description: Some(t(detail)),
         locus: ExecutionLocus::ClientLocal,
         kind: OperationKind::Effect,
         contract: ActionContract {
