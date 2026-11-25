@@ -2661,32 +2661,6 @@ impl ActionProvider for RemoteDevice {
     }
 }
 
-impl tilo_actions::remote::ResourceReads for RemoteDevice {
-    fn answer_read(
-        self: Arc<Self>,
-        _caller: &Caller,
-        correlation: u64,
-        read: tilo_actions::remote::ResourceReadRequest,
-    ) -> tilo_actions::remote::ReadingAnswer {
-        let asked = self.ask_message(RemoteActionMessage::ResourceRead {
-            correlation,
-            on_behalf_of: None,
-            read,
-        });
-        Box::pin(async move {
-            let result = match asked.await {
-                Some(Ok(RemoteActionMessage::ResourceReading { result, .. })) => result,
-                Some(Ok(_)) | None => Err(tilo_actions::remote::ActionCallError::Unanswered),
-                Some(Err(error)) => Err(error),
-            };
-            RemoteActionMessage::ResourceReading {
-                correlation,
-                result,
-            }
-        })
-    }
-}
-
 pub(crate) fn now_ns() -> u64 {
     tilo_clock::wall()
         .duration_since(SystemTime::UNIX_EPOCH)
