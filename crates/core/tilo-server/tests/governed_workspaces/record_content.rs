@@ -166,8 +166,8 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
         .await;
 
-    // Bob's page keeps the picture sealed in its record's store and names the
-    // reference: the host knows the ciphertext's address alone.
+    // Bob's page keeps the picture sealed in its record's store; the workspace's record of the
+    // app names the reference, so the host knows the ciphertext's address alone.
     let picture: Vec<u8> = b"a picture only Bob's page kept. "
         .iter()
         .copied()
@@ -179,40 +179,25 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     assert!(tilo_content::is_sealed(&reference));
     let address = tilo_content::content_address(&reference).unwrap();
     let sealed = store.read(&address).unwrap();
-    bob_link
-        .publish(|peer| {
-            peer.publication_mut().publish_document(
-                PHOTOS,
-                "",
-                AutoCommit::new().save(),
-                &phone.sk,
-                SystemTime::now(),
+    crate::common::write_record(
+        server.workspaces().unwrap(),
+        &workspace.workspace,
+        (PHOTOS, ""),
+        |doc| {
+            doc.put(
+                ROOT,
+                "photo",
+                format!(
+                    "blake3:{}:{}:{reference}",
+                    blake3::hash(&picture).to_hex(),
+                    picture.len()
+                ),
             )
-        })
-        .expect("Bob's page starts the record on his link");
-    let mut doc = AutoCommit::new();
-    doc.put(
-        ROOT,
-        "photo",
-        format!(
-            "blake3:{}:{}:{reference}",
-            blake3::hash(&picture).to_hex(),
-            picture.len()
-        ),
+            .map_err(|error| error.to_string())
+        },
     )
-    .unwrap();
-    doc.commit_edit("fixture", "photo", &phone.cert.user_public_key);
-    bob_link
-        .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                PHOTOS,
-                "",
-                doc.save_after(&[]),
-                &phone.sk,
-                SystemTime::now(),
-            )
-        })
-        .expect("Bob's reference goes out on his link");
+    .await
+    .expect("the record names the picture");
 
     // The host asks for the address the store keys the ciphertext under, and
     // Bob's page answers it as a page does.
@@ -375,49 +360,38 @@ async fn an_unanswered_ask_is_asked_again(process: tilo_clock::testing::OwnProce
     crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
         .await;
 
-    // Bob's page keeps two pictures and names both in its record.
+    // Bob's page keeps two pictures; the workspace's record of the app names both.
     let store = tilo_content::ContentStore::memory().sealing();
-    let mut doc = AutoCommit::new();
     let mut pictures = Vec::new();
-    for name in ["answered", "lost"] {
+    let mut named = Vec::new();
+    for (field, name) in [("photo", "answered"), ("picture", "lost")] {
         let picture = format!("the picture whose ask is {name}").into_bytes();
         let reference = store.put(&picture).unwrap();
         let address = tilo_content::content_address(&reference).unwrap();
-        doc.put(
-            ROOT,
-            name,
+        named.push((
+            field.to_owned(),
             format!(
                 "blake3:{}:{}:{reference}",
                 blake3::hash(&picture).to_hex(),
                 picture.len()
             ),
-        )
-        .unwrap();
+        ));
         pictures.push((address.clone(), store.read(&address).unwrap()));
     }
-    doc.commit_edit("fixture", "pictures", &phone.cert.user_public_key);
-    bob_link
-        .publish(|peer| {
-            peer.publication_mut().publish_document(
-                PHOTOS,
-                "",
-                AutoCommit::new().save(),
-                &phone.sk,
-                SystemTime::now(),
-            )
-        })
-        .expect("Bob's page starts the record on his link");
-    bob_link
-        .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                PHOTOS,
-                "",
-                doc.save_after(&[]),
-                &phone.sk,
-                SystemTime::now(),
-            )
-        })
-        .expect("Bob's references go out on his link");
+    crate::common::write_record(
+        server.workspaces().unwrap(),
+        &workspace.workspace,
+        (PHOTOS, ""),
+        |doc| {
+            for (field, reference) in &named {
+                doc.put(ROOT, field.as_str(), reference.as_str())
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        },
+    )
+    .await
+    .expect("the record names both pictures");
     let [(answered, answered_bytes), (lost, lost_bytes)] = <[_; 2]>::try_from(pictures).unwrap();
 
     let answer = |linked: &Linked, ask: &[u8], address: &str, bytes: &[u8]| {
