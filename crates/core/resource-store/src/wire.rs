@@ -101,7 +101,7 @@ impl DraftScope {
             // A restore writes resources it does not name: those nested in what it names, and an
             // undo of several steps whichever documents those steps touched.
             Command::Undo { .. } | Command::Restore { .. } | Command::UndoMany { .. } => {
-                self.undo = true
+                self.undo = true;
             }
             Command::Batch(commands) => {
                 for step in commands {

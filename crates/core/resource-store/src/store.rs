@@ -1158,6 +1158,12 @@ impl Store {
         kinds: &[String],
         redo: bool,
     ) -> Vec<String> {
+        struct Step {
+            moment: u64,
+            op: u64,
+            invocation: String,
+            undoes: Option<String>,
+        }
         let named = Stamp {
             invoker: invoker.to_owned(),
             ..Stamp::default()
@@ -1179,12 +1185,6 @@ impl Store {
             if kept {
                 documents.push(document.to_owned());
             }
-        }
-        struct Step {
-            moment: u64,
-            op: u64,
-            invocation: String,
-            undoes: Option<String>,
         }
         let mut all: Vec<Step> = Vec::new();
         for document in documents {
@@ -1217,7 +1217,7 @@ impl Store {
             .filter(|(undo, _)| !undos.iter().any(|(_, taken)| taken == undo))
             .map(|(_, taken)| taken.as_str())
             .collect();
-        all.sort_by(|one, other| (other.moment, other.op).cmp(&(one.moment, one.op)));
+        all.sort_by_key(|step| std::cmp::Reverse((step.moment, step.op)));
         let mut seen = std::collections::HashSet::new();
         let mut picked = Vec::new();
         for step in all {
