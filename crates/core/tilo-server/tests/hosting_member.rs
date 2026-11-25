@@ -18,6 +18,7 @@ use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{Hosted, Linked, TestDevice, TestUser, next, receives, serve_on};
 use tilo_server::WorkspaceId;
+use tilo_workspace_service::workspaces::AdmittedWrite;
 
 /// The app the tests write records in. Each step writes a record of its own, so a change is read
 /// back as the one that step made.
@@ -170,25 +171,33 @@ async fn change_author(linked: &mut Linked, record: &str) -> [u8; 32] {
         .author
 }
 
-/// Whether `hosted` keeps a change to `record` that `author` signed.
-async fn carried_from(
-    hosted: &Hosted,
+/// What `hosted` takes in of other devices' writes, from now on.
+fn admitted(hosted: &Hosted) -> tokio::sync::broadcast::Receiver<AdmittedWrite> {
+    hosted.host.workspaces().admitted_writes()
+}
+
+/// The device the next change to `record` in `workspace` that `admitted` tells was written by:
+/// whom the host took it in as. Every record is sealed in a store, so who wrote a change is read
+/// where the host admits it, as the apps it shows the change to read it.
+async fn admitted_author(
+    admitted: &mut tokio::sync::broadcast::Receiver<AdmittedWrite>,
     workspace: WorkspaceId,
     record: &str,
-    author: [u8; 32],
-) -> bool {
-    hosted
-        .host
-        .workspace_documents()
-        .retained(workspace)
-        .await
-        .is_ok_and(|bodies| {
-            bodies.iter().any(|body| {
-                body.author == author
-                    && NeighbourMsg::decode(&body.body)
-                        .is_ok_and(|message| record_of(&message, record))
-            })
-        })
+) -> [u8; 32] {
+    tilo_test_env::within("the host takes the change in", async {
+        loop {
+            match admitted.recv().await {
+                Ok(write) if write.workspace == workspace && record_of(&write.message, record) => {
+                    return write.author;
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("the host stopped telling what it takes in")
+                }
+            }
+        }
+    })
+    .await
 }
 
 /// Wait until `hosted` admits `device` to `workspace`: the link it opens.
@@ -686,6 +695,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
 
     // A change made through the holder reaches the governor, and one made on
     // the governor reaches the holder, each with its author.
+    let mut taken_in = admitted(&governor);
     write(&on_holder, &phone, "note:phone", "from the phone").unwrap();
     reaches_host(
         &governor,
@@ -694,14 +704,9 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
         "from the phone",
     )
     .await;
-    assert!(
-        carried_from(
-            &governor,
-            workspace.workspace_id,
-            "note:phone",
-            phone.device_pubkey()
-        )
-        .await,
+    assert_eq!(
+        admitted_author(&mut taken_in, workspace.workspace_id, "note:phone").await,
+        phone.device_pubkey(),
         "the governor reads the change as the phone's"
     );
     host_writes(
@@ -725,6 +730,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     let state = holder.stop_keeping().await;
     let holder = crate::common::serve_in(&site, &server, takes, state).await;
     let again = reopened_at(&on_holder, &holder, workspace.workspace_id).await;
+    let mut taken_in = admitted(&governor);
     write(&again, &phone, "note:restart", "after the restart").unwrap();
     reaches_host(
         &governor,
@@ -733,14 +739,9 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
         "after the restart",
     )
     .await;
-    assert!(
-        carried_from(
-            &governor,
-            workspace.workspace_id,
-            "note:restart",
-            phone.device_pubkey()
-        )
-        .await,
+    assert_eq!(
+        admitted_author(&mut taken_in, workspace.workspace_id, "note:restart").await,
+        phone.device_pubkey(),
         "the governor reads the change as the phone's"
     );
 
@@ -838,6 +839,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         "the governor's workspace names its own device"
     );
     let on_holder = member_at(&holder, &phone, workspace.workspace_id).await;
+    let mut taken_in = admitted(&governor);
     write(&on_holder, &phone, "note:site", "from the site").unwrap();
     reaches_host(
         &governor,
@@ -846,14 +848,9 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         "from the site",
     )
     .await;
-    assert!(
-        carried_from(
-            &governor,
-            workspace.workspace_id,
-            "note:site",
-            phone.device_pubkey()
-        )
-        .await,
+    assert_eq!(
+        admitted_author(&mut taken_in, workspace.workspace_id, "note:site").await,
+        phone.device_pubkey(),
         "the governor reads the change as the phone's"
     );
 
@@ -972,6 +969,7 @@ async fn a_workspace_moves_from_one_server_to_another() {
         "the workspace names the device it was made on"
     );
     let at_new = member_at(&new_server, &phone, workspace.workspace_id).await;
+    let mut taken_in = admitted(&made_on);
     write(&at_new, &phone, "note:new-server", "from the new server").unwrap();
     reaches_host(
         &made_on,
@@ -980,14 +978,9 @@ async fn a_workspace_moves_from_one_server_to_another() {
         "from the new server",
     )
     .await;
-    assert!(
-        carried_from(
-            &made_on,
-            workspace.workspace_id,
-            "note:new-server",
-            phone.device_pubkey()
-        )
-        .await,
+    assert_eq!(
+        admitted_author(&mut taken_in, workspace.workspace_id, "note:new-server").await,
+        phone.device_pubkey(),
         "the server it was made on reads the change as the phone's"
     );
 
