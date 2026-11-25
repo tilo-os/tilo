@@ -42,6 +42,9 @@ struct RowAccessInputs {
     index: usize,
     count: usize,
     bounds: Option<Rect>,
+    /// Where the row's own widget stands: the controls it publishes (a task's box) are placed by
+    /// it, so a row laid out since its node was kept is published again.
+    placed: Rect,
     focused: bool,
     selected: bool,
     menu: bool,
@@ -106,7 +109,14 @@ impl VirtualRows {
         enabled: bool,
     ) -> crate::a11y::AccessNode {
         let count = self.model.len();
-        let child = crate::a11y::stated_node(row.widget.as_ref());
+        let mut child = crate::a11y::stated_node(row.widget.as_ref());
+        // A row the list holds but did not lay out stands nowhere: the controls it publishes (a
+        // task's box) would read at the window's origin, so they carry no place.
+        if !crate::a11y::is_placed(row.widget.as_ref())
+            && let Some(node) = &mut child
+        {
+            crate::a11y::unplace(node);
+        }
         // The item held open in its row is still the row: it is named by the title its
         // document states, never by the name of the field the document happens to begin with.
         let held_title = self
@@ -445,6 +455,7 @@ impl VirtualRows {
             index: row.index,
             count,
             bounds: self.row_reach(row.index),
+            placed: row.widget.get_rect(),
             focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
             selected: self.selection.is_selected(&row.key),
             menu: self.menus.row_offers(&*self.model, &row.key),

@@ -914,6 +914,19 @@ pub(crate) fn with_synthetic_bounds(
     access
 }
 
+/// Whether layout gave `widget` a place with an area on the window: one it never placed (a
+/// list's row it did not lay out) reads as a box at the origin.
+pub(crate) fn is_placed(widget: &dyn crate::widget::Widget) -> bool {
+    widget.get_rect().area() > 0.0
+}
+
+/// `node` and everything under it as published by a widget nothing laid out ([`is_placed`]): no
+/// bounds anywhere, so nothing in it is a place to press.
+pub(crate) fn unplace(node: &mut AccessNode) {
+    node.bounds = None;
+    node.children.iter_mut().for_each(unplace);
+}
+
 /// Editable-text selection in the widget's native UTF-8 document space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct AccessibleTextSelection {
