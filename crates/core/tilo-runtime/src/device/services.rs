@@ -3447,10 +3447,10 @@ fn seat_services(
     // The agents each workspace's own record names, read here, so an agent is admitted with
     // or without a desktop session; what each spent, and the agent sessions the person
     // admitted, are the desktop session's, which the daemon hands each agent's connection.
-    services.agents = Some(Arc::new(super::workspaces::RecordedAgents {
-        workspaces: Arc::downgrade(parts.workspaces),
-        session: Arc::clone(&forwarded.agents),
-    }));
+    services.agents = Some(Arc::new(super::workspaces::RecordedAgents::new(
+        parts.workspaces,
+        Arc::clone(&forwarded.agents),
+    )));
     services.agent_sessions =
         Some(forwarded.agents as Arc<dyn tilo_broker_core::services::AgentSessions>);
 }

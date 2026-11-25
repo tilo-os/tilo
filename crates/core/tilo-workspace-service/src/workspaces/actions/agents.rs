@@ -248,6 +248,59 @@ impl Workspaces {
             .collect()
     }
 
+    /// Hand `seen` each workspace held here with the agents its list of its agents names
+    /// ([`Self::listed_agents`]): every workspace now, one again on each write to its records of
+    /// the workspace app, and every workspace again when one comes to be held here or a write
+    /// went by unread. From a task of the runtime this is called on. What keeps the list it hands
+    /// on answers a synchronous caller without waiting on the workspaces.
+    #[cfg(feature = "apps")]
+    pub fn follow_listed_agents(
+        &self,
+        seen: impl Fn(String, Vec<tilo_broker_core::services::ListedAgent>) + Send + 'static,
+    ) {
+        let workspaces = self.downgrade();
+        let mut writes = self.document_writes();
+        let mut holds = self.holds_changed();
+        holds.borrow_and_update();
+        tokio::spawn(async move {
+            let mut every = true;
+            let mut written = None::<String>;
+            loop {
+                let Some(held) = workspaces.upgrade() else {
+                    return;
+                };
+                if every {
+                    for workspace in held.ids().await {
+                        let workspace = workspace.to_string();
+                        let listed = held.listed_agents(&workspace).await;
+                        seen(workspace, listed);
+                    }
+                } else if let Some(workspace) = written.take() {
+                    let listed = held.listed_agents(&workspace).await;
+                    seen(workspace, listed);
+                }
+                drop(held);
+                every = false;
+                tokio::select! {
+                    write = writes.recv() => match write {
+                        Ok(write) if write.app == tilo_workspace_agent::OWNER => {
+                            written = Some(write.workspace);
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => every = true,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    },
+                    changed = holds.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        every = true;
+                    }
+                }
+            }
+        });
+    }
+
     /// Whether the agent `agent` still works in `workspace`: the workspace's list of its
     /// agents names it and it is not retired.
     pub async fn agent_is_active(&self, workspace: &str, agent: &str) -> bool {
