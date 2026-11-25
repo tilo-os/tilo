@@ -48,12 +48,12 @@ async fn reading(workspaces: &Workspaces, workspace: &str) -> Value {
         })
         .unwrap_or_default();
     // The accounts this device's person connected at issuers their apps describe: theirs alone,
-    // so a device reads its own person's and nobody else's.
+    // kept in their own workspace, so a device reads its own person's and nobody else's.
     let own = workspaces.acting_or_own(None);
-    let connected = own
-        .person_id()
-        .map(|person| workspaces.connected_accounts(workspace, person))
-        .unwrap_or_default();
+    let connected = match own.person_id() {
+        Some(person) => workspaces.connected_accounts(person).await,
+        None => Vec::new(),
+    };
     let reading = Reading {
         accounts,
         connected,

@@ -24,6 +24,7 @@ use tilo_server_protocol::servers::person_workspace_id;
 use super::Workspaces;
 
 pub mod accessory;
+pub mod connected;
 pub mod devices;
 pub mod speaker;
 pub mod wake;
@@ -174,6 +175,11 @@ pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) -> R
         surfaces,
         super::blocked::BLOCKED.0,
         &[surface_of::<super::blocked::Blocked>()],
+    )?;
+    declare(
+        surfaces,
+        connected::CONNECTED.0,
+        &[surface_of::<connected::ConnectedAccounts>()],
     )?;
     declare(
         surfaces,

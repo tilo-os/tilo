@@ -1,7 +1,7 @@
 //! Connecting a person's account at an issuer an app describes, from that app, against a
-//! stand-in issuer on loopback: the account it confirms is the person's alone, read back only by
-//! the app that described the issuer, and an issuer that refuses the address the browser came
-//! back to says which address to register.
+//! stand-in issuer on loopback: the account it confirms is the person's alone and kept in their
+//! own workspace, read back only by the app that described the issuer, and an issuer that
+//! refuses the address the browser came back to says which address to register.
 
 use serde_json::{Value, json};
 use tilo_actions::remote::person_accounts::{self, ConnectedAccount, SignInStep};
@@ -9,10 +9,11 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, InvocationReceipt, ReceiptStatus,
 };
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
+use tilo_server_protocol::servers::person_workspace_id;
 
 use super::super::tests::{admit, caller, governed, settled};
 use super::accounts_tests::asking;
-use crate::workspaces::Workspaces;
+use crate::workspaces::person_workspace::{self, connected};
 use crate::workspaces::tests::{governor, test_host};
 
 const BRIDGE: &str = "so.tilo.bridge";
@@ -78,9 +79,16 @@ async fn connected(
     came.map(answered)
 }
 
-/// How many grants for `name` the workspace's vault keeps.
-fn grants(vault: &crate::workspaces::vault::OpenVault, name: &str) -> usize {
-    vault
+/// How many grants for `name` the vault of `person`'s own workspace keeps.
+async fn grants(
+    workspaces: &crate::workspaces::Workspaces,
+    person: &[u8; 32],
+    name: &str,
+) -> usize {
+    workspaces
+        .open_vault(&person_workspace_id(person))
+        .await
+        .unwrap()
         .entries()
         .iter()
         .filter(|(item, _)| item.username == name)
@@ -91,25 +99,65 @@ fn refused_with(error: &ActionCallError, words: &str) -> bool {
     matches!(error, ActionCallError::Refused { reason } if reason.contains(words))
 }
 
-/// The account's grant is in the person's vault, and only there: the one `ada` grant, and no
-/// token kept beside the workspace for the bridge's fake issuer.
-async fn only_in_the_vault(workspaces: &Workspaces, here: &str, person: &str) {
+/// What `person` connected (`account`, at the bridge's issuer) reads back as theirs alone: by
+/// the app that described the issuer and by nobody else, the grant in their own workspace's
+/// vault, and nothing secret in the record that reaches their devices.
+async fn reads_only_theirs(
+    workspaces: &crate::workspaces::Workspaces,
+    (device, bo): (
+        &tilo_user_identity::DeviceCert,
+        &tilo_user_identity::DeviceCert,
+    ),
+    account: ConnectedAccount,
+) {
+    let person = hex::encode(device.user_public_key);
+    // The app that described the issuer reads the account; another app, or another issuer,
+    // reads nothing.
+    let read = workspaces
+        .connected_account((&person, BRIDGE, "fake"))
+        .await
+        .expect("the bridge reads the account its person connected");
     assert_eq!(
-        grants(&workspaces.open_vault(here).await.unwrap(), "ada"),
-        1
+        (read.id.as_str(), read.name.as_str()),
+        ("80351110224678912", "ada")
     );
-    let kept = std::fs::read_to_string(
+    assert!(
         workspaces
-            .workspace_root(here)
-            .join("connected-accounts")
-            .join(person)
-            .join(BRIDGE)
-            .join("fake.json"),
+            .connected_account((&person, "so.tilo.other", "fake"))
+            .await
+            .is_none()
+    );
+    assert!(
+        workspaces
+            .connected_account((&person, BRIDGE, "other"))
+            .await
+            .is_none()
+    );
+    assert_eq!(workspaces.connected_accounts(&person).await, vec![account]);
+    let bo_person = hex::encode(bo.user_public_key);
+    assert!(
+        workspaces
+            .connected_account((&bo_person, BRIDGE, "fake"))
+            .await
+            .is_none(),
+        "another person reads nothing of hers"
+    );
+
+    // The grant is in the vault of the person's own workspace, and only there; the record of
+    // what they connected, which reaches their devices, holds nothing secret.
+    assert_eq!(grants(workspaces, &device.user_public_key, "ada").await, 1);
+    let record = person_workspace::read_on::<connected::ConnectedAccounts>(
+        workspaces,
+        &person_workspace_id(&device.user_public_key),
+        connected::CONNECTED,
     )
+    .await
     .unwrap();
+    let kept = format!("{record:?}");
+    assert!(kept.contains("80351110224678912"), "{kept}");
     assert!(
         !kept.contains("access-"),
-        "no token is kept beside the workspace: {kept}"
+        "no token is in the record: {kept}"
     );
 }
 
@@ -122,11 +170,15 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     let (key, owner) = governor();
     let host = test_host(dir.path(), &key, &owner).await;
     let workspaces = host.workspaces();
+    // The device that made the root founds the person's own workspace, where what they
+    // connect is kept.
+    person_workspace::found(workspaces)
+        .await
+        .expect("the person's own workspace");
     let (workspace, workspace_id, actions) = governed(workspaces).await;
-    let device = admit(workspaces, &workspace, &owner, 1).await;
+    let device = owner.clone();
     let page = actions.device_page(workspace_id, &device);
-    let person = hex::encode(device.user_public_key);
-    let here = workspace_id.to_string();
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
     let in_bridge = caller(&device).through_app(BRIDGE);
 
     // Only a person, through the app that describes the issuer, connects an account there.
@@ -137,6 +189,14 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
     .await
     .unwrap_err();
     assert!(refused_with(&outside, "from the app"), "{outside:?}");
+    // Nor does anyone on a device that is not theirs: what they connect is kept on their own.
+    let elsewhere = settled(actions.device_page(workspace_id, &bo).invoke(
+        &caller(&bo).through_app(BRIDGE),
+        asking(person_accounts::CONNECT_ACCOUNT, connect(&server, port)),
+    ))
+    .await
+    .unwrap_err();
+    assert!(refused_with(&elsewhere, "not one of them"), "{elsewhere:?}");
 
     let account = connected(&page, &in_bridge, connect(&server, port))
         .await
@@ -164,36 +224,17 @@ async fn a_person_connects_their_account_at_an_issuer_an_app_describes() {
         authorize.target
     );
 
-    // The app that described the issuer reads the account; another app, or another issuer,
-    // reads nothing.
-    let read = workspaces
-        .connected_account(&here, (&person, BRIDGE, "fake"))
-        .expect("the bridge reads the account its person connected");
-    assert_eq!(
-        (read.id.as_str(), read.name.as_str()),
-        ("80351110224678912", "ada")
-    );
-    assert!(
-        workspaces
-            .connected_account(&here, (&person, "so.tilo.other", "fake"))
-            .is_none()
-    );
-    assert!(
-        workspaces
-            .connected_account(&here, (&person, BRIDGE, "other"))
-            .is_none()
-    );
-    assert_eq!(workspaces.connected_accounts(&here, &person), vec![account]);
-
-    // The grant is in the person's vault, and only there.
-    only_in_the_vault(workspaces, &here, &person).await;
+    reads_only_theirs(workspaces, (&device, &bo), account).await;
 
     // Connecting the same account again keeps one grant, the new one.
     connected(&page, &in_bridge, connect(&server, port))
         .await
         .expect("connected again");
-    let vault = workspaces.open_vault(&here).await.unwrap();
-    assert_eq!(grants(&vault, "ada"), 1, "the earlier grant went");
+    assert_eq!(
+        grants(workspaces, &device.user_public_key, "ada").await,
+        1,
+        "the earlier grant went"
+    );
 
     // An issuer that refuses the address the browser came back to says which to register.
     server.refuse_redirect();
@@ -238,11 +279,15 @@ async fn a_person_forgets_an_account_they_connected() {
     let (key, owner) = governor();
     let host = test_host(dir.path(), &key, &owner).await;
     let workspaces = host.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
-    let device = admit(workspaces, &workspace, &owner, 1).await;
+    // The device that made the root founds the person's own workspace, where what they
+    // connect is kept.
+    person_workspace::found(workspaces)
+        .await
+        .expect("the person's own workspace");
+    let (_, workspace_id, actions) = governed(workspaces).await;
+    let device = owner.clone();
     let page = actions.device_page(workspace_id, &device);
     let person = hex::encode(device.user_public_key);
-    let here = workspace_id.to_string();
     connected(
         &page,
         &caller(&device).through_app(BRIDGE),
@@ -266,13 +311,11 @@ async fn a_person_forgets_an_account_they_connected() {
     assert!(left.is_empty());
     assert!(
         workspaces
-            .connected_account(&here, (&person, BRIDGE, "fake"))
+            .connected_account((&person, BRIDGE, "fake"))
+            .await
             .is_none()
     );
-    assert_eq!(
-        grants(&workspaces.open_vault(&here).await.unwrap(), "ada"),
-        0
-    );
+    assert_eq!(grants(workspaces, &device.user_public_key, "ada").await, 0);
     assert_eq!(server.revoked().len(), 1, "the issuer took the grant back");
     let again = settled(page.invoke(&caller(&device), forget()))
         .await

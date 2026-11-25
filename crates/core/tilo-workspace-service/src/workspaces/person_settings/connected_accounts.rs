@@ -8,16 +8,16 @@
 //! The issuer's identity endpoint confirms the account, and the person's page waits for that
 //! ([`FINISH_CONNECT_ACCOUNT`]).
 //!
-//! What is kept is the person's alone: the grant as an item of their vault, and beside the
-//! workspace, under their own folder, which app's issuer it is, the confirmed account and which
-//! item holds the grant. No other member, and no app but the one that described the issuer,
-//! reads any of it; that app reads only the account's id and name ([`connected`]).
+//! What is kept is the person's alone, in their own workspace, so it reaches every device of
+//! theirs: the grant as an item of its vault, and in the record of their connected accounts
+//! which app's issuer it is, the confirmed account and which item holds the grant. No other
+//! member, and no app but the one that described the issuer, reads any of it; that app reads
+//! only the account's id and name ([`Workspaces::connected_account`]).
 //!
 //! [`CONNECT_ACCOUNT`]: tilo_actions::remote::person_accounts::CONNECT_ACCOUNT
 //! [`FINISH_CONNECT_ACCOUNT`]: tilo_actions::remote::person_accounts::FINISH_CONNECT_ACCOUNT
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -34,7 +34,13 @@ use tilo_oauth::OAuthError;
 use tilo_oauth::described::{ConfirmedAccount, DescribedIssuer};
 use tokio::sync::watch;
 
+use tilo_server_protocol::servers::person_workspace_id;
+
 use crate::workspaces::Workspaces;
+use crate::workspaces::person_workspace;
+use crate::workspaces::person_workspace::connected::{
+    CONNECTED, Connected, ConnectedAccounts, entry_id,
+};
 
 /// How long a connect waits for the person's browser.
 const CONNECT_WAIT: Duration = Duration::from_secs(10 * 60);
@@ -42,8 +48,6 @@ const CONNECT_WAIT: Duration = Duration::from_secs(10 * 60);
 const FINISH_WAIT: Duration = Duration::from_secs(10 * 60 + 30);
 /// When a connect nobody waited for to the end is forgotten.
 const FORGOTTEN_AFTER: Duration = Duration::from_secs(20 * 60);
-/// The folder of a workspace's root the connected accounts are kept in, one folder per person.
-const DIR: &str = "connected-accounts";
 /// The most connects waiting at once on this host.
 const MAX_WAITING: usize = 64;
 /// The longest id an app or an issuer is kept under.
@@ -52,7 +56,11 @@ const MAX_NAME: usize = 128;
 const ONLY_A_PERSON: &str = "Only a person connects their own account, from the app that asks";
 const NOT_BEGUN: &str = "That connect was not begun here, or is over. Connect again";
 const NOT_KEPT: &str = "The account was confirmed, but could not be kept here. Connect again";
-const NOT_CONNECTED: &str = "That account is not connected here";
+const NOT_CONNECTED: &str = "That account is not connected";
+const NOT_THEIRS: &str =
+    "Your connected accounts are on your own devices, and this is not one of them";
+const NOT_YET: &str =
+    "This device has not received your connected accounts yet. Try again in a moment";
 
 /// What a connect comes to: the account, or why not in words the person reads.
 type Outcome = Option<Result<ConnectedAccount, String>>;
@@ -69,31 +77,41 @@ struct Waiting {
 
 static WAITING: Mutex<BTreeMap<String, Waiting>> = Mutex::new(BTreeMap::new());
 
-/// One connected account as it is kept: nothing secret, only which vault item holds the grant.
+/// What gives a connected account's grant back when it is forgotten: the issuer as the app
+/// described it and the public client the grant was given to. Kept as the record's `described`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Kept {
-    app: String,
+#[serde(rename_all = "camelCase")]
+struct Described {
     issuer: DescribedIssuer,
-    /// The public client the grant was given to, which gives it back when it is forgotten.
     client_id: String,
-    account: ConfirmedAccount,
-    /// The vault item holding the grant.
-    grant: String,
 }
 
-impl Kept {
-    fn shown(&self) -> ConnectedAccount {
-        ConnectedAccount {
-            app: self.app.clone(),
-            issuer: self.issuer.id.clone(),
-            label: self.issuer.label.clone(),
-            id: self.account.id.clone(),
-            name: self.account.name.clone(),
+/// The issuer and client `kept` was connected with; none when what is kept of them does not
+/// read, which only a record this host did not write has.
+fn described_of(kept: &Connected) -> Option<Described> {
+    match serde_json::from_str::<Described>(&kept.described) {
+        Ok(described) => Some(described),
+        Err(error) => {
+            tracing::warn!(%error, "a connected account's issuer does not read");
+            None
         }
     }
 }
 
-/// Whether `name` can name a folder or a file as it is: what an app id or an issuer id is.
+fn shown(kept: &Connected) -> ConnectedAccount {
+    let label =
+        described_of(kept).map_or_else(|| kept.issuer.clone(), |described| described.issuer.label);
+    ConnectedAccount {
+        app: kept.app.clone(),
+        issuer: kept.issuer.clone(),
+        label,
+        id: kept.account.clone(),
+        name: kept.name.clone(),
+    }
+}
+
+/// Whether `name` is what an app id or an issuer id is: letters, digits, dots, dashes and
+/// underscores.
 fn plain(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_NAME
@@ -101,81 +119,6 @@ fn plain(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-}
-
-fn person_dir(root: &Path, person: &str) -> PathBuf {
-    root.join(DIR).join(person)
-}
-
-fn file_of(root: &Path, (person, app, issuer): (&str, &str, &str)) -> PathBuf {
-    person_dir(root, person)
-        .join(app)
-        .join(format!("{issuer}.json"))
-}
-
-/// The account kept at `path`; none where nothing is kept, or what is kept does not read.
-fn read_kept(path: &Path) -> Option<Kept> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(error) => {
-            tracing::warn!(%error, "a connected account kept here could not be read");
-            return None;
-        }
-    };
-    match serde_json::from_slice(&bytes) {
-        Ok(kept) => Some(kept),
-        Err(error) => {
-            tracing::warn!(%error, "a connected account kept here does not read");
-            None
-        }
-    }
-}
-
-fn write_kept(path: &Path, kept: &Kept) -> Result<(), String> {
-    let text = serde_json::to_vec_pretty(kept).map_err(|error| error.to_string())?;
-    let dir = path.parent().ok_or("no folder")?;
-    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
-    let partial = path.with_extension("json.partial");
-    std::fs::write(&partial, text).map_err(|error| error.to_string())?;
-    std::fs::rename(&partial, path).map_err(|error| error.to_string())
-}
-
-/// The account `person` connected at the issuer `issuer` that `app` described, in the workspace
-/// whose root is `root`: its id and name, and nothing of its grant.
-fn connected(root: &Path, (person, app, issuer): (&str, &str, &str)) -> Option<ConfirmedAccount> {
-    if !(plain(person) && plain(app) && plain(issuer)) {
-        return None;
-    }
-    read_kept(&file_of(root, (person, app, issuer))).map(|kept| kept.account)
-}
-
-/// Every account `person` connected in the workspace whose root is `root`, by app and issuer.
-fn connected_accounts(root: &Path, person: &str) -> Vec<ConnectedAccount> {
-    if !plain(person) {
-        return Vec::new();
-    }
-    let mut listed = Vec::new();
-    let Ok(apps) = std::fs::read_dir(person_dir(root, person)) else {
-        return listed;
-    };
-    for app in apps.flatten() {
-        let Ok(issuers) = std::fs::read_dir(app.path()) else {
-            continue;
-        };
-        for issuer in issuers.flatten() {
-            let path = issuer.path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "json")
-                && let Some(kept) = read_kept(&path)
-            {
-                listed.push(kept.shown());
-            }
-        }
-    }
-    listed.sort_by(|a, b| (&a.app, &a.issuer).cmp(&(&b.app, &b.issuer)));
-    listed
 }
 
 fn described(issuer: AccountIssuer) -> DescribedIssuer {
@@ -252,28 +195,72 @@ fn asker(caller: &Caller) -> Result<(String, String), ActionCallError> {
 }
 
 impl Workspaces {
-    /// The account the person `person` (their id) connected in `workspace` at the issuer
-    /// `issuer` that the app `app` described: its id and name, and nothing of its grant. What
-    /// that app reads of the person invoking it, and nothing anyone else reads.
-    #[must_use]
-    pub fn connected_account(
-        &self,
-        workspace: &str,
-        (person, app, issuer): (&str, &str, &str),
-    ) -> Option<ConfirmedAccount> {
-        connected(&self.workspace_root(workspace), (person, app, issuer))
+    /// The person's own workspace their connected accounts are kept in, when `person` (their
+    /// id) is this device's person: a device of anybody else's keeps none of it.
+    fn connected_workspace(&self, person: &str) -> Option<String> {
+        let own = self.device_cert().user_public_key;
+        (hex::encode(own) == person).then(|| person_workspace_id(&own))
     }
 
-    /// Every account the person `person` (their id) connected in `workspace`, for them to see
-    /// and forget.
-    #[must_use]
-    pub fn connected_accounts(&self, workspace: &str, person: &str) -> Vec<ConnectedAccount> {
-        connected_accounts(&self.workspace_root(workspace), person)
+    /// The record of `person`'s connected accounts, as this device reads it: none where this
+    /// device is not theirs, has not received their own workspace yet, or it does not read.
+    async fn connected_record(&self, person: &str) -> Option<ConnectedAccounts> {
+        let workspace = self.connected_workspace(person)?;
+        if !person_workspace::holds_person_workspace(self).await {
+            return None;
+        }
+        match person_workspace::read_on::<ConnectedAccounts>(self, &workspace, CONNECTED).await {
+            Ok(record) => Some(record),
+            Err(error) => {
+                tracing::warn!(%error, "the person's connected accounts are not read");
+                None
+            }
+        }
+    }
+
+    /// The person's own workspace, for a change to their connected accounts on a device of
+    /// theirs that has received it; the words they read otherwise.
+    async fn changing_connected(&self, person: &str) -> Result<String, String> {
+        let workspace = self
+            .connected_workspace(person)
+            .ok_or_else(|| NOT_THEIRS.to_owned())?;
+        if !person_workspace::holds_person_workspace(self).await {
+            return Err(NOT_YET.to_owned());
+        }
+        Ok(workspace)
+    }
+
+    /// The account the person `person` (their id) connected at the issuer `issuer` that the
+    /// app `app` described: its id and name, and nothing of its grant. What that app reads of
+    /// the person invoking it, the same on every device of theirs, and nothing anyone else
+    /// reads.
+    pub async fn connected_account(
+        &self,
+        (person, app, issuer): (&str, &str, &str),
+    ) -> Option<ConfirmedAccount> {
+        let record = self.connected_record(person).await?;
+        record
+            .accounts
+            .get(&entry_id(app, issuer))
+            .map(|kept| ConfirmedAccount {
+                id: kept.account.clone(),
+                name: kept.name.clone(),
+            })
+    }
+
+    /// Every account the person `person` (their id) connected, for them to see and forget.
+    pub async fn connected_accounts(&self, person: &str) -> Vec<ConnectedAccount> {
+        let Some(record) = self.connected_record(person).await else {
+            return Vec::new();
+        };
+        let mut listed: Vec<ConnectedAccount> = record.accounts.values().map(shown).collect();
+        listed.sort_by(|a, b| (&a.app, &a.issuer).cmp(&(&b.app, &b.issuer)));
+        listed
     }
 
     /// Answer `request` when it is one of a person's connected accounts' actions
-    /// ([`CONNECT_ACCOUNT`], [`FINISH_CONNECT_ACCOUNT`], [`FORGET_CONNECTED_ACCOUNT`]) in the
-    /// workspace `workspace_id` names; `None` for any other action.
+    /// ([`CONNECT_ACCOUNT`], [`FINISH_CONNECT_ACCOUNT`], [`FORGET_CONNECTED_ACCOUNT`]), asked
+    /// in a workspace `workspace_id` names; `None` for any other action.
     pub(super) async fn connected_accounts_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
@@ -286,18 +273,14 @@ impl Workspaces {
         ) {
             return None;
         }
-        let Some(workspace) = workspace_id else {
+        if workspace_id.is_none() {
             return Some(Err(ActionCallError::UnknownAction));
-        };
-        Some(
-            self.connected_invoke(&workspace.to_string(), caller, request)
-                .await,
-        )
+        }
+        Some(self.connected_invoke(caller, request).await)
     }
 
     async fn connected_invoke(
         &self,
-        workspace: &str,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
@@ -305,22 +288,14 @@ impl Workspaces {
             let person = forgetter(caller)?;
             let forgetting: ForgetConnectedAccount =
                 super::argument(request, "the app and issuer of the account to forget")?;
-            return super::answer(
-                &self
-                    .forget_connected(workspace, &person, &forgetting, request)
-                    .await,
-            );
+            return super::answer(&self.forget_connected(&person, &forgetting, request).await);
         }
         let (person, app) = asker(caller)?;
         match request.target.address.action.as_str() {
             CONNECT_ACCOUNT => {
                 let asking: ConnectAccount =
                     super::argument(request, "an issuer to connect an account at")?;
-                super::answer(
-                    &self
-                        .connect_account(workspace, (&person, &app), asking, request)
-                        .await,
-                )
+                super::answer(&self.connect_account((&person, &app), asking, request).await)
             }
             FINISH_CONNECT_ACCOUNT => {
                 let finishing: FinishConnectAccount =
@@ -333,11 +308,12 @@ impl Workspaces {
 
     async fn connect_account(
         &self,
-        workspace: &str,
         (person, app): (&str, &str),
         asking: ConnectAccount,
         call: &InvokeRequest,
     ) -> Result<SignInStep, String> {
+        // Where the account would be kept is settled before the browser goes anywhere.
+        self.changing_connected(person).await?;
         let issuer = described(asking.issuer);
         issuer.check()?;
         if !plain(&issuer.id) {
@@ -381,7 +357,6 @@ impl Workspaces {
             },
         );
         let workspaces = self.clone();
-        let workspace = workspace.to_owned();
         let (person, app) = (person.to_owned(), app.to_owned());
         let call = call.clone();
         tokio::spawn(async move {
@@ -395,13 +370,9 @@ impl Workspaces {
             .await;
             let came = match confirmed {
                 Ok(Ok((tokens, account))) => {
+                    let described = Described { issuer, client_id };
                     workspaces
-                        .keep_connected(
-                            &workspace,
-                            (&person, &app),
-                            &call,
-                            (issuer, &client_id, account, &tokens),
-                        )
+                        .keep_connected((&person, &app), &call, (described, account, &tokens))
                         .await
                 }
                 Ok(Err(error)) => Err(words(&issuer, &error)),
@@ -416,29 +387,34 @@ impl Workspaces {
         })
     }
 
-    /// Keep what a connect confirmed: the grant in `person`'s vault, in place of the one an
-    /// earlier connect of the same account kept, and the account beside the workspace.
+    /// Keep what a connect confirmed in `person`'s own workspace: the grant in its vault, in
+    /// place of the one an earlier connect of the same account kept, and the account in the
+    /// record of their connected accounts.
     async fn keep_connected(
         &self,
-        workspace: &str,
         (person, app): (&str, &str),
         call: &InvokeRequest,
-        (issuer, client_id, account, tokens): (
-            DescribedIssuer,
-            &str,
-            ConfirmedAccount,
-            &tilo_oauth::TokenSet,
-        ),
+        (described, account, tokens): (Described, ConfirmedAccount, &tilo_oauth::TokenSet),
     ) -> Result<ConnectedAccount, String> {
-        let root = self.workspace_root(workspace);
-        let path = file_of(&root, (person, app, &issuer.id));
-        let earlier = read_kept(&path).and_then(|kept| ItemId::parse(&kept.grant));
-        let place = Place::parse(&issuer.token_endpoint).map_err(|_| NOT_KEPT.to_owned())?;
+        let workspace = self.changing_connected(person).await?;
+        let issuer = described.issuer.id.clone();
+        let earlier = self
+            .connected_record(person)
+            .await
+            .and_then(|record| {
+                record
+                    .accounts
+                    .get(&entry_id(app, &issuer))
+                    .map(|kept| kept.grant.clone())
+            })
+            .and_then(|grant| ItemId::parse(&grant));
+        let place =
+            Place::parse(&described.issuer.token_endpoint).map_err(|_| NOT_KEPT.to_owned())?;
         let grant = serde_json::to_string(tokens).map_err(|_| NOT_KEPT.to_owned())?;
         let acting = tilo_action_policy::Acting::person(person.to_owned());
         let name = account.name.clone();
         let item = self
-            .vault_for(workspace, &acting)
+            .vault_for(&workspace, &acting)
             .serving(call)
             .changing(|items| {
                 let item = items.add(NewItem::new(ItemKind::Key, vec![place], name, grant))?;
@@ -452,19 +428,35 @@ impl Workspaces {
                 tracing::warn!(%error, "a connected account's grant was not kept in the vault");
                 NOT_KEPT.to_owned()
             })?;
-        let kept = Kept {
+        let kept = Connected {
             app: app.to_owned(),
             issuer,
-            client_id: client_id.to_owned(),
-            account,
+            account: account.id,
+            name: account.name,
+            described: serde_json::to_string(&described).map_err(|_| NOT_KEPT.to_owned())?,
             grant: item,
         };
-        write_kept(&path, &kept).map_err(|error| {
-            tracing::warn!(%error, "a connected account was not kept beside its workspace");
+        let shown = shown(&kept);
+        person_workspace::apply_on(
+            self,
+            &workspace,
+            CONNECTED,
+            ConnectedAccounts::KEEP.with((
+                kept.app,
+                kept.issuer,
+                kept.account,
+                kept.name,
+                kept.described,
+                kept.grant,
+            )),
+        )
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "a connected account was not kept in its person's workspace");
             NOT_KEPT.to_owned()
         })?;
         self.person_settings_changed();
-        Ok(kept.shown())
+        Ok(shown)
     }
 }
 
@@ -474,25 +466,31 @@ impl Workspaces {
     /// Answers the accounts still connected.
     async fn forget_connected(
         &self,
-        workspace: &str,
         person: &str,
         forgetting: &ForgetConnectedAccount,
         call: &InvokeRequest,
     ) -> Result<Vec<ConnectedAccount>, String> {
         let (app, issuer) = (forgetting.app.as_str(), forgetting.issuer.as_str());
-        if !(plain(app) && plain(issuer)) {
-            return Err(NOT_CONNECTED.to_owned());
-        }
-        let root = self.workspace_root(workspace);
-        let path = file_of(&root, (person, app, issuer));
-        let kept = read_kept(&path).ok_or_else(|| NOT_CONNECTED.to_owned())?;
+        let workspace = self.changing_connected(person).await?;
+        let kept = self
+            .connected_record(person)
+            .await
+            .and_then(|record| record.accounts.get(&entry_id(app, issuer)).cloned())
+            .ok_or_else(|| NOT_CONNECTED.to_owned())?;
+        let described = described_of(&kept);
         let acting = tilo_action_policy::Acting::person(person.to_owned());
-        let grant = match (
-            ItemId::parse(&kept.grant),
-            Place::parse(&kept.issuer.token_endpoint),
-        ) {
-            (Some(id), Ok(place)) => self
-                .vault_for(workspace, &acting)
+        let place = described.as_ref().and_then(|described| {
+            match Place::parse(&described.issuer.token_endpoint) {
+                Ok(place) => Some(place),
+                Err(error) => {
+                    tracing::warn!(%error, "a connected account's token endpoint names no place");
+                    None
+                }
+            }
+        });
+        let grant = match (ItemId::parse(&kept.grant), place) {
+            (Some(id), Some(place)) => self
+                .vault_for(&workspace, &acting)
                 .serving(call)
                 .changing(|items| {
                     let released = items.use_at(&id, &place, person).ok();
@@ -506,36 +504,40 @@ impl Workspaces {
                 })?,
             _ => None,
         };
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::warn!(%error, "a forgotten connected account stays kept");
-                return Err("The account could not be forgotten here. Try again".to_owned());
-            }
-        }
+        person_workspace::apply_on(
+            self,
+            &workspace,
+            CONNECTED,
+            ConnectedAccounts::FORGET.with((app.to_owned(), issuer.to_owned())),
+        )
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "a forgotten connected account stays kept");
+            "The account could not be forgotten here. Try again".to_owned()
+        })?;
         if let Some(released) = grant
+            && let Some(described) = described
             && let Ok(tokens) = serde_json::from_str::<tilo_oauth::TokenSet>(&released.secret)
         {
-            give_back(kept, tokens).await;
+            give_back(described, tokens).await;
         }
         self.person_settings_changed();
-        Ok(connected_accounts(&root, person))
+        Ok(self.connected_accounts(person).await)
     }
 }
 
 /// Give a forgotten account's grant back to its issuer, where the issuer takes one back. The
 /// account is forgotten here either way; an issuer that did not answer keeps a grant nobody
 /// holds any more, which runs out on its own.
-async fn give_back(kept: Kept, tokens: tilo_oauth::TokenSet) {
-    if kept.issuer.revocation_endpoint.is_none() {
+async fn give_back(described: Described, tokens: tilo_oauth::TokenSet) {
+    if described.issuer.revocation_endpoint.is_none() {
         return;
     }
     let given = tokio::task::spawn_blocking(move || {
         let client = tilo_oauth::client::OAuthClient::new()?;
         client.revoke(
-            &kept.issuer.provider(),
-            &kept.issuer.registration(&kept.client_id),
+            &described.issuer.provider(),
+            &described.issuer.registration(&described.client_id),
             &tokens,
         )
     })

@@ -142,6 +142,9 @@ tilo-host-blocked-block-device = Ein Gerät sperren
 tilo-host-blocked-unblock-device = Ein Gerät nicht mehr sperren
 tilo-host-blocked-block-user = Eine Person und alle ihre Geräte sperren
 tilo-host-blocked-unblock-user = Eine Person nicht mehr sperren
+tilo-accounts-connected = Verbundene Konten
+tilo-accounts-connected-keep = Ein verbundenes Konto behalten
+tilo-accounts-connected-forget = Ein verbundenes Konto vergessen
 
 ## Workspace vault
 passwords-workspace-vault = Arbeitsbereichstresor

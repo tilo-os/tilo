@@ -142,6 +142,9 @@ tilo-host-blocked-block-device = Block a device
 tilo-host-blocked-unblock-device = Stop blocking a device
 tilo-host-blocked-block-user = Block a person and all their devices
 tilo-host-blocked-unblock-user = Stop blocking a person
+tilo-accounts-connected = Connected accounts
+tilo-accounts-connected-keep = Keep a connected account
+tilo-accounts-connected-forget = Forget a connected account
 
 ## Workspace vault
 passwords-workspace-vault = Workspace vault
