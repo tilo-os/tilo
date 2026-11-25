@@ -231,3 +231,69 @@ fn a_change_of_the_same_page_is_reconciled_in_place_and_never_swaps() {
     );
     assert!(shown.shows("a"));
 }
+
+/// The swap to a page `b` that holds a button the person presses.
+fn swap_to_pressable() -> Vec<Patch> {
+    let mut b = page("b");
+    let mut go = UiNode::empty("ui.Button", "b-go");
+    go.props.insert("label".to_owned(), Value::text("Go"));
+    go.events.insert("press".to_owned(), wire::Event::default());
+    b.children.push(go);
+    vec![
+        Patch::Remove {
+            parent: vec!["stage".to_owned()],
+            key: "a".to_owned(),
+        },
+        Patch::Insert {
+            parent: vec!["stage".to_owned()],
+            index: 0,
+            node: b,
+        },
+    ]
+}
+
+impl Shown {
+    /// Click the control `name` at `now`, and the presses the window sent the app for it.
+    fn click(&mut self, now: Instant, name: &str) -> Vec<String> {
+        clock(now, || {
+            self.harness
+                .click_named(name)
+                .expect("the control is drawn");
+            ui::widget::find_mut::<AppWindow>(self.harness.root_widget_mut())
+                .expect("the window")
+                .flush();
+        });
+        let mut pressed = Vec::new();
+        while let Some(batch) = self.app.recv().expect("receives") {
+            for message in wire::decode_batch::<ToApp>(&batch).expect("a batch") {
+                if let ToApp::Fire { key, event, .. } = message {
+                    pressed.push(format!("{key} {event}"));
+                }
+            }
+        }
+        pressed
+    }
+}
+
+#[test]
+fn the_page_a_swap_brought_takes_the_persons_press_while_it_fades_in_and_after() {
+    let start = ui::time::now();
+    let mut shown = Shown::open("a", Some("cross_fade"), false, start);
+    shown.change(start, MotionSource::Pointer, swap_to_pressable());
+
+    // While the swap plays, the page coming in is the one the person acts on.
+    let midway = start + FRAME;
+    shown.frame(midway);
+    assert!(shown.stage().is_swapping(), "the swap still plays");
+    assert_eq!(
+        shown.click(midway, "b-go"),
+        ["b-go press"],
+        "the press reached the button on the page fading in"
+    );
+
+    // Once it has played, the stage still hands the press to the page it shows.
+    let later = start + Duration::from_secs(1);
+    shown.frame(later);
+    assert!(!shown.stage().is_swapping());
+    assert_eq!(shown.click(later, "b-go"), ["b-go press"]);
+}

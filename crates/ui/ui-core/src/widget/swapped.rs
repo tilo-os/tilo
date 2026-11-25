@@ -12,8 +12,9 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
+use winit::event::WindowEvent;
 
-use super::{AppModel, DrawChild, DrawCtx, Element, ModelPath, TaffyTreeExt, Widget};
+use super::{AppModel, DrawChild, DrawCtx, Element, EventCtx, ModelPath, TaffyTreeExt, Widget};
 use crate::motion::{CrossFade, Feel, frame_now, recent_input};
 use crate::theme::Theme;
 use crate::time::Instant;
@@ -288,6 +289,30 @@ impl Widget for Swapped {
         crate::widget::in_opacity_layer(scene, transform, rect, incoming, |scene| {
             current.draw_child(scene, transform, text, theme, &env);
         });
+    }
+
+    /// The person acts on the view being shown: the one fading out is on its way out and takes
+    /// nothing. It is laid out last, over the one it replaces.
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        let Some(current) = ctx
+            .taffy
+            .children(ctx.node_id)
+            .ok()
+            .and_then(|children| children.last().copied())
+        else {
+            return;
+        };
+        let path = ctx.path;
+        self.current
+            .handle_event(event, &mut ctx.reborrow(path, current));
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.current.wants_pointer_capture()
+    }
+
+    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+        self.current.touch_claim(point)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
