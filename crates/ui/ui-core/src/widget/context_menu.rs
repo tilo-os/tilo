@@ -1540,7 +1540,7 @@ const STILL_POINTER: f64 = 0.5;
 const PADDING: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
 /// Distance from the panel's edge to a row's content, on both sides.
-fn label_inset(theme: &Theme) -> f64 {
+pub(crate) fn label_inset(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s3)
 }
 

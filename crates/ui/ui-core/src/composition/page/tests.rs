@@ -564,7 +564,8 @@ fn the_page_moves_by_the_themes_motion() {
         "a menu arrives over `base`"
     );
     assert_eq!(prop(&css, "appear-props"), "opacity,transform");
-    // One curve per property: its surface is opaque a third of the way in, while it still grows.
+    // One curve per property: its surface is opaque and at its size a third of the way in, and
+    // from then on only its rows move, on their own curve.
     let curves: Vec<Vec<f64>> = prop(&css, "appear-curve")
         .split("linear(")
         .skip(1)
@@ -581,7 +582,34 @@ fn the_page_moves_by_the_themes_motion() {
     };
     let third = opacity.len() / 3 + 1;
     assert_eq!(opacity[third], 1.0, "opaque by a third: {opacity:?}");
-    assert!(transform[third] < 0.9, "still growing: {transform:?}");
+    assert_eq!(
+        transform[third], 1.0,
+        "at its size by a third: {transform:?}"
+    );
+    assert!(
+        transform[1] < opacity[1],
+        "it grows behind its fade: {transform:?}"
+    );
+    let held: Vec<f64> = prop(&css, "held-curve")
+        .strip_prefix("linear(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or_else(|| panic!("a linear() curve for the rows"))
+        .split(',')
+        .map(|point| point.parse().expect("a number"))
+        .collect();
+    let opaque = opacity
+        .iter()
+        .position(|&o| o >= 1.0)
+        .unwrap_or(opacity.len());
+    assert!(
+        held.iter().take(opaque).all(|&h| h == 0.0),
+        "its rows wait for an opaque surface: {held:?} against {opacity:?}"
+    );
+    assert!(
+        held[third] > 0.0 && held[third] < 1.0 && held[held.len() * 2 / 3] == 1.0,
+        "its rows come in after a third and are in place by two thirds: {held:?}"
+    );
+    assert_eq!(prop(&css, "held-rise"), "4px");
     let settle = prop(&css, "settle");
     let points: Vec<f64> = settle
         .strip_prefix("linear(")
@@ -805,6 +833,24 @@ fn a_menu_buttons_menu_is_a_layer_of_its_own_that_grows_from_the_button() {
             && layer.contains("--tilo-appear-from:")
             && layer.contains("Pin to the top"),
         "{layer}"
+    );
+    // The page sets the menu's rows in its own face, so it takes its width from them, never less
+    // than the app laid it out, and its height from its rows: a width measured by another renderer
+    // cut a label short.
+    let surface = layer
+        .split("data-w=\"ContextMenu\"")
+        .nth(1)
+        .and_then(|rest| rest.split('>').next())
+        .unwrap_or_else(|| panic!("the menu stands in its layer: {layer}"));
+    assert!(
+        surface.contains("width:max-content;")
+            && surface.contains("min-width:")
+            && !surface
+                .split(";width:")
+                .skip(1)
+                .any(|value| value.starts_with(|c: char| c.is_ascii_digit()))
+            && !surface.contains("height:"),
+        "the menu is as wide and as tall as its rows: {surface}"
     );
     for patch in &patches {
         if let Patch::Replace { id, html } = patch {

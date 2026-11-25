@@ -501,12 +501,13 @@ fn node_words(node: &AccessNode) -> Option<Words> {
     Some(Words { title, detail })
 }
 
-/// Where a node's element sits among its parent's: in the flow, or at its bounds from the
-/// parent's corner.
+/// Where a node's element sits among its parent's: in the flow, at its bounds from the
+/// parent's corner, or over the window as a layer of its own.
 #[derive(Clone, Copy)]
 enum Place {
     Flow,
     At([f64; 2]),
+    Over,
 }
 
 /// What an element in a document is: a field a person edits in place, as a document's text.
@@ -611,7 +612,7 @@ impl Page {
             over.attr("data-layer", "");
             over.attr("style", &appear_style(layer));
             over.children
-                .push(self.node(layer, Place::At([0.0, 0.0]), Context::Plain));
+                .push(self.node(layer, Place::Over, Context::Plain));
             body.children.push(over);
         }
         if let Some(focus) = &composition.focus {
@@ -668,15 +669,37 @@ impl Page {
             css.push_str("display:flex;flex-direction:column;");
         }
         css.push_str("min-width:0;");
-        if let Place::At([x, y]) = place {
-            let [at_x, at_y, width, height] = node.rect;
-            let _ = write!(
-                css,
-                "position:absolute;left:{}px;top:{}px;width:{width}px;height:{height}px;\
-                 margin:0;min-height:0;max-width:none;max-height:none;flex:none;",
-                at_x - x,
-                at_y - y,
-            );
+        match place {
+            // A surface over the window whose rows the page draws itself (a menu, a list to pick
+            // from) is as wide as its widest row set in the face the page draws, never narrower
+            // than the app laid it out, and as tall as its rows: a width measured in another
+            // renderer would cut its labels short.
+            Place::Over if leaf && shows == Shows::Structure => {
+                // It keeps the window's margin (`floating_surface::viewport_margin`, the menu's
+                // inset) at the right edge, as the app places it.
+                let [at_x, at_y, width, _] = node.rect;
+                let _ = write!(
+                    css,
+                    "position:absolute;left:{at_x}px;top:{at_y}px;width:max-content;\
+                     min-width:{width}px;max-width:calc(100% - {at_x}px - var(--tilo-menu-inset));\
+                     margin:0;flex:none;",
+                );
+            }
+            Place::At(_) | Place::Over => {
+                let [x, y] = match place {
+                    Place::At(corner) => corner,
+                    _ => [0.0, 0.0],
+                };
+                let [at_x, at_y, width, height] = node.rect;
+                let _ = write!(
+                    css,
+                    "position:absolute;left:{}px;top:{}px;width:{width}px;height:{height}px;\
+                     margin:0;min-height:0;max-width:none;max-height:none;flex:none;",
+                    at_x - x,
+                    at_y - y,
+                );
+            }
+            Place::Flow => {}
         }
         let places = !leaf && !node.flows;
         for (counts, held) in [
@@ -1521,12 +1544,18 @@ pub fn theme_css(theme: &crate::Theme) -> String {
         motion.fast().as_millis(),
         appear_time.as_millis(),
     );
-    // A menu's rows stand in the page as the app lays them out: its row height, the inset around
-    // them, the padding before a row's glyph, the glyph's size and the air after it.
-    let menu = crate::widget::FloatingMetrics::of(theme, TextRole::Body, false);
+    // A menu's rows stand in the page as `ContextMenu` lays them out and paints them: its row
+    // height, the panel's inset round the rows (the armed row's too), what is left of the row's
+    // content inset inside that, the glyph's size and the air after it.
+    let tokens = &theme.tokens;
+    let inset = crate::widget::floating_surface::menu_inset(theme);
+    let line = f64::from(theme.text(TextRole::Body).line_height_px());
     let menu_props = format!(
-        "--tilo-menu-row:{}px;--tilo-menu-inset:{}px;--tilo-menu-pad:{}px;--tilo-menu-icon:{}px;--tilo-menu-gap:{}px;",
-        menu.row, menu.inset, menu.pad, menu.icon, menu.spacing,
+        "--tilo-menu-row:{}px;--tilo-menu-inset:{inset}px;--tilo-menu-pad:{}px;--tilo-menu-icon:{}px;--tilo-menu-gap:{}px;",
+        (line + f64::from(tokens.spacing.s2)).max(f64::from(tokens.metrics.menu_row_height)),
+        crate::widget::context_menu::label_inset(theme) - inset,
+        tokens.metrics.icon_sm,
+        tokens.spacing.s2,
     );
     format!(
         ":root{{color-scheme:{look};{motion_props}{menu_props}--tilo-hover:{};--tilo-press:{};--tilo-selected:{};--tilo-ground:{};--tilo-sidebar:{};--tilo-raised:{};--tilo-overlay:{};--tilo-text:{};--tilo-text-dim:{};--tilo-text-tertiary:{};--tilo-border:{};--tilo-focus:{};--tilo-accent:{};--tilo-on-accent:{};--tilo-radius:{:.1}px;--tilo-control-radius:{}px;{type_roles}}}",

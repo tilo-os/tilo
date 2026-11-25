@@ -113,13 +113,13 @@ impl Appear {
     }
 
     /// An arriving surface `progress` of the way in: how opaque it is, and how far its scale and reach
-    /// have come. Both start slow, so the first frame after a press is its faintest and smallest, since a
-    /// motion linear in the clock would be a third of the way in by then; it is opaque by
-    /// [`Self::OPAQUE_AT`], and its scale and reach ease on the square of its progress to the end.
+    /// have come. Both are done by [`Self::OPAQUE_AT`], so from then on only what it holds moves
+    /// ([`Self::contents`]); its scale and reach ease on the square of that share, so the first frame
+    /// after a press is its smallest.
     #[must_use]
     pub fn arriving(progress: f64) -> (f64, f64) {
-        let p = progress.clamp(0.0, 1.0);
-        (stage(p, 0.0, Self::OPAQUE_AT), p * p)
+        let opaque = stage(progress.clamp(0.0, 1.0), 0.0, Self::OPAQUE_AT);
+        (opaque, opaque * opaque)
     }
 
     /// How far what an arriving surface holds (a menu's rows) has come `progress` of the way in: none

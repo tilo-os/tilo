@@ -341,33 +341,37 @@ tilo_test_env::scenario! {
             first.offset
         );
         let half = Appear::coming(0.5, Direction::Enter, surface, anchor, on());
+        let share = 0.5 / 0.7;
         assert!(
-            half.opacity > 0.7 && half.opacity < 0.75,
+            (f64::from(half.opacity) - share).abs() < 1e-6,
             "its surface comes ahead of its scale: {}",
             half.opacity
         );
         assert!(
-            (half.scale - 0.94).abs() < 1e-9,
-            "the scale is eased, a quarter of the way in halfway through: {}",
+            (half.scale - (0.92 + 0.08 * share * share)).abs() < 1e-9,
+            "the scale eases on the square of the opaque share: {}",
             half.scale
         );
         assert!(
-            (half.offset.hypot() - Appear::REACH * 0.75).abs() < 1e-9,
+            (half.offset.hypot() - Appear::REACH * (1.0 - share * share)).abs() < 1e-9,
             "{:?}",
             half.offset
         );
         let early = Appear::coming(0.35, Direction::Enter, surface, anchor, on());
         assert!(early.opacity <= 0.5, "{}", early.opacity);
-        assert!(early.scale < 0.94, "more than 6 % smaller: {}", early.scale);
-        // Its surface is opaque within 60 ms of a 210 ms arrival, and still growing then. What it
-        // holds only starts once nothing shows through it, so its words never read over what lies
-        // behind it, and has arrived well before the surface settles.
+        assert!(early.scale < 0.941, "about 6 % smaller: {}", early.scale);
+        // Its surface is opaque and at rest within 60 ms of a 210 ms arrival: from then on only
+        // what it holds moves. What it holds only starts once nothing shows through it, so its
+        // words never read over what lies behind it, and has arrived well before the spring ends.
         let base = Duration::from_millis(210);
         let spring = SpringSpec::settling_within(base);
         let at = |ms: u64| 1.0 - spring.state(1.0, 0.0, Duration::from_millis(ms).as_secs_f64()).0;
         let opaque = Appear::coming(at(60), Direction::Enter, surface, anchor, on());
         assert_eq!(opaque.opacity, 1.0, "opaque at {}", at(60));
-        assert!(opaque.scale < 0.99, "still growing: {}", opaque.scale);
+        assert!(
+            Appear::pose(at(60), Direction::Enter, surface, anchor, on()).is_rest(),
+            "at rest at 60 ms: {opaque:?}"
+        );
         for step in 0..=100 {
             let p = f64::from(step) / 100.0;
             let held = Appear::contents(p, Direction::Enter, on());
