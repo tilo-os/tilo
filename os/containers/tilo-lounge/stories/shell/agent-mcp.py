@@ -28,7 +28,7 @@ from real_apps import Agent  # noqa: E402
 
 SHELL = "so.tilo.session"
 CHROME = "desktop:chrome"
-APPS = "file-explorer settings activity"
+APPS = "files settings activity"
 # The tilolang apps beside them, by their directory under apps/tl.
 TL_APPS = ("chat", "tasks")
 # The channel the agent posts in, made through Chat's own `new_channel`.

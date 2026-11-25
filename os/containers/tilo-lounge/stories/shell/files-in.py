@@ -39,7 +39,7 @@ DOCUMENT = "letter.txt"
 LETTER = "The keys are under the flowerpot"
 CLI = os.environ.get("TILO_CLI_BIN", "")
 SWITCHER = "Switch workspace, now in "
-APPS = "file-explorer settings terminal pdf-viewer photos activity"
+APPS = "files settings terminal pdf photos activity"
 # The tilolang apps beside them, by their directory under apps/tl.
 TILOLANG = ("sheets", "tasks")
 

@@ -29,7 +29,7 @@ from story import PROFILE, SWITCHER, Failed, Person, Story, front, until, walk, 
 
 SETTINGS = "so.tilo.settings"
 STRIPS = "Show strips, now on "
-APPS = "file-explorer settings"
+APPS = "files settings"
 # The tilolang apps beside them, by their directory under apps/tl.
 TILOLANG = ("tasks",)
 # Settings' page with the look, as Settings names it, and its light-or-dark choice.

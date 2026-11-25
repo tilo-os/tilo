@@ -20,7 +20,7 @@ from story import Failed, Story, until, walk  # noqa: E402
 SHELL = "so.tilo.session"
 SHOW_PAIR_DEVICE = ("session:invite", "show-pair-device")
 SESSION = BUILD / "bin/tilo-session"
-APPS = "file-explorer settings activity"
+APPS = "files settings activity"
 # The tilolang apps beside them, by their directory under apps/tl.
 TILOLANG = ("tasks",)
 

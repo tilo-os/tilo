@@ -58,7 +58,7 @@ REPO = Path(__file__).resolve().parents[2]
 SESSION = REPO / "dist/dev/nested-session.sh"
 # The apps every session installs unless it names its own: what a check of a
 # desktop needs to see a person's work in it.
-APPS = "file-explorer settings terminal"
+APPS = "files settings terminal"
 # Where cargo builds, as cargo reads it.
 TARGET = Path(os.environ.get("CARGO_TARGET_DIR") or REPO / "target")
 # Where the nested-session build lands (dist/dev/nested-session-build.sh).

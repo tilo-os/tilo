@@ -41,7 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import real_apps as ra
 
-APPS = "file-explorer settings"
+APPS = "files settings"
 # The tilolang apps installed beside them, by their directory under apps/tl.
 TL_APPS = ["chat"]
 # The channel the agent tells of the file in.
