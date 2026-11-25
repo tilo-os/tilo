@@ -204,7 +204,7 @@ imports! {
     (WallClock, "wall_clock", "i", "i"),
     (PersonNamed, "person_named", "i", "i"),
     (AgentNamed, "agent_named", "i", "i"),
-    (InvocationPush, "invocation_push", "iii", ""),
+    (InvocationPush, "invocation_push", "iiii", ""),
     (InvocationPop, "invocation_pop", "", ""),
     (ActorKind, "actor_kind", "i", "l"),
     (ActorRole, "actor_role", "i", "i"),

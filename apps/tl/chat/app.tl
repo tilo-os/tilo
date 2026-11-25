@@ -3576,6 +3576,11 @@ scenario "a team's channels" -> TextChannel {
     invoke(new_channel(conversations, "weekend", category: .some(social)))
     invoke(new_channel(conversations, "books", category: .some(social)))
     invoke(new_voice_channel(conversations, "Lounge"))
+    // The conversation with yourself: your notes, which the sidebar labels as yours. Your own
+    // steps come first: in a workspace a seed does only what you do, and stops at the first
+    // step taken as someone else.
+    let notes = invoke(message_person(conversations, invoker))
+    invoke(send(notes, RichText("Ask Leo about the walk on Saturday.")))
     invoke(
         send(design, RichText("The new onboarding build is on the test machines.")),
         by: mia,
@@ -3627,15 +3632,6 @@ scenario "a team's channels" -> TextChannel {
         by: leo,
         at: 2026-06-29T08:30Z,
     )
-    let dm = invoke(message_person(conversations, leo))
-    invoke(
-        send(dm, RichText("Are we still on for the walk on Saturday?")),
-        by: leo,
-        at: 2026-06-30T09:02Z,
-    )
-    // The conversation with yourself: your notes, which the sidebar labels as yours.
-    let notes = invoke(message_person(conversations, invoker))
-    invoke(send(notes, RichText("Ask Leo about the walk on Saturday.")))
     design
 }
 

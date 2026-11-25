@@ -671,6 +671,22 @@ impl Runtime {
         self.core.serve_members(root);
     }
 
+    /// Decide by a real workspace's access from now on: the members the host gives are the
+    /// workspace's own. A scenario run here stages no one (`person("Leo")` names Leo, who is
+    /// in the workspace only if its members say so) and may act only as whoever runs it, so a
+    /// seed records nothing in someone else's name. A host without access (a test's, a shot's)
+    /// stages the people its scenarios name.
+    pub fn decide_by_workspace(&self) {
+        self.core.members_decided.set(true);
+    }
+
+    /// Whether this runtime decides by a real workspace's access
+    /// ([`Self::decide_by_workspace`]).
+    #[must_use]
+    pub fn decides_by_workspace(&self) -> bool {
+        self.core.members_decided.get()
+    }
+
     /// Whether this runtime's host serves `target`'s reading itself ([`Self::serve_reading`]):
     /// a host handing in the readings the session publishes skips it.
     #[must_use]

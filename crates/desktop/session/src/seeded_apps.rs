@@ -148,7 +148,7 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
         .meta
         .scenarios
         .first()
-        .map(|scenario| scenario.action.clone());
+        .map(|scenario| (scenario.name.clone(), scenario.action.clone()));
     let seed = {
         let (name, person) = (name.clone(), person.to_owned());
         move |host: &Host| -> Result<(), String> {
@@ -164,13 +164,21 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
                     &tilolang_tilo::host::system_time(),
                 )?;
             }
-            if let Some(action) = &scenario {
-                host.runtime()
-                    .invoke_action(
-                        &tilo_actions::Actor::from(tilo_actions::MemberId::person(&person)),
-                        (action.as_str(), vec![]),
-                    )
-                    .map_err(|error| format!("{name} {action}: {error}"))?;
+            if let Some((called, action)) = &scenario
+                && let Err(error) = host.runtime().invoke_action(
+                    &tilo_actions::Actor::from(tilo_actions::MemberId::person(&person)),
+                    (action.as_str(), vec![]),
+                )
+            {
+                let error = format!("{name}'s scenario \"{called}\": {error}");
+                // In a workspace the scenario does only what the person does: a step it takes
+                // as someone else is refused and stops it there. What it wrote before that
+                // stands, and the app opens on it; the refusal is said once, here. Anywhere else
+                // a scenario that stops is broken.
+                if !host.runtime().decides_by_workspace() {
+                    return Err(error);
+                }
+                tracing::warn!(%error, "the app's first scenario stopped partway");
             }
             // A workspace of many items, to feel the app as a person with that many does.
             if let Some(items) = seed_items() {

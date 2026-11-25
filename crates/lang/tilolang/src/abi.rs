@@ -237,7 +237,7 @@ imports! {
     WallClock = "wall_clock" ([H] -> [H]);
     PersonNamed = "person_named" ([H] -> [H]);
     AgentNamed = "agent_named" ([H] -> [H]);
-    InvocationPush = "invocation_push" ([H, H, H] -> []);
+    InvocationPush = "invocation_push" ([H, H, H, H] -> []);
     InvocationPop = "invocation_pop" ([] -> []);
     ActorKind = "actor_kind" ([H] -> [I64]);
     ActorRole = "actor_role" ([H] -> [H]);

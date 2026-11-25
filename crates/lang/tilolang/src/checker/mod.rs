@@ -1463,7 +1463,8 @@ impl Checker<'_> {
 
     /// `invoke(act(args), by: mia, at: 2026-06-29T07:02Z, from: msg)` in a scenario: runs what it
     /// names with `invoker` = `by`, `now` = `at` where one is named, and what it creates recorded as
-    /// made from `from`. Each invocation is a change of its own.
+    /// made from `from`. Each invocation is a change of its own. The runtime is handed the
+    /// action's name too, for the words it refuses a step with.
     fn builtin_invoke(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.written != Written::Scenario {
             for a in args {
@@ -1528,6 +1529,7 @@ impl Checker<'_> {
                 }
             }
         }
+        let action = Ex::str(&called(&first.value));
         let value = self.expr(&first.value, None);
         let ty = value.ty.clone();
         let (mut stmts, last) = match value.kind {
@@ -1548,7 +1550,7 @@ impl Checker<'_> {
         let pop = Stmt::Eval(Ex::host(Imp::InvocationPop, Vec::new(), Ty::Unit));
         let mut out = vec![Stmt::Eval(Ex::host(
             Imp::InvocationPush,
-            vec![by, at, from],
+            vec![by, at, from, action],
             Ty::Unit,
         ))];
         out.append(&mut stmts);

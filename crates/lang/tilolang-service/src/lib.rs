@@ -195,15 +195,23 @@ impl ResourceService {
     }
 
     /// Read and write `store` from now on, with every package the host runs loaded again over it.
+    /// The store is the one the session's own parts write into (the shell's), whose host decides
+    /// their actions by the shell's own policy; this service only reads it and publishes it.
     fn rehost(&mut self, store: tilolang_tilo::resources::ResourceStore) -> Result<(), String> {
-        let host = self.host_over(store)?;
+        let host = self.host_over(store, || None)?;
         self.install(host);
         Ok(())
     }
 
-    /// A host over `store` with every package this service's host runs loaded again over it.
-    fn host_over(&self, store: tilolang_tilo::resources::ResourceStore) -> Result<Host, String> {
-        let host = Host::open(store, self.host.viewer().clone(), None, || None)
+    /// A host over `store` with every package this service's host runs loaded again over it,
+    /// deciding every action it runs by `access`: the person's access where `store` keeps its
+    /// resources.
+    fn host_over(
+        &self,
+        store: tilolang_tilo::resources::ResourceStore,
+        access: impl Fn() -> Option<tilo_actions::policy::MemberAccess> + 'static,
+    ) -> Result<Host, String> {
+        let host = Host::open(store, self.host.viewer().clone(), None, access)
             .map_err(|error| error.to_string())?;
         if let Some(words) = &self.words {
             host.set_words(std::rc::Rc::clone(words));
@@ -1249,14 +1257,28 @@ impl Service for ResourceService {
         if self.in_workspace {
             return Ok(false);
         }
+        // Every action run into the workspace, the seed's included, is decided by the person's
+        // access there, as their window decides it: who the workspace's members are, and what the
+        // person may do. A host with no access would decide each as owning the whole tree, so
+        // nothing runs there before the workspace's policy has reached this device.
+        if store.access().is_none() {
+            return Err("the workspace's policy has not reached this device yet".to_owned());
+        }
         let port: std::rc::Rc<dyn tilolang_tilo::resources::Port> =
             std::rc::Rc::new(WorkspacePort {
                 store: std::rc::Rc::clone(store),
                 app: app.clone(),
             });
+        let deciding = std::rc::Rc::clone(store);
         // The service moves only once the workspace took the seed: one it refused leaves the
         // service reading the resources it held, and the move is asked again.
-        let host = self.host_over(tilolang_tilo::resources::ResourceStore::new(port))?;
+        let host = self.host_over(
+            tilolang_tilo::resources::ResourceStore::new(port),
+            move || deciding.access(),
+        )?;
+        // Its members are the workspace's own: the seed stages no one, and does only what the
+        // person running it does.
+        host.runtime().decide_by_workspace();
         // Seeded once something besides the app's root is kept: a root alone is what a seed the
         // workspace refused partway left (its keys were not here yet), and it is seeded again.
         let held = match host.package(&app) {

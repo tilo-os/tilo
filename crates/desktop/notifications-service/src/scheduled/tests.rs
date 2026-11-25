@@ -69,6 +69,14 @@ impl tilo_service::WorkspaceStore for Workspace {
         };
         serde_json::to_vec(&reply).map_err(|e| e.to_string())
     }
+
+    /// The person's own workspace: they are its only member.
+    fn access(&self) -> Option<tilo_actions::policy::MemberAccess> {
+        Some(tilo_actions::policy::MemberAccess::person(
+            tilo_actions::policy::WorkspacePolicy::new("workspace", PERSON),
+            PERSON,
+        ))
+    }
 }
 
 /// A log kept in `workspace`, as the daemon keeps it once the session reached it: what a

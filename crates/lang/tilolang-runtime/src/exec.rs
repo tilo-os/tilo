@@ -3325,6 +3325,37 @@ impl Core {
         ret_void()
     }
 
+    /// Whether the running scenario may run `action` as `who`. A runtime deciding by a real
+    /// workspace's access (a seed run into a person's workspace) acts only as whoever runs the
+    /// scenario: recording a change as anyone else, a member or not, would be doing it in their
+    /// name. The refusal names the step, who it was to run as, and why; whoever ran the
+    /// scenario names the scenario.
+    fn may_act_as(&self, who: &Actor, action: &str) -> HResult<()> {
+        if !self.members_decided.get() {
+            return Ok(());
+        }
+        let runs_as = {
+            let frames = self.frames.borrow();
+            let FrameKind::Action(state) = &frames.top()?.kind else {
+                return trap("only a scenario names people and acts as them");
+            };
+            state.invoker.clone()
+        };
+        if *who == runs_as {
+            return Ok(());
+        }
+        let name = self.named(who);
+        if self.member(who).is_none() {
+            trap(format!(
+                "can't {action} as {name}: {name} is not in this workspace"
+            ))
+        } else {
+            trap(format!(
+                "can't {action} as {name}: {name} is not you, so this can't be done as them"
+            ))
+        }
+    }
+
     /// Run `f` on the top frame's action state, which must be a scenario's: only seed data
     /// names people and acts as them.
     fn scenario_state(&self, f: impl FnOnce(&mut ActionState)) -> HResult<()> {
@@ -3652,6 +3683,8 @@ impl Core {
                         return trap(format!("expected a resource, got {}", other.kind_name()));
                     }
                 };
+                let action = self.text(a.h(3)?)?;
+                self.may_act_as(&who, &action)?;
                 self.scenario_segment()?;
                 let invocation = Invocation { who, at, from };
                 self.scenario_state(|state| state.invocations.push(invocation))?;

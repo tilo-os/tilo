@@ -33,6 +33,12 @@ use crate::common::{Api, PERSON, until, wait_for};
 /// The Tasks app, as its package names it.
 const TASKS: &str = "so.tilo.tasks";
 
+/// The Tasks app and its root's type: what its window joins.
+const TASKS_WINDOW: (&str, &str) = (TASKS, "Tasks");
+
+/// The Chat app and its root's type: what its window joins.
+const CHAT_WINDOW: (&str, &str) = ("so.tilo.chat", "Conversations");
+
 /// A task the tasks app's first scenario seeded.
 const SEEDED_TASK: &str = "Take the bins out";
 
@@ -89,15 +95,15 @@ fn me() -> tilo_actions::Actor {
     ))
 }
 
-/// The Tasks app's package, as installed.
-fn tasks_bundle() -> Bundle {
+/// The app `app`'s package, as installed.
+fn bundle(app: &str) -> Bundle {
     let catalog = package_store::Catalog::at(crate::common::app_store(), None);
     let installed = app_catalogue::apps::read(&catalog).expect("the installed apps");
-    let tasks = installed
+    let found = installed
         .iter()
-        .find(|app| app.app_id == TASKS)
-        .expect("Tasks is installed");
-    Bundle::read(&tasks.payload_root).expect("Tasks' payload")
+        .find(|installed| installed.app_id == app)
+        .unwrap_or_else(|| panic!("{app} is installed"));
+    Bundle::read(&found.payload_root).unwrap_or_else(|error| panic!("{app}'s payload: {error}"))
 }
 
 /// Every text `node` and the nodes inside it show.
@@ -149,51 +155,53 @@ fn tasks_in(host: &Host) -> Vec<(ResourceRef, String, bool)> {
         .collect()
 }
 
-/// The Tasks window's route, joined as the launcher hands an app its collaboration connection and
-/// its identity.
+/// The window of `app`'s route, joined as the launcher hands an app its collaboration connection
+/// and its identity.
 fn join(
     socket: &std::path::Path,
+    app: &str,
     workspace: &str,
     workspace_id: uuid::Uuid,
     kind: &str,
 ) -> Result<collaboration::CollaborationManager, String> {
     let mut app_wire =
         std::os::unix::net::UnixStream::connect(socket).map_err(|e| e.to_string())?;
-    launcher::services::write_collab_handoff(&mut app_wire, TASKS, workspace)
+    launcher::services::write_collab_handoff(&mut app_wire, app, workspace)
         .map_err(|e| e.to_string())?;
     let mut identity =
         std::os::unix::net::UnixStream::connect(launcher::services::identity_socket())
             .map_err(|e| e.to_string())?;
-    launcher::services::write_identity_handshake(&mut identity, TASKS, workspace)
+    launcher::services::write_identity_handshake(&mut identity, app, workspace)
         .map_err(|e| e.to_string())?;
     collaboration::CollaborationManager::join_instance(
         &collab_types::document::ResourceType::new(kind.to_owned()),
         std::os::fd::OwnedFd::from(app_wire),
         &std::os::fd::OwnedFd::from(identity),
-        collaboration::RouteSpec::app(TASKS.to_owned(), workspace_id),
+        collaboration::RouteSpec::app(app.to_owned(), workspace_id),
     )
     .map_err(|error| format!("the window joins: {error:?}"))?
     .finish_join()
     .map_err(|error| format!("the window's route is joined: {error:?}"))
 }
 
-/// Run `work` in a window of the Tasks app, as its process runs one: the app's package in a host
-/// over the workspace's store, reached on the app's own route through the session's app wire.
-/// The session turns meanwhile. `work` is asked again, with what moved in the store read anew,
-/// until it answers or a minute passed.
-fn in_tasks_window<R: Send>(
+/// Run `work` in a window of the app `window` names (the app and its root's type), as its process
+/// runs one: the app's package in a host over the workspace's store, reached on the app's own
+/// route through the session's app wire. The session turns meanwhile. `work` is asked again,
+/// with what moved in the store read anew, until it answers or a minute passed.
+fn in_window<R: Send>(
     session: &mut Session,
     root: &std::path::Path,
     launches: &tilo_session::Launches,
     workspace: &str,
+    (app, root_type): (&str, &str),
     work: impl Fn(&Host) -> Option<R> + Send + Sync,
 ) -> R {
     // The app's process is this test's: the session admits its connection as the launch it
     // recorded.
-    launches.started(std::process::id(), TASKS, workspace, true);
+    launches.started(std::process::id(), app, workspace, true);
     let socket = root.join("app_wire.sock");
     let workspace_id = uuid::Uuid::parse_str(workspace).expect("a workspace id");
-    let kind = format!("tl.{TASKS}.Tasks");
+    let kind = format!("tl.{app}.{root_type}");
     std::thread::scope(|scope| {
         let window = scope.spawn(|| -> Result<R, String> {
             // The workspace's founding membership reaches the identity service a few turns after
@@ -201,7 +209,7 @@ fn in_tasks_window<R: Send>(
             // window started that early would be, and it joins again.
             let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
             let manager = loop {
-                match join(&socket, workspace, workspace_id, &kind) {
+                match join(&socket, app, workspace, workspace_id, &kind) {
                     Ok(manager) => break manager,
                     Err(why)
                         if why.contains("not a member") && std::time::Instant::now() < until =>
@@ -214,7 +222,7 @@ fn in_tasks_window<R: Send>(
             let connection = tilolang_process::connection::Connection::new(manager)?;
             let store = ResourceStore::new(std::rc::Rc::new(connection.port(None)));
             let host = Host::open(store, me(), None, || None).map_err(|error| error.to_string())?;
-            host.load_bundle(&tasks_bundle())
+            host.load_bundle(&bundle(app))
                 .map_err(|error| error.to_string())?;
             let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
             loop {
@@ -223,7 +231,7 @@ fn in_tasks_window<R: Send>(
                 }
                 if std::time::Instant::now() > until {
                     let held: Vec<String> = host
-                        .package(TASKS)
+                        .package(app)
                         .map(|package| {
                             package
                                 .meta
@@ -265,7 +273,7 @@ fn the_seeded_tasks_are_in_the_store_the_tasks_window_opens() {
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
 
-    let shown = in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
+    let shown = in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
         if !tasks_in(host)
             .iter()
             .any(|(_, title, _)| title == SEEDED_TASK)
@@ -280,6 +288,57 @@ fn the_seeded_tasks_are_in_the_store_the_tasks_window_opens() {
     assert!(
         shown.iter().any(|text| text == SEEDED_PROJECT),
         "the Tasks window's view lists the seeded projects: {shown:?}"
+    );
+}
+
+/// How many resources of the type named `name` of `app` the store `host` reads holds.
+fn held_of(host: &Host, app: &str, name: &str) -> usize {
+    host.package(app)
+        .and_then(|package| package.meta.types.into_iter().find(|ty| ty.name == name))
+        .and_then(|ty| host.store().resources_of(&ty.id).ok())
+        .map_or(0, |ids| ids.len())
+}
+
+/// Chat seeded into the person's own workspace holds only what they did: its channels and
+/// categories, and their notes to themselves. The scenario's messages from Mia, Leo and Ada
+/// were never theirs to write there, so the workspace holds none of them, and Chat's window
+/// opens on the channels and the person's one conversation.
+#[test]
+fn the_seeded_chat_holds_only_the_persons_own_steps() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let launches = std::sync::Arc::new(tilo_session::Launches::default());
+    let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
+    let (app, _) = CHAT_WINDOW;
+
+    let (shown, directs, messages) = in_window(
+        &mut session,
+        root.path(),
+        &launches,
+        &workspace,
+        CHAT_WINDOW,
+        |host| {
+            let directs = held_of(host, app, "Direct");
+            if directs == 0 {
+                return None;
+            }
+            let view = host.open_main(app).ok()?;
+            let mut shown = Vec::new();
+            texts_of(view.tree(), &mut shown);
+            Some((shown, directs, held_of(host, app, "Message")))
+        },
+    );
+    for channel in ["general", "design", "weekend"] {
+        assert!(
+            shown.iter().any(|text| text == channel),
+            "Chat's window lists the seeded channel {channel}: {shown:?}"
+        );
+    }
+    assert_eq!(
+        (directs, messages),
+        (1, 1),
+        "the one conversation is the person's notes to themselves, holding their one note: \
+         nothing was written as anyone else"
     );
 }
 
@@ -353,7 +412,7 @@ fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_the_window() {
     let launches = std::sync::Arc::new(tilo_session::Launches::default());
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
     // The session's Tasks is the workspace's once it holds it: the seeded task is there first.
-    in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
+    in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
         tasks_in(host)
             .iter()
             .any(|(_, title, _)| title == SEEDED_TASK)
@@ -371,7 +430,7 @@ fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_the_window() {
         )
         .unwrap_or_else(|error| panic!("the app's action runs: {error}"));
 
-    let titles = in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
+    let titles = in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
         let titles: Vec<String> = tasks_in(host)
             .into_iter()
             .map(|(_, title, _)| title)
@@ -406,7 +465,7 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
     let (mut session, workspace) = session(root.path(), std::sync::Arc::clone(&launches));
 
     // The person checks the task off in the window, as its check box does.
-    in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
+    in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
         let (task, _, _) = tasks_in(host)
             .into_iter()
             .find(|(_, title, _)| title == "Book a haircut")?;
@@ -494,7 +553,7 @@ fn a_task_added_in_the_window_is_the_persons_and_marks_nothing_for_them() {
     let me = me();
 
     let (versions, unseen) =
-        in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
+        in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
             let Some((milk, _, _)) = tasks_in(host)
                 .into_iter()
                 .find(|(_, title, _)| title == "Milk")
@@ -537,7 +596,7 @@ fn typing_a_title_in_the_window_is_one_act_of_its_history() {
     let me = me();
 
     let (typed, steps, lead, (placeholder, arrow, beside, said)) =
-        in_tasks_window(&mut session, root.path(), &launches, &workspace, |host| {
+        in_window(&mut session, root.path(), &launches, &workspace, TASKS_WINDOW, |host| {
             let package = host.package(TASKS)?;
             let task = package.meta.types.iter().find(|ty| ty.name == "Task")?;
             let title = task

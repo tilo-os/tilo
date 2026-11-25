@@ -249,6 +249,10 @@ pub struct Core {
     /// The workspace package's `members` root, when the host serves its reading from these
     /// members (`Runtime::serve_members`): every change to them is that reading's too.
     pub members_root: RefCell<Option<crate::value::ResourceRef>>,
+    /// The host decides by a real workspace's access (`Runtime::decide_by_workspace`): its
+    /// members are the workspace's own, so a scenario stages no one and acts only as whoever
+    /// runs it.
+    pub members_decided: std::cell::Cell<bool>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
     /// The network came back: entries waiting to go online are tried again on the next settle.
     pub retry_waiting: std::cell::Cell<bool>,
@@ -479,6 +483,7 @@ impl Core {
             device: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
             members_root: RefCell::new(None),
+            members_decided: std::cell::Cell::new(false),
             sink: RefCell::new(None),
             retry_waiting: std::cell::Cell::new(false),
             words: RefCell::new(Box::new(crate::words::SourceWords)),

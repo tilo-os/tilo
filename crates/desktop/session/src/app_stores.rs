@@ -84,14 +84,18 @@ pub(crate) type HeldStores = std::rc::Rc<
     ) -> Option<std::rc::Rc<dyn tilo_service::WorkspaceStore>>,
 >;
 
-/// The stores of the workspaces the daemon `daemon` keeps, asked on the session's link to it.
+/// The stores of the workspaces the daemon `daemon` keeps, asked on the session's link to it,
+/// each deciding what runs into it by the person's access as `view` reads the workspace's policy.
+/// None without a view: a session that reads no workspace's policy runs nothing into one.
 pub(crate) fn held_stores(
     daemon: tilo_session_client::daemon_documents::DaemonShell,
+    view: Option<std::sync::Arc<tilo_session_client::workspace_view::WorkspaceView>>,
 ) -> HeldStores {
     std::rc::Rc::new(move |workspace, _runtime| {
         daemon.link().ok()?;
         Some(std::rc::Rc::new(HeldStore {
             daemon: daemon.clone(),
+            view: std::sync::Arc::clone(view.as_ref()?),
             workspace,
         }))
     })
@@ -101,6 +105,9 @@ pub(crate) fn held_stores(
 /// write and read their resources in it: each command runs at the daemon, as the device's person.
 struct HeldStore {
     daemon: tilo_session_client::daemon_documents::DaemonShell,
+    /// The workspaces as this device holds them: the workspace's policy, which decides every
+    /// action the session's apps run into it.
+    view: std::sync::Arc<tilo_session_client::workspace_view::WorkspaceView>,
     workspace: String,
 }
 
@@ -120,5 +127,13 @@ impl tilo_service::WorkspaceStore for HeldStore {
                 "the daemon answered a resource command with {other:?}"
             )),
         }
+    }
+
+    fn access(&self) -> Option<tilo_actions::policy::MemberAccess> {
+        let policy = self.view.policy(&self.workspace).ok()?;
+        Some(tilo_actions::policy::MemberAccess::person(
+            policy,
+            hex::encode(self.view.person()),
+        ))
     }
 }

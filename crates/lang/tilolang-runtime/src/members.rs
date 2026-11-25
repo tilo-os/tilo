@@ -170,15 +170,18 @@ impl Core {
         Ok(self.named_member(MemberId::agent(format!("scenario:{name}"), person)))
     }
 
-    /// Adds the member `id` to the workspace, unless it is one already, and names them.
+    /// Adds the member `id` to the workspace, unless it is one already, and names them. A
+    /// runtime deciding by a real workspace's access adds no one: its members are the
+    /// workspace's, and a scenario run there only names people.
     fn named_member(&self, id: MemberId) -> Actor {
         let who = Actor::Member(id.clone());
-        if self
-            .members
-            .borrow()
-            .list
-            .iter()
-            .any(|member| member.id == id)
+        if self.members_decided.get()
+            || self
+                .members
+                .borrow()
+                .list
+                .iter()
+                .any(|member| member.id == id)
         {
             return who;
         }
@@ -205,7 +208,7 @@ impl Core {
         self.members.borrow().list.clone()
     }
 
-    fn member(&self, who: &Actor) -> Option<Member> {
+    pub(crate) fn member(&self, who: &Actor) -> Option<Member> {
         self.members
             .borrow()
             .list

@@ -516,7 +516,10 @@ metadata carries `capture_protected`, and so does every view showing it or that 
 - Changes are CRDT-backed and replay identically everywhere; resources with an outside
   origin follow that service's rules.
 - A package can declare **scenarios**: named seed data for screenshots, tests and benchmarks.
-  They never touch a person's data; a real first launch starts empty.
+  They never touch a person's data; a real first launch starts empty. A development session
+  that seeds a workspace with an app's first scenario runs it under the person's access there:
+  `person("Mia")` stages no one, and a step run `by:` anyone but the person is refused and
+  stops the scenario, so a seed records nothing in another's name.
 
 ## The detail docs
 

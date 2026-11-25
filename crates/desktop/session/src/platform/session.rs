@@ -723,7 +723,7 @@ impl Session {
         }
         // The stores of the workspaces the daemon keeps, as the apps the session runs itself read
         // and write their resources in them.
-        let held_stores = crate::app_stores::held_stores(daemon.clone());
+        let held_stores = crate::app_stores::held_stores(daemon.clone(), view.clone());
         // What is the person's alone is kept in their own workspace, which the device's daemon
         // keeps: the session reads and writes it there.
         if let (Some(store), Some(identity)) = (

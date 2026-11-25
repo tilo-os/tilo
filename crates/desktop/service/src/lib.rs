@@ -363,6 +363,13 @@ pub trait WorkspaceStore {
     /// # Errors
     /// The workspace's store cannot be reached, or refused the command.
     fn command(&self, app: &str, command: &[u8]) -> Result<Vec<u8>, String>;
+
+    /// The person's access in the workspace as its policy stands now: who its members are and
+    /// what the person may do there. Every action the session's apps run into the workspace is
+    /// decided by it, the actions their seeds run included, as an app's window decides them.
+    /// `None` while the workspace's policy has not reached this device: nothing may run into the
+    /// workspace until it has.
+    fn access(&self) -> Option<tilo_actions::policy::MemberAccess>;
 }
 
 /// `resource` offering every action of the vocabulary `E`.
