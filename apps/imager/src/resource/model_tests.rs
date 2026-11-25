@@ -34,7 +34,7 @@ tilo_test_env::scenario! {
 
     phase a_new_record_starts_with_empty_records;
     {
-        let imager = Replica::<Imager>::new().in_app("so.tilo.model", "Model");
+        let imager = Replica::<Imager>::new().in_app(crate::resource::APP_ID, "Imager");
         let state = imager.state().unwrap();
         assert!(state.source.is_none());
         assert!(state.recent.is_empty());
@@ -43,7 +43,7 @@ tilo_test_env::scenario! {
 
     phase profile_field_edits_set_one_field_and_store_no_secret;
     {
-        let mut imager = Replica::<Imager>::new().in_app("so.tilo.model", "Model");
+        let mut imager = Replica::<Imager>::new().in_app(crate::resource::APP_ID, "Imager");
         let profile = Imager::paths().profile;
         for change in [
             profile.hostname.replace("lab01"),
@@ -84,7 +84,7 @@ tilo_test_env::scenario! {
 
     phase reviewing_images_keeps_them_in_recency_order;
     {
-        let mut imager = Replica::<Imager>::new().in_app("so.tilo.model", "Model");
+        let mut imager = Replica::<Imager>::new().in_app(crate::resource::APP_ID, "Imager");
         let [tilo, fedora, arch]: [Source; 3] = sample_recent_sources().try_into().unwrap();
         assert!(
             imager.apply(Imager::CLEAR_SOURCE.with(())).is_err(),
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
 
     phase concurrent_edits_converge;
     {
-        let mut ours = Replica::<Imager>::new().in_app("so.tilo.model", "Model");
+        let mut ours = Replica::<Imager>::new().in_app(crate::resource::APP_ID, "Imager");
         review(&mut ours, &sample_source());
         let mut theirs = ours.fork();
         let profile = Imager::paths().profile;
@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
 
     phase an_agents_changes_render_as_the_apps_sentences;
     {
-        let mut imager = Replica::<Imager>::new().in_app("so.tilo.model", "Model").as_agent_for("claude", "ada");
+        let mut imager = Replica::<Imager>::new().in_app(crate::resource::APP_ID, "Imager").as_agent_for("claude", "ada");
         review(&mut imager, &sample_source());
         let profile = Imager::paths().profile;
         for change in [

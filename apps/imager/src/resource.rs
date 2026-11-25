@@ -623,7 +623,9 @@ mod tests {
             "an internal disk is not a write target here"
         );
         let job = find(&resources, "imager.job").expect("the write job");
-        assert_eq!(ids(job), ["status"]);
+        // Stopping the write and ejecting its drive are the job's own actions; with no write
+        // running, invoking either is refused.
+        assert_eq!(ids(job), ["status", "cancel-write", "eject"]);
         for row in [drive, job] {
             assert!(
                 row.actions
