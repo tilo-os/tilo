@@ -1122,7 +1122,7 @@ impl Task {
     ///
     /// The host refused the device or answered nothing, its answer does not read, or the
     /// membership it answered does not hold here.
-    async fn take_in(&mut self, workspace_id: WorkspaceId) -> Result<(), LinkError> {
+    async fn take_in(&self, workspace_id: WorkspaceId) -> Result<(), LinkError> {
         let entering = tilo_server_protocol::entering::Entering {
             workspace: workspace_id.to_string(),
             name: self.config.cert.device_label.clone(),
