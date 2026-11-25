@@ -1,13 +1,75 @@
 //! Admission of live widget/Taffy nodes to their record owners, and the checked entry points that
 //! deliver a callback to one admitted node.
-use super::{
-    BoundDispatchError, BoundNode, CallbackBinding, CallbackScopeGuard, DocumentEditStamp,
-};
+use super::{BoundDispatchError, BoundNode};
+#[cfg(feature = "model")]
+use super::{CallbackBinding, CallbackScopeGuard, DocumentEditStamp};
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
+#[cfg(feature = "model")]
 use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
+
+/// The component scope a node is admitted under, which the nodes below it inherit.
+#[cfg(feature = "model")]
+pub(super) type Scope = Option<Rc<CallbackBinding>>;
+/// Without the model no component scopes a node: every node is the window's own.
+#[cfg(not(feature = "model"))]
+pub(super) type Scope = ();
+
+/// What entering a node's scope holds open until it drops.
+#[cfg(feature = "model")]
+type EntryScope = Option<CallbackScopeGuard>;
+#[cfg(not(feature = "model"))]
+type EntryScope = ();
+
+/// Whether `scope` is a component's.
+#[cfg(feature = "model")]
+fn scoped(scope: &Scope) -> bool {
+    scope.is_some()
+}
+#[cfg(not(feature = "model"))]
+fn scoped((): &Scope) -> bool {
+    false
+}
+
+/// Enter `scope` for one visit to a node admitted under it.
+#[cfg(feature = "model")]
+fn enter_scope(scope: &Scope) -> Result<EntryScope, BoundDispatchError> {
+    scope.as_deref().map(CallbackBinding::enter).transpose()
+}
+#[cfg(not(feature = "model"))]
+fn enter_scope((): &Scope) -> Result<EntryScope, BoundDispatchError> {
+    Ok(())
+}
+
+/// The scope a root is admitted under: the component it is, if it is one.
+#[cfg(feature = "model")]
+fn root_scope(root: &dyn Widget) -> Scope {
+    crate::bound_dispatch::callback_binding(root).map(Rc::new)
+}
+#[cfg(not(feature = "model"))]
+fn root_scope(_: &dyn Widget) -> Scope {}
+
+/// The scope `widget` is admitted under, below a node admitted under `inherited`.
+#[cfg(feature = "model")]
+fn widget_scope(widget: &dyn Widget, inherited: Scope) -> Scope {
+    if widget.resets_binding_inheritance() {
+        None
+    } else {
+        crate::bound_dispatch::callback_binding(widget)
+            .map(Rc::new)
+            .or(inherited)
+    }
+}
+#[cfg(not(feature = "model"))]
+fn widget_scope(_: &dyn Widget, (): Scope) -> Scope {}
+
+/// What entering a widget for a walk ([`enter_widget`]) holds open until it drops: with the model,
+/// the scope of the component the widget is.
+pub(crate) struct NodeEntry {
+    _scope: EntryScope,
+}
 
 /// Admission metadata for precisely one live widget/Taffy layout.
 #[derive(Default)]
@@ -15,7 +77,7 @@ pub struct BoundNodeMap {
     pub(super) nodes: HashMap<NodeId, BoundNode>,
     pub(super) parents: HashMap<NodeId, NodeId>,
 }
-type PendingAdmission = (NodeId, Option<Rc<CallbackBinding>>, bool);
+type PendingAdmission = (NodeId, Scope, bool);
 
 #[derive(Default)]
 struct Boundaries {
@@ -34,6 +96,7 @@ impl Boundaries {
 }
 
 impl BoundNodeMap {
+    #[cfg(feature = "model")]
     /// Read the nearest canonical record owner's document and history stamp.
     /// Local writes, remote merges and undo/redo invalidate it, including an
     /// edit followed by its inverse. Reading does not open an action or commit.
@@ -66,12 +129,14 @@ impl BoundNodeMap {
         }
         false
     }
+    #[cfg(feature = "model")]
     pub(crate) fn binding_for(&self, node: NodeId) -> Option<CallbackBinding> {
         self.nodes
             .get(&node)
             .filter(|node| !node.inactive)
             .and_then(|node| node.binding.as_deref().cloned())
     }
+    #[cfg(feature = "model")]
     /// [`Self::binding_for`] without copying the binding, for a walk that asks it of every node.
     pub(crate) fn binding_ref(&self, node: NodeId) -> Option<&CallbackBinding> {
         self.nodes
@@ -83,12 +148,12 @@ impl BoundNodeMap {
     pub(crate) fn has_owner(&self, node: NodeId) -> bool {
         self.nodes
             .get(&node)
-            .is_some_and(|entry| entry.binding.is_some())
+            .is_some_and(|entry| scoped(&entry.binding))
     }
     pub(crate) fn owns_document(&self, node: NodeId) -> bool {
         self.nodes
             .get(&node)
-            .is_some_and(|entry| entry.binding.is_some())
+            .is_some_and(|entry| scoped(&entry.binding))
     }
     pub fn new() -> Self {
         Self::default()
@@ -162,13 +227,7 @@ impl BoundNodeMap {
         }
         let pending: Vec<_> = roots
             .iter()
-            .map(|(root, layout_root)| {
-                (
-                    *layout_root,
-                    crate::bound_dispatch::callback_binding(*root).map(Rc::new),
-                    false,
-                )
-            })
+            .map(|(root, layout_root)| (*layout_root, root_scope(*root), false))
             .collect();
         // SAFETY: the caller owns all supplied roots and layout pointers.
         unsafe { self.admit(pending, &boundaries, taffy, nodes) };
@@ -233,13 +292,7 @@ impl BoundNodeMap {
             let binding = if let Some(&pointer) = nodes.get(&node) {
                 // SAFETY: rebuild's owner guarantees all admitted pointers are live.
                 let widget = unsafe { &*pointer };
-                let binding = if widget.resets_binding_inheritance() {
-                    None
-                } else {
-                    crate::bound_dispatch::callback_binding(widget)
-                        .map(Rc::new)
-                        .or(inherited)
-                };
+                let binding = widget_scope(widget, inherited);
                 self.nodes.insert(
                     node,
                     BoundNode {
@@ -297,28 +350,33 @@ pub unsafe fn invoke_bound_node<R>(
     if admitted.inactive {
         return Err(BoundDispatchError::MissingNode);
     }
+    #[cfg(feature = "model")]
     if let Some(binding) = &admitted.binding {
         binding.note_input();
-        binding.with_document(outer, |document, root| {
+        return binding.with_document(outer, |document, root| {
             // SAFETY: admission and lifetime were checked before this dereference;
             // the caller guarantees live topology and exclusive widget access.
             let widget = unsafe { &mut **pointer };
             let result = callback(widget, document, root);
             let _ = binding.drain_owned_tree(widget, document);
             result
-        })
-    } else {
-        Ok(callback(unsafe { &mut **pointer }, outer, outer_root))
+        });
     }
+    // SAFETY: as above.
+    Ok(callback(unsafe { &mut **pointer }, outer, outer_root))
 }
 
 /// Enter a retained boundary for the complete duration of a tree walk.
-pub(crate) fn enter_widget(
-    widget: &dyn Widget,
-) -> Result<Option<CallbackScopeGuard>, BoundDispatchError> {
-    crate::bound_dispatch::callback_binding(widget)
+pub(crate) fn enter_widget(widget: &dyn Widget) -> Result<NodeEntry, BoundDispatchError> {
+    #[cfg(feature = "model")]
+    let scope = crate::bound_dispatch::callback_binding(widget)
         .map(|binding| binding.enter())
-        .transpose()
+        .transpose()?;
+    #[cfg(not(feature = "model"))]
+    let scope = {
+        let _ = widget;
+    };
+    Ok(NodeEntry { _scope: scope })
 }
 
 impl BoundNodeMap {
@@ -350,11 +408,7 @@ pub(crate) unsafe fn inspect_bound_node<R>(
     callback: impl FnOnce(&dyn Widget) -> R,
 ) -> Result<R, BoundDispatchError> {
     let admitted = bindings.admitted(nodes, node)?;
-    let _entry = admitted
-        .binding
-        .as_deref()
-        .map(CallbackBinding::enter)
-        .transpose()?;
+    let _entry = enter_scope(&admitted.binding)?;
     // SAFETY: admission and lifetime checked; caller owns the stable live tree.
     Ok(callback(unsafe { &*admitted.pointer }))
 }
@@ -367,11 +421,7 @@ pub(crate) unsafe fn layout_bound_node<R>(
     callback: impl FnOnce(&mut dyn Widget) -> R,
 ) -> Result<R, BoundDispatchError> {
     let admitted = bindings.admitted(nodes, node)?;
-    let _entry = admitted
-        .binding
-        .as_deref()
-        .map(CallbackBinding::enter)
-        .transpose()?;
+    let _entry = enter_scope(&admitted.binding)?;
     // SAFETY: admission and lifetime checked; caller exclusively owns this target.
     Ok(callback(unsafe { &mut *admitted.pointer }))
 }
@@ -381,6 +431,7 @@ pub(crate) unsafe fn layout_bound_node<R>(
 pub(crate) struct NodeSweep<'m> {
     bindings: &'m BoundNodeMap,
     nodes: &'m HashMap<NodeId, *mut dyn Widget>,
+    #[cfg(feature = "model")]
     held: Option<(&'m CallbackBinding, CallbackScopeGuard)>,
 }
 
@@ -392,11 +443,13 @@ impl<'m> NodeSweep<'m> {
         Self {
             bindings,
             nodes,
+            #[cfg(feature = "model")]
             held: None,
         }
     }
 
     /// Enter `binding`'s scope unless the sweep already has the same one.
+    #[cfg(feature = "model")]
     fn enter(&mut self, binding: Option<&'m CallbackBinding>) -> Result<(), BoundDispatchError> {
         let Some(binding) = binding else {
             self.held = None;
@@ -421,7 +474,10 @@ impl<'m> NodeSweep<'m> {
         callback: impl FnOnce(&dyn Widget) -> R,
     ) -> Result<R, BoundDispatchError> {
         let admitted = self.bindings.admitted(self.nodes, node)?;
-        self.enter(admitted.binding.as_deref())?;
+        #[cfg(feature = "model")]
+        {
+            self.enter(admitted.binding.as_deref())?;
+        }
         // SAFETY: admission and lifetime checked; caller owns the stable live tree.
         Ok(callback(unsafe { &*admitted.pointer }))
     }
@@ -433,7 +489,10 @@ impl<'m> NodeSweep<'m> {
         callback: impl FnOnce(&mut dyn Widget) -> R,
     ) -> Result<R, BoundDispatchError> {
         let admitted = self.bindings.admitted(self.nodes, node)?;
-        self.enter(admitted.binding.as_deref())?;
+        #[cfg(feature = "model")]
+        {
+            self.enter(admitted.binding.as_deref())?;
+        }
         // SAFETY: admission and lifetime checked; caller exclusively owns this target.
         Ok(callback(unsafe { &mut *admitted.pointer }))
     }
@@ -450,11 +509,7 @@ pub(crate) unsafe fn mutate_bound_node<R>(
     if admitted.inactive {
         return Err(BoundDispatchError::MissingNode);
     }
-    let _entry = admitted
-        .binding
-        .as_deref()
-        .map(CallbackBinding::enter)
-        .transpose()?;
+    let _entry = enter_scope(&admitted.binding)?;
     // SAFETY: admission and lifetime checked; caller exclusively owns this target.
     Ok(callback(unsafe { &mut *admitted.pointer }))
 }
@@ -463,10 +518,14 @@ pub(crate) unsafe fn mutate_bound_node<R>(
 /// enforce their own entry when called by an unbound legacy traversal.
 pub(crate) fn enter_traversal<const BOUND: bool>(
     widget: &dyn Widget,
-) -> Result<Option<CallbackScopeGuard>, BoundDispatchError> {
+) -> Result<NodeEntry, BoundDispatchError> {
     if BOUND {
         enter_widget(widget)
     } else {
-        Ok(None)
+        #[cfg(feature = "model")]
+        let scope = None;
+        #[cfg(not(feature = "model"))]
+        let scope = ();
+        Ok(NodeEntry { _scope: scope })
     }
 }

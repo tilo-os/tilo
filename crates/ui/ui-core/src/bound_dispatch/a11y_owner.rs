@@ -1,10 +1,9 @@
 //! The admitted nodes the accessibility bridge may name and address.
-#[allow(
-    clippy::wildcard_imports,
-    reason = "private implementation module shares its enclosing host types"
-)]
-use super::*;
+use super::BoundNodeMap;
 use crate::accesskit_bridge::A11yTarget;
+use crate::widget::Widget;
+use std::collections::HashMap;
+use taffy::NodeId;
 
 /// The live, admitted nodes exported to the AT bridge.
 pub(crate) struct ExportedNodes {

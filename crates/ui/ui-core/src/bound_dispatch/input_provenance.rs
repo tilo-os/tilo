@@ -1,6 +1,7 @@
 //! Where a control invocation came from: the person's input kind and origin, carried as thread-scoped
 //! provenance from the producer through the queue that drains it to the execution that records it.
 use super::Origin;
+#[cfg(feature = "model")]
 use crate::widget::Widget;
 use std::cell::Cell;
 
@@ -23,6 +24,7 @@ thread_local! {
     static INPUT: Cell<Input> = const { Cell::new(Input::Discrete) };
     static DRAINED_INPUT: Cell<Input> = const { Cell::new(Input::Discrete) };
     static DRAINED_ORIGIN: Cell<Origin> = const { Cell::new(Origin::Person) };
+    #[cfg(feature = "model")]
     static NATIVE_TEXT_EXECUTION: Cell<Input> = const { Cell::new(Input::Discrete) };
 }
 
@@ -65,7 +67,9 @@ pub(crate) fn note_drained_input(input: Input) {
     DRAINED_INPUT.with(|flag| flag.set(input));
 }
 
+#[cfg(feature = "model")]
 struct DrainTextScope(Input);
+#[cfg(feature = "model")]
 impl Drop for DrainTextScope {
     fn drop(&mut self) {
         DRAINED_INPUT.with(|flag| flag.set(self.0));
@@ -78,13 +82,16 @@ pub(crate) fn note_drained_origin(origin: Origin) {
     DRAINED_ORIGIN.with(|flag| flag.set(origin));
 }
 
+#[cfg(feature = "model")]
 struct DrainOriginScope(Origin);
+#[cfg(feature = "model")]
 impl Drop for DrainOriginScope {
     fn drop(&mut self) {
         DRAINED_ORIGIN.with(|flag| flag.set(self.0));
     }
 }
 
+#[cfg(feature = "model")]
 /// The next invocation `widget`'s queues hand over, the effect invocation it continues, and who asked
 /// for it.
 pub(crate) fn take_attributed_with_origin(
@@ -100,6 +107,7 @@ pub(crate) fn take_attributed_with_origin(
     taken.map(|(intent, on_behalf_of)| (intent, on_behalf_of, origin))
 }
 
+#[cfg(feature = "model")]
 pub(super) fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input, Origin) {
     let _scope = DrainTextScope(DRAINED_INPUT.with(|flag| flag.replace(Input::Discrete)));
     let _origin = DrainOriginScope(DRAINED_ORIGIN.with(|flag| flag.replace(Origin::Person)));
@@ -111,18 +119,22 @@ pub(super) fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input, O
     )
 }
 
+#[cfg(feature = "model")]
 struct NativeTextScope(Input);
+#[cfg(feature = "model")]
 impl Drop for NativeTextScope {
     fn drop(&mut self) {
         NATIVE_TEXT_EXECUTION.with(|flag| flag.set(self.0));
     }
 }
 
+#[cfg(feature = "model")]
 pub(super) fn with_native_text<T>(input: Input, run: impl FnOnce() -> T) -> T {
     let _scope = NativeTextScope(NATIVE_TEXT_EXECUTION.with(|flag| flag.replace(input)));
     run()
 }
 
+#[cfg(feature = "model")]
 /// The provenance of the native text execution running on this thread: [`Input::Discrete`] outside
 /// [`with_native_text`].
 pub(super) fn native_text_input() -> Input {

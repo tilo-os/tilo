@@ -1,22 +1,33 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
+#[cfg(feature = "model")]
 mod bound_widget;
+#[cfg(feature = "model")]
 #[cfg(test)]
 pub(crate) use bound_widget::keyboard_input_scope;
+#[cfg(feature = "model")]
 pub(crate) use bound_widget::{
     BoundTraversal, has_separate_document_owner, history_owner, visit_components,
     visit_resource_owners,
 };
+#[cfg(feature = "model")]
 pub use bound_widget::{BoundWidget, callback_binding, resource_owners};
+#[cfg(feature = "model")]
 pub(crate) mod local_target;
 
+#[cfg(feature = "model")]
 mod published_target;
+#[cfg(feature = "model")]
 use published_target::{resolve_published_action, shared_target};
 
+#[cfg(feature = "model")]
 mod executing;
+#[cfg(feature = "model")]
 use executing::{ExecutingHostDevice, ExecutingHostPerson, ExecutingScope};
+#[cfg(feature = "model")]
 pub use executing::{
     executing_device, executing_person, executing_scope, local_person_invocation_permitted,
 };
+#[cfg(feature = "model")]
 use tilo_actions::ResourceSpec;
 
 mod node_map;
@@ -26,48 +37,72 @@ pub(crate) use node_map::{
     mutate_bound_node,
 };
 
+#[cfg(feature = "model")]
 mod hosted;
+#[cfg(feature = "model")]
 pub(crate) use hosted::{HostedInvocation, published_here};
 
+#[cfg(feature = "model")]
 mod deferred_intent;
+#[cfg(feature = "model")]
 mod filter;
+#[cfg(feature = "model")]
 use deferred_intent::validate_deferred_arguments;
+#[cfg(feature = "model")]
 pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
+#[cfg(feature = "model")]
 pub(crate) use filter::{filter_resource, filter_shared};
+#[cfg(feature = "model")]
 use filter::{inherit_filtered, insert_available_permitted};
 
+#[cfg(feature = "model")]
 mod control;
+#[cfg(feature = "model")]
 pub(crate) use control::{
     ControlContinuationArguments, ControlDeclaration, ControlIdentity, ControlObservation,
     control_declaration, control_draft_identity, control_observation,
     control_observation_with_arguments,
 };
 
+#[cfg(feature = "model")]
 use crate::permissions::{MemberId, PermissionContext, SharedPermissions};
+#[cfg(feature = "model")]
 use crate::published::SharedResource;
+#[cfg(feature = "model")]
 use crate::resource::{DocumentCheckout, ResourceOpenError, ResourceSaveStatus, ResourceStore};
+#[cfg(feature = "model")]
 use crate::wake::{WakeHandle, WakeScopeGuard};
 use crate::widget::Widget;
+#[cfg(feature = "model")]
 use automerge::{AutoCommit, ChangeHash, ObjId, ROOT, transaction::Transactable};
+#[cfg(feature = "model")]
 use std::cell::{Cell, RefCell};
+#[cfg(feature = "model")]
 use std::collections::HashMap;
+#[cfg(feature = "model")]
 use std::rc::Rc;
+#[cfg(feature = "model")]
 use taffy::NodeId;
 
+#[cfg(feature = "model")]
 mod action_part;
+#[cfg(feature = "model")]
 pub(crate) use action_part::ToolkitPart;
 
 mod input_provenance;
 #[cfg(test)]
 pub(crate) use input_provenance::physical_text;
+#[cfg(feature = "model")]
 pub(crate) use input_provenance::take_attributed_with_origin;
 pub(crate) use input_provenance::{
     Input, input, note_drained_input, note_drained_origin, with_input, with_physical_text,
 };
+#[cfg(feature = "model")]
 use input_provenance::{capture_physical_drain, native_text_input, with_native_text};
 
 pub(crate) use crate::widget::controls::Origin;
 
+#[cfg(feature = "model")]
 /// Runtime destination; the domain address remains independent of UI instances.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BoundActionAddress {
@@ -75,6 +110,7 @@ pub struct BoundActionAddress {
     pub address: tilo_actions::ActionAddress,
 }
 
+#[cfg(feature = "model")]
 impl BoundActionAddress {
     /// The address of `action` on `resource` as `instance` publishes it, or `None` when either half is
     /// empty or contains the address separator.
@@ -91,6 +127,7 @@ impl BoundActionAddress {
     }
 }
 
+#[cfg(feature = "model")]
 #[derive(Debug)]
 pub(crate) enum BoundActionError {
     Api(tilo_actions::ApiError),
@@ -110,6 +147,7 @@ pub(crate) enum BoundActionError {
     Hosted(HostedInvocation),
 }
 
+#[cfg(feature = "model")]
 impl BoundActionError {
     pub(crate) fn into_api(self) -> tilo_actions::ApiError {
         match self {
@@ -132,6 +170,7 @@ impl BoundActionError {
         }
     }
 }
+#[cfg(feature = "model")]
 impl std::fmt::Display for BoundActionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -149,8 +188,10 @@ impl std::fmt::Display for BoundActionError {
         }
     }
 }
+#[cfg(feature = "model")]
 impl std::error::Error for BoundActionError {}
 
+#[cfg(feature = "model")]
 /// Why a resource's operation failed, as the API answers it: a resource that
 /// says what an action changes has not arrived yet
 /// ([`tilo_actions::api::NOT_READY_REASON`]) answers a refusal whose caller
@@ -165,6 +206,7 @@ fn operation_failure(reason: String) -> tilo_actions::ApiError {
     tilo_actions::ApiError::Failed(reason)
 }
 
+#[cfg(feature = "model")]
 /// [`operation_failure`] for a refusal the handler named: a code a caller
 /// decides on reaches it as that code (a message the mailbox holds already),
 /// and one this API answers itself — a write waiting for what it changes —
@@ -178,6 +220,7 @@ fn operation_refusal(refusal: tilo_resource::Refusal) -> tilo_actions::ApiError 
     }
 }
 
+#[cfg(feature = "model")]
 /// The unchanged domain enum groups Unavailable failures.
 pub(crate) fn api_error_code(error: &tilo_actions::ApiError) -> &str {
     if let tilo_actions::ApiError::Unavailable { code, .. } = error
@@ -193,17 +236,20 @@ pub(crate) fn api_error_code(error: &tilo_actions::ApiError) -> &str {
     }
     error.code()
 }
+#[cfg(feature = "model")]
 impl From<tilo_actions::ApiError> for BoundActionError {
     fn from(error: tilo_actions::ApiError) -> Self {
         Self::Api(error)
     }
 }
+#[cfg(feature = "model")]
 impl From<BoundDispatchError> for BoundActionError {
     fn from(error: BoundDispatchError) -> Self {
         Self::Dispatch(error)
     }
 }
 
+#[cfg(feature = "model")]
 /// A UI selection retains the captured lifetime and registry owner, never just
 /// the reusable numeric instance or a domain resource ID.
 #[derive(Clone)]
@@ -212,6 +258,7 @@ pub(crate) struct BoundActionTarget {
     pub(crate) binding: CallbackBinding,
     pub(crate) address: BoundActionAddress,
 }
+#[cfg(feature = "model")]
 impl BoundActionTarget {
     pub(crate) fn key(&self) -> String {
         format!(
@@ -223,6 +270,7 @@ impl BoundActionTarget {
     }
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn has_matching_broker_component(
     root: &dyn Widget,
     route: Option<&crate::collaboration::AcceptedRoute>,
@@ -241,6 +289,7 @@ pub(crate) fn has_matching_broker_component(
     found
 }
 
+#[cfg(feature = "model")]
 /// Refresh every component control's availability from its resources, plus the APIs its host answers
 /// for it (`host_apis`): the window's History API wherever History serves it.
 pub(crate) fn refresh_bound_controls(
@@ -273,6 +322,7 @@ pub(crate) fn refresh_bound_controls(
     visit_components(root, &mut ComponentRequest::new(None, &mut visit))
 }
 
+#[cfg(feature = "model")]
 /// The addresses a component's controls may run: every available action of
 /// its published resources that its permissions admit, and `APIs`, what
 /// its host answers. Derived from the tree once, then kept: the same forest
@@ -322,6 +372,7 @@ pub(crate) fn component_controls_allowed(
     Rc::new(allowed)
 }
 
+#[cfg(feature = "model")]
 impl ControlAvailability {
     fn derive(
         binding: &CallbackBinding,
@@ -373,6 +424,7 @@ impl ControlAvailability {
     }
 }
 
+#[cfg(feature = "model")]
 fn same_offer(last: &SharedResource, next: &SharedResource) -> bool {
     let (last, next) = (last.head(), next.head());
     last.id == next.id
@@ -385,6 +437,7 @@ fn same_offer(last: &SharedResource, next: &SharedResource) -> bool {
             .all(|(last, next)| last.id == next.id && last.contract == next.contract)
 }
 
+#[cfg(feature = "model")]
 fn visit_subtree(node: &SharedResource, visit: &mut dyn FnMut(&SharedResource)) {
     visit(node);
     for child in node.children() {
@@ -392,6 +445,7 @@ fn visit_subtree(node: &SharedResource, visit: &mut dyn FnMut(&SharedResource)) 
     }
 }
 
+#[cfg(feature = "model")]
 fn count_addresses(
     binding: &CallbackBinding,
     node: &SharedResource,
@@ -428,6 +482,7 @@ fn count_addresses(
     }
 }
 
+#[cfg(feature = "model")]
 /// A component's control intent, with the effect invocation it continues when the component's effect
 /// handler or completion queued it, and who asked for it.
 pub(crate) type PendingComponentControl = (
@@ -437,11 +492,13 @@ pub(crate) type PendingComponentControl = (
     Origin,
 );
 
+#[cfg(feature = "model")]
 pub(crate) struct DrainedControlInvocations {
     pub(crate) pending: Vec<PendingComponentControl>,
     pub(crate) error: Option<BoundDispatchError>,
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControlInvocations {
     let batch = capture_control_invocations(root);
     DrainedControlInvocations {
@@ -458,6 +515,7 @@ pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControl
     }
 }
 
+#[cfg(feature = "model")]
 #[derive(Default)]
 pub(crate) struct BoundControlBatch {
     pub(crate) visited: Vec<CallbackBinding>,
@@ -469,17 +527,20 @@ pub(crate) struct BoundControlBatch {
     pub(crate) failures: Vec<BoundDispatchError>,
 }
 
+#[cfg(feature = "model")]
 /// Move every reachable component control while preserving controls captured before a later owner
 /// traversal failure.
 pub(crate) fn capture_control_invocations(root: &mut dyn Widget) -> BoundControlBatch {
     visit_control_queues(root, true)
 }
 
+#[cfg(feature = "model")]
 /// Retry ownership traversal without opening any live queue after History entry.
 pub(crate) fn inspect_control_owners(root: &mut dyn Widget) -> BoundControlBatch {
     visit_control_queues(root, false)
 }
 
+#[cfg(feature = "model")]
 /// Snapshot the finite binding queues through immutable owner metadata. These
 /// descriptors are sealed before the fallible mutable traversal starts. They
 /// are never matched to later emissions by value or reinserted in a live queue.
@@ -490,6 +551,7 @@ pub(crate) struct ControlQueueSnapshot {
     pub(crate) controls: Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn snapshot_control_queues(root: &dyn Widget) -> ControlQueueSnapshot {
     fn visit(
         widget: &dyn Widget,
@@ -525,6 +587,7 @@ pub(crate) fn snapshot_control_queues(root: &dyn Widget) -> ControlQueueSnapshot
     }
 }
 
+#[cfg(feature = "model")]
 fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch {
     let mut invocations = Vec::new();
     let mut continuing = Vec::new();
@@ -586,31 +649,37 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
     }
 }
 
+#[cfg(feature = "model")]
 thread_local! {
     static ANSWERING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[cfg(feature = "model")]
 fn answering() -> bool {
     ANSWERING.with(std::cell::Cell::get)
 }
 
+#[cfg(feature = "model")]
 /// While held, a document action the API applies answers what it changed
 /// even when its declaration answers nothing: it continues an operation
 /// that waits on it, and that operation replies to its caller from it.
 pub(crate) struct Answering(bool);
 
+#[cfg(feature = "model")]
 impl Answering {
     pub(crate) fn enter(on: bool) -> Self {
         Self(ANSWERING.with(|cell| cell.replace(on)))
     }
 }
 
+#[cfg(feature = "model")]
 impl Drop for Answering {
     fn drop(&mut self) {
         ANSWERING.with(|cell| cell.set(self.0));
     }
 }
 
+#[cfg(feature = "model")]
 /// Deliver feedback only to the component that emitted the local intent: domain resource addresses can
 /// be shared by several live instances.
 pub(crate) fn notify_control_invocation_result(
@@ -636,6 +705,7 @@ pub(crate) fn notify_control_invocation_result(
     )
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn poll_resource_operation(
     root: &mut dyn Widget,
     document: &AutoCommit,
@@ -665,6 +735,7 @@ pub(crate) fn poll_resource_operation(
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
+#[cfg(feature = "model")]
 /// One bound component's published resources.
 #[derive(Clone)]
 pub(crate) struct BoundResourceSnapshot {
@@ -675,11 +746,13 @@ pub(crate) struct BoundResourceSnapshot {
     controls: Rc<RefCell<Option<ControlAvailability>>>,
 }
 
+#[cfg(feature = "model")]
 struct Forest {
     shared: std::cell::OnceCell<Rc<[SharedResource]>>,
     plain: std::cell::OnceCell<Rc<Vec<ResourceSpec>>>,
 }
 
+#[cfg(feature = "model")]
 impl BoundResourceSnapshot {
     pub(crate) fn new(binding: CallbackBinding, resources: Vec<ResourceSpec>) -> Self {
         Self {
@@ -739,6 +812,7 @@ impl BoundResourceSnapshot {
     }
 }
 
+#[cfg(feature = "model")]
 /// What [`refresh_bound_controls`] derived from one component's forest, and everything that derivation
 /// read: the forest itself (kept, so the next one is diffed against it), the component's permissions
 /// and the APIs its host offers.
@@ -752,9 +826,12 @@ pub(crate) struct ControlAvailability {
     allowed: Rc<std::collections::HashSet<tilo_actions::ActionAddress>>,
 }
 
+#[cfg(feature = "model")]
 /// Reserved transport namespace. Domain resources never contain this rewrite.
 pub(crate) const PUBLICATION_PREFIX: &str = tilo_actions::BOUND_RESOURCE_PREFIX;
+#[cfg(feature = "model")]
 const MAX_PUBLICATION_ALIAS: usize = 4096;
+#[cfg(feature = "model")]
 pub(crate) struct BoundPublication {
     host: uuid::Uuid,
     owners: RefCell<HashMap<uuid::Uuid, CallbackBinding>>,
@@ -768,6 +845,7 @@ pub(crate) struct BoundPublication {
     /// frame.
     published: Cell<u64>,
 }
+#[cfg(feature = "model")]
 impl Default for BoundPublication {
     fn default() -> Self {
         Self {
@@ -778,6 +856,7 @@ impl Default for BoundPublication {
         }
     }
 }
+#[cfg(feature = "model")]
 impl BoundPublication {
     pub(crate) fn alias(
         &self,
@@ -924,6 +1003,7 @@ impl BoundPublication {
     }
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn validate_bound_resources(
     root: &mut dyn Widget,
     binding: &CallbackBinding,
@@ -932,6 +1012,7 @@ pub(crate) fn validate_bound_resources(
     Ok(bound_contract_violations(root, binding, resources)?.is_some_and(|found| found.is_empty()))
 }
 
+#[cfg(feature = "model")]
 /// Every contract violation of one component's surface, checked against the component registry and
 /// operation handlers.
 pub(crate) fn bound_contract_violations(
@@ -955,6 +1036,7 @@ pub(crate) fn bound_contract_violations(
     Ok(violations)
 }
 
+#[cfg(feature = "model")]
 /// Collect each retained component once even when an ordinary container does
 /// not forward `search_providers`. Legacy providers keep their root-owned route.
 pub(crate) fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::SearchProvider>> {
@@ -965,6 +1047,7 @@ pub(crate) fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::
     )
 }
 
+#[cfg(feature = "model")]
 /// [`search_providers`] as the action directory's observation reads them: the
 /// same providers in the same order, described without being made, so a
 /// source that indexes to answer builds nothing until someone searches.
@@ -978,6 +1061,7 @@ pub(crate) fn search_provider_descriptors(
     )
 }
 
+#[cfg(feature = "model")]
 fn collect_search_sources<T>(
     root: &dyn Widget,
     read: &dyn Fn(&dyn Widget) -> Vec<T>,
@@ -1013,6 +1097,7 @@ fn collect_search_sources<T>(
     found
 }
 
+#[cfg(feature = "model")]
 fn provider_resource(
     widget: &dyn Widget,
     binding: &CallbackBinding,
@@ -1029,6 +1114,7 @@ fn provider_resource(
         .find_map(|provider| provider.resolve_action_resource(address))
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn resolve_component_resource(
     root: &mut dyn Widget,
     doc: &AutoCommit,
@@ -1058,6 +1144,7 @@ pub(crate) fn resolve_component_resource(
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
+#[cfg(feature = "model")]
 /// Whether the component `binding` hosts is up and shown to its member but does not publish
 /// resource `id` yet: it publishes resources this member may see, and `id` is none of them. What a
 /// component publishes nothing of, or nothing this member may see, is not on its way.
@@ -1115,6 +1202,7 @@ pub(crate) fn component_awaits_resource(
     visit_components(root, &mut ComponentRequest::new(Some(binding), &mut visit)).is_ok() && awaits
 }
 
+#[cfg(feature = "model")]
 /// Whether `resource` or one of its children is resource `id`.
 fn holds_resource(resource: &ResourceSpec, id: &str) -> bool {
     resource.id.as_str() == id
@@ -1124,6 +1212,7 @@ fn holds_resource(resource: &ResourceSpec, id: &str) -> bool {
             .any(|child| holds_resource(child, id))
 }
 
+#[cfg(feature = "model")]
 /// [`unbound_resource_pending`] in the component `binding` hosts.
 pub(crate) fn component_resource_pending(
     root: &mut dyn Widget,
@@ -1143,6 +1232,7 @@ pub(crate) fn component_resource_pending(
     visit_components(root, &mut ComponentRequest::new(Some(binding), &mut visit)).is_ok() && pending
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn publication_visibility(
     root: &dyn Widget,
     doc: &AutoCommit,
@@ -1195,6 +1285,7 @@ pub(crate) fn publication_visibility(
     visit(root, doc, owner, None, id)
 }
 
+#[cfg(feature = "model")]
 /// [`publication_visibility`] for each of `wanted` (an owner and a resource id), in one walk of the
 /// widget tree: what each resource's first publisher in tree order says discloses it.
 pub(crate) fn publication_visibilities(
@@ -1254,6 +1345,7 @@ pub(crate) fn publication_visibilities(
     found
 }
 
+#[cfg(feature = "model")]
 /// Opaque legacy navigation remains scoped to the provider that produced it.
 pub(crate) fn activate_bound_search(
     root: &mut dyn Widget,
@@ -1298,6 +1390,7 @@ pub(crate) fn activate_bound_search(
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
+#[cfg(feature = "model")]
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct BoundDirectoryObservation {
     owner: uuid::Uuid,
@@ -1306,6 +1399,7 @@ pub(crate) struct BoundDirectoryObservation {
     revisions: Vec<Option<String>>,
     domains: Vec<crate::widget::ActionDirectoryInvocationDomain>,
 }
+#[cfg(feature = "model")]
 impl BoundDirectoryObservation {
     pub(crate) fn supports_model_refresh(&self) -> bool {
         self.generation.is_some_and(|value| value != u64::MAX)
@@ -1324,6 +1418,7 @@ impl BoundDirectoryObservation {
             && matches!((before.generation, self.generation), (Some(old), Some(new)) if new >= old)
     }
 }
+#[cfg(feature = "model")]
 pub(crate) fn directory_observation(
     root: &dyn Widget,
     doc: &AutoCommit,
@@ -1403,9 +1498,11 @@ pub(crate) fn directory_observation(
     Ok(observations)
 }
 
+#[cfg(feature = "model")]
 #[derive(Default)]
 pub(crate) struct BoundResourceCache(RefCell<Vec<CachedBoundResources>>);
 
+#[cfg(feature = "model")]
 /// One bound owner's admission generation and record frontier, read on each side of an input
 /// dispatch (the native App).
 pub(crate) struct BoundOwnerMark {
@@ -1415,6 +1512,7 @@ pub(crate) struct BoundOwnerMark {
     document: Option<(Vec<automerge::ChangeHash>, usize)>,
 }
 
+#[cfg(feature = "model")]
 /// What an owner's published controls and synced root read besides its record and its widgets: what its
 /// permissions mean now (a grant expires with time) and the durability it shows (its record's and its
 /// chain parts', [`CallbackBinding::shown_save_status`]), which its root shows once synced.
@@ -1424,6 +1522,7 @@ pub(crate) struct OwnerInputs {
     pub(crate) save: Result<crate::resource::ResourceSaveStatus, String>,
 }
 
+#[cfg(feature = "model")]
 impl BoundOwnerMark {
     pub(crate) fn is_committed(&self) -> bool {
         self.document
@@ -1432,11 +1531,13 @@ impl BoundOwnerMark {
     }
 }
 
+#[cfg(feature = "model")]
 /// Every live bound owner under `root`, once each, in tree order.
 pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
     owner_marks(root, outer)
 }
 
+#[cfg(feature = "model")]
 fn owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
     fn visit(widget: &dyn Widget, outer: &AutoCommit, marks: &mut Vec<BoundOwnerMark>) {
         if let Some(binding) = callback_binding(widget)
@@ -1465,6 +1566,7 @@ fn owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
     marks
 }
 
+#[cfg(feature = "model")]
 impl BoundResourceCache {
     /// An input dispatch lends each owner its record mutably, which advances the owner's admission
     /// generation whether or not anything was written. When the records stand exactly where they
@@ -1508,6 +1610,7 @@ impl BoundResourceCache {
         )
     }
 }
+#[cfg(feature = "model")]
 struct CachedBoundResources {
     snapshot: BoundResourceSnapshot,
     generation: u64,
@@ -1521,11 +1624,13 @@ struct CachedBoundResources {
     filter_token: u64,
 }
 
+#[cfg(feature = "model")]
 enum LocalInputs {
     Owner(u64, crate::component_inputs::Reads),
     Frames(u64),
 }
 
+#[cfg(feature = "model")]
 impl LocalInputs {
     /// Whether a snapshot published after `self` still has for an owner at `revision` in host frame
     /// `frames`.
@@ -1538,6 +1643,7 @@ impl LocalInputs {
     }
 }
 
+#[cfg(feature = "model")]
 #[allow(
     clippy::too_many_lines,
     reason = "private nested traversal and per-owner cache admission stay together"
@@ -1766,6 +1872,7 @@ pub(crate) fn discover_cached_bound_resources(
     Ok(snapshots)
 }
 
+#[cfg(feature = "model")]
 /// Action-scoped authority the bound dispatch shares: the action `action` on
 /// `resource` runs when allowed, and is
 /// [`tilo_actions::ApiError::ConfirmationRequired`] where the workspace's grants
@@ -1787,6 +1894,7 @@ pub(crate) fn admit_local_action(
     })
 }
 
+#[cfg(feature = "model")]
 /// Whether the person's own call of `spec` with these arguments waits for their yes, as the
 /// action's contract declares it ([`tilo_actions::ConfirmationPolicy`]):
 /// [`tilo_actions::ApiError::ConfirmationRequired`] when it does and `approval`, their approve of
@@ -1814,6 +1922,7 @@ pub(crate) fn press_asks(
     }
 }
 
+#[cfg(feature = "model")]
 /// Why an invocation the person made did not run, in words for them: what
 /// the window says instead of dropping the click unseen.
 pub(crate) fn refusal_reason(error: &tilo_actions::ApiError) -> String {
@@ -1844,6 +1953,7 @@ pub(crate) fn refusal_reason(error: &tilo_actions::ApiError) -> String {
     reason
 }
 
+#[cfg(feature = "model")]
 /// What a person reads for a refusal the toolkit routing made, by
 /// its code: those refusals say, for an agent or a log, which step of the
 /// dispatch stopped, never what the person can do. `None` for a refusal
@@ -1894,8 +2004,10 @@ fn internal_refusal(code: &str) -> Option<&'static str> {
     })
 }
 
+#[cfg(feature = "model")]
 pub(crate) use ::collaboration::permissions::denied;
 
+#[cfg(feature = "model")]
 /// The one resource `binding` publishes for the document's `request`ed history action, and that
 /// action's name: a keyboard undo or redo reaches a document that declares its history through the
 /// action it publishes, and exactly one of them.
@@ -1933,6 +2045,7 @@ pub(crate) fn history_action_resource<'a>(
     Ok((resource, action))
 }
 
+#[cfg(feature = "model")]
 /// Read-only traversal releases each checked document borrow before descending
 /// to another component. It never establishes an undo baseline.
 pub(crate) fn discover_bound_resources(
@@ -1943,6 +2056,7 @@ pub(crate) fn discover_bound_resources(
     discover_bound_resources_with_filter(widget, doc, lazy_address, true)
 }
 
+#[cfg(feature = "model")]
 fn discover_bound_resources_with_filter(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -2094,6 +2208,7 @@ fn discover_bound_resources_with_filter(
     Ok(snapshots)
 }
 
+#[cfg(feature = "model")]
 /// What a call of `address` that no component offers its caller is told: `permission_denied`,
 /// saying why, where a component of `instance` publishes the action and the permissions there keep
 /// it from them, as the workspace's own API says it; [`tilo_actions::ApiError::Unknown`] where
@@ -2124,6 +2239,7 @@ pub(crate) fn unoffered(
     }
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn select_bound_target(
     snapshots: &[BoundResourceSnapshot],
     address: &tilo_actions::ActionAddress,
@@ -2161,12 +2277,14 @@ pub(crate) fn select_bound_target(
     Ok(selected)
 }
 
+#[cfg(feature = "model")]
 pub(crate) type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
     &'a ResourceSpec,
     &'a tilo_actions::ActionSpec,
 );
 
+#[cfg(feature = "model")]
 pub(crate) fn find_action_resource<'a>(
     resources: &'a [ResourceSpec],
     id: &str,
@@ -2180,6 +2298,7 @@ pub(crate) fn find_action_resource<'a>(
     })
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn resolve_resource_invocation<'a>(
     resources: &'a [ResourceSpec],
     address: &tilo_actions::ActionAddress,
@@ -2209,6 +2328,7 @@ pub(crate) fn resolve_resource_invocation<'a>(
     Ok((typed, resource, spec))
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn encode_resource_action(
     resources: &[ResourceSpec],
     address: &tilo_actions::ActionAddress,
@@ -2222,6 +2342,7 @@ pub(crate) fn encode_resource_action(
     }
 }
 
+#[cfg(feature = "model")]
 /// Resolve an invocation's arguments against `resources` and encode it.
 pub(crate) fn encode_resource_invocation(
     resources: &[ResourceSpec],
@@ -2233,6 +2354,7 @@ pub(crate) fn encode_resource_invocation(
     encode_resource_action(resources, address, arguments.as_ref(), None)
 }
 
+#[cfg(feature = "model")]
 /// The item resources the action in `envelope` created, each with its id and
 /// the address it is published under, in minting order: what a write answers
 /// its caller, so nothing reads an id out of a rendered address. `minted`
@@ -2340,6 +2462,7 @@ pub fn minted_items(
         .collect()
 }
 
+#[cfg(feature = "model")]
 /// `value` beside what the write made: the ids it minted, and per item its
 /// id and the address it is published under (`made`). A create thus answers
 /// what it made on every surface, and a bulk of them answers each.
@@ -2373,6 +2496,7 @@ pub fn with_made(
     Some(serde_json::Value::Object(fields))
 }
 
+#[cfg(feature = "model")]
 /// Canonical Document executor, retaining its actual envelope for owned bookkeeping.
 /// Who writes a document change `actor` makes here: `actor`'s handle, which
 /// history reads back, joined to the writer of this copy of the record.
@@ -2388,6 +2512,7 @@ pub fn document_writer(actor: &tilo_actions::Actor, doc: &AutoCommit) -> Vec<u8>
     crate::history_source::authors::device_actor(&actor.actor_bytes(), doc.get_actor())
 }
 
+#[cfg(feature = "model")]
 fn execute_document(
     doc: &mut AutoCommit,
     action: &dyn tilo_actions::Action,
@@ -2453,6 +2578,7 @@ fn execute_document(
     Ok(dispatched)
 }
 
+#[cfg(feature = "model")]
 fn note_active_writer(writer: &[u8]) {
     let writers = ACTIVE.with_borrow(|active| {
         let handle = active.as_ref().and_then(|entry| entry.3.clone())?;
@@ -2464,6 +2590,7 @@ fn note_active_writer(writer: &[u8]) {
     }
 }
 
+#[cfg(feature = "model")]
 /// The refusal of an own-device effect for someone not at this device.
 pub(crate) fn own_device_refusal() -> tilo_actions::ApiError {
     tilo_actions::ApiError::Unavailable {
@@ -2473,6 +2600,7 @@ pub(crate) fn own_device_refusal() -> tilo_actions::ApiError {
     }
 }
 
+#[cfg(feature = "model")]
 /// Whether `actor` may run an own-device effect here ([`tilo_actions::OWN_DEVICE_SCOPE`]): it acts on
 /// the device of whoever invokes it, so only the person at this device, or an agent the broker admitted
 /// acting for them, has it as their own.
@@ -2493,6 +2621,7 @@ pub(crate) fn runs_own_device(
                 }))
 }
 
+#[cfg(feature = "model")]
 /// A resolved, encoded resource operation and the caller it runs for.
 pub(crate) struct ResourceOperation<'a> {
     pub(crate) target_route: Option<crate::collaboration::RouteSpec>,
@@ -2512,6 +2641,7 @@ pub(crate) struct ResourceOperation<'a> {
     pub(crate) api: Option<&'a mut dyn crate::session_api::SessionApi>,
 }
 
+#[cfg(feature = "model")]
 /// One execution body for bound components, under the broker's admission.
 pub(crate) fn execute_resource_operation(
     widget: &mut dyn Widget,
@@ -2524,6 +2654,7 @@ pub(crate) fn execute_resource_operation(
     perform_resource_operation(widget, doc, path, registry, transport, operation)
 }
 
+#[cfg(feature = "model")]
 fn perform_resource_operation(
     widget: &mut dyn Widget,
     doc: &mut AutoCommit,
@@ -2834,6 +2965,7 @@ fn perform_resource_operation(
     result
 }
 
+#[cfg(feature = "model")]
 /// One caller's request to a bound resource action, before resolution.
 #[derive(Clone, Copy)]
 pub(crate) struct ResourceActionRequest<'a> {
@@ -2854,6 +2986,7 @@ pub(crate) struct ResourceActionRequest<'a> {
     pub(crate) route: Option<&'a dyn Fn(&ResourceSpec, &tilo_actions::ActionSpec) -> bool>,
 }
 
+#[cfg(feature = "model")]
 /// Private checked front API.
 pub(crate) fn invoke_resource_action(
     root: &mut dyn Widget,
@@ -2866,6 +2999,7 @@ pub(crate) fn invoke_resource_action(
     perform_resource_action(root, document, target, transport, api, request)
 }
 
+#[cfg(feature = "model")]
 fn perform_resource_action(
     root: &mut dyn Widget,
     document: &mut AutoCommit,
@@ -3096,6 +3230,7 @@ fn perform_resource_action(
     )))
 }
 
+#[cfg(feature = "model")]
 fn below_root(root: bool, resource: ResourceSpec) -> ResourceSpec {
     if root {
         resource
@@ -3104,12 +3239,14 @@ fn below_root(root: bool, resource: ResourceSpec) -> ResourceSpec {
     }
 }
 
+#[cfg(feature = "model")]
 #[derive(Clone, Copy)]
 enum Walk {
     Component,
     Unbound,
 }
 
+#[cfg(feature = "model")]
 fn for_each_published(widget: &dyn Widget, walk: Walk, visit: &mut dyn FnMut(&dyn Widget, bool)) {
     fn descend(
         widget: &dyn Widget,
@@ -3127,6 +3264,7 @@ fn for_each_published(widget: &dyn Widget, walk: Walk, visit: &mut dyn FnMut(&dy
     descend(widget, true, walk, visit);
 }
 
+#[cfg(feature = "model")]
 fn collect_published(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -3159,6 +3297,7 @@ fn collect_published(
     });
 }
 
+#[cfg(feature = "model")]
 fn resolve_published(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -3176,6 +3315,7 @@ fn resolve_published(
     found
 }
 
+#[cfg(feature = "model")]
 /// What the outer tree rooted at `widget` publishes.
 pub(crate) fn collect_unbound_resources(
     widget: &dyn Widget,
@@ -3185,6 +3325,7 @@ pub(crate) fn collect_unbound_resources(
     collect_published(widget, doc, Walk::Unbound, None, resources);
 }
 
+#[cfg(feature = "model")]
 /// [`collect_unbound_resources`] rebuilt for one presence view.
 /// Never cached: it is the invoker's tree at invoke time.
 pub(crate) fn collect_presence_resources(
@@ -3196,6 +3337,7 @@ pub(crate) fn collect_presence_resources(
     collect_published(widget, doc, Walk::Unbound, Some(presence), resources);
 }
 
+#[cfg(feature = "model")]
 /// Resource `id` resolved in the outer tree rooted at `widget`.
 pub(crate) fn resolve_unbound_resource(
     widget: &dyn Widget,
@@ -3205,6 +3347,7 @@ pub(crate) fn resolve_unbound_resource(
     resolve_published(widget, doc, Walk::Unbound, id)
 }
 
+#[cfg(feature = "model")]
 /// Whether resource `id`, which `widget`'s subtree resolves to nothing now, may resolve once what it
 /// reads arrives ([`crate::widget::resources::PublishesResources::resource_pending`]).
 pub(crate) fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
@@ -3218,6 +3361,7 @@ pub(crate) fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
     pending
 }
 
+#[cfg(feature = "model")]
 /// Runtime metadata; does not own the component's widget or mount lifetime.
 #[derive(Clone)]
 pub struct CallbackBinding {
@@ -3248,6 +3392,7 @@ pub struct CallbackBinding {
     pub(crate) writes_as_author: bool,
 }
 
+#[cfg(feature = "model")]
 impl crate::collaboration::native_initial::ComponentBinding for CallbackBinding {
     type Entry = CallbackScopeGuard;
     type EnterError = BoundDispatchError;
@@ -3270,6 +3415,7 @@ impl crate::collaboration::native_initial::ComponentBinding for CallbackBinding 
     }
 }
 
+#[cfg(feature = "model")]
 /// Private retained traversal request. The public Widget trait cannot expose a
 /// root/registry closure directly; only toolkit code can construct this request.
 type ComponentVisitor<'a> = dyn FnMut(
@@ -3278,6 +3424,7 @@ type ComponentVisitor<'a> = dyn FnMut(
         &tilo_actions::ActionRegistry,
     ) -> Option<(tilo_actions::InvocationId, bool)>
     + 'a;
+#[cfg(feature = "model")]
 pub(crate) struct ComponentRequest<'a> {
     pub(crate) target: Option<&'a CallbackBinding>,
     pub(crate) found: bool,
@@ -3286,6 +3433,7 @@ pub(crate) struct ComponentRequest<'a> {
     /// ([`service_owner_save_progress`]); `shown` says whether that changed what it shows.
     pub(crate) save_progress: Option<bool>,
 }
+#[cfg(feature = "model")]
 impl<'a> ComponentRequest<'a> {
     /// A visit of the component `target` names, or of every component.
     pub(crate) fn new(
@@ -3301,6 +3449,7 @@ impl<'a> ComponentRequest<'a> {
     }
 }
 
+#[cfg(feature = "model")]
 /// One original ordinary model pass for the current retained owner.
 pub(crate) fn service_retained_owner_model(
     root: &mut dyn Widget,
@@ -3355,6 +3504,7 @@ pub(crate) fn service_retained_owner_model(
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
+#[cfg(feature = "model")]
 /// A record's save moved on and nothing else woke the owner
 /// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]): its owner is told the save status
 /// alone, by the component that tells it in every frame, against what it last told it. A save
@@ -3383,10 +3533,12 @@ pub enum BoundDispatchError {
     MissingNode,
     ClosedLifetime,
     CrossResourceReentry,
+    #[cfg(feature = "model")]
     Record(ResourceOpenError),
     Persistence(String),
 }
 
+#[cfg(feature = "model")]
 /// Logical typing ownership survives physical commits made when an opaque
 /// callback from another instance is admitted. Read-only entry never touches it.
 pub(crate) struct PendingResourceAction {
@@ -3399,23 +3551,27 @@ pub(crate) struct PendingResourceAction {
     native_text: Option<NativeTextSpan>,
 }
 
+#[cfg(feature = "model")]
 struct NativeTextSpan {
     action: tilo_actions::EncodedAction,
     frontier: Vec<ChangeHash>,
 }
 
+#[cfg(feature = "model")]
 struct NativeTextPolicy {
     action: tilo_actions::EncodedAction,
     continues: bool,
     continuable: bool,
 }
 
+#[cfg(feature = "model")]
 struct ActiveMutation {
     binding: CallbackBinding,
     before: Option<Vec<ChangeHash>>,
     /// Settlement names its owner without closing a draft until an action writes.
     deferred: bool,
 }
+#[cfg(feature = "model")]
 struct ActionFrame {
     history: collaboration::history::UndoLog,
     state: crate::resource::ResourceActions,
@@ -3423,8 +3579,10 @@ struct ActionFrame {
     operations: Vec<OperationSpan>,
     writer: automerge::ActorId,
 }
+#[cfg(feature = "model")]
 type FrameHandle = Rc<RefCell<Option<ActionFrame>>>;
 
+#[cfg(feature = "model")]
 /// Owned bookkeeping only; the explicit document loan remains on the stack.
 /// Effect cursors police opaque mutations. View has no cursor until a real
 /// typed producer arrives, so pure navigation never closes pending typing.
@@ -3436,6 +3594,7 @@ struct OperationSpan {
     native_text: Option<NativeTextPolicy>,
 }
 
+#[cfg(feature = "model")]
 fn operation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
     ACTIVE.with_borrow(|active| {
         let (_, _, observation, handle) = active.as_ref()?;
@@ -3455,6 +3614,7 @@ fn operation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
     })
 }
 
+#[cfg(feature = "model")]
 /// The frame of `doc` while a callback of a bound component mutates it (a sync, an event) or one of its
 /// operations runs.
 fn mutation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
@@ -3479,6 +3639,7 @@ fn mutation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
     })
 }
 
+#[cfg(feature = "model")]
 fn note_native_text_policy(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -3526,6 +3687,7 @@ fn note_native_text_policy(
     }
 }
 
+#[cfg(feature = "model")]
 /// Narrow shared producer hook. Called only when a typed action is about to
 /// execute; returning None preserves the legacy `LocalDispatch` path unchanged.
 pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash>> {
@@ -3545,6 +3707,7 @@ pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash
     Some(before)
 }
 
+#[cfg(feature = "model")]
 /// A successful executor reports owned exact heads, never a borrowed root or
 /// registry. No-op and failed/submitted-without-change dispatches add nothing.
 ///
@@ -3646,12 +3809,14 @@ pub(crate) fn report_typed_action(
         .and_then(|value| value.checked_add(1));
 }
 
+#[cfg(feature = "model")]
 struct BoundOperation<'a> {
     doc: &'a mut AutoCommit,
     frame: FrameHandle,
     depth: usize,
     finished: bool,
 }
+#[cfg(feature = "model")]
 impl<'a> BoundOperation<'a> {
     fn enter(
         binding: &CallbackBinding,
@@ -3729,17 +3894,20 @@ impl<'a> BoundOperation<'a> {
         violation
     }
 }
+#[cfg(feature = "model")]
 impl Drop for BoundOperation<'_> {
     fn drop(&mut self) {
         self.finish();
     }
 }
 
+#[cfg(feature = "model")]
 struct RestoreFrame<'a> {
     history: &'a mut collaboration::history::UndoLog,
     state: &'a mut crate::resource::ResourceActions,
     frame: FrameHandle,
 }
+#[cfg(feature = "model")]
 impl Drop for RestoreFrame<'_> {
     fn drop(&mut self) {
         if let Some(owned) = self.frame.borrow_mut().take() {
@@ -3749,6 +3917,7 @@ impl Drop for RestoreFrame<'_> {
     }
 }
 
+#[cfg(feature = "model")]
 /// The undo bracket a widget reported since the last sweep, with what the boundary keeps of it: whether
 /// the widget keeps the step open, and its ephemeral state.
 pub(crate) struct TakenActionBracket {
@@ -3757,6 +3926,7 @@ pub(crate) struct TakenActionBracket {
     metadata: Option<String>,
 }
 
+#[cfg(feature = "model")]
 impl TakenActionBracket {
     /// `widget`'s bracket, if it reported one.
     pub(crate) fn take(widget: &mut dyn Widget) -> Option<Self> {
@@ -3769,6 +3939,7 @@ impl TakenActionBracket {
     }
 }
 
+#[cfg(feature = "model")]
 impl PendingResourceAction {
     fn new(binding: &CallbackBinding, before: Vec<ChangeHash>) -> Self {
         Self {
@@ -3785,6 +3956,7 @@ impl PendingResourceAction {
     }
 }
 
+#[cfg(feature = "model")]
 impl ActionFrame {
     fn pass_over(&mut self, before: Vec<ChangeHash>, after: Vec<ChangeHash>, doc: &AutoCommit) {
         let boundary = self
@@ -4029,11 +4201,13 @@ impl ActionFrame {
     }
 }
 
+#[cfg(feature = "model")]
 struct SettlementReturn<'a> {
     document: &'a mut AutoCommit,
     frame: FrameHandle,
     previous: Option<ActiveMutation>,
 }
+#[cfg(feature = "model")]
 impl Drop for SettlementReturn<'_> {
     fn drop(&mut self) {
         if let Some(frame) = self.frame.borrow_mut().as_mut() {
@@ -4048,6 +4222,7 @@ impl Drop for SettlementReturn<'_> {
     }
 }
 
+#[cfg(feature = "model")]
 /// Restores the caller's segment before its opaque callback resumes. Bookkeeping
 /// borrows end before arbitrary widget code runs, so nested same-record delivery
 /// reuses owned state without reconstructing references from thread-local pointers.
@@ -4056,6 +4231,7 @@ struct MutationReturn<'a> {
     frame: FrameHandle,
     previous: Option<CallbackBinding>,
 }
+#[cfg(feature = "model")]
 impl Drop for MutationReturn<'_> {
     fn drop(&mut self) {
         if let Some(frame) = self.frame.borrow_mut().as_mut() {
@@ -4069,15 +4245,18 @@ impl Drop for MutationReturn<'_> {
     }
 }
 
+#[cfg(feature = "model")]
 type ActiveResource = (
     ResourceStore,
     DocumentCheckout,
     *const AutoCommit,
     Option<FrameHandle>,
 );
+#[cfg(feature = "model")]
 thread_local! {
     static ACTIVE: RefCell<Option<ActiveResource>> = const { RefCell::new(None) };
 }
+#[cfg(feature = "model")]
 /// What entering a component's callback scope has until it is dropped.
 pub struct CallbackScopeGuard {
     _wake: Option<WakeScopeGuard>,
@@ -4090,6 +4269,7 @@ pub struct CallbackScopeGuard {
     opened: Option<usize>,
 }
 
+#[cfg(feature = "model")]
 impl CallbackScopeGuard {
     /// The guard for work that runs inside a scope this thread already holds
     /// ([`CallbackBinding::enter`]).
@@ -4105,6 +4285,7 @@ impl CallbackScopeGuard {
     }
 }
 
+#[cfg(feature = "model")]
 impl Drop for CallbackScopeGuard {
     fn drop(&mut self) {
         if let Some(depth) = self.opened.take() {
@@ -4113,6 +4294,7 @@ impl Drop for CallbackScopeGuard {
     }
 }
 
+#[cfg(feature = "model")]
 thread_local! {
     /// The component scopes this thread has entered and not left, innermost last. A hosted
     /// component's descendants share its binding, so the walks over them and the document reads
@@ -4121,6 +4303,7 @@ thread_local! {
     static OPEN_SCOPES: RefCell<Vec<OpenScope>> = const { RefCell::new(Vec::new()) };
 }
 
+#[cfg(feature = "model")]
 /// A component's callback scope open on this thread ([`OPEN_SCOPES`]): what entering it again must
 /// meet to run the work inside it.
 struct OpenScope {
@@ -4129,6 +4312,7 @@ struct OpenScope {
     actor: MemberId,
 }
 
+#[cfg(feature = "model")]
 impl OpenScope {
     /// Whether `binding` opens the scope this one is, entering as `actor`.
     fn same(&self, binding: &CallbackBinding, actor: &MemberId) -> bool {
@@ -4138,6 +4322,7 @@ impl OpenScope {
     }
 }
 
+#[cfg(feature = "model")]
 /// One component's scope held across a walk that visits many of its widgets or resources one after
 /// another. A walk that recurses keeps its own guard alive for its children; a loop over nodes of
 /// the same component holds it here, and enters it again only when the component changes.
@@ -4146,6 +4331,7 @@ pub(crate) struct HeldScope {
     held: Option<(CallbackBinding, CallbackScopeGuard)>,
 }
 
+#[cfg(feature = "model")]
 impl HeldScope {
     /// Enter `binding`'s scope for the visit about to run, unless it is the one this walk holds.
     ///
@@ -4172,13 +4358,16 @@ impl HeldScope {
     }
 }
 
+#[cfg(feature = "model")]
 struct ActiveEntry;
+#[cfg(feature = "model")]
 impl Drop for ActiveEntry {
     fn drop(&mut self) {
         ACTIVE.with_borrow_mut(|active| *active = None);
     }
 }
 
+#[cfg(feature = "model")]
 impl CallbackBinding {
     /// The entry of edits this binding makes: its operation context, by its
     /// author unless the context names someone.
@@ -4191,6 +4380,7 @@ impl CallbackBinding {
     }
 }
 
+#[cfg(feature = "model")]
 impl CallbackBinding {
     /// Queue a search for the host presenting this component. Only the
     /// latest request matters: an older one the host has not shown yet is
@@ -4882,10 +5072,11 @@ impl CallbackBinding {
 struct BoundNode {
     pointer: *mut dyn Widget,
     semantic_name: String,
-    binding: Option<Rc<CallbackBinding>>,
+    binding: node_map::Scope,
     inactive: bool,
 }
 
+#[cfg(feature = "model")]
 /// Record owners outside a component (person records, routed records) keep their real record ownership;
 /// they do not impersonate a canonical component. The record is taken as it is stored: no app's
 /// types read it.
@@ -4920,6 +5111,7 @@ pub(crate) fn run_record_history_edit(
         })
         .map_err(|_| NOT_RESTORED.to_owned())?
 }
+#[cfg(feature = "model")]
 /// A read-only invalidation stamp. It contains no document text and confers no
 /// write authority; an unavailable stamp must invalidate deferred insertion.
 #[derive(Clone, PartialEq, Eq)]
@@ -4929,6 +5121,7 @@ pub struct DocumentEditStamp {
     frontier: Vec<ChangeHash>,
     pending: usize,
 }
+#[cfg(feature = "model")]
 impl DocumentEditStamp {
     /// Bind an embedded field's private equality check to its record and node.
     #[cfg(feature = "native")]
@@ -4978,10 +5171,12 @@ impl DocumentEditStamp {
 #[path = "bound_dispatch/a11y_owner.rs"]
 mod a11y_owner;
 
+#[cfg(feature = "model")]
 #[cfg(test)]
 #[path = "bound_dispatch/bound_action_address_tests.rs"]
 mod bound_action_address_tests;
 
+#[cfg(feature = "model")]
 /// Whether a document cannot take a peer's changes yet: an unfinished edit, or a restore over a
 /// different frontier.
 pub(crate) fn defers_remote(store: &ResourceStore, checkout: &DocumentCheckout) -> bool {
@@ -4992,6 +5187,7 @@ pub(crate) fn defers_remote(store: &ResourceStore, checkout: &DocumentCheckout) 
         .unwrap_or(false)
 }
 
+#[cfg(feature = "model")]
 fn defers_remote_state(doc: &AutoCommit, state: &crate::resource::ResourceActions) -> bool {
     doc.pending_ops() != 0
         || state.pending().is_some_and(|pending| {
@@ -4999,6 +5195,7 @@ fn defers_remote_state(doc: &AutoCommit, state: &crate::resource::ResourceAction
         })
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn merge_remote_owned_document(
     store: &ResourceStore,
     checkout: &DocumentCheckout,
@@ -5054,6 +5251,7 @@ pub(crate) fn merge_remote_owned_document(
     Ok(merged)
 }
 
+#[cfg(feature = "model")]
 /// Deliver a semantic (accessibility) action to one admitted node, refused
 /// while History has its live content inert.
 /// # Safety
@@ -5075,18 +5273,22 @@ pub(crate) unsafe fn invoke_bound_semantic_node<R>(
         .map_err(|error| format!("{error:?}"))
 }
 
+#[cfg(feature = "model")]
 #[cfg(test)]
 #[path = "bound_dispatch/document_action_ack_tests.rs"]
 mod document_action_ack_tests;
 
+#[cfg(feature = "model")]
 #[cfg(test)]
 #[path = "bound_dispatch/author_writer_tests.rs"]
 mod author_writer_tests;
 
+#[cfg(feature = "model")]
 #[cfg(test)]
 #[path = "bound_dispatch/device_actor_tests.rs"]
 mod device_actor_tests;
 
+#[cfg(feature = "model")]
 #[cfg(test)]
 #[path = "bound_dispatch/native_text_tests.rs"]
 mod native_text_tests;
