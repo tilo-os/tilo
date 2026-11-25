@@ -211,6 +211,55 @@ fn a_program_names_the_shell_package_the_session_runs_with_none_installed() {
     });
 }
 
+/// A session the device's daemon started, which launches no app itself, runs the person's REPL
+/// programs: the daemon starts the task's host, as it starts every tilolang process of the
+/// computer, on the runtimes the apps installed there run on, and the program acts on the shell
+/// the person sees.
+#[test]
+fn a_daemon_only_sessions_repl_runs_a_program() {
+    use crate::common::dev_apps;
+    let _settled = ui::motion::testing::settled();
+    // A computer that installed this tree's apps and the runtimes they run on, with the launcher
+    // its daemon starts every tilolang process through.
+    let mut home = crate::common::device_home();
+    let store = home.data().join("tilo-apps");
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+    dev_apps::install(&store, &home.state().join("tilolang"));
+    dev_apps::install_runtimes(&home.data().join("tilo-runtime"));
+    home.env()
+        .set(
+            "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+            &dev_apps::runtimes().trusted,
+        )
+        .set(
+            "TILO_LAUNCHER_BIN",
+            tilo_test_env::sibling_binary("launcher", "tilo-launcher"),
+        );
+    let device = crate::common::device_daemon(home, None);
+    let root = private_home();
+    // The daemon's person and identity are the session's: none minted beside them.
+    let mut session = device.session_with(Options {
+        collab: false,
+        state: Some(root.path().join("state")),
+        app_socket: tilo_session::AppSocket::At(root.path().join("app_wire.sock")),
+        api_server: Some(root.path().join("api.sock")),
+        ..Options::default()
+    });
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    let mut repl = Api::open(&mut session, root.path());
+
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.show_style(shell.viewing, style: \"so.tilo.shell:frames\")",
+    );
+    assert!(!failed, "the daemon ran the program: {answer}");
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, CANVAS).is_some()
+    });
+}
+
 /// Placing what a text finds, twice, through the API: each place is the person's step, and the
 /// session keeps answering, the program session that asked and a new one alike.
 #[test]
