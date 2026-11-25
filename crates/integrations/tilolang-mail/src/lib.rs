@@ -82,7 +82,12 @@ pub(crate) fn follow_the_network(reconnected: Arc<AtomicBool>, wake: mail_engine
     let spawned = std::thread::Builder::new()
         .name("mail-network".into())
         .spawn(move || {
-            let Ok(runtime) = tokio::runtime::Builder::new_current_thread().build() else {
+            // The platform answers changes where it has them; a build without the system's
+            // status polls on a timer instead, which a runtime without time panics on.
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+            else {
                 return;
             };
             runtime.block_on(async move {
