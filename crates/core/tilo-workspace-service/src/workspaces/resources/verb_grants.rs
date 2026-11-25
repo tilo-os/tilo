@@ -3,10 +3,12 @@
 //! governance the change was written under ([`tilo_peer_state::StatePeer::permissions_as_written`]).
 //!
 //! The store checks that what a change writes lies within what its verb declares it writes; this
-//! decides whether its author may invoke that verb on each kind it touches. Platform verbs go on
-//! keeping their own checks ([`keeps_its_own_check`]): what they admit is the store's rule, not a
-//! grant. An agent's change is judged by the lesser of the agent and the person it acts for, which
-//! the authority of the access it was written under already is.
+//! decides whether its author may invoke that verb on each kind it touches. A step through
+//! history that names the verb it takes back is judged by that verb's grant too
+//! ([`VerbGrants::may_take_back`]), so taking a change back asks for no less than making it.
+//! Platform verbs go on keeping their own checks ([`keeps_its_own_check`]): what they admit is
+//! the store's rule, not a grant. An agent's change is judged by the lesser of the agent and the
+//! person it acts for, which the authority of the access it was written under already is.
 
 use web_time::SystemTime;
 
@@ -58,6 +60,29 @@ impl VerbGrants {
             .kind(kind)
             .action(verb);
         access.allows(&node, tilo_action_policy::ActionKind::Undoable, self.now)
+    }
+
+    /// Whether `author` may take back the step `stamp` names, on a record of `kind`: a step
+    /// through history that says which step it moves is judged by the grant of that step's verb
+    /// too, so taking a change back does no more than making it did. A step that names no verb
+    /// to take back, or no step at all, keeps its own check.
+    pub(super) fn may_take_back(
+        &self,
+        author: &[u8; 32],
+        stamp: &collab_types::Stamp,
+        kind: &str,
+    ) -> bool {
+        let Some(tilo_actions::Did::History(step)) = stamp
+            .context
+            .as_deref()
+            .and_then(|context| context.what.as_ref())
+        else {
+            return true;
+        };
+        if step.verb.is_empty() {
+            return true;
+        }
+        self.may(author, &step.verb, kind)
     }
 }
 
@@ -183,6 +208,56 @@ mod tests {
             !no_access.may(&DEVICE, VERB, KIND),
             "no access admits no app verb"
         );
+    }
+
+    /// A change under `verb` whose history step names the invocation it moves and the verb that
+    /// invocation was made as, as an undo or a restore writes one.
+    fn undo_stamp(verb: &str, takes_back: &str) -> collab_types::Stamp {
+        use tilo_actions::{ActionContext, Did, HistoryOp, HistoryStep};
+        collab_types::Stamp {
+            verb: verb.to_owned(),
+            context: Some(Box::new(ActionContext {
+                what: Some(Did::History(HistoryStep {
+                    op: HistoryOp::Undo,
+                    steps: 1,
+                    of: None,
+                    undoes: Some("the invocation".to_owned()),
+                    verb: takes_back.to_owned(),
+                })),
+                ..ActionContext::default()
+            })),
+            ..collab_types::Stamp::default()
+        }
+    }
+
+    /// A step taken back is admitted by the grant of the verb it takes back, as well as by its
+    /// own: an editor without that verb may not take its change back, and one with it may. The
+    /// path a store's undo writes, which names the verb as its own, is judged the same way.
+    #[test]
+    fn a_step_taken_back_is_judged_by_the_verb_it_takes_back() {
+        let refused = grants(policy(Answer::Deny));
+        let undoing = undo_stamp("$undo", VERB);
+        assert!(
+            !refused.may_take_back(&DEVICE, &undoing, KIND),
+            "an editor without the verb it takes back may not take its change back"
+        );
+        assert!(
+            refused.may(&DEVICE, "$undo", KIND),
+            "the platform's own verb keeps its check, which is why the step's is asked too"
+        );
+        let admitted = grants(policy(Answer::Allow));
+        assert!(
+            admitted.may_take_back(&DEVICE, &undoing, KIND),
+            "with the verb it takes back, the step is admitted"
+        );
+        // A store's undo names the verb it takes back as its own, and `may` asks it directly.
+        let named = undo_stamp(VERB, VERB);
+        assert!(!refused.may(&DEVICE, &named.verb, KIND));
+        assert!(!refused.may_take_back(&DEVICE, &named, KIND));
+        assert!(admitted.may(&DEVICE, &named.verb, KIND));
+        // A restore names no verb it takes back: its own check stands.
+        let restoring = undo_stamp("$restore", "");
+        assert!(refused.may_take_back(&DEVICE, &restoring, KIND));
     }
 
     /// The lookup's cost on a realistic batch: one access read, then a grant question per

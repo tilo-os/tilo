@@ -989,10 +989,10 @@ impl HostedWorkspace {
                     && platform_write_belongs(proposal.stamp, author_person)
                     && proposal.stamp.as_ref().is_none_or(|stamp| {
                         proposal.touched.resources.iter().all(|(_, touch)| {
-                            touch
-                                .kind
-                                .as_deref()
-                                .is_none_or(|kind| grants.may(&author, &stamp.verb, kind))
+                            touch.kind.as_deref().is_none_or(|kind| {
+                                grants.may(&author, &stamp.verb, kind)
+                                    && grants.may_take_back(&author, stamp, kind)
+                            })
                         })
                     })
             }
