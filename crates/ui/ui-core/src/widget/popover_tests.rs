@@ -443,3 +443,104 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// A panel standing at a press is as wide as its content needs, bounded by the window, not laid
+/// out at the window's width. The top layer names the window it floats in when it paints the
+/// panel; a rebuild after that — the layout a theme change brings — keeps the panel's size and
+/// place, light to dark and dark to light.
+#[test]
+fn an_aimed_popover_keeps_its_size_when_the_theme_changes() {
+    let answers = || {
+        crate::widget::Column::new()
+            .push(Box::new(crate::widget::Text::new(
+                "Share “Release planning” with Mia?",
+            )))
+            .push(Box::new(
+                crate::widget::Row::new()
+                    .push(Box::new(crate::widget::Button::new(
+                        "decline",
+                        "Don't allow",
+                    )))
+                    .push(Box::new(
+                        crate::widget::Button::new("share", "Share")
+                            .role(crate::widget::ButtonRole::Primary),
+                    )),
+            ))
+    };
+    let press = Point::new(420.0, 260.0);
+    let (w, h) = (WINDOW.width() as f32, WINDOW.height() as f32);
+    for (first, second) in [
+        (Theme::dark(), Theme::light()),
+        (Theme::light(), Theme::dark()),
+    ] {
+        let mut p = Popover::with_content(answers()).open(true);
+        p.set_aim(Some(press));
+        crate::testing::lay_out_in(&mut p, w, h, &first).expect("the first layout");
+        let before = p.rect();
+        // Name the window the panel floats in, as the top layer's paint does.
+        present(&mut p, &first);
+        // The theme change rebuilds the layout under the other theme.
+        crate::testing::lay_out_in(&mut p, w, h, &second).expect("the layout at the other theme");
+        let after = p.rect();
+        assert!(
+            (after.width() - before.width()).abs() < 0.5,
+            "{} to {}: the panel widens from {before:?} to {after:?}",
+            first.name,
+            second.name
+        );
+        assert!(
+            (after.origin() - before.origin()).hypot() < 0.5,
+            "{} to {}: the panel moves from {before:?} to {after:?}",
+            first.name,
+            second.name
+        );
+        assert!(
+            after.width() < WINDOW.width() / 2.0,
+            "the panel hugs its content rather than the window: {after:?}"
+        );
+        let main = primary_button(p.content()).expect("the panel's main answer");
+        assert!(
+            (main.center() - press).hypot() < 1.0,
+            "{} to {}: the main answer {main:?} stands under the press {press:?}",
+            first.name,
+            second.name
+        );
+    }
+
+    // A solve after the window is named, without a rebuild, bounds the body the same way: the
+    // width the window leaves is a bound, so the panel keeps hugging its content.
+    let theme = Theme::light();
+    let mut tree = TaffyTree::<()>::new();
+    let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let mut text = TextRenderer::new();
+    let mut p = Popover::with_content(answers()).open(true);
+    p.set_aim(Some(press));
+    let node = p.build_layout(&mut tree, &theme, &mut nodes);
+    let available = crate::taffy::Size {
+        width: crate::taffy::AvailableSpace::Definite(w),
+        height: crate::taffy::AvailableSpace::Definite(h),
+    };
+    // SAFETY: the popover, its tree and node map stay exclusively owned here.
+    unsafe {
+        crate::widget::solve_built_layout(&p, &mut tree, node, &nodes, &mut text, available)
+            .expect("the first solve");
+    }
+    p.apply_layout(&tree, node, Point::ZERO);
+    let before = p.rect();
+    present(&mut p, &theme);
+    // SAFETY: as above.
+    unsafe {
+        crate::widget::solve_built_layout(&p, &mut tree, node, &nodes, &mut text, available)
+            .expect("the solve after the window is named");
+    }
+    p.apply_layout(&tree, node, Point::ZERO);
+    let after = p.rect();
+    assert!(
+        (after.width() - before.width()).abs() < 0.5,
+        "naming the window widens the panel from {before:?} to {after:?}"
+    );
+    assert!(
+        after.width() < WINDOW.width() / 2.0,
+        "the panel hugs its content rather than the window: {after:?}"
+    );
+}

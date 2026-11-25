@@ -407,8 +407,9 @@ impl PopoverPanel {
         self.sheet_when_narrow && self.presented.is_some_and(|w| w.width() < SHEET_WIDTH)
     }
 
-    /// The width the panel's body is laid out at: the width the window leaves less the panel's
-    /// padding, narrowed to its `max_width`; a sheet spans the window's width.
+    /// The width the window leaves the panel's body: the window less the panel's padding, narrowed
+    /// to its `max_width`. A sheet, and a panel with a width of its own, stand at it; a panel that
+    /// names no width hugs its content and wraps it only where this is narrower.
     fn body_width(&self, theme: &Theme) -> f64 {
         let Some(window) = self.presented else {
             return 0.0;
@@ -979,15 +980,28 @@ impl PopoverPanel {
         !self.open && (self.options.is_some() || self.label.is_some())
     }
 
+    /// The width the body is given and the width that bounds it, which is the content's box in the
+    /// tree: a sheet, and a panel with a width of its own, stand at it; a panel that names no width
+    /// hugs its content within the width the window leaves, once the top layer has named the
+    /// window, and wraps only where that is narrower.
+    fn body_size_style(&self, theme: &Theme) -> (Dimension, Dimension) {
+        if self.presented.is_none() {
+            let given = self.max_width.map_or(Dimension::auto(), |width| {
+                Dimension::length(crate::num::f32_of_f64(width))
+            });
+            return (given, Dimension::auto());
+        }
+        let available = Dimension::length(crate::num::f32_of_f64(self.body_width(theme)));
+        if self.is_sheet() || self.max_width.is_some() {
+            (available, Dimension::auto())
+        } else {
+            (Dimension::auto(), available)
+        }
+    }
+
     /// The style of the node the content is laid out under.
     fn body_style(&self, theme: &Theme) -> Style {
-        let width = if self.presented.is_some() {
-            Dimension::length(crate::num::f32_of_f64(self.body_width(theme)))
-        } else {
-            self.max_width.map_or(Dimension::auto(), |width| {
-                Dimension::length(crate::num::f32_of_f64(width))
-            })
-        };
+        let (width, max_width) = self.body_size_style(theme);
         Style {
             position: taffy::Position::Absolute,
             inset: taffy::Rect {
@@ -998,6 +1012,10 @@ impl PopoverPanel {
             },
             size: Size {
                 width,
+                height: Dimension::auto(),
+            },
+            max_size: Size {
+                width: max_width,
                 height: Dimension::auto(),
             },
             flex_direction: taffy::FlexDirection::Row,
@@ -1498,22 +1516,20 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         node: NodeId,
         _text: &mut TextRenderer,
     ) -> bool {
-        // The content's max-content width is bounded by the popover node: give it the width the
-        // window leaves, narrowed to the panel's own bound, once the top layer has named the
-        // window it floats in.
+        // Once the top layer has named the window it floats in, the width the window leaves
+        // bounds the body; a panel with no width of its own keeps hugging its content inside it.
         let (Some(_), true) = (self.panel.presented, self.panel.host_content.is_some()) else {
             return false;
         };
         let Ok(mut style) = taffy.style(node).cloned() else {
             return false;
         };
-        let width = Dimension::length(crate::num::f32_of_f64(
-            self.panel.body_width(&self.panel.layout_theme),
-        ));
-        if style.size.width == width {
+        let (width, max_width) = self.panel.body_size_style(&self.panel.layout_theme);
+        if style.size.width == width && style.max_size.width == max_width {
             return false;
         }
         style.size.width = width;
+        style.max_size.width = max_width;
         taffy.set_style(node, style).is_ok()
     }
 
