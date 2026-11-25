@@ -84,28 +84,58 @@ impl std::error::Error for DeviceRefusal {}
 /// The sockets' directory cannot be made, is not this account's own, or a socket's path in it is
 /// too long for a socket's address.
 pub fn sockets(login: &Path) -> Result<(PathBuf, bool), String> {
-    let system = tilo_paths::machine::system_daemon();
-    // A daemon serving a profile named apart listens in that profile's sockets, as it is started
-    // over it: a command run beside it with the same profile asks it there.
-    let sockets = if let Some(profile) = named_profile() {
-        profile_sockets(login, Path::new(&profile))?
-    } else if system {
-        PathBuf::from(SYSTEM_SOCKETS)
-    } else {
-        own_sockets(login)?
+    let named = named_profile();
+    let sockets = match placed(tilo_paths::machine::system_daemon(), named.as_deref()) {
+        Placed::System => PathBuf::from(SYSTEM_SOCKETS),
+        Placed::Apart(profile) => profile_sockets(login, profile)?,
+        Placed::Own => own_sockets(login)?,
     };
     socket_fits(&sockets.join(NATIVE))?;
+    let system = sockets == Path::new(SYSTEM_SOCKETS);
     Ok((sockets, system))
 }
 
 /// The profile this environment names its daemon apart with, when it names one
 /// (`TILO_RUNTIME_PROFILE`): a host's, a stack's, a test's. Such a daemon is started by whoever
-/// named the profile, and no command starts a service for it; a client waits for that daemon.
+/// named the profile, and no command starts a service for it; a client waits for that daemon. The
+/// profile Tilo OS's system unit names for its own daemon, which its programs inherit, is the
+/// computer's and names none apart.
 #[must_use]
 pub fn named_profile() -> Option<PathBuf> {
     std::env::var_os(tilo_paths::machine::DAEMON_PROFILE_VAR)
         .filter(|profile| !profile.is_empty())
         .map(PathBuf::from)
+        .filter(|profile| {
+            !tilo_paths::machine::serves_the_computer(
+                tilo_paths::machine::system_daemon(),
+                Some(profile),
+            )
+        })
+}
+
+/// Where a daemon's sockets go, before any directory is made.
+#[derive(Debug, PartialEq, Eq)]
+enum Placed<'a> {
+    /// The system unit's runtime directory, which every account of the computer reaches.
+    System,
+    /// A directory of the profile's own beside this account's sockets.
+    Apart(&'a Path),
+    /// This account's own service's directory.
+    Own,
+}
+
+/// Where the daemon serving the profile `named` listens, on a computer whose daemon is the
+/// system's (`system`) or not. The system unit names its own profile and listens where every
+/// client finds it; a daemon serving any other profile, as one account's, listens in that
+/// profile's own directory, and a command run beside it with the same profile asks it there.
+fn placed(system: bool, named: Option<&Path>) -> Placed<'_> {
+    if tilo_paths::machine::serves_the_computer(system, named) {
+        Placed::System
+    } else if let Some(profile) = named {
+        Placed::Apart(profile)
+    } else {
+        Placed::Own
+    }
 }
 
 /// The native endpoint's socket in the daemon's `sockets`.
@@ -529,6 +559,25 @@ fn answered(typed: &Value, text: &str, failed: bool) -> Result<Value, DeviceRefu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On Tilo OS the system unit names its own profile and still listens where every client
+    /// finds it, while a daemon a test or a VM host starts over a profile of its own listens apart,
+    /// as that account's, and is not the computer's.
+    #[test]
+    fn the_system_units_profile_is_the_computers_and_any_other_is_apart() {
+        let system_profile = Path::new(tilo_paths::machine::DAEMON_SYSTEM_PROFILE);
+        assert_eq!(placed(true, Some(system_profile)), Placed::System);
+        assert_eq!(placed(true, None), Placed::System);
+        let apart = Path::new("/var/tmp/owner/daemon");
+        assert_eq!(placed(true, Some(apart)), Placed::Apart(apart));
+        assert_eq!(placed(false, Some(apart)), Placed::Apart(apart));
+        // Off Tilo OS no profile is the system's, whatever its path.
+        assert_eq!(
+            placed(false, Some(system_profile)),
+            Placed::Apart(system_profile)
+        );
+        assert_eq!(placed(false, None), Placed::Own);
+    }
 
     /// A sockets' directory whose longest socket path still fits a socket's address is taken; one
     /// a byte longer is refused, naming the path it would have made, never cut short.

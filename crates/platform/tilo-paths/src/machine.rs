@@ -47,6 +47,18 @@ pub fn account_daemon_profile() -> Option<std::path::PathBuf> {
 
 /// The unit Tilo OS runs the device daemon from boot with, as the system's own account.
 pub const DAEMON_SYSTEM_UNIT: &str = "/usr/lib/systemd/system/tilo-runtime.service";
+/// The profile the system unit names for its daemon ([`DAEMON_PROFILE_VAR`]): its home and state
+/// on Tilo OS, outside every person's home.
+pub const DAEMON_SYSTEM_PROFILE: &str = "/var/lib/tilo/state";
+
+/// Whether the daemon serving the profile `named` ([`DAEMON_PROFILE_VAR`], when it is said) is the
+/// computer's own, on a computer whose daemon is the system's (`system`): the system unit names its
+/// own profile, and is the computer's; any other profile is served apart, as one account's (a
+/// test's, a VM host's, a stack's), even on Tilo OS.
+#[must_use]
+pub fn serves_the_computer(system: bool, named: Option<&std::path::Path>) -> bool {
+    system && named.is_none_or(|profile| profile == std::path::Path::new(DAEMON_SYSTEM_PROFILE))
+}
 
 /// Whether this computer's daemon is the system's: Tilo OS runs it from boot as its own
 /// account for every person of the computer, where other computers run it as the person.

@@ -132,7 +132,13 @@ pub(crate) fn service_sockets(profile: &Path) -> io::Result<PathBuf> {
     let own = sockets_dir(profile)?;
     let account = tilo_api::daemon::admission::installed()
         .and_then(tilo_api::daemon::admission::Admission::device_person_uid);
-    service_sockets_at(&own, tilo_api::daemon::system_daemon(), account)
+    service_sockets_at(&own, serves_the_computer(profile), account)
+}
+
+/// Whether the daemon serving `profile` is the computer's: Tilo OS's system unit, serving every
+/// account of it. A daemon started over any other profile, there too, is one account's.
+fn serves_the_computer(profile: &Path) -> bool {
+    tilo_paths::machine::serves_the_computer(tilo_api::daemon::system_daemon(), Some(profile))
 }
 
 /// [`service_sockets`] for a daemon that is the computer's (`system`) or one account's, serving
@@ -430,7 +436,7 @@ impl Running {
         tilo_api::daemon::admission::install(
             tilo_api::daemon::admission::Admission::new(
                 crate::seats::own_account(),
-                tilo_api::daemon::system_daemon(),
+                serves_the_computer(profile),
             )
             .keeping_accounts_in(profile.to_path_buf())?,
         );
@@ -442,7 +448,7 @@ impl Running {
         #[cfg(unix)]
         publish_native(profile, &path)?;
         #[cfg(unix)]
-        if tilo_api::daemon::system_daemon() {
+        if serves_the_computer(profile) {
             use std::os::unix::fs::PermissionsExt as _;
             // Every account reaches it; the admission decides what each is answered.
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))?;

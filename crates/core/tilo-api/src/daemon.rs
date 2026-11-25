@@ -33,7 +33,7 @@ pub const AGENT_LINE: &str = r#"{"native":"agent"}"#;
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The system unit's profile: the daemon's home and state on Tilo OS.
-pub const SYSTEM_PROFILE: &str = "/var/lib/tilo/state";
+pub const SYSTEM_PROFILE: &str = tilo_paths::machine::DAEMON_SYSTEM_PROFILE;
 pub use tilo_device_identity::login::daemon::{DeviceRefusal, socket_fits};
 pub use tilo_paths::machine::system_daemon;
 

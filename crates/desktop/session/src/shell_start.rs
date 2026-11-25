@@ -79,9 +79,19 @@ fn named_descriptor(name: &str) -> Option<RawFd> {
 /// connection it draws on with its start, and the service starts it with a link of its own.
 #[must_use]
 pub fn asks_the_service(host_desktop: bool, handed: bool) -> bool {
-    !handed
-        && !tilo_api::daemon::system_daemon()
-        && (host_desktop || tilo_api::daemon::this_computer().is_ok_and(|place| place.alive()))
+    if handed {
+        return false;
+    }
+    // The daemon this session's environment names: a profile's own on Tilo OS too (a test's, a
+    // development session's), which starts its shell as a person's own service does.
+    let place = tilo_failure::ignored!(
+        "a session whose service cannot be placed asks it only when a display manager started it, and that start says why it cannot",
+        tilo_api::daemon::this_computer().ok()
+    );
+    match place {
+        Some(place) => !place.system() && (host_desktop || place.alive()),
+        None => host_desktop && !tilo_api::daemon::system_daemon(),
+    }
 }
 
 /// Have this computer's Tilo service start the person's shell with `args` (this session's own
