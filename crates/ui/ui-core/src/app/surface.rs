@@ -1359,7 +1359,7 @@ impl App {
             && !self.root_widget.needs_redraw()
             && !self.root_widget.needs_animation_frame()
             && !self.wake_pending()
-            && self.actions.bound_invocations.is_empty()
+            && !self.actions.bound_calls_running()
             && !crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref());
         let frames = &mut self.layout.frames;
         frames.laid_out = frames.laid_out.saturating_add(1);
