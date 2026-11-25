@@ -147,21 +147,21 @@ bytes = 2490368
 bytes = 2490368
 
 [engines.x86_64]
-"libtilo_adblock_engine.so" = 262144
+"libtilo_adblock_engine.so" = 196608
 "libtilo_browser_engine.so" = 196608
-"libtilo_camera_engine.so" = 1245184
-"libtilo_chip_engine.so" = 1245184
+"libtilo_camera_engine.so" = 851968
+"libtilo_chip_engine.so" = 1179648
 "libtilo_contact_directory_engine.so" = 393216
-"libtilo_diffmerge_engine.so" = 393216
+"libtilo_diffmerge_engine.so" = 327680
 "libtilo_emoji_engine.so" = 65536
-"libtilo_git_engine.so" = 3735552
-"libtilo_grayjay_engine.so" = 458752
-"libtilo_highlight_engine.so" = 2818048
+"libtilo_git_engine.so" = 3538944
+"libtilo_grayjay_engine.so" = 393216
+"libtilo_highlight_engine.so" = 1245184
 "libtilo_music_engine.so" = 5021696
-"libtilo_theme_painter_engine.so" = 131072
-"libtilo_totp_engine.so" = 2097152
+"libtilo_theme_painter_engine.so" = 65536
+"libtilo_totp_engine.so" = 524288
 "libtilo_typst_engine.so" = 34406400
-"libtilo_wasm_engine.so" = 2621440
+"libtilo_wasm_engine.so" = 65536
 "libtilo_youtube_engine.so" = 4554752
 
 [engines.aarch64]

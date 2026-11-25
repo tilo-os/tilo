@@ -474,6 +474,18 @@ while (( index < ${#listed[@]} )); do
     done < <(dynamic_section "$TARGET_DIR/$PROFILE/$library" \
         | sed -n 's/.*(NEEDED).*\[\([^]]*\)\].*/\1/p')
 done
+# A Rust dylib carries its crate metadata (`.rustc`) for the crates that
+# compile against it, and those compile and link against Cargo's own copy under
+# deps/, which keeps it. The copy that ships is only ever loaded, by its app or
+# by another engine, and the loader never reads the metadata: it leaves it out.
+# It was most of the Browser's engine, 272 KB of 462 KB. The copy is written
+# beside the shipped file and renamed over it, before the checks below run each
+# engine from it.
+for library in "${listed[@]}"; do
+    shipped="$TARGET_DIR/$PROFILE/$library"
+    objcopy --remove-section=.rustc "$shipped" "$shipped.shipped"
+    mv -f "$shipped.shipped" "$shipped"
+done
 # Each engine must link this runtime through the wrapper and run against it.
 for library in "${listed[@]}"; do
     engine=${library#lib}
