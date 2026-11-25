@@ -6518,6 +6518,7 @@ default = false
 # image to carry (os/Containerfile.builder), so the checks that build with fonts fetch none.
 [[check]]
 name = "font-seed"
+requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "python3 -I tools/font-catalog.py seed crates/ui/ui-core/assets/fonts /target/font-seed"
 outputs = ["/target/font-seed/**"]
@@ -6533,6 +6534,7 @@ default = false
 
 [[check]]
 name = "test-assets"
+requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "python3 -I tools/test-assets.py --cache-root /target/test-assets crates/engines/doc-fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json crates/ui/ui-core/tests/fixtures/typography/artifacts.json"
 outputs = ["/target/test-assets/**"]
@@ -6542,6 +6544,7 @@ default = false
 # (`[cargo_builds]`) to take instead of fetching it (crates/os/tilo-ntfs-helper/source_artifact.py).
 [[check]]
 name = "ntfs-source"
+requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "TILO_NTFS_SOURCE_CACHE=/target/ntfs-source python3 -I crates/os/tilo-ntfs-helper/source_artifact.py"
 outputs = ["/target/ntfs-source/**"]
