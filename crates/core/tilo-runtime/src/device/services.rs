@@ -2586,7 +2586,7 @@ fn start_broker(
     let (policy_origin, policy_time) = execution_policy_clock()?;
     let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
         parts.sockets.collab.clone(),
-        Some(Arc::clone(parts.workspaces) as Arc<dyn WorkspaceAuthority>),
+        Some(Arc::new(parts.workspaces.copies().clone()) as Arc<dyn WorkspaceAuthority>),
         PeerPublisher::with_commits(ServiceCommits::new(parts.workspaces)
             as Arc<dyn tilo_workspace_service::apps::workspace_commits::WorkspaceCommits>),
         None,
@@ -2832,7 +2832,7 @@ fn record_services(
     services.workspace_memberships = Some(
         tilo_workspace_service::workspaces::ProfileMemberships::new(
             parts.workspaces.copies().clone(),
-            Arc::clone(parts.workspaces)
+            Arc::new(parts.workspaces.copies().clone())
                 as tilo_workspace_service::apps::services::WorkspaceAuthorityHandle,
         ) as Arc<dyn tilo_workspace_service::apps::services::WorkspaceMemberships>,
     );

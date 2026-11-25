@@ -45,6 +45,19 @@ mod window {
             .expect("the launch names the workspace")
             .clone();
         let mut control = UnixStream::connect(control).ok();
+        // A step it cannot take is said on the control socket, where the test reads it.
+        if let Some(told) = control
+            .as_ref()
+            .and_then(|control| control.try_clone().ok())
+        {
+            let told = std::sync::Mutex::new(told);
+            std::panic::set_hook(Box::new(move |panic| {
+                if let Ok(mut told) = told.lock() {
+                    let said = panic.to_string().replace('\n', " ");
+                    let _ = writeln!(told, "panicked: {said}");
+                }
+            }));
+        }
         let Ok(instance) = instance.parse::<u64>() else {
             if let Some(control) = control.as_mut() {
                 let _ = writeln!(control, "no window instance");

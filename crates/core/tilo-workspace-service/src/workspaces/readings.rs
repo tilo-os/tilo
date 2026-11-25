@@ -334,3 +334,90 @@ pub(super) struct Governance<'a> {
     #[cfg(feature = "agents")]
     pub(super) workspace: &'a str,
 }
+
+/// What the broker admits an app's connection and checks its calls by: the workspaces this
+/// service holds, each as its copy here describes it, read without waiting on any workspace's
+/// lock.
+impl crate::apps::services::WorkspaceAuthority for Workspaces {
+    /// The revocations the workspace's copy here holds: what an agent's key and a saved
+    /// shortcut's signer are checked against here.
+    fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
+        let peer = self.copy_now(WorkspaceId::parse(workspace)?)?.peer;
+        let mut revocations = tilo_user_identity::RevocationList::new();
+        for entry in peer.revocations() {
+            revocations.insert(entry).ok()?;
+        }
+        Some(revocations)
+    }
+
+    /// The registries the workspace's copy here records: what a moderation request's destination
+    /// is checked against here.
+    fn package_registries(&self, workspace: &str) -> Option<serde_json::Value> {
+        let peer = self.copy_now(WorkspaceId::parse(workspace)?)?.peer;
+        Some(serde_json::json!({ "registries": peer.governance().package_registries() }))
+    }
+
+    /// The work kept done in the workspace's copy here: what counts a shortcut's triggered runs
+    /// here.
+    fn done_under(&self, workspace: &str, prefix: &str) -> Vec<serde_json::Value> {
+        tilo_failure::ignored!(
+            "a name that is no workspace id names no workspace held here, nor work done in one",
+            WorkspaceId::parse(workspace)
+        )
+        .and_then(|id| self.copy_now(id))
+        .map(|copy| {
+            copy.peer
+                .workspace()
+                .done_under(prefix)
+                .into_values()
+                .map(|done| done.answer)
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// Every workspace held here, as one tree: the ones served from here first, then the ones it
+    /// takes part in.
+    fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
+        let tree = tilo_desktop_model::Layout {
+            workspaces: self.workspaces_now(),
+            ..tilo_desktop_model::Layout::default()
+        };
+        read(&tree);
+        Ok(())
+    }
+
+    /// Only the requested workspace is built.
+    fn with_workspace(
+        &self,
+        workspace: &str,
+        read: &mut dyn FnMut(Option<&tilo_desktop_model::Workspace>),
+    ) -> Result<(), String> {
+        let held = WorkspaceId::parse(workspace)
+            .and_then(|id| self.workspace_now(id))
+            .filter(|held| held.id().to_string() == workspace);
+        read(held.as_ref());
+        Ok(())
+    }
+}
+
+impl Workspaces {
+    /// The workspaces held here, each as its copy describes it: the ones served from here first,
+    /// then the ones it takes part in.
+    #[must_use]
+    pub fn workspaces_now(&self) -> Vec<tilo_desktop_model::Workspace> {
+        let mut copies = self.copies_now();
+        copies.sort_by_key(|(_, copy)| copy.member);
+        copies
+            .into_iter()
+            .filter_map(|(workspace, copy)| super::describe(workspace, &copy.name, &copy.peer))
+            .collect()
+    }
+
+    /// One workspace as [`Self::workspaces_now`] describes it, built alone.
+    #[must_use]
+    pub fn workspace_now(&self, workspace: WorkspaceId) -> Option<tilo_desktop_model::Workspace> {
+        let copy = self.copy_now(workspace)?;
+        super::describe(workspace, &copy.name, &copy.peer)
+    }
+}

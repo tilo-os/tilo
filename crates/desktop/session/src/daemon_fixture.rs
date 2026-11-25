@@ -29,6 +29,22 @@ use tilo_workspace_service::workspaces::fixtures::{TestHost, governor, test_host
 use crate::layout::Layouts;
 use crate::workspace_view::{ShellAsks, WorkspaceView};
 
+/// The device's certificate authority as a device's daemon keeps it: the device acts under its
+/// own certificate in every workspace it holds, and admits no other.
+struct ThisDevice(DeviceCert);
+
+impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority for ThisDevice {
+    fn authorize(&self, _: uuid::Uuid, certificate: &DeviceCert) -> Result<(), String> {
+        (certificate == &self.0)
+            .then_some(())
+            .ok_or_else(|| "a certificate other than this device's".to_owned())
+    }
+
+    fn app_certificate(&self, _: &str) -> Result<DeviceCert, String> {
+        Ok(self.0.clone())
+    }
+}
+
 /// The device's daemon, holding its workspaces on a real workspace service, and the shell link it
 /// answers the session on.
 pub(crate) struct TestDaemon {
@@ -81,6 +97,7 @@ impl TestDaemon {
         runtime
             .block_on(async { tilo_workspace_service::resource_actions::register(&workspaces) })
             .expect("the runtime runs");
+        let launched = launcher.is_some();
         let links = Arc::new(ShellLinks::default());
         let actions = Arc::new(Governance {
             workspaces: workspaces.clone(),
@@ -106,16 +123,28 @@ impl TestDaemon {
             })),
             // The providers registered on the device, the seat a shell serves among them.
             providers: Some(workspaces.providers()),
+            // The apps it admits act as the device's person, as the device's certificate
+            // authority answers for each workspace.
+            native_certificates: launched.then(|| {
+                Arc::new(ThisDevice(cert.clone()))
+                    as Arc<dyn tilo_workspace_service::apps::certificate_authority::CertificateAuthority>
+            }),
             launcher,
             ..ProcessServices::default()
         };
+        // The apps it admits are checked against the workspaces it holds, as a device's daemon
+        // checks them.
+        let membership = launched.then(|| {
+            Arc::new(workspaces.clone())
+                as tilo_workspace_service::apps::services::WorkspaceAuthorityHandle
+        });
         let fanout = Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
         tilo_runtime::device::provide_window_steps(Arc::clone(&fanout), &workspaces.providers());
         let dispatch = runtime
             .block_on(async {
                 tilo_workspace_service::apps::collab_broker::spawn_with_services(
                     socket.clone(),
-                    None,
+                    membership,
                     tilo_workspace_service::apps::collab_outbound::PeerPublisher::disabled(),
                     None,
                     services,
