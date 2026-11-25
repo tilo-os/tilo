@@ -109,7 +109,9 @@ fn a_second_dev_attaches_to_the_running_session() {
         use sha2::Digest as _;
         sha2::Sha256::digest(state.as_os_str().as_encoded_bytes())
     };
-    let session = runtime.join(format!("tilo-nested-{}", &hex::encode(digest)[..12]));
+    let mut hash = hex::encode(digest);
+    hash.truncate(12);
+    let session = runtime.join(format!("tilo-nested-{hash}"));
     let login = session.join(tilo_paths::login::SESSION_DIR);
     std::fs::create_dir_all(&login).unwrap();
     let _control = std::os::unix::net::UnixListener::bind(session.join("control.sock")).unwrap();

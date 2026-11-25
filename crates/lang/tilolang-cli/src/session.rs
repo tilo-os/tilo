@@ -274,9 +274,9 @@ pub(crate) fn start_detached(
     command
         .spawn()
         .map_err(|error| format!("starting the session: {error}"))?;
-    let deadline = std::time::Instant::now() + START_WAIT;
+    let started = std::time::Instant::now();
     while !ready.is_file() {
-        if std::time::Instant::now() > deadline {
+        if started.elapsed() > START_WAIT {
             return Err(format!(
                 "the session did not answer {} s after it started (see {})",
                 START_WAIT.as_secs(),
@@ -466,5 +466,9 @@ mod tests {
         environment.set("XDG_RUNTIME_DIR", &runtime);
         let newest = newest_running().expect("a running session");
         assert_eq!(newest.state, states[1], "the newest session answers");
+        assert!(
+            held.iter().all(|socket| socket.local_addr().is_ok()),
+            "both sessions' sockets stay bound while the tool looks"
+        );
     }
 }
