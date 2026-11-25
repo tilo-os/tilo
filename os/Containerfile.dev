@@ -317,9 +317,12 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     && systemctl unmask systemd-sysext.service \
     && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
        tilo-vm-incoming.service tilo-vm-reconcile-image.service \
-    && test -x /usr/libexec/tilo/tilo-control \
-    && grep -aq 'tilo-dev-image-session-v1' /usr/bin/tilo-session \
-    && systemd-sysext --version >/dev/null \
+    && { test -x /usr/libexec/tilo/tilo-control \
+         || { echo "the dev image has no /usr/libexec/tilo/tilo-control" >&2; exit 1; }; } \
+    && { grep -aq 'tilo-dev-image-session-v1' /usr/bin/tilo-session \
+         || { echo "/usr/bin/tilo-session is not the dev-overrides session: it lacks the tilo-dev-image-session-v1 marker" >&2; exit 1; }; } \
+    && { systemd-sysext --version >/dev/null \
+         || { echo "the dev image's systemd-sysext does not run" >&2; exit 1; }; } \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \
     && /usr/sbin/sshd -t -h /run/tilo-dev-hostkey \
     && rm -f /run/tilo-dev-hostkey /run/tilo-dev-hostkey.pub \
