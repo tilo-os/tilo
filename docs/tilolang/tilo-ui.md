@@ -44,14 +44,14 @@ changes: `TextInput::from_state` and `Text::from_state` take the handle, and `se
 value. The button reads the name and sets the greeting, so the label changes without a resource or
 an action.
 
-`--headless` runs the same program through `FrameHarness`, the toolkit's host with no window, GPU
+`--headless` runs the same program through `Driver`, the toolkit's host with no window, GPU
 or process services. It lays the tree out at the given viewport, dispatches input as the window
 would, and lets the program read what was laid out. The output below is what that path prints;
 without the flag the program opens the window.
 
 <!-- file: src/main.rs -->
 ```rust
-use tilo_ui::headless::{FrameHarness, InspectionSnapshot};
+use tilo_ui::headless::{Driver, InspectionSnapshot};
 use tilo_ui::widget::{Button, Column, ListRow, Text, TextInput};
 use tilo_ui::{App, LocalState, State, TextRole};
 
@@ -100,13 +100,13 @@ fn main() {
 
     if std::env::args().any(|argument| argument == "--headless") {
         // The viewport is in logical pixels.
-        let mut harness = FrameHarness::new(State::new(), tree(&name, &greeting), (720, 480));
+        let mut driver = Driver::new(State::new(), tree(&name, &greeting), (720, 480));
         name.set("Ada".to_owned());
-        harness.relayout();
-        println!("{}", describe(&harness.inspection()));
-        harness.click_named("greet").expect("the Greet button is on screen");
-        harness.relayout();
-        println!("{}", describe(&harness.inspection()));
+        driver.relayout();
+        println!("{}", describe(&driver.inspection()));
+        driver.click_named("greet").expect("the Greet button is on screen");
+        driver.relayout();
+        println!("{}", describe(&driver.inspection()));
         return;
     }
 
@@ -172,7 +172,7 @@ A window running outside Tilo takes its appearance from the operating system: li
 higher contrast, reduced motion, and the accent colour, which the window uses for focus rings,
 carets and selections. The window follows a change while it is open.
 Inside Tilo the shell supplies the appearance through the workspace's settings. For a test or a
-capture, `FrameHarness::new_with_theme` takes a theme explicitly.
+capture, `Driver::new_with_theme` takes a theme explicitly.
 
 The [interface guidelines](../../crates/ui/ui-core/HIG.md) describe the tokens and their use, and
 [layout](../designs/app-language/layout.md) covers how the parts size and place themselves at any
@@ -185,8 +185,8 @@ Every widget reports an accessibility node: a role, a name, a value and an acces
 window's AccessKit tree from those nodes, so a screen reader reads the words the window shows, and
 keyboard focus, selection and the input method go through the same widgets that draw.
 
-The same nodes are available without a window. `FrameHarness::inspection` returns the laid-out
-widget tree and its accessibility nodes as one snapshot, and `FrameHarness::accessibility_audit`
+The same nodes are available without a window. `Driver::inspection` returns the laid-out
+widget tree and its accessibility nodes as one snapshot, and `Driver::accessibility_audit`
 reports the nodes that break the toolkit's accessibility contract. Both read the tree the live
 window exports, so a test asserts on what a screen reader would get.
 
@@ -205,9 +205,9 @@ process services. That is the build for `wasm32-unknown-unknown`:
 tilo-ui = { version = "0.4", default-features = false }
 ```
 
-A browser host drives the widget tree itself. `FrameHarness` lays it out and dispatches the events
-your page delivers, `FrameHarness::frame_output` gives the frame as a vello `Scene` with the same
-accessibility nodes, and `FrameHarness::composition` with `tilo_ui::composition::page::Page` writes it as
+A browser host drives the widget tree itself. `Driver` lays it out and dispatches the events
+your page delivers, `Driver::frame_output` gives the frame as a vello `Scene` with the same
+accessibility nodes, and `Driver::composition` with `tilo_ui::composition::page::Page` writes it as
 semantic HTML styled from the theme's tokens. Clipboard, file choosers and notifications go
 through `tilo_ui::process`: install browser-backed `ProcessServices` with
 `process::install_default`, and without one those effects do nothing outside your program.

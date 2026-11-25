@@ -937,7 +937,7 @@ fn a_named_control_with_no_laid_out_place_is_no_target_and_is_never_pressed_at_t
     );
     driver.relayout();
     assert!(
-        driver.targets().get("unplaced.control").is_none(),
+        !driver.targets().contains_key("unplaced.control"),
         "a control nothing laid out has no place to press: {:?}",
         driver.targets().get("unplaced.control")
     );
