@@ -158,7 +158,7 @@ ask whether the larger thing could be done a better way; if it could, say so bef
   stabilization until it ships; every fix made there is ported back to `main`.
 - Commit small and push straight to `main` (`git pull --rebase origin main`,
   then `git push origin HEAD:main`). There is no merge queue and no
-  integration branch. The pre-commit hook is fast and reads only what the
+  branch in front of `main`. The pre-commit hook is fast and reads only what the
   commit stages; the pre-push hook lints the packages the push changes through
   t's per-package clippy checks, and compiles the packages that build directly
   on them in one `t cargo check` (only a compile error there refuses),
