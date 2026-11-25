@@ -239,6 +239,7 @@ impl tilo_actions::remote::asked::AskedDispatch for Handed {
 
 /// The answer the workspace's invocations list for the call that waits, found the way a reader
 /// finds it: the call is listed by the id its asked record names, with its own `resolve`.
+#[cfg(feature = "apps")]
 fn listed_answer(
     store: &tilo_actions::remote::asked::AskedStore,
     workspace: &str,
@@ -265,6 +266,7 @@ fn listed_answer(
 /// device kept no invocation record of; listing it lets no one else answer. Another person's
 /// device and the agent that asked are refused as not theirs, and a foreign device of their own
 /// answers nothing for them.
+#[cfg(feature = "apps")]
 #[tokio::test]
 async fn the_persons_admitted_run_answers_what_their_agent_asked_and_no_other_device_does() {
     use tilo_actions::remote::asked::{self, AskedBy, AskedFacts, Named};

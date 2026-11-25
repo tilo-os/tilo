@@ -216,6 +216,7 @@ fn every_kind_a_write_path_names_is_declared_in_the_store_a_start_builds() {
 /// A command an app asks under a verb the platform writes under is refused: the wider write set
 /// is the platform's alone. The same record under the app's own verb is written, so the refusal
 /// is the verb's, not the record's.
+#[cfg(feature = "apps")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_apps_command_under_the_platforms_verb_is_refused() {
     const APP: &str = "test.platform-command";
