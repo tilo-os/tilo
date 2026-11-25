@@ -673,9 +673,17 @@ export class Workspace {
     return (await this.endpoint()).program(source, session);
   }
 
-  /** Each change, invocation event and presence change, the cursor kept. */
-  async *watch(path: string | null = null): AsyncGenerator<Event> {
-    yield* (await this.endpoint()).events(path);
+  /**
+   * Each change, invocation event and presence change, the cursor kept. Its `return()` ends it
+   * at once, even while it waits for the next event on a quiet workspace.
+   */
+  watch(path: string | null = null): AsyncGenerator<Event> {
+    const workspace = this;
+    return closable((open) =>
+      (async function* () {
+        yield* (await workspace.endpoint()).events(path, open);
+      })(),
+    );
   }
 
   /**
@@ -821,4 +829,41 @@ export class Workspace {
     const group = new InvocationGroup(await this.endpoint(), title, invocationId(title));
     return withinInvocation(group, () => body(group));
   }
+}
+
+/**
+ * The iterator `make` gives, ended at once by `return()` or `throw()`: an awaited `next()` answers
+ * done instead of waiting for an item that may never come, and `open` tells `make`'s iterator to
+ * ask for no more.
+ */
+function closable<T>(make: (open: () => boolean) => AsyncGenerator<T>): AsyncGenerator<T> {
+  let closed = false;
+  let close: () => void = () => {};
+  const ended = new Promise<IteratorResult<T, undefined>>((resolve) => {
+    close = () => resolve({ value: undefined, done: true });
+  });
+  const source = make(() => !closed);
+  const end = (): void => {
+    closed = true;
+    close();
+    // The source ends at its next step: the call it waits on answers, and `open` says stop.
+    source.return(undefined).catch(() => {});
+  };
+  const iterator: AsyncGenerator<T> = {
+    next: () =>
+      closed ? Promise.resolve({ value: undefined, done: true }) : Promise.race([source.next(), ended]),
+    return: async (value) => {
+      end();
+      return { value, done: true };
+    },
+    throw: async (error: unknown) => {
+      end();
+      throw error;
+    },
+    [Symbol.asyncIterator]: () => iterator,
+    [Symbol.asyncDispose]: async () => {
+      end();
+    },
+  };
+  return iterator;
 }

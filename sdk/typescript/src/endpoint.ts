@@ -373,10 +373,11 @@ export class Endpoint {
    * The workspace's events as they happen, `path`'s alone or everything under
    * it: each change, each invocation starting or finishing, and who is there.
    * The cursor is kept, so a watch that ends is read on from where it stopped.
+   * It reads on while `open` says so: a watch its reader stopped asks for no more.
    */
-  async *events(path: string | null = null): AsyncGenerator<Event> {
+  async *events(path: string | null = null, open: () => boolean = () => true): AsyncGenerator<Event> {
     let cursor: string | null = null;
-    while (this.signal === null || !this.signal.aborted) {
+    while (open() && (this.signal === null || !this.signal.aborted)) {
       try {
         const answer = await this.call("tilo_watch", watchArgs(cursor, path));
         cursor = cursorOf(answer) ?? cursor;
