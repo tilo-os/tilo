@@ -1178,7 +1178,7 @@ impl Workspaces {
         device: [u8; 32],
         addr: Option<EndpointAddr>,
     ) -> Result<bool, String> {
-        let (workspace_id, known) = {
+        let (workspace_id, known, refused) = {
             let hosted = self
                 .workspace(workspace)
                 .await
@@ -1190,12 +1190,12 @@ impl Workspaces {
                 .keeping_devices()
                 .iter()
                 .find(|known| host_device(known) == device)
-                .map(|known| {
-                    WorkspaceDeviceHintV1::from_transport_hint(known)
-                        .map(|address| address.endpoint_addr)
-                })
-                .and_then(Result::ok);
-            (hosted.workspace_id(), known)
+                .and_then(|known| WorkspaceDeviceHintV1::from_transport_hint(known).ok());
+            let refused = known
+                .as_ref()
+                .is_some_and(|known| self.revocations().refuses(&known.device_certificate));
+            let known = known.map(|known| known.endpoint_addr);
+            (hosted.workspace_id(), known, refused)
         };
         // Whether the server handed what it keeps on before it was taken out: it then lets the
         // workspace go itself once the change taking it out reaches it, and passes that change
@@ -1204,6 +1204,10 @@ impl Workspaces {
         let mut handed_on = false;
         let reached = if device == self.inner.host.cert.device_public_key {
             self.caught_up_elsewhere(workspace, workspace_id).await?;
+            None
+        } else if refused {
+            // A device whose key its root revoked hands nothing on: whatever it keeps is refused
+            // here, and it learns it is out from that revocation, not from being asked.
             None
         } else if let Some(addr) = addr.or(known) {
             match self.reach_host(device, addr.clone()).await {

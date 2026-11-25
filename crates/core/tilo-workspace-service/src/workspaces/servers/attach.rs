@@ -64,6 +64,17 @@ pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
     let admin = person_workspace_id(&workspaces.device_cert().user_public_key);
     let servers = read(workspaces).await?;
     let own = workspaces.device_cert().device_public_key;
+    // A retired server's key is refused before the server is taken out of anything: once it is,
+    // nothing is asked of it, and a server that is away is not waited for. A server that retired
+    // itself refuses its own key only once another holder kept its retirement
+    // ([`super::Servers::RETIRE_SERVER`]), which its own pass of the document waits for.
+    if !servers
+        .servers
+        .get(&super::device_id(&own))
+        .is_some_and(|server| server.retired)
+    {
+        super::refuse_retired(workspaces, &servers).await?;
+    }
     let mut hosted = workspaces
         .list()
         .await

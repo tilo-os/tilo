@@ -825,6 +825,21 @@ impl Workspaces {
         }
     }
 
+    /// Where this device's copy of `workspace` stands against its other holders, as its links to
+    /// them do now: what it says in the workspace's copy status when it next reports.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not held here.
+    pub async fn held_copy(
+        &self,
+        workspace: &str,
+    ) -> Result<tilo_peer_state::HeldCopy, super::CollaborationError> {
+        let hosted = self.workspace(workspace).await?;
+        let held = held_copy(hosted.lock().await.holders.links());
+        Ok(held)
+    }
+
     /// Where `workspace`'s copies stand: what it wants, each holder, and
     /// which of them is short of what.
     ///
