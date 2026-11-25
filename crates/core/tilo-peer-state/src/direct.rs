@@ -3745,18 +3745,21 @@ impl DirectSync {
             self.carry_governance(author, message, retained);
             return (false, None);
         }
+        let heard = self.judge(author, message, retained, history).await;
         // A host keeps the workspace's own changes a device sends it, as it
         // keeps the channel governance: a device that links to it later is
-        // replayed them from its store.
+        // replayed them from its store. Only a change the workspace took in —
+        // now, or once what it waits for arrives — is history: one it refused
+        // is served to nobody, since every device it reached would refuse it
+        // too.
         #[cfg(not(target_arch = "wasm32"))]
-        if matches!(&message, NeighbourMsg::SyncResp { .. }) {
+        if matches!(&heard.message, NeighbourMsg::SyncResp { .. }) && heard.report.is_ok() {
             self.keep_governance(&Authored {
                 from: author,
-                message: message.clone(),
+                message: heard.message.clone(),
                 published: false,
             });
         }
-        let heard = self.judge(author, message, retained, history).await;
         self.settle(heard)
     }
 
