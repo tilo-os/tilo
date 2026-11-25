@@ -326,10 +326,6 @@ impl super::DesktopHandle {
     /// Each floating window the shell draws, by its group, and where it stands on the display it
     /// floats over, from that display's top-left corner: where the record keeps it, or where the
     /// person's hand has it while they carry it.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "the float's corner against the display it was laid out on, both whole pixels"
-    )]
     pub fn floats_drawn(&self) -> Vec<(GroupId, Rect)> {
         let shared = self.shared.borrow();
         shared
