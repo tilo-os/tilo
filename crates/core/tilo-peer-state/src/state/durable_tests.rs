@@ -502,3 +502,80 @@ tilo_test_env::scenario! {
         assert_eq!(read.exact, Some(exact.as_slice()), "the exact index comes up as it was");
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_kept_member_list_with_a_superseded_waiting_change_restores_without_it;
+
+    phase it_restores_and_is_kept_again_whole;
+    // An earlier layout kept the workspace's member list on a base saved with the changes then
+    // waiting beside it. A change of a history a base replaced waited there, and the document
+    // dropped it once its actor numbered a change of the current history the same: the kept
+    // state held both, and the host holding it no longer started.
+    {
+        use automerge::transaction::Transactable as _;
+        let (peer, _, _, _, now) = crate::admission_tests::seeded();
+        let workspace = peer.workspace_id().to_owned();
+        let owner = peer.owner_certificates()[0].clone();
+        let restore = |bytes: &[u8]| {
+            StatePeer::restore(
+                bytes,
+                &workspace,
+                owner.clone(),
+                vec![owner.clone()],
+                RevocationList::new(),
+                now,
+            )
+        };
+        let kept = peer.durable().unwrap();
+        let mut durable = Durable::read(&kept, &workspace).unwrap();
+        let mut doc =
+            automerge::AutoCommit::load(durable.workspace_bytes.as_deref().unwrap()).unwrap();
+        // The actor's second change of the replaced history, built on a first this document
+        // never gets.
+        let actor = automerge::ActorId::from(b"holder".as_slice());
+        let mut replaced = doc.fork().with_actor(actor.clone());
+        replaced.put(automerge::ROOT, "replaced", 1).unwrap();
+        replaced.commit();
+        let missing = replaced.get_heads();
+        replaced.put(automerge::ROOT, "replaced", 2).unwrap();
+        replaced.commit();
+        let superseded = replaced.get_changes(&missing);
+        tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, superseded).unwrap();
+        assert_eq!(doc.committed_document().queued_changes().count(), 1);
+        let base = doc.save();
+        let heads = doc.get_heads();
+        // The actor writes on the current history: its second change takes the waiting one's
+        // number.
+        doc.set_actor(actor);
+        for n in 0..2 {
+            doc.put(automerge::ROOT, "written", n).unwrap();
+            doc.commit();
+        }
+        durable.workspace_bytes = Some([base, doc.save_after(&heads)].concat());
+        let broken = postcard::to_allocvec(&durable).unwrap();
+        assert!(
+            Durable::read(&broken, &workspace)
+                .ok()
+                .and_then(|durable| automerge::AutoCommit::load(
+                    durable.workspace_bytes.as_deref().unwrap()
+                )
+                .err())
+                .is_some_and(|error| error.to_string().contains("duplicate seq")),
+            "the kept member list is one automerge refuses whole"
+        );
+
+        let restored = restore(&broken).expect("the state restores without the superseded change");
+        assert_eq!(restored.workspace_heads(), Some(doc.get_heads()));
+        // Kept again, the state holds what it applied, and loads whole.
+        let rewritten = restored.durable().unwrap();
+        let members = Durable::read(&rewritten, &workspace)
+            .unwrap()
+            .workspace_bytes
+            .unwrap();
+        let mut reloaded = automerge::AutoCommit::load(&members).expect("it loads whole");
+        assert_eq!(reloaded.get_heads(), doc.get_heads());
+        assert_eq!(reloaded.committed_document().queued_changes().count(), 0);
+        let again = restore(&rewritten).unwrap();
+        assert_eq!(again.workspace_heads(), Some(doc.get_heads()));
+    }
+}

@@ -354,7 +354,37 @@ fn decode_documents(documents: &[DurableDocument]) -> Vec<Result<CachedDocument,
 }
 
 fn decode_document(document: &DurableDocument) -> Result<CachedDocument, String> {
-    tilo_automerge_isolate::load(&document.bytes)
+    loaded(
+        &document.bytes,
+        &format!("{}/{}", document.route.app, document.route.record),
+    )
+}
+
+/// `bytes`, a document as durable state kept it, loaded. One an earlier layout kept with a
+/// waiting change that no longer applies beside its history loads without that change
+/// ([`crate::cached_document::load_without_superseded_waiting`]), and says what it left out:
+/// what it applied is all there, and it is written in this build's layout when next kept.
+fn loaded(bytes: &[u8], what: &str) -> Result<CachedDocument, String> {
+    let error = match tilo_automerge_isolate::load(bytes) {
+        Ok(doc) => return Ok(CachedDocument::from(doc)),
+        Err(error) => error.to_string(),
+    };
+    let (mut doc, left_out) = crate::cached_document::load_without_superseded_waiting(bytes)
+        .map_err(|recovering| {
+            format!("{error} (and without its superseded waiting changes: {recovering})")
+        })?;
+    for change in &left_out {
+        tracing::warn!(
+            document = what,
+            actor = %change.actor_id(),
+            seq = change.seq(),
+            hash = %change.hash(),
+            %error,
+            "a stored document kept a waiting change of a history its own replaced; it opens without it"
+        );
+    }
+    // Loaded again in isolation, as every stored document is.
+    tilo_automerge_isolate::load(&doc.save())
         .map(CachedDocument::from)
         .map_err(err)
 }
@@ -1348,10 +1378,7 @@ fn digest_document(route: &Route, entry: &Document) -> Result<Vec<super::Stretch
 /// The workspace document a peer kept, loaded in isolation so it stays in a
 /// worker and the first inbound change does not pay a full rebuild.
 fn restored_workspace(bytes: &[u8]) -> Result<CachedDocument, String> {
-    tilo_automerge_isolate::load(bytes)
-        .map(CachedDocument::from)
-        .map_err(err)
-        .and_then(|doc| doc.stored_as(bytes))
+    loaded(bytes, "the workspace's member list").and_then(|doc| doc.stored_as(bytes))
 }
 
 /// `bytes`, the workspace's governance as durable state kept it, checked as

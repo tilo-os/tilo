@@ -68,10 +68,11 @@ pub(crate) type Redemptions =
 /// of changes since it, and the digest of the runs' bytes.
 pub(crate) type StoredParts = (Arc<[u8]>, Vec<Arc<[u8]>>, [u8; 32]);
 /// The document as stored: a saved base, then the changes since it, in
-/// runs each a state's changes since the one before ([`CachedDocument::stored`]).
+/// runs each a state's changes since the one before, then the changes still
+/// waiting for what they build on ([`CachedDocument::stored`]).
 #[derive(Clone)]
 struct Stored {
-    /// A whole saved state of the document.
+    /// A whole saved state of the document, of its applied changes alone.
     base: Arc<[u8]>,
     since: Vec<Arc<[u8]>>,
     /// The runs' bytes, one after the other, digested. Boxed: a hasher is
@@ -81,11 +82,56 @@ struct Stored {
     since_digest: Box<blake3::Hasher>,
     /// The heads the base and the runs hold the changes of.
     heads: Vec<automerge::ChangeHash>,
+    /// The changes of this state still waiting for what they build on, as
+    /// they wait now. Never part of the base or the runs a later state builds
+    /// on: a waiting change a later state drops (one of a history a base
+    /// replaced, numbered as a change the document holds is) is gone from
+    /// what that state stores, and the stored state loads as the one it is.
+    waiting: Arc<[u8]>,
 }
 impl Stored {
     fn since_len(&self) -> usize {
         self.since.iter().map(|run| run.len()).sum()
     }
+    /// The runs as stored: the runs, then the changes waiting.
+    fn stored_since(&self) -> Vec<Arc<[u8]>> {
+        let mut since = self.since.clone();
+        if !self.waiting.is_empty() {
+            since.push(Arc::clone(&self.waiting));
+        }
+        since
+    }
+    /// The digest of [`Self::stored_since`]'s bytes, one after the other.
+    fn stored_since_digest(&self) -> [u8; 32] {
+        let mut digest = (*self.since_digest).clone();
+        digest.update(&self.waiting);
+        *digest.finalize().as_bytes()
+    }
+}
+/// The changes waiting in `doc` for what they build on, one after the other: never one
+/// numbered as an applied change, or as one waiting before it, which would make the stored
+/// state one automerge refuses to load.
+fn waiting_bytes(doc: &automerge::Automerge) -> Arc<[u8]> {
+    let mut bytes = Vec::new();
+    let mut numbered = std::collections::HashSet::new();
+    for change in doc.queued_changes() {
+        if doc
+            .hash_of_actor_seq(change.actor_id(), change.seq())
+            .is_none()
+            && numbered.insert((change.actor_id(), change.seq()))
+        {
+            bytes.extend_from_slice(change.raw_bytes());
+        }
+    }
+    bytes.into()
+}
+/// `doc` saved without the changes waiting in it: the base a stored state
+/// builds on holds only what is applied ([`Stored::waiting`]).
+fn saved_applied(doc: &AutoCommit) -> Vec<u8> {
+    AutoCommit::clone(doc).save_with_options(automerge::SaveOptions {
+        retain_orphans: false,
+        ..automerge::SaveOptions::default()
+    })
 }
 /// The lengths and digests of a document's stored parts: its saved base, and the changes made
 /// since it. [`CachedDocument::stored_layout`] answers it without keeping either.
@@ -102,8 +148,8 @@ fn layout_of(stored: &Stored) -> StoredLayout {
     StoredLayout {
         base_len: stored.base.len(),
         base_digest: *blake3::hash(&stored.base).as_bytes(),
-        since_len: stored.since_len(),
-        since_digest: *stored.since_digest.finalize().as_bytes(),
+        since_len: stored.since_len().saturating_add(stored.waiting.len()),
+        since_digest: stored.stored_since_digest(),
     }
 }
 
@@ -482,6 +528,7 @@ impl CachedDocument {
                     &copy
                 };
                 let doc = committed.committed_document();
+                let waiting = waiting_bytes(doc);
                 if let Some(before) = &self.before
                     && before
                         .heads
@@ -494,21 +541,22 @@ impl CachedDocument {
                     if since_len.saturating_mul(2) <= before.base.len() {
                         let mut since_digest = (*before.since_digest).clone();
                         since_digest.update(&added);
+                        since_digest.update(&waiting);
                         return StoredLayout {
                             base_len: before.base.len(),
                             base_digest: *blake3::hash(&before.base).as_bytes(),
-                            since_len,
+                            since_len: since_len.saturating_add(waiting.len()),
                             since_digest: *since_digest.finalize().as_bytes(),
                         };
                     }
                 }
-                let saved = AutoCommit::clone(committed).save();
+                let saved = saved_applied(committed);
                 crate::work::read(saved.len());
                 StoredLayout {
                     base_len: saved.len(),
                     base_digest: *blake3::hash(&saved).as_bytes(),
-                    since_len: 0,
-                    since_digest: *blake3::hash(&[]).as_bytes(),
+                    since_len: waiting.len(),
+                    since_digest: *blake3::hash(&waiting).as_bytes(),
                 }
             })
             .clone()
@@ -552,6 +600,7 @@ impl CachedDocument {
             };
             let doc = committed.committed_document();
             let heads = committed.committed_heads();
+            let waiting = waiting_bytes(doc);
             if let Some(before) = &self.before
                 && before
                     .heads
@@ -574,20 +623,28 @@ impl CachedDocument {
                         since: runs,
                         since_digest,
                         heads,
+                        waiting,
                     };
                 }
             }
+            // A document with nothing waiting saves as its applied changes alone.
+            let base = if doc.queued_changes().next().is_none() {
+                self.saved_bytes().into()
+            } else {
+                saved_applied(committed).into()
+            };
             Stored {
-                base: self.saved_bytes().into(),
+                base,
                 since: Vec::new(),
                 since_digest: Box::new(blake3::Hasher::new()),
                 heads,
+                waiting,
             }
         });
         (
             Arc::clone(&stored.base),
-            stored.since.clone(),
-            *stored.since_digest.finalize().as_bytes(),
+            stored.stored_since(),
+            stored.stored_since_digest(),
         )
     }
     /// A document as a store kept it: [`Self::stored`]'s saved base, then
@@ -609,19 +666,27 @@ impl CachedDocument {
         };
         let mut base = AutoCommit::load(base_bytes).map_err(|error| error.to_string())?;
         let heads = base.get_heads();
-        if heads.is_empty() || self.save_after(&heads) != since {
+        if heads.is_empty() {
+            return Ok(self);
+        }
+        let applied = self.save_after(&heads);
+        let waiting = waiting_bytes(self.committed_document());
+        if since.get(..applied.len()) != Some(applied.as_slice())
+            || since.get(applied.len()..) != Some(&*waiting)
+        {
             return Ok(self);
         }
         // Nothing has kept this state yet: the memo this state was made with
         // holds no base.
         crate::work::read(since.len());
         let mut since_digest = Box::new(blake3::Hasher::new());
-        since_digest.update(since);
+        since_digest.update(&applied);
         let _ = self.stored.set(Stored {
             base: base_bytes.into(),
-            since: vec![since.into()],
+            since: vec![applied.into()],
             since_digest,
             heads: self.committed_heads(),
+            waiting,
         });
         Ok(self)
     }
@@ -668,6 +733,106 @@ fn saved_chunk(bytes: &[u8]) -> Option<usize> {
     }
     let total = at.checked_add(data)?;
     (total < bytes.len()).then_some(total)
+}
+/// `bytes`, a stored document automerge refuses whole, loaded without the waiting changes
+/// that hold a sequence number its applied history gives another change, and without what
+/// waits on them: answers the document and the changes left out.
+///
+/// An earlier layout stored a base with the changes then waiting beside it, and built every
+/// later state on that base, also after the document dropped one of them: a change of a
+/// history a base replaced, whose actor numbers its changes on the new base again. Once the
+/// new history reached that number, the stored state held two changes of one actor's sequence
+/// number and no longer loaded. What the document applied is all there; only changes that
+/// never applied are left out, which the document left out when it was kept. A stored state
+/// whose applied changes themselves disagree is refused, as automerge refused it.
+pub(crate) fn load_without_superseded_waiting(
+    bytes: &[u8],
+) -> Result<(AutoCommit, Vec<automerge::Change>), String> {
+    use tilo_automerge::ApplyIncoming as _;
+    let base_len = saved_chunk(bytes).ok_or("a stored document holds no saved base")?;
+    let (base, rest) = bytes.split_at(base_len);
+    let mut doc = AutoCommit::load(base).map_err(|error| error.to_string())?;
+    let mut pending =
+        automerge::Automerge::parse_changes(rest).map_err(|error| error.to_string())?;
+    // The changes whose history is here, applied in the order they were stored.
+    loop {
+        let mut applied = false;
+        let mut waiting = Vec::with_capacity(pending.len());
+        for change in pending {
+            if doc.committed_document().has_change(&change.hash()) {
+                continue;
+            }
+            if !change
+                .deps()
+                .iter()
+                .all(|dep| doc.committed_document().has_change(dep))
+            {
+                waiting.push(change);
+                continue;
+            }
+            if doc
+                .committed_document()
+                .hash_of_actor_seq(change.actor_id(), change.seq())
+                .is_some()
+            {
+                return Err(format!(
+                    "two applied changes of actor {} hold sequence number {}",
+                    change.actor_id(),
+                    change.seq()
+                ));
+            }
+            doc.apply_incoming([change])
+                .map_err(|error| error.to_string())?;
+            applied = true;
+        }
+        pending = waiting;
+        if !applied {
+            break;
+        }
+    }
+    // What still waits: a change numbered as an applied one, or as one waiting before it, is of
+    // another history, and so is whatever builds on it.
+    let mut superseded = std::collections::HashSet::new();
+    let mut numbered = std::collections::HashSet::new();
+    let mut left_out = Vec::new();
+    let mut kept = Vec::new();
+    for change in pending {
+        let numbered_applied = doc
+            .committed_document()
+            .hash_of_actor_seq(change.actor_id(), change.seq())
+            .is_some();
+        let builds_on_superseded = change.deps().iter().any(|dep| superseded.contains(dep));
+        if numbered_applied
+            || builds_on_superseded
+            || !numbered.insert((change.actor_id().clone(), change.seq()))
+        {
+            superseded.insert(change.hash());
+            left_out.push(change);
+        } else {
+            kept.push(change);
+        }
+    }
+    // A change waiting on one left out after it in the stored order goes too.
+    loop {
+        let before = kept.len();
+        kept.retain(|change| {
+            let goes = change.deps().iter().any(|dep| superseded.contains(dep));
+            if goes {
+                superseded.insert(change.hash());
+                left_out.push(change.clone());
+            }
+            !goes
+        });
+        if kept.len() == before {
+            break;
+        }
+    }
+    if left_out.is_empty() {
+        return Err("a stored document loads with every change it holds".into());
+    }
+    doc.apply_incoming(kept)
+        .map_err(|error| error.to_string())?;
+    Ok((doc, left_out))
 }
 /// Join the last run with the one before it while that one is at most twice
 /// as long: run lengths then fall by more than half from each to the next,
@@ -884,5 +1049,116 @@ mod tests {
             restored.load_incoming(&remote.save_after(&heads)).unwrap();
             assert_eq!(restored.get_heads(), remote.get_heads());
         }
+
+        phase a_waiting_change_the_document_drops_is_gone_from_what_it_stores;
+        {
+            let (mut seed, superseded) = superseded_history();
+            let actor = seed.get_actor().clone();
+            let mut cached = CachedDocument::from(seed.fork().with_actor(actor));
+            cached.load_incoming(&superseded.raw).unwrap();
+            assert_eq!(cached.committed_document().queued_changes().count(), 1);
+            let (base, since, _) = cached.stored();
+            let stored = [&*base, &since.concat()].concat();
+            assert_eq!(
+                AutoCommit::load(&stored)
+                    .unwrap()
+                    .committed_document()
+                    .queued_changes()
+                    .count(),
+                1,
+                "a change waiting for what it builds on is stored as waiting"
+            );
+            // The actor writes on: its own changes take the numbers the waiting change held, and
+            // the document drops it.
+            for n in 0..2 {
+                cached.put(ROOT, "written", n).unwrap();
+                cached.commit();
+            }
+            assert_eq!(cached.committed_document().queued_changes().count(), 0);
+            let (base, since, digest) = cached.stored();
+            assert!(
+                !since.is_empty(),
+                "the state is stored on the base it was stored on before, with its changes since"
+            );
+            let stored = [&*base, &since.concat()].concat();
+            let mut reopened = AutoCommit::load(&stored).expect("the stored state loads");
+            assert_eq!(reopened.get_heads(), cached.committed_heads());
+            assert_eq!(reopened.committed_document().queued_changes().count(), 0);
+            let reopened = CachedDocument::from(reopened).stored_as(&stored).unwrap();
+            assert_eq!(
+                reopened.stored().2,
+                digest,
+                "the reopened state stores as the bytes it was read from"
+            );
+        }
+
+        phase a_document_stored_with_a_superseded_waiting_change_opens_without_it;
+        {
+            let (seed, superseded) = superseded_history();
+            // As an earlier layout kept it: a base saved with the change then waiting beside it,
+            // and the changes the actor wrote on it since, numbered as the waiting one is.
+            let mut doc = seed.clone();
+            doc.load_incoming(&superseded.raw).unwrap();
+            let base = doc.save();
+            let heads = doc.get_heads();
+            for n in 0..2 {
+                doc.put(ROOT, "written", n).unwrap();
+                doc.commit();
+            }
+            let stored = [base, doc.save_after(&heads)].concat();
+            let refused = AutoCommit::load(&stored).expect_err("automerge refuses it whole");
+            assert!(refused.to_string().contains("duplicate seq"), "{refused}");
+            let (mut opened, left_out) = load_without_superseded_waiting(&stored).unwrap();
+            assert_eq!(opened.get_heads(), doc.get_heads());
+            assert_eq!(opened.committed_document().queued_changes().count(), 0);
+            assert_eq!(
+                left_out.iter().map(automerge::Change::hash).collect::<Vec<_>>(),
+                vec![superseded.hash],
+                "only the change that never applied is left out"
+            );
+            // Two applied changes of one number are no waiting change to leave out.
+            let mut other = seed;
+            let seed_heads = other.get_heads();
+            other.put(ROOT, "other", 1).unwrap();
+            other.commit();
+            let forked = [doc.save(), other.save_after(&seed_heads)].concat();
+            assert!(AutoCommit::load(&forked).is_err());
+            assert!(load_without_superseded_waiting(&forked).is_err());
+        }
+    }
+
+    /// A change waiting for what it builds on.
+    struct Waiting {
+        raw: Vec<u8>,
+        hash: automerge::ChangeHash,
+    }
+
+    /// A document of one actor, large enough that a few changes are stored beside its base, and
+    /// a change of the same actor from a history this document never holds: numbered as the
+    /// actor's next change but one, built on a change that never comes, as the changes of a
+    /// history a base replaced are when the actor writes on the base again.
+    fn superseded_history() -> (AutoCommit, Waiting) {
+        let actor = automerge::ActorId::from(b"holder".as_slice());
+        let mut seed = AutoCommit::new().with_actor(actor.clone());
+        for n in 0..2_000 {
+            seed.put(ROOT, format!("row-{n}"), n.to_string()).unwrap();
+        }
+        seed.commit();
+        let mut replaced = seed.fork().with_actor(actor);
+        replaced.put(ROOT, "replaced", 1).unwrap();
+        replaced.commit();
+        let missing = replaced.get_heads();
+        replaced.put(ROOT, "replaced", 2).unwrap();
+        replaced.commit();
+        let change = replaced
+            .get_changes(&missing)
+            .into_iter()
+            .next()
+            .expect("the change after the missing one");
+        let waiting = Waiting {
+            raw: change.raw_bytes().to_vec(),
+            hash: change.hash(),
+        };
+        (seed, waiting)
     }
 }
