@@ -505,7 +505,7 @@ mod tests {
         taken().push(Taken {
             path: gone_path.clone(),
             file: file_at(&made.device_privkey),
-            key: other.clone(),
+            key: other,
         });
         let read = super::super::read_device_key(&made.device_privkey).map(|key| key.to_bytes());
         let answered_here = taken_here(&made.device_privkey).map(|key| key.to_bytes());
