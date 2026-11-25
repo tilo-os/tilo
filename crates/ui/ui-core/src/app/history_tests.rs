@@ -2439,6 +2439,25 @@ fn asking_window(app: App) -> crate::headless::Driver {
     driver
 }
 
+/// Place `window` on the record `binding`'s component carries, as the window that hosts it says when
+/// it joins the workspace: the component's own calls go out, and come back, on that route.
+fn place_on_component_route(
+    window: &mut crate::headless::Driver,
+    binding: &crate::bound_dispatch::CallbackBinding,
+) {
+    let route = binding.broker_route().expect("the component's record has a route");
+    assert!(window.app_mut().collaboration.manager.send(
+        crate::collaboration::CollabRequest::Hello {
+            app_id: route.app_id,
+            cluster_id: route.cluster_id,
+            record: route.document,
+            resource_type: None,
+            handle: None,
+        }
+    ));
+    window.relayout();
+}
+
 /// The call the window's device holds for the person's yes once the frame that sends it ran, with
 /// the invocation and what it meant as the window keeps it.
 fn asked(
@@ -3282,8 +3301,14 @@ fn component_control_root(
     Vec<ComponentControlHandle>,
     Rc<Cell<bool>>,
 ) {
-    let mut owners = crate::resource::ResourceOwners::in_memory();
-    let records = owners.open(HISTORY.app_id, "component-controls").unwrap();
+    // The components' records live in a workspace, as a placed window's do: each has a route its
+    // own calls go out and come back on.
+    let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
+        crate::resource::MemoryWorkspace::default(),
+    ));
+    let records = owners
+        .open(HISTORY.app_id, "00000000-0000-0000-0000-000000000930")
+        .unwrap();
     let failure = Rc::new(Cell::new(false));
     let mut slots = Vec::new();
     let mut handles = Vec::new();
@@ -3456,17 +3481,19 @@ tilo_test_env::scenario! {
             };
             let (root, original, _) =
                 component_control_root(&[("component-replaced", confirmation.clone())]);
+            let mut app = app();
+            app.root_widget = root;
+            layout(&mut app);
+            let mut window = asking_window(app);
+            place_on_component_route(&mut window, &original[0].binding);
             original[0]
                 .binding
                 .queued_controls
                 .borrow_mut()
                 .push_back(nested_control("component-replaced", "original", 5));
-            let mut app = app();
-            app.root_widget = root;
-            layout(&mut app);
-            let mut window = asking_window(app);
             let app = window.app_mut();
             palette_history_round_trip(app);
+            assert_eq!(app.pending_history_controls().len(), 1, "History holds the queued control");
 
             // A control that asks first is continued by the same press as any other: the device
             // asks the person when it runs.
@@ -3537,15 +3564,16 @@ tilo_test_env::scenario! {
             };
             let (root, original, _) =
                 component_control_root(&[("callback-owner", confirmation.clone())]);
+            let mut app = app();
+            app.root_widget = root;
+            layout(&mut app);
+            let mut window = asking_window(app);
+            place_on_component_route(&mut window, &original[0].binding);
             original[0]
                 .binding
                 .queued_controls
                 .borrow_mut()
                 .push_back(nested_control("callback-owner", "original", 7));
-            let mut app = app();
-            app.root_widget = root;
-            layout(&mut app);
-            let mut window = asking_window(app);
             let app = window.app_mut();
             palette_history_round_trip(app);
 
@@ -3600,15 +3628,16 @@ tilo_test_env::scenario! {
         };
         let (root, original, _) =
             component_control_root(&[("asked-owner", confirmation.clone())]);
+        let mut app = app();
+        app.root_widget = root;
+        layout(&mut app);
+        let mut window = asking_window(app);
+        place_on_component_route(&mut window, &original[0].binding);
         original[0]
             .binding
             .queued_controls
             .borrow_mut()
             .push_back(nested_control("asked-owner", "original", 9));
-        let mut app = app();
-        app.root_widget = root;
-        layout(&mut app);
-        let mut window = asking_window(app);
         let app = window.app_mut();
         palette_history_round_trip(app);
         let command = emit_pending_control_command(app, "history-pending-1");
@@ -3819,10 +3848,16 @@ tilo_test_env::scenario! {
         app.root_widget = root;
         layout(&mut app);
         let mut window = asking_window(app);
+        place_on_component_route(&mut window, &old[0].binding);
         let input = r#"{"alias":"original","nested":{"leaf":1}}"#;
         activate_component_palette(window.app_mut(), &old[0], "same-address", input);
         palette_enter(window.app_mut());
-        asked(&mut window).expect("the palette's choice waits for the person's yes");
+        if asked(&mut window).is_none() {
+            panic!(
+                "the palette's choice waits for the person's yes, refused: {:?}",
+                window.app().actions.refused.reasons().collect::<Vec<_>>()
+            );
+        }
         palette_history_round_trip(window.app_mut());
         let original = held_ask(window.app());
         let app = window.app_mut();
