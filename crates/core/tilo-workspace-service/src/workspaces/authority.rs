@@ -411,8 +411,32 @@ fn decide_by_governance(
             }
         }
     };
-    // Its person decides, whichever key of theirs asks: an agent's own
-    // grants were decided where it asked.
+    // A key is no device of the person's own: what only one of those may change — the
+    // administration, the workspace itself, a place — it may not, and the workspace's own
+    // refusal says so.
+    if !crate::workspace_access::person_device(device) {
+        let refusal = match op {
+            WorkspaceOp::MakeAdministrator | WorkspaceOp::AdmitAdministrator => {
+                Some(tilo_action_policy::Refusal::Administrators {
+                    actor: person.to_owned(),
+                    unmaking: false,
+                })
+            }
+            WorkspaceOp::MakeOwner => Some(tilo_action_policy::Refusal::OwnershipByOwner),
+            WorkspaceOp::Change(change) if member.policy.unmakes_administrator(person, change) => {
+                Some(tilo_action_policy::Refusal::Administrators {
+                    actor: person.to_owned(),
+                    unmaking: true,
+                })
+            }
+            _ => None,
+        };
+        if let Some(refusal) = refusal {
+            return Err(refused(op, &refusal));
+        }
+    }
+    // Its person decides, whichever key of theirs asks: an agent's own grants were decided where
+    // it asked.
     permits(person, member.acting.foreign_device).map_err(|refusal| refused(op, &refusal))?;
     let Some(host) = host else {
         return Ok(person.to_owned());

@@ -908,7 +908,7 @@ impl WorkspacePolicy {
     /// Whether `change` unmakes or removes an administrator other than
     /// `actor_person`: the owner's alone to do. Leaving, or
     /// giving up one's own administration, is anyone's.
-    fn unmakes_administrator(&self, actor_person: &str, change: &Change) -> bool {
+    pub fn unmakes_administrator(&self, actor_person: &str, change: &Change) -> bool {
         let target = match change {
             Change::RemoveMember { person }
             | Change::Ban { person }

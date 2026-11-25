@@ -5614,20 +5614,22 @@ impl RuntimeActionProvider {
             let route = (Arc::clone(&session.provider), session.acting().clone());
             return asked.send(run, caller, route, request);
         }
-        // A key or an agent of the person's act on the workspace's own tree as themselves
-        // ([`Self::workspace_tree`]): the provider runs the workspace's own checks, and asks
-        // its person where they are asked, as it does for the person's own connection.
+        // A key or an agent of the person's asks the workspace's own tree as itself, where a
+        // device of the workspace asks it: the workspace's governance decides it by that run's
+        // own grants, and its stores by that run's own certificate ([`Self::workspace_tree`]).
         if request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
-            && let Some((tree, asked)) = self.workspace_tree(caller)
+            && let Some((_, asked)) = self.workspace_tree(caller)
         {
+            let answers = self.workspaces.copies().device_actions();
+            let answer = answers.invoke(&asked, request.clone());
             self.invocations.record(
                 caller,
                 &asked,
                 &request,
                 Some(&self.workspace),
-                (Arc::clone(&tree.answers), asked.clone()),
+                (Arc::clone(&answers), asked.clone()),
             );
-            return tree.answers.invoke(&asked, request);
+            return answer;
         }
         let runs_as = session.acting().clone();
         let invocation = request.invocation;
