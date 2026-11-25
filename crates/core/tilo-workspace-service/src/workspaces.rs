@@ -1323,7 +1323,9 @@ impl Workspaces {
     }
 
     /// Whether `device` holds a link to `workspace_id` here now: one the
-    /// workspace's host admitted and has not refused.
+    /// workspace's host admitted and has not refused. A device whose links the
+    /// host ended stays among the link's remotes, so a later widening can open
+    /// them again, but holds no link until then.
     #[must_use]
     pub fn linked(&self, workspace_id: WorkspaceId, device: &[u8; 32]) -> bool {
         self.inner
@@ -1331,6 +1333,11 @@ impl Workspaces {
             .lock_recover()
             .get(&workspace_id)
             .is_some_and(|remotes| remotes.contains(device))
+            && self
+                .inner
+                .direct
+                .link(workspace_id)
+                .is_some_and(|link| link.ended_link(*device).is_none())
     }
 
     /// In-process access to the records of the workspaces this host keeps, for
