@@ -532,7 +532,13 @@ tilo_test_env::scenario! {
 
             let (fill, edge, ink) = face_colors(&theme, ButtonRole::Secondary, rest);
             assert_eq!(fill, raised);
-            assert_eq!(edge, None);
+            // High contrast keeps every control's boundary: its face is its ground's black.
+            if colors.palette.high_contrast {
+                let edge = edge.expect("a high-contrast face keeps its boundary");
+                assert!(contrast_ratio(edge, fill) >= 3.0, "{}", theme.name);
+            } else {
+                assert_eq!(edge, None, "{}", theme.name);
+            }
             assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
             assert_eq!(
                 face_colors(&theme, ButtonRole::Secondary, hover).0,

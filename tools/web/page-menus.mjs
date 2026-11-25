@@ -67,6 +67,7 @@ const DRAWN = `(() => {
     edge: resolved('color', token('--tilo-floating-edge')),
     press: resolved('backgroundColor', token('--tilo-press')),
     trigger: trigger && getComputedStyle(trigger).backgroundColor,
+    triggerChevron: !!trigger?.lastElementChild?.matches('svg.tilo-glyph'),
     shadow: getComputedStyle(menu).boxShadow,
   };
 })()`;
@@ -126,6 +127,7 @@ try {
       const columns = new Set(labelled.map(row => Math.round(row.textX)));
       if (columns.size > 1) fail(`labels start at ${[...columns].join(', ')} px, not one column`);
       if (!drawn.shadow.includes(drawn.edge)) fail(`the panel's edge is not the theme's floating edge ${drawn.edge}: ${drawn.shadow}`);
+      if (!drawn.triggerChevron) fail('its button draws no down chevron, where the app draws one');
       if (drawn.trigger !== drawn.press) fail(`its button is not held while it is open (${drawn.trigger}, not ${drawn.press})`);
       await tab.close();
     }

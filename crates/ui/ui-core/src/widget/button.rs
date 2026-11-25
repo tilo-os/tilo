@@ -961,7 +961,13 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
                 colors.text_primary
             };
             let ink = colors.ink_on_any(&[rest, hover, active], wanted, ON_FILL_MIN_CONTRAST);
-            (fill, None, ink)
+            // High contrast raises nothing off its black ground, so the face keeps its boundary
+            // as the theme's hairline (`chrome::panel_border`), as every panel does.
+            let edge = colors
+                .palette
+                .high_contrast
+                .then(|| crate::chrome::panel_border(theme));
+            (fill, edge, ink)
         }
         ButtonRole::Key => {
             let ground = colors.surfaces.content;

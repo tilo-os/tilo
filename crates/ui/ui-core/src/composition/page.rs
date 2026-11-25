@@ -750,7 +750,16 @@ impl Page {
                     }
                 }
             }
-            (Shows::Words, Some(access)) => words_into(&mut element, access),
+            (Shows::Words, Some(access)) => {
+                words_into(&mut element, access);
+                // A labelled button that opens a menu ends in its down chevron, as the app paints
+                // it: it reads as a choice, not an action.
+                if access.role == Role::Button && access.state.expanded.is_some() {
+                    element
+                        .own
+                        .push_str(&crate::icons::glyph_svg(crate::icons::Icon::ChevronDown));
+                }
+            }
             (Shows::Call, _) => call_into(&mut element, node),
             (Shows::Paint, _) => {
                 if let Some(data) = node

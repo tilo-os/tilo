@@ -47,6 +47,7 @@ html,body{margin:0;height:100%;background:var(--tilo-ground);}
 .tilo-view dialog[data-w]{display:flex;flex-direction:column;padding:0;}
 .tilo-view [data-layer]>[role=menu]:not(:has(>.tilo-paint)){padding:var(--tilo-menu-inset);}
 .tilo-view [role=menu]>[role^=menuitem]:not([data-w]){flex-direction:row;align-items:center;justify-content:flex-start;gap:var(--tilo-menu-gap);min-height:var(--tilo-menu-row);padding:0 var(--tilo-menu-pad);text-align:start;}
+.tilo-view button[aria-expanded]:not([role^=menuitem])>.tilo-glyph:last-child:not(:first-child){flex:none;width:var(--tilo-menu-icon);height:var(--tilo-menu-icon);}
 .tilo-view [role=menu]>[role^=menuitem]>.tilo-glyph{flex:none;width:var(--tilo-menu-icon);height:var(--tilo-menu-icon);}
 .tilo-view [role=menu]>[role^=menuitem]>.tilo-detail{margin-inline-start:auto;}
 .tilo-view [role=menu]>[role^=menuitem]>.tilo-glyph:last-child{margin-inline-start:auto;}
