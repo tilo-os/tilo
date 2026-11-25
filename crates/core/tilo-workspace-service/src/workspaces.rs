@@ -1009,6 +1009,9 @@ type OwnReadings = std::sync::RwLock<
     >,
 >;
 
+/// How a hand-on of what this device keeps ended, once it did ([`Workspaces::hand_on_before_leaving`]).
+type HandOnEnded = tokio::sync::watch::Receiver<Option<Result<(), String>>>;
+
 struct WorkspacesInner {
     host: WorkspaceServices,
     /// Where the workspaces' live resources are shown, once the session asks for them
@@ -1118,6 +1121,10 @@ struct WorkspacesInner {
     /// The servers being handed a workspace now, by workspace and device: named among those
     /// keeping it, but not yet saying they keep all of it ([`Workspaces::handing_to`]).
     handing: std::sync::Mutex<std::collections::BTreeSet<(String, [u8; 32])>>,
+    /// The hand-ons of what this device keeps, started as an owner takes it
+    /// out of a workspace, by workspace: how each ended, once it did
+    /// ([`Workspaces::hand_on_before_leaving`]).
+    handing_on: std::sync::Mutex<std::collections::HashMap<String, HandOnEnded>>,
     /// The workspace UUID each time this device's copy turns current with
     /// another of its holders ([`Workspaces::holders_reached`]).
     reached: tokio::sync::broadcast::Sender<String>,
@@ -1549,6 +1556,7 @@ impl Workspaces {
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
                 handing: std::sync::Mutex::default(),
+                handing_on: std::sync::Mutex::default(),
                 reached: tokio::sync::broadcast::Sender::new(64),
                 deletions: tokio::sync::broadcast::channel(64).0,
                 branches: tokio::sync::broadcast::channel(64).0,

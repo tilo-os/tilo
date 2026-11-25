@@ -1408,11 +1408,27 @@ impl Workspaces {
                 .and_then(Result::ok);
             (governed.workspace_id(), known)
         };
+        // Whether the server handed what it keeps on before it was taken out: it then lets the
+        // workspace go itself once the change taking it out reaches it, and passes that change
+        // on first ([`Self::dial_holders`]). Told to stop before the change reached it, it would
+        // let go with the change unheard by any device keeping the workspace.
+        let mut handed_on = false;
         let reached = if device == self.inner.host.cert.device_public_key {
             self.caught_up_elsewhere(workspace, workspace_id).await?;
             None
         } else if let Some(addr) = addr.or(known) {
             match self.reach_host(device, addr.clone()).await {
+                // A device that keeps no store of the workspace (the owner's
+                // own, holding a member copy) has the server hand what it
+                // keeps on to another device keeping it, and let it go, before
+                // it takes the server out.
+                Ok(reached) if self.inner.direct.link(workspace_id).is_none() => {
+                    hand_on(&reached, workspace).await.map_err(|error| {
+                        format!("the server keeps the workspace still: {error}")
+                    })?;
+                    handed_on = true;
+                    Some(reached)
+                }
                 Ok(reached) => {
                     self.take_store_of(workspace_id, addr, device)
                         .await
@@ -1458,6 +1474,9 @@ impl Workspaces {
         let Some(reached) = reached else {
             return Ok(false);
         };
+        if handed_on {
+            return Ok(true);
+        }
         let mut arguments = Map::new();
         arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
         match reached.ask(UNHOST_WORKSPACE, arguments).await {
@@ -1467,6 +1486,61 @@ impl Workspaces {
                 Ok(false)
             }
         }
+    }
+
+    /// Have another device keeping `workspace` take in every change this
+    /// device keeps of it ([`Self::caught_up_elsewhere`]), as `caller` asks
+    /// before it takes this device out: the workspace's owner, or this
+    /// device's own person. A hand-on outlasts what one ask waits for, so
+    /// the first ask starts it and each answers whether it is done: `true`
+    /// once another device said it keeps every change this one does.
+    ///
+    /// # Errors
+    ///
+    /// `caller` may not ask it, the workspace is not held here, or the
+    /// hand-on ended with no other device keeping it having taken in its
+    /// changes: the next ask starts it again.
+    pub(super) async fn hand_on_before_leaving(
+        &self,
+        caller: &DeviceCert,
+        workspace: &str,
+    ) -> Result<bool, String> {
+        let (workspace_id, owner) = {
+            let governed = self
+                .workspace(workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            let governed = governed.lock().await;
+            (governed.workspace_id(), governed.peer().owner())
+        };
+        if caller.user_public_key != owner
+            && caller.user_public_key != self.inner.host.cert.user_public_key
+        {
+            return Err(
+                "only its own person or the workspace's owner asks a host to hand it on".into(),
+            );
+        }
+        let mut handing = self
+            .inner
+            .handing_on
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(running) = handing.get(workspace) {
+            let Some(ended) = running.borrow().clone() else {
+                return Ok(false);
+            };
+            handing.remove(workspace);
+            return ended.map(|()| true);
+        }
+        let (ended, running) = tokio::sync::watch::channel(None);
+        handing.insert(workspace.to_owned(), running);
+        drop(handing);
+        let (this, workspace) = (self.clone(), workspace.to_owned());
+        tokio::spawn(async move {
+            let handed = this.caught_up_elsewhere(&workspace, workspace_id).await;
+            let _ = ended.send(Some(handed));
+        });
+        Ok(false)
     }
 
     /// Have another device keeping `workspace` take in every change this
@@ -1786,6 +1860,35 @@ impl OtherHost {
             Some(Err(error)) => Err(error.to_string()),
             None => Err("the host did not answer".to_owned()),
         }
+    }
+}
+
+/// How long the owner's device waits for a server it takes out of a workspace
+/// to hand what it keeps on to another device keeping it.
+const HANDED_ON_WITHIN: Duration = Duration::from_secs(600);
+
+/// Have `reached`, a server about to be taken out of `workspace`, hand what it
+/// keeps on to another device keeping it ([`UNHOST_WORKSPACE`] with
+/// `hand_on`), asking again until it says it did.
+///
+/// # Errors
+///
+/// The server refused, stopped answering, or did not finish within
+/// [`HANDED_ON_WITHIN`].
+async fn hand_on(reached: &OtherHost, workspace: &str) -> Result<(), String> {
+    let started = tilo_clock::now();
+    loop {
+        let mut arguments = Map::new();
+        arguments.insert("workspace".into(), Value::String(workspace.to_owned()));
+        arguments.insert("hand_on".into(), Value::Bool(true));
+        let answer = reached.ask(UNHOST_WORKSPACE, arguments).await?;
+        if answer.get("handed").and_then(Value::as_bool) == Some(true) {
+            return Ok(());
+        }
+        if tilo_clock::now().duration_since(started) > HANDED_ON_WITHIN {
+            return Err("it did not hand what it keeps on to another device keeping it".into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 

@@ -1545,10 +1545,10 @@ async fn a_workspace_handed_to_a_person_is_administered_by_them() {
 }
 
 /// A page's own route to the servers keeping a workspace: its owner lists them, and a person
-/// the workspace does not let choose them is refused, as is a site that names no server and a
-/// server that does not keep it.
+/// the workspace does not let choose them is refused. Choosing them is no page's: the page
+/// wire carries no change to them.
 #[tokio::test]
-async fn a_page_lists_and_chooses_the_servers_keeping_the_workspace() {
+async fn a_page_lists_the_servers_keeping_the_workspace() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -1586,34 +1586,6 @@ async fn a_page_lists_and_chooses_the_servers_keeping_the_workspace() {
         "{refused:?}"
     );
 
-    // A host line that names no host, and a server that does not keep it, are refused in
-    // their own words.
-    let refused = workspaces
-        .page_workspaces(
-            &owner,
-            WorkspacesRequest::AddServer {
-                workspace: workspace.clone(),
-                host: "not a host line".into(),
-            },
-        )
-        .await;
-    assert!(
-        matches!(refused, WorkspacesReply::Refused(_)),
-        "{refused:?}"
-    );
-    let refused = workspaces
-        .page_workspaces(
-            &owner,
-            WorkspacesRequest::RemoveServer {
-                workspace,
-                server: hex::encode([7; 32]),
-            },
-        )
-        .await;
-    assert!(
-        matches!(refused, WorkspacesReply::Refused(_)),
-        "{refused:?}"
-    );
     server.shutdown().await;
 }
 

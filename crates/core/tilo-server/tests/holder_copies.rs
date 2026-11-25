@@ -443,9 +443,9 @@ async fn govern(
 /// did, owning it itself under a grant that names her the person it keeps it
 /// for, and handed it to the second. The first then stops for good. Alice,
 /// through a key of hers that reached the workspace on the second server,
-/// lists its servers there, which makes the workspace hers, and takes the
-/// stopped one out; the second then keeps the workspace alone and makes its
-/// base.
+/// lists its servers there, which makes the workspace hers, and from her
+/// computer, which keeps her root, takes the stopped one out; the second then
+/// keeps the workspace alone and makes its base.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
     clippy::too_many_lines,
@@ -459,6 +459,7 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     let main = operator.enrol("main", DeviceCapabilities::member());
     let alice = TestUser::fresh("Alice");
     let key = alice.enrol("key", DeviceCapabilities::server_key_grant());
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let made_on = serve_on(&operator, &old, WorkSetting::own_person()).await;
     let remains = serve_on(&operator, &main, WorkSetting::own_person()).await;
     let workspace = made_on.host.workspaces().create("Notes").await.unwrap();
@@ -558,14 +559,46 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
             .await,
         "choosing its servers, the person it is kept for owns it"
     );
-    let removed = govern(
-        &key_link.actions,
-        &workspace,
-        "server.remove",
+    // She takes the stopped server out from her computer, which keeps her root: which servers
+    // keep a workspace is changed under its key alone, never a server's. It comes into the
+    // workspace on the remaining server as a further device of hers, by the certificate her root
+    // signed.
+    let laptop_state = tempfile::tempdir().unwrap();
+    let (laptop_service, _laptop_keys) =
+        crate::common::own_service(laptop_state.path(), &laptop).await;
+    let own = laptop_service.workspaces().clone();
+    tilo_server::servers::found(&own)
+        .await
+        .expect("Alice's own workspace is founded on her computer");
+    tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
+        &own,
+        &alice.user_sk,
+        &laptop.cert,
+    )
+    .await
+    .expect("her computer keeps her root");
+    let main_hint = workspaces
+        .hosts(&workspace.workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|hint| hint.host == main.cert)
+        .expect("the remaining server names its own address");
+    within(
+        "her computer holds the workspace",
+        own.hold_as_member(workspace.workspace_id, &main_hint),
+    )
+    .await
+    .expect("the remaining server admits her computer");
+    let removed = crate::common::servers_action(
+        &own,
+        &laptop,
+        &workspace.workspace,
+        "remove",
         serde_json::json!({ "server": old_key }),
     )
     .await
-    .expect("the owner's key takes the stopped server out");
+    .expect("her computer takes the stopped server out");
     let servers = removed["servers"].as_array().unwrap();
     assert_eq!(servers.len(), 1, "{removed}");
     assert_eq!(servers[0]["device"], main_key, "{removed}");
@@ -589,6 +622,8 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
         )),
         "and nothing falls short about it: {status:?}"
     );
+    drop(own);
+    laptop_service.shutdown().await;
     drop(key_link);
     remains.stop().await;
 }

@@ -1321,13 +1321,20 @@ impl Verb {
 }
 
 /// The contract tags one of the host's verbs carries as its declaration states them: a secret
-/// answer is kept in no record ([`tilo_actions::SECRET_ANSWER_TAG`]).
+/// answer is kept in no record ([`tilo_actions::SECRET_ANSWER_TAG`]), and a change to which
+/// servers keep a workspace runs only where the owner's root is kept
+/// ([`tilo_actions::ROOT_ONLY_TAG`]).
 pub(super) fn tags_of(action: &str) -> Vec<String> {
+    let mut tags = Vec::new();
     if tilo_actions::remote::answers_a_secret(action) {
-        vec![tilo_actions::SECRET_ANSWER_TAG.to_owned()]
-    } else {
-        Vec::new()
+        tags.push(tilo_actions::SECRET_ANSWER_TAG.to_owned());
     }
+    // Which servers keep a workspace changes only under the key of a device of the owner's
+    // that keeps their identity.
+    if matches!(action, ADD_SERVER | REMOVE_SERVER | MOVE_SERVER) {
+        tags.push(tilo_actions::ROOT_ONLY_TAG.to_owned());
+    }
+    tags
 }
 
 impl Verb {
@@ -3607,6 +3614,17 @@ impl Workspaces {
         let GovernanceCall {
             workspace, args, ..
         } = call;
+        // Which servers keep a workspace is changed under the key of a device
+        // of the owner's that keeps their identity, never a server's: the
+        // change is signed where it runs, so it runs only there.
+        if matches!(action, ADD_SERVER | REMOVE_SERVER | MOVE_SERVER)
+            && !super::person_workspace::devices::keeps_root(self, self.device_cert()).await
+        {
+            return Err(ActionCallError::refused(
+                "only a device of the owner's that keeps their identity changes which servers \
+                 keep a workspace; run it there",
+            ));
+        }
         let confirmed = match action {
             ADD_SERVER => {
                 let role = args

@@ -312,9 +312,9 @@ impl Workspaces {
             WorkspacesRequest::Name { workspace, name } => {
                 self.name_self(&workspace, device, &name, now).await?
             }
-            request @ (WorkspacesRequest::Servers { .. }
-            | WorkspacesRequest::AddServer { .. }
-            | WorkspacesRequest::RemoveServer { .. }) => self.page_servers(device, request).await?,
+            WorkspacesRequest::Servers { workspace } => {
+                self.page_servers(device, &workspace).await?
+            }
             WorkspacesRequest::Delete { workspace } => self.page_delete(device, &workspace).await?,
         })
     }
@@ -532,24 +532,19 @@ impl Workspaces {
         Ok(member.allows(&node, tilo_action_policy::ActionKind::Undoable, now))
     }
 
-    /// A page listing the servers keeping a workspace, having another keep it
-    /// as well by its site, and letting one go: each answers the servers as
-    /// they are then, the one the workspace was made on first.
+    /// A page listing the servers keeping a workspace, the one the workspace
+    /// was made on first. Choosing them is the owner's, on a device of theirs
+    /// that keeps their identity (`workspace/servers#add`): a server never
+    /// signs which servers keep a workspace.
     async fn page_servers(
         &self,
         device: &DeviceCert,
-        request: WorkspacesRequest,
+        workspace: &str,
     ) -> Result<WorkspacesReply, CollaborationError> {
-        let workspace = match &request {
-            WorkspacesRequest::Servers { workspace }
-            | WorkspacesRequest::AddServer { workspace, .. }
-            | WorkspacesRequest::RemoveServer { workspace, .. } => workspace.clone(),
-            _ => return Err(CollaborationError::new("not a servers request")),
-        };
-        // Which servers keep a workspace is its owner's choice, as the
+        // Which servers keep a workspace is its owner's to read, as the
         // workspace's own `server.*` actions decide it.
         let chooses = {
-            let governed = self.workspace(&workspace).await?;
+            let governed = self.workspace(workspace).await?;
             let mut governed = governed.lock().await;
             self.hand_kept_workspace_to(&mut governed, device.user_public_key)
                 .await;
@@ -560,21 +555,8 @@ impl Workspaces {
                 "only the workspace's owner chooses the servers that keep it",
             ));
         }
-        match request {
-            WorkspacesRequest::AddServer { host, .. } => {
-                self.add_server(&workspace, &host, tilo_peer_state::CopyRole::KeyHolder)
-                    .await
-                    .map_err(CollaborationError::new)?;
-            }
-            WorkspacesRequest::RemoveServer { server, .. } => {
-                self.remove_server(&workspace, &server)
-                    .await
-                    .map_err(CollaborationError::new)?;
-            }
-            _ => {}
-        }
         let servers = self
-            .keeping_devices(&workspace)
+            .keeping_devices(workspace)
             .await
             .map_err(CollaborationError::new)?;
         Ok(WorkspacesReply::Servers(

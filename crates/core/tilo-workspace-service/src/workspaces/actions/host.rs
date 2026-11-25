@@ -1722,8 +1722,16 @@ impl Workspaces {
             ServiceOperation::UnhostWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
+                let workspace = args.required_text("workspace")?;
+                if args.boolean("hand_on")?.unwrap_or(false) {
+                    let handed = self
+                        .hand_on_before_leaving(device, workspace)
+                        .await
+                        .map_err(ActionCallError::refused)?;
+                    return Ok(serde_json::json!({ "handed": handed }));
+                }
                 let stopped = self
-                    .unhold(device, args.required_text("workspace")?)
+                    .unhold(device, workspace)
                     .await
                     .map_err(ActionCallError::refused)?;
                 Ok(serde_json::json!({ "stopped": stopped }))

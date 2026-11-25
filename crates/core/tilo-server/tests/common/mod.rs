@@ -1401,3 +1401,92 @@ pub async fn reaches_host(hosted: &Hosted, workspace: WorkspaceId, record: &str,
     .await;
 }
 pub use tilo_workspace_service::workspaces::fixtures::write_record;
+
+/// What the workspace's governance answers on `service` for `action` on its servers
+/// (`workspace/servers#<action>`), asked as `computer`: on the computer's own service, as
+/// `tilo -w W do workspace/servers#<action>` asks its daemon.
+pub async fn servers_action(
+    service: &tilo_server::workspaces::Workspaces,
+    computer: &TestDevice,
+    workspace: &str,
+    action: &str,
+    argument: serde_json::Value,
+) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
+    use tilo_actions::remote::ActionProvider as _;
+    use tilo_actions::remote::{
+        ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+        WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_child,
+    };
+    use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+    let serde_json::Value::Object(argument) = argument else {
+        panic!("arguments are an object");
+    };
+    let pending = service
+        .providers()
+        .invoke(
+            &Caller::authenticated(computer.cert.user_public_key, computer.device_pubkey())
+                .in_workspace(workspace.to_owned()),
+            InvokeRequest {
+                invocation: InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: WORKSPACE_GOVERNANCE_PROVIDER.into(),
+                    address: ActionAddress::new(
+                        workspace_governance_child(workspace, Some("servers")),
+                        action,
+                    ),
+                },
+                argument: InvokeArgument::Json(argument),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: Some(120_000),
+                appearance: None,
+                signed: None,
+            },
+        )
+        .expect("the computer's own service answers the workspace's governance");
+    // A refusal is the call's answer, whether the dispatch or the action gives it.
+    let receipt = tilo_test_env::within(format!("the service answers servers#{action}"), pending)
+        .await
+        .expect("the call is answered")?;
+    match receipt.status {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+        ReceiptStatus::Rejected { error } => Err(error),
+        // Still running past what a caller waits for: followed under its id, as the CLI
+        // follows it.
+        ReceiptStatus::Accepted => {
+            let caller =
+                Caller::authenticated(computer.cert.user_public_key, computer.device_pubkey())
+                    .in_workspace(workspace.to_owned());
+            let provider = service
+                .providers()
+                .get(WORKSPACE_GOVERNANCE_PROVIDER)
+                .expect("the service serves the workspace's governance");
+            tilo_test_env::within(format!("servers#{action} finishes"), async {
+                loop {
+                    match provider
+                        .answers
+                        .observe(&caller, &receipt.invocation)
+                        .map(|state| state.update)
+                    {
+                        Some(InvocationUpdate::Succeeded { output, .. }) => {
+                            return Ok(output.value.unwrap_or_default());
+                        }
+                        Some(InvocationUpdate::Failed { error, .. }) => {
+                            return Err(ActionCallError::Refused {
+                                reason: format!("{error:?}"),
+                            });
+                        }
+                        Some(InvocationUpdate::Cancelled { .. }) => {
+                            panic!("servers#{action} was cancelled")
+                        }
+                        _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+                    }
+                }
+            })
+            .await
+        }
+        other => panic!("servers#{action} finished with {other:?}"),
+    }
+}

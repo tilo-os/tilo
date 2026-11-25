@@ -383,25 +383,6 @@ pub enum WorkspacesRequest {
     Servers {
         workspace: String,
     },
-    /// Have the server whose own line is `host` keep `workspace` as well:
-    /// answered with [`WorkspacesReply::Servers`] after it took it, or
-    /// refused in its own words. Only the workspace's owners choose its
-    /// servers, and the other server takes it only for an owner it let in.
-    AddServer {
-        workspace: String,
-        /// The other server's own `web-host.json` line, which its operator
-        /// hands over: its certificate and where it is dialled.
-        host: String,
-    },
-    /// Have a server keep `workspace` no more, named by the name the server
-    /// list shows or by its device key: answered with
-    /// [`WorkspacesReply::Servers`]. Only the workspace's owners choose its
-    /// servers.
-    RemoveServer {
-        workspace: String,
-        /// The server's name in the list, or its device key.
-        server: String,
-    },
     /// Delete `workspace`, with everything this server keeps of it: final,
     /// and answered with [`WorkspacesReply::Deleted`]. A workspace of the
     /// calling device's person, with nobody else in it, is theirs to delete.
@@ -463,9 +444,8 @@ pub enum WorkspacesReply {
     Shared(u32),
     /// The workspace names the caller as asked, for [`WorkspacesRequest::Name`].
     Named,
-    /// The servers keeping a workspace ([`WorkspacesRequest::Servers`],
-    /// [`WorkspacesRequest::AddServer`] and [`WorkspacesRequest::RemoveServer`]):
-    /// the one asked first.
+    /// The servers keeping a workspace ([`WorkspacesRequest::Servers`]): the
+    /// one asked first.
     Servers(Vec<ServerEntry>),
     /// The workspace was deleted ([`WorkspacesRequest::Delete`]).
     Deleted,
@@ -1146,7 +1126,12 @@ pub const LIST_REVOCATIONS: &str = "identity.revocations";
 /// address the host signs for the workspace. Only a certified host serves
 /// workspaces this way. Answers a [`HostedWorkspace`].
 pub const HOST_WORKSPACE: &str = "workspace.host";
-/// Let `workspace` go, as its owners ask. Answers `{"stopped": bool}`.
+/// Let `workspace` go, as its owners ask. Answers `{"stopped": bool}`. With
+/// `hand_on`, let go of nothing yet: have another device the workspace names
+/// to keep it take in every change this host's store keeps of it, started by
+/// the first such ask and answered `{"handed": bool}` by each, `true` once one
+/// did. What the owner's device that keeps no store of its own asks before it
+/// takes the host out.
 pub const UNHOST_WORKSPACE: &str = "workspace.unhost";
 /// Take in what the store of the asking device, one the workspace names among
 /// those keeping it, keeps of `workspace` and this host's store lacks, over the
