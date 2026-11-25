@@ -20,8 +20,6 @@ pub use runtime_fs;
 pub use settings_store;
 pub use tilo_actions;
 pub use tilo_app;
-pub use tilo_doc_codecs;
-pub use tilo_document;
 pub use tilo_files;
 pub use tilo_identity_client;
 pub use tilo_mime;
@@ -31,7 +29,6 @@ pub use tilo_model_client;
 // here instead of carrying its own copy.
 pub use tilo_model_client as tilo_model_gateway;
 pub use tilo_net;
-pub use tilo_rich_text;
 pub use tilo_rt;
 pub use tilo_user_identity;
 pub use tilo_webview;

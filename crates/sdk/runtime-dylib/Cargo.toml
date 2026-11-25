@@ -78,19 +78,10 @@ tilo-files = { path = "../../platform/tilo-files" }
 # rather than carrying a copy each.
 tilo-rt = { path = "../../platform/tilo-rt" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
-# The rich-text document engine and its editor: the office apps, Notes, Chat,
-# Calendar, Ebook and PDF Viewer each carried a copy of about 300 KB.
-tilo-document = { path = "../tilo-document" }
-tilo-rich-text = { path = "../tilo-rich-text" }
 # Versioned format/network engines used by system apps. Keeping these in the
 # runtime bundle lets tapps contain policy and UI while the replaceable engine
 # implementations are stored once per runtime generation.
 vte = "0.15.0"
-# Document codecs (Notes, Files, Mail, the office apps, ...). Apps choose the
-# codec features; the union is built here once. The WebDAV client is not here:
-# its calendar sign-in reaches account credentials, so Calendar and Settings load
-# it from the accounts engine.
-tilo-doc-codecs = { path = "../../engines/tilo-doc-codecs", default-features = false }
 roxmltree.workspace = true
 xattr = "1.6.1"
 # The SSH client's curve: Remote and Git Client verify P-384 host keys through
