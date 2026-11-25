@@ -181,7 +181,7 @@ async fn keep_again(workspaces: &Workspaces, workspace: &str) -> Result<bool, St
         return Ok(false);
     }
     std::fs::remove_file(&released).map_err(|error| error.to_string())?;
-    workspaces.serve_direct(&hosted)?;
+    workspaces.serve_direct(&hosted).await?;
     let reading = hosted.reading();
     let state = Arc::new(AsyncMutex::new(hosted));
     workspaces.inner.readings.hold(workspace, &state, reading);

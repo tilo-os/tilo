@@ -382,7 +382,7 @@ fn keep(
     }
     if matches!(message, NeighbourMsg::SyncResp { .. }) {
         store
-            .keep_workspace_governance(workspace, author, message)
+            .keep_workspace_change(workspace, author, message)
             .map_err(|error| format!("{workspace}: {error}"))?;
         return Ok(());
     }

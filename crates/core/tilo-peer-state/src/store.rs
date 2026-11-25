@@ -19,7 +19,7 @@
 //! route a channel's group frames take ([`neighbour_wire::retention`]), the
 //! newest frame, and each change to the workspace's own state as a frame of
 //! its own, one file each under `channels/<workspace>/`
-//! ([`Store::keep_channel`], [`Store::keep_workspace_governance`]). A device
+//! ([`Store::keep_channel`], [`Store::keep_workspace_change`]). A device
 //! that links later joins each channel's group from them and is replayed the
 //! workspace's changes before the records they govern. A device's own state
 //! beside them is kept whole under `state/` ([`Store::keep_state`]).
@@ -559,6 +559,31 @@ fn beside(workspace: WorkspaceId, frame: &Frame) {
         seq = frame.seq,
         "two frames with other bytes at one author's sequence number; the store keeps and serves both"
     );
+}
+
+/// The route the store keeps `message`, a change to `workspace`'s own state
+/// ([`Store::keep_workspace_change`]), under: named by the change's own
+/// bytes, so none replaces the change before it. `None` when `message` is no
+/// change to `workspace`'s own state.
+fn workspace_change_route(
+    workspace: WorkspaceId,
+    message: &NeighbourMsg,
+) -> Result<Option<[u8; 32]>, StoreError> {
+    let NeighbourMsg::SyncResp {
+        workspace: named,
+        changes,
+    } = message
+    else {
+        return Ok(None);
+    };
+    if changes.is_empty() || WorkspaceId::parse(named) != Some(workspace) {
+        return Ok(None);
+    }
+    let bytes = postcard::to_allocvec(message)?;
+    let mut seed = b"workspace-governance\0".to_vec();
+    seed.extend_from_slice(workspace.as_uuid().as_bytes());
+    seed.extend_from_slice(blake3::hash(&bytes).as_bytes());
+    Ok(Some(*blake3::hash(&seed).as_bytes()))
 }
 
 impl Store {
@@ -1361,28 +1386,80 @@ impl Store {
     ///
     /// Returns an error when the frame cannot be written. The store keeps
     /// the frames before it then.
-    pub fn keep_workspace_governance(
+    pub fn keep_workspace_change(
         &self,
         workspace: WorkspaceId,
         author: [u8; 32],
         message: &NeighbourMsg,
     ) -> Result<bool, StoreError> {
-        let NeighbourMsg::SyncResp {
-            workspace: named,
-            changes,
-        } = message
-        else {
+        let Some(route) = workspace_change_route(workspace, message)? else {
             return Ok(false);
         };
-        if changes.is_empty() || WorkspaceId::parse(named) != Some(workspace) {
+        let bytes = postcard::to_allocvec(message)?;
+        self.keep_at(workspace, route, author, bytes)
+    }
+
+    /// Every change to `workspace`'s own state the store kept
+    /// ([`Self::keep_workspace_change`]), each with the author it kept it
+    /// for, in the order it kept them.
+    #[must_use]
+    pub fn kept_workspace_changes(&self, workspace: WorkspaceId) -> Vec<([u8; 32], NeighbourMsg)> {
+        let mut kept: Vec<Channel> = self
+            .held
+            .lock_recover()
+            .workspaces
+            .get(&workspace)
+            .map(|stored| stored.channels.values().cloned().collect())
+            .unwrap_or_default();
+        kept.sort_by_key(|channel| channel.order);
+        kept.into_iter()
+            .filter_map(|channel| match NeighbourMsg::decode(&channel.bytes) {
+                Ok(message) => match workspace_change_route(workspace, &message) {
+                    Ok(Some(_)) => Some((channel.author, message)),
+                    Ok(None) => None,
+                    Err(error) => {
+                        tracing::warn!(%error, "a kept channel frame is no change to the workspace's own state; it is not served");
+                        None
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(%error, "a kept channel frame does not decode; it is not served");
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Drop the change to `workspace`'s own state the store kept of
+    /// `message`, whoever it was kept for: false when it kept none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frame's file cannot be removed.
+    pub fn forget_workspace_change(
+        &self,
+        workspace: WorkspaceId,
+        message: &NeighbourMsg,
+    ) -> Result<bool, StoreError> {
+        let Some(route) = workspace_change_route(workspace, message)? else {
+            return Ok(false);
+        };
+        let removed = self
+            .held
+            .lock_recover()
+            .workspaces
+            .get_mut(&workspace)
+            .and_then(|stored| stored.channels.remove(&route))
+            .is_some();
+        if !removed {
             return Ok(false);
         }
-        let bytes = postcard::to_allocvec(message)?;
-        let mut seed = b"workspace-governance\0".to_vec();
-        seed.extend_from_slice(workspace.as_uuid().as_bytes());
-        seed.extend_from_slice(blake3::hash(&bytes).as_bytes());
-        let route = *blake3::hash(&seed).as_bytes();
-        self.keep_at(workspace, route, author, bytes)
+        let path = channels_dir(&self.disk.root, workspace).join(hex::encode(route));
+        match self.disk.remove(&path) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Keep `bytes`, `author`'s channel frame of `route`, replacing a frame
@@ -3582,23 +3659,23 @@ mod tests {
         let second = publish(workspace(), b"second");
         assert!(
             store
-                .keep_workspace_governance(workspace(), [1; 32], &first)
+                .keep_workspace_change(workspace(), [1; 32], &first)
                 .unwrap()
         );
         assert!(
             store
-                .keep_workspace_governance(workspace(), [1; 32], &second)
+                .keep_workspace_change(workspace(), [1; 32], &second)
                 .unwrap()
         );
         assert!(
             !store
-                .keep_workspace_governance(workspace(), [1; 32], &first)
+                .keep_workspace_change(workspace(), [1; 32], &first)
                 .unwrap(),
             "a change already here is not kept twice"
         );
         assert!(
             !store
-                .keep_workspace_governance(
+                .keep_workspace_change(
                     workspace(),
                     [1; 32],
                     &NeighbourMsg::SyncResp {
@@ -3612,7 +3689,7 @@ mod tests {
         let other = WorkspaceId::from_u128(8);
         assert!(
             !store
-                .keep_workspace_governance(
+                .keep_workspace_change(
                     workspace(),
                     [1; 32],
                     &publish(other, b"another workspace's"),

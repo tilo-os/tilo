@@ -473,7 +473,7 @@ impl Workspaces {
             .await
             .insert(workspace.to_owned(), Arc::clone(&state));
         let hosted = state.lock().await;
-        self.serve_direct(&hosted)?;
+        self.serve_direct(&hosted).await?;
         drop(hosted);
         Ok(state)
     }
@@ -513,7 +513,7 @@ impl Workspaces {
         .map_err(|error| error.to_string())?;
         hosted.handed_by = Some(holder.clone());
         self.inner.readings.hold(workspace, state, hosted.reading());
-        self.serve_direct(&hosted)?;
+        self.serve_direct(&hosted).await?;
         drop(hosted);
         tracing::info!(%workspace, "a member copy held here holds the workspace from now on");
         Ok(())

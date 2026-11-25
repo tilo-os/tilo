@@ -2047,7 +2047,7 @@ impl Workspaces {
                 }
                 Box::pin(self.kept_member(workspace)).await?
             } else {
-                self.serve_direct(&workspace)?;
+                self.serve_direct(&workspace).await?;
                 Arc::new(tokio::sync::Mutex::new(workspace))
             };
             self.inner.readings.hold(&name, &state, reading);

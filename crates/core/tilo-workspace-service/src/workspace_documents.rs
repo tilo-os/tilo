@@ -226,7 +226,7 @@ impl WorkspaceDocuments {
                 .map_err(|error| error.to_string())?;
         } else {
             self.store
-                .keep_workspace_governance(workspace_id, author, &message)
+                .keep_workspace_change(workspace_id, author, &message)
                 .map_err(|error| error.to_string())?;
         }
         Ok(host_order())

@@ -551,12 +551,17 @@ impl Workspaces {
     /// Serve `workspace`'s replica over the direct link, keeping its history
     /// and its channels' governance at the host's store, and take in what its
     /// members send there.
-    pub(super) fn serve_direct(&self, workspace: &HostedWorkspace) -> Result<(), String> {
+    ///
+    /// What the store kept of the workspace's own state is judged first, as
+    /// the link judges it: a change the workspace refuses is dropped before
+    /// any device is sent it.
+    pub(super) async fn serve_direct(&self, workspace: &HostedWorkspace) -> Result<(), String> {
         let link = tilo_peer_state::direct::DirectSync::over(
             workspace.peer.clone(),
             self.inner.host.key.clone(),
         )
         .with_store(Arc::clone(&self.inner.store));
+        link.drop_refused_workspace_changes().await;
         self.inner.direct.serve(link.clone())?;
         self.follow_link(workspace, &link);
         Ok(())

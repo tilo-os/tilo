@@ -231,7 +231,7 @@ impl super::Workspaces {
         if let Some(person) = person {
             self.give_ownership(&mut hosted, person, None).await?;
         }
-        self.serve_direct(&hosted)?;
+        self.serve_direct(&hosted).await?;
         drop(hosted);
         self.keep_reading(&workspace).await;
         tracing::info!(workspace = %summary.workspace, workspace_id = %summary.workspace_id, "hosted workspace created");

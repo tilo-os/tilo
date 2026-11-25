@@ -1958,7 +1958,7 @@ impl DirectSync {
     /// device is the workspace's host on its links: what a device that links
     /// later joins each channel's group from ([`Store::keep_channel`]) and is
     /// replayed the workspace's own changes from
-    /// ([`Store::keep_workspace_governance`]). Only the host keeps and hands
+    /// ([`Store::keep_workspace_change`]). Only the host keeps and hands
     /// it, so a member's older copy never stands in for the newest.
     #[cfg(not(target_arch = "wasm32"))]
     fn keep_governance(&self, authored: &Authored) {
@@ -1975,11 +1975,58 @@ impl DirectSync {
         let kept = if channels {
             store.keep_channel(workspace, authored.from, &authored.message)
         } else {
-            store.keep_workspace_governance(workspace, authored.from, &authored.message)
+            store.keep_workspace_change(workspace, authored.from, &authored.message)
         };
         if let Err(error) = kept {
             tracing::warn!(%error, "governance was not kept at the store; a device that links later asks its members for it");
         }
+    }
+
+    /// Drop every change to the workspace's own state this device's store
+    /// kept that the workspace refuses now, and answer how many it dropped.
+    ///
+    /// A host kept each change a device sent it before the workspace decided
+    /// it, and served it to every device that linked later, where it was
+    /// refused again, though it could leave the device waiting for history it
+    /// was never sent. Each frame kept is judged as a retained frame is
+    /// ([`Self::judge`]), by the workspace's governance and the frame's own
+    /// author: the ones it refuses for good are dropped from the store, and
+    /// one that only waits for history this device lacks stays as it is.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn drop_refused_workspace_changes(&self) -> usize {
+        let (Some(store), Ok(workspace)) = (&self.0.store, self.workspace()) else {
+            return 0;
+        };
+        let mut dropped = 0_usize;
+        for (claimed, message) in store.kept_workspace_changes(workspace) {
+            let author = author_of(&message).unwrap_or(claimed);
+            let heard = self.judge(author, message.clone(), true, true).await;
+            let refused = match &heard.report {
+                Ok(_) => false,
+                Err(error) => {
+                    !error.is_device_failure() && !arrived_late(error) && error.reason().permanent()
+                }
+            };
+            if !refused {
+                continue;
+            }
+            match store.forget_workspace_change(workspace, &message) {
+                Ok(true) => dropped = dropped.saturating_add(1),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    %error,
+                    "a change the workspace refuses was not dropped from its store"
+                ),
+            }
+        }
+        if dropped > 0 {
+            tracing::info!(
+                %workspace,
+                dropped,
+                "changes to the workspace's own state it refuses were dropped from its store"
+            );
+        }
+        dropped
     }
 
     /// Note `authored` when it is a group's genesis this host carries.
@@ -5055,6 +5102,10 @@ fn short(key: &[u8; 32]) -> String {
 #[cfg(test)]
 #[path = "direct_history_tests.rs"]
 mod history_tests;
+
+#[cfg(test)]
+#[path = "direct_sweep_tests.rs"]
+mod sweep_tests;
 
 #[cfg(test)]
 mod tests {

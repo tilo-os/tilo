@@ -290,7 +290,7 @@ impl Workspaces {
         if hosted.workspace_id() != id {
             return Err("the workspace's record names another workspace".into());
         }
-        self.serve_direct(&hosted)?;
+        self.serve_direct(&hosted).await?;
         let reading = hosted.reading();
         let state = Arc::new(AsyncMutex::new(hosted));
         self.inner.readings.hold(&name, &state, reading);
