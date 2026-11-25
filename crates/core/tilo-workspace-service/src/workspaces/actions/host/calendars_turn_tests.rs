@@ -185,3 +185,52 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
         Err(ActionCallError::UnknownAction)
     ));
 }
+
+/// Only a turn of a member's own agent is offered the connecting of a calendar account: another
+/// member's agent's turn connects for the workspace too, and every caller that is no turn this
+/// server carries out for a member (the person themselves, an agent outside a turn, an agent
+/// admitted as a member, a bot, an app, a turn confined elsewhere, an agent a person's own device
+/// hands its session to) is offered none of it.
+#[tokio::test]
+async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_server(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces().clone();
+    let (workspace, workspace_id, _service) =
+        crate::workspaces::actions::tests::governed(&workspaces).await;
+    let ada = crate::workspaces::actions::tests::admit(&workspaces, &workspace, &owner, 1).await;
+    let bo = crate::workspaces::actions::tests::admit(&workspaces, &workspace, &owner, 2).await;
+
+    let bos_caller = on_turn(&bo, &workspace, SCOUT);
+    let bos_turn = turn(workspace_id, &bos_caller, None);
+    assert!(
+        offered(&workspaces, &bos_turn)
+            .await
+            .contains(&person_accounts::BEGIN_SIGN_IN.to_owned()),
+        "another member's agent connects the workspace's calendars"
+    );
+    for (who, caller) in super::turn_use_tests::not_hosted_turns(&ada, &workspace) {
+        let not_a_turn = turn(workspace_id, &caller, None);
+        assert!(
+            offered(&workspaces, &not_a_turn).await.is_empty(),
+            "{who} is offered no connecting"
+        );
+    }
+
+    // A turn connects an account for its calendars alone: the person's mail and files are not
+    // reached with the calendars' grant.
+    let scout = on_turn(&ada, &workspace, SCOUT);
+    let hers = turn(workspace_id, &scout, None);
+    let with_mail = json!({"provider": "google", "calendar": true, "mail": true});
+    assert!(matches!(
+        asks(
+            &workspaces,
+            &hers,
+            person_accounts::BEGIN_SIGN_IN,
+            with_mail
+        )
+        .await,
+        Err(ActionCallError::UnknownAction)
+    ));
+}

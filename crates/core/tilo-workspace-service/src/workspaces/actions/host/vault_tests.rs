@@ -109,7 +109,7 @@ pub(super) async fn ask_at(
 }
 
 /// The call of `target` with `argument`, under a fresh invocation id.
-fn request_of(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
+pub(super) fn request_of(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
     let argument = match argument {
         Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
         _ => InvokeArgument::None,
@@ -131,7 +131,7 @@ fn request_of(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
 /// `request` asked by `caller`, on the device `device` certifies, in the workspace
 /// `workspace_id` carries: what it answered, or, where it waits for its person's yes, what they
 /// are shown.
-async fn asked(
+pub(super) async fn asked(
     service: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     (device, caller): (&DeviceCert, &Caller),

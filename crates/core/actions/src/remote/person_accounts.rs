@@ -42,6 +42,11 @@ pub const ADD_MAIL: &str = "add-mail";
 /// item belongs to. It carries no secret, so unlike [`ADD_MAIL`] an agent
 /// acting for the person may ask it.
 pub const ADD_MAIL_WITH_ITEM: &str = "add-mail-with-item";
+/// Connect a calendar account at a `CalDAV` server its person names
+/// ([`AddCalendarAccount`]), once that server took the sign-in, and answer it
+/// as a [`MailAccount`]: what a person who rents a calendar from no mail
+/// provider connects.
+pub const ADD_CALENDAR: &str = "add-calendar";
 /// Sign an account in again (`account`) with the entry the workspace's vault
 /// keeps for it, through the same sign-in the account was added with: the
 /// accounts reading then says how it went.
@@ -164,7 +169,7 @@ fn accounts_step(verb: &str) -> crate::ActionEffect {
 pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
     use super::person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED, vault_step};
     let (vault, accounts): (&[&str], &[&str]) = match (resource, action) {
-        (RESOURCE, ADD_MAIL | BEGIN_SIGN_IN) => {
+        (RESOURCE, ADD_MAIL | ADD_CALENDAR | BEGIN_SIGN_IN) => {
             (&[KEEP_SEALED, KEEP_USES, REMOVE_SEALED], &[SAVE_ACCOUNT])
         }
         (RESOURCE, REPLACE_PASSWORD) => (&[KEEP_SEALED], &[]),
@@ -832,6 +837,38 @@ impl std::fmt::Debug for AddMailAccount {
             .field("outgoing_host", &self.outgoing_host)
             .field("outgoing_port", &self.outgoing_port)
             .field("services", &self.services)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A calendar account to connect at a `CalDAV` server ([`ADD_CALENDAR`]). The
+/// password travels here and nowhere back: it is sealed in the workspace's
+/// vault once the server took it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddCalendarAccount {
+    /// The server's address as its person typed it: a bare name
+    /// (`dav.example.org`) is that server over https.
+    pub server: String,
+    /// The name it signs in with.
+    pub username: String,
+    pub password: String,
+    /// The name it is shown under; its user name where it is empty.
+    #[serde(default)]
+    pub name: String,
+    /// Whether nothing is ever written to its server: once connected so, it
+    /// stays so until its person removes it, whoever adds it again.
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+impl std::fmt::Debug for AddCalendarAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AddCalendarAccount")
+            .field("server", &self.server)
+            .field("username", &self.username)
+            .field("name", &self.name)
+            .field("read_only", &self.read_only)
             .finish_non_exhaustive()
     }
 }

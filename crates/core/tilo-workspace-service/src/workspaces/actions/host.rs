@@ -1749,6 +1749,8 @@ mod addresses_tests;
 #[cfg(test)]
 mod asking_tests;
 mod branch;
+#[cfg(test)]
+mod calendar_accounts_tests;
 #[cfg(all(test, feature = "agents"))]
 mod calendars_turn_tests;
 #[cfg(test)]

@@ -240,6 +240,71 @@ impl Workspaces {
         *prover = Arc::new(Finding(proving, find));
     }
 
+    /// Ask calendar servers for the calendars they hold through `discover` from now on, which is
+    /// told the server's address, the user name and the password it would sign in with: a test
+    /// stands in for the calendar servers people name. Every other sign-in is proved by whatever
+    /// proved it before.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn discover_calendars_through(
+        &self,
+        discover: impl Fn(
+            &str,
+            &str,
+            &str,
+        ) -> Result<Vec<tilo_dav::discovery::CalendarCollection>, String>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        struct Discovering<F>(Arc<dyn AccountTester>, F);
+        impl<F> AccountTester for Discovering<F>
+        where
+            F: Fn(&str, &str, &str) -> Result<Vec<tilo_dav::discovery::CalendarCollection>, String>
+                + Send
+                + Sync,
+        {
+            fn discover_calendars(
+                &self,
+                account: &accounts::Account,
+                secret: &accounts::Secret,
+            ) -> Result<Vec<tilo_dav::discovery::CalendarCollection>, String> {
+                let said = |name: &str| {
+                    account
+                        .config
+                        .get(name)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                (self.1)(&said("server_url"), &said("username"), &secret.password)
+            }
+
+            fn find_mail_servers(
+                &self,
+                address: &str,
+                allowed: &dyn Fn(&str) -> bool,
+            ) -> Result<tilo_account_probe::mail_servers::MailServers, String> {
+                self.0.find_mail_servers(address, allowed)
+            }
+
+            fn test(
+                &self,
+                account: &accounts::Account,
+                secret: &accounts::Secret,
+            ) -> Result<String, String> {
+                self.0.test(account, secret)
+            }
+        }
+        let mut prover = self
+            .inner
+            .vault_uses
+            .prover
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let proving = Arc::clone(&prover);
+        *prover = Arc::new(Discovering(proving, discover));
+    }
+
     /// Control this device's cloud mounts through `cloud` from now on: a
     /// test's service stands in for the files service that mounts them.
     #[cfg(all(test, feature = "agents"))]
@@ -369,8 +434,28 @@ impl Workspaces {
         }
         let effect = mail_effect(action);
         let asked = (workspace_id, caller, certificate);
+        let reach = self.reaching(asked, Store::MAIL, action, effect).await?;
+        // An agent's connect of a calendar account the workspace keeps already adds nothing, and
+        // nobody is asked about it: signing a connected account in again is its person's.
+        if action == person_accounts::ADD_CALENDAR && reach.agent.is_some() {
+            let here = reach.workspace.to_string();
+            let kept = self
+                .vault_for(&here, &reach.acting)
+                .accounts()
+                .await
+                .map_err(ActionCallError::refused)?;
+            let adding: person_accounts::AddCalendarAccount =
+                argument(request, "a calendar server and its sign-in")?;
+            if let Some(id) = person_mail::calendar_account_id(&adding)
+                && kept.account(&id).is_some()
+            {
+                return Err(ActionCallError::Refused {
+                    reason: format!("That calendar account is connected already: {id}"),
+                });
+            }
+        }
         let reach = self
-            .reaching_allowed(asked, Store::MAIL, action, effect, request)
+            .allowed(reach, caller, Store::MAIL, action, request)
             .await?;
         let here = reach.workspace.to_string();
         let root = self.workspace_root(&here);

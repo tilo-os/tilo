@@ -10,8 +10,8 @@ use std::path::Path;
 use serde_json::{Map, Value};
 use tilo_account_probe::mail_servers::MailServers;
 use tilo_actions::remote::person_accounts::{
-    self, AddMailAccount, FindServers, FoundServers, MailAccount, MailAccounts, MailSignIn,
-    MailSignIns, Provider, ServerAt, Services, SetCalendars, SetFilesMode, SetServices,
+    self, AddCalendarAccount, AddMailAccount, FindServers, FoundServers, MailAccount, MailAccounts,
+    MailSignIn, MailSignIns, Provider, ServerAt, Services, SetCalendars, SetFilesMode, SetServices,
     SignedInAccount, SyncControl,
 };
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
@@ -116,7 +116,7 @@ impl Workspaces {
                 &adding.address,
                 &adding.password,
                 &adding.display_name,
-                &adding.address,
+                Some(&adding.address),
             )
             .await
             {
@@ -295,40 +295,73 @@ impl Workspaces {
                 .await
                 .map_err(|_| "the calendar server check did not finish".to_owned())??;
         let mut kept = kept;
-        let before: Vec<accounts::calendar::RemoteCalendar> = match kept.config.get("calendars") {
-            Some(calendars) => serde_json::from_value(calendars.clone())
-                .map_err(|error| format!("This account's kept calendars do not read: {error}"))?,
-            None => Vec::new(),
-        };
-        let read_only = kept
-            .config
-            .get("read_only")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let calendars: Vec<accounts::calendar::RemoteCalendar> = found
-            .into_iter()
-            .enumerate()
-            .map(|(place, calendar)| {
-                let had = before.iter().find(|had| had.id == calendar.href);
-                accounts::calendar::RemoteCalendar {
-                    id: calendar.href,
-                    name: calendar.name,
-                    color: had.map_or_else(
-                        || u8::try_from(place % 7).unwrap_or_default(),
-                        |had| had.color,
-                    ),
-                    visible: had.is_none_or(|had| had.visible),
-                    read_only: calendar.read_only || read_only,
-                }
-            })
-            .collect();
+        let read_only = is_read_only(&kept);
+        let calendars = calendars_found(found, &kept, read_only)?;
         if let Some(config) = kept.config.as_object_mut() {
-            config.insert(
-                "calendars".into(),
-                serde_json::to_value(&calendars).map_err(|error| error.to_string())?,
-            );
+            config.insert("calendars".into(), calendars);
         }
         signing.vault.keep_account(&kept).await
+    }
+
+    /// Connect the calendar account `adding` names at its `CalDAV` server (`ADD_CALENDAR`), once
+    /// that server took its sign-in: the calendars it lists are kept on the account, each on
+    /// show, and the sign-in in the workspace's vault. The server is asked only where this
+    /// server's mail may go. Added again, it is the same account, signed in with what was typed
+    /// now: an account connected for reading only stays so, whoever adds it, until its person
+    /// removes it.
+    async fn add_calendar(
+        &self,
+        signing: Signing<'_>,
+        adding: AddCalendarAccount,
+    ) -> Result<MailAccount, String> {
+        let username = adding.username.trim().to_owned();
+        if username.is_empty() {
+            return Err("A calendar account has a user name".to_owned());
+        }
+        if adding.password.is_empty() {
+            return Err("A calendar account has a password".to_owned());
+        }
+        let server = calendar_server(&adding.server)?;
+        let id = caldav_id(&username, &server);
+        let held = signing.vault.accounts().await?;
+        let before = held
+            .account(&id)
+            .filter(|kept| kept.type_id.as_str() == accounts::calendar::TYPE_ID);
+        let read_only = adding.read_only || before.as_ref().is_some_and(is_read_only);
+        let mut asking = accounts::Account::new(
+            accounts::AccountId::from(id.clone()),
+            accounts::calendar::TYPE_ID,
+        );
+        asking.config = serde_json::json!({ "server_url": server.as_str(), "username": username });
+        if let Some(before) = before {
+            asking.config["calendars"] =
+                before.config.get("calendars").cloned().unwrap_or_default();
+        }
+        let tester = self.account_tester();
+        let secret = accounts::Secret::password(adding.password.clone());
+        let looked = asking.clone();
+        let found =
+            tokio::task::spawn_blocking(move || tester.discover_calendars(&looked, &secret))
+                .await
+                .map_err(|_| "the calendar server check did not finish".to_owned())??;
+        let calendars = calendars_found(found, &asking, read_only)?;
+        let mut stored = keep_calendar_account(
+            signing.vault,
+            server.as_str(),
+            &username,
+            &adding.password,
+            &adding.name,
+            None,
+        )
+        .await?;
+        if let Some(config) = stored.config.as_object_mut() {
+            config.insert("calendars".into(), calendars);
+            if read_only {
+                config.insert("read_only".into(), Value::Bool(true));
+            }
+        }
+        signing.vault.keep_account(&stored).await?;
+        Ok(calendar_row(&stored))
     }
 
     /// Keep on show the calendars `choosing` names (`SET_CALENDARS`): the ones it leaves out stay
@@ -597,7 +630,7 @@ impl Workspaces {
             &username,
             &secret.password,
             &kept.display_name,
-            kept.id.as_str(),
+            Some(kept.id.as_str()),
         )
         .await
     }
@@ -646,6 +679,15 @@ impl Workspaces {
             person_accounts::ADD_MAIL => {
                 let adding: AddMailAccount = argument(request, "an account to add")?;
                 let kept = self.add_mail(signing, adding).await;
+                if kept.is_ok() {
+                    self.person_settings_changed();
+                }
+                answer(&kept)
+            }
+            person_accounts::ADD_CALENDAR => {
+                let adding: AddCalendarAccount =
+                    argument(request, "a calendar server and its sign-in")?;
+                let kept = Box::pin(self.add_calendar(signing, adding)).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -960,25 +1002,124 @@ fn linked_calendar(
     super::linked_calendar(held, named, account.id.as_str())
 }
 
+/// The `CalDAV` server `typed` names, as a sign-in may go to it: a bare name (`dav.example.org`)
+/// is that server over https. It is held to the one rule every calendar sign-in is under
+/// ([`accounts::is_secure_endpoint`]), encrypted or this machine itself, and carries no sign-in
+/// of its own.
+pub(super) fn calendar_server(typed: &str) -> Result<tilo_dav::Url, String> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Err("A calendar account has a server address".to_owned());
+    }
+    let spelled = if typed.contains("://") {
+        typed.to_owned()
+    } else {
+        format!("https://{typed}")
+    };
+    let url = tilo_dav::Url::parse(&spelled)
+        .map_err(|_| format!("{typed} is not a calendar server's address"))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("The server's address must not carry a sign-in".to_owned());
+    }
+    if !accounts::is_secure_endpoint(url.as_str()) {
+        return Err(format!(
+            "{typed} is not reached over https, so its sign-in would be sent in the clear"
+        ));
+    }
+    Ok(url)
+}
+
+/// The id of the calendar account `username` signs in with at `server`.
+fn caldav_id(username: &str, server: &tilo_dav::Url) -> String {
+    format!("caldav:{username}@{}", server.authority())
+}
+
+/// The id the calendar account `adding` names would be kept under, where its server's address
+/// reads.
+pub(in crate::workspaces) fn calendar_account_id(adding: &AddCalendarAccount) -> Option<String> {
+    let username = adding.username.trim();
+    let server = calendar_server(&adding.server).ok()?;
+    (!username.is_empty()).then(|| caldav_id(username, &server))
+}
+
+/// Whether `account` is connected for reading only.
+fn is_read_only(account: &accounts::Account) -> bool {
+    account
+        .config
+        .get("read_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The calendars `found` on `account`'s server, as the account keeps them: the ones it held
+/// before keep the choice its person made for them, a calendar the server holds now shows, and
+/// every one of an account connected for reading only is one that is not written, whatever its
+/// server lets its person do.
+fn calendars_found(
+    found: Vec<tilo_dav::discovery::CalendarCollection>,
+    account: &accounts::Account,
+    read_only: bool,
+) -> Result<Value, String> {
+    let before: Vec<accounts::calendar::RemoteCalendar> = match account.config.get("calendars") {
+        Some(Value::Null) | None => Vec::new(),
+        Some(calendars) => serde_json::from_value(calendars.clone())
+            .map_err(|error| format!("This account's kept calendars do not read: {error}"))?,
+    };
+    let calendars: Vec<accounts::calendar::RemoteCalendar> = found
+        .into_iter()
+        .enumerate()
+        .map(|(place, calendar)| {
+            let had = before.iter().find(|had| had.id == calendar.href);
+            accounts::calendar::RemoteCalendar {
+                id: calendar.href,
+                name: calendar.name,
+                color: had.map_or_else(
+                    || u8::try_from(place % 7).unwrap_or_default(),
+                    |had| had.color,
+                ),
+                visible: had.is_none_or(|had| had.visible),
+                read_only: calendar.read_only || read_only,
+            }
+        })
+        .collect();
+    serde_json::to_value(&calendars).map_err(|error| error.to_string())
+}
+
+/// The calendar account `account`, as the accounts list answers one.
+fn calendar_row(account: &accounts::Account) -> MailAccount {
+    MailAccount {
+        id: account.id.to_string(),
+        address: field(account, "username"),
+        display_name: account.display_name.clone(),
+        has_secret: has_sign_in(account),
+        server: field(account, "server_url"),
+        services: Services {
+            mail: false,
+            calendar: true,
+            files: false,
+        },
+        ..MailAccount::default()
+    }
+}
+
 /// The calendar account kept beside a provider's mail account, signed in with
 /// the password its person gave. Its server is not asked here: the calendar
 /// bridge asks it when it keeps the account's calendars, and the person
 /// chooses among them in Settings.
-#[cfg(feature = "agents")]
 async fn keep_calendar_account(
     vault: VaultAt<'_>,
     server_url: &str,
     username: &str,
     password: &str,
     name: &str,
-    mail_account: &str,
+    mail_account: Option<&str>,
 ) -> Result<accounts::Account, String> {
     let username = username.trim().to_owned();
     if username.is_empty() || password.is_empty() {
         return Err("A calendar account has a user name and a password".into());
     }
     let server = tilo_dav::Url::parse(server_url).map_err(|error| error.to_string())?;
-    let id = format!("caldav:{username}@{}", server.authority());
+    let id = caldav_id(&username, &server);
     let display_name = if name.trim().is_empty() {
         username.clone()
     } else {
@@ -993,8 +1134,14 @@ async fn keep_calendar_account(
         "username": username,
         "calendars": [],
         "collapsed": false,
-        "mail_account": mail_account,
     });
+    // The mail account whose calendars these are: what reads the link back when the account's
+    // services, or the account itself, go.
+    if let Some(mail) = mail_account
+        && let Some(config) = stored.config.as_object_mut()
+    {
+        config.insert("mail_account".to_owned(), mail.into());
+    }
     let places = places_of(&stored)?;
     let owner = stored.id.to_string();
     let before = vault

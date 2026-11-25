@@ -11,13 +11,20 @@ use super::Verb;
 use super::mail;
 
 /// The `tilo.accounts` actions a person asks of the workspace's accounts, in catalogue order.
-const VERBS: [Verb; 21] = [
+const VERBS: [Verb; 22] = [
     Verb {
         id: person_accounts::ADD_MAIL,
         label: "Add a mail account",
         check: "",
         kind: ActionKind::Undoable,
         params: mail::add_account_params,
+    },
+    Verb {
+        id: person_accounts::ADD_CALENDAR,
+        label: "Connect a calendar server",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: add_calendar_params,
     },
     Verb {
         id: person_accounts::BEGIN_SIGN_IN,
@@ -245,6 +252,35 @@ fn begin_sign_in_params() -> Vec<ActionParam> {
             "account",
             ParamType::Text,
             "The account this signs in again, when its sign-in stopped working.",
+        ),
+    ]
+}
+
+fn add_calendar_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "server",
+            ParamType::Text,
+            "The CalDAV server's address, such as `dav.example.org`: a bare name is that server \
+             over https.",
+        ),
+        ActionParam::required("username", ParamType::Text, "The name it signs in with."),
+        ActionParam::required(
+            "password",
+            ParamType::Secret,
+            "Its password or app password, sealed in the workspace's vault once the server took \
+             it and never answered back.",
+        ),
+        ActionParam::optional(
+            "name",
+            ParamType::Text,
+            "The name the account is shown under.",
+        ),
+        ActionParam::optional(
+            "readOnly",
+            ParamType::Boolean,
+            "Connect it for reading only: nothing is ever written to its server, until the \
+             account is removed.",
         ),
     ]
 }

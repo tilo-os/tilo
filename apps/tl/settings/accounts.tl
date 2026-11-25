@@ -20,6 +20,7 @@ view accounts_pane() {
     state cloud_server: Text = ""
     state cloud_username: Text = ""
     state cloud_password: Text = ""
+    state cloud_read_only: Bool = false
     state sign_in: Text = ""
     state sign_in_open: Text = ""
     state sign_in_prompt: Text = ""
@@ -536,6 +537,18 @@ view accounts_pane() {
                         .then(set(identities, ""))
                         .then(set(form, true))
                 }
+                ui.MenuItem("Calendar server (CalDAV)") {
+                    on choose: set(cloud_kind, "caldav")
+                        .then(set(cloud_name, ""))
+                        .then(set(cloud_server, ""))
+                        .then(set(cloud_username, ""))
+                        .then(set(cloud_password, ""))
+                        .then(set(cloud_read_only, false))
+                        .then(set(sign_in, ""))
+                        .then(set(sign_in_open, ""))
+                        .then(set(sign_in_prompt, ""))
+                        .then(set(sign_in_code, ""))
+                }
                 for storage in [
                     "nextcloud",
                     "google-drive",
@@ -581,10 +594,14 @@ view accounts_pane() {
                 "Connect Dropbox"
             } else if cloud_kind == "icloud-drive" {
                 "Connect iCloud Drive"
+            } else if cloud_kind == "caldav" {
+                "Connect a calendar server"
             } else { "Connect a WebDAV server" },
         ) {
             ui.Text(
-                if cloud_kind == "webdav" {
+                if cloud_kind == "caldav" {
+                    "The server's address, its user name and its password. Its calendars show in Calendar."
+                } else if cloud_kind == "webdav" {
                     "The server's address, its user name and its password. Its files mount in Files."
                 } else if cloud_kind == "icloud-drive" {
                     "Your Apple ID and its password. Apple sends a verification code to your devices; iCloud Drive's files mount in Files."
@@ -604,7 +621,14 @@ view accounts_pane() {
                         fill,
                     )
                 }
-                if cloud_kind == "icloud-drive" or cloud_kind == "webdav" {
+                if cloud_kind == "caldav" {
+                    ui.TextInput(
+                        bind: cloud_server,
+                        placeholder: "The server's address, such as dav.example.org",
+                        fill,
+                    )
+                }
+                if cloud_kind == "icloud-drive" or cloud_kind == "webdav" or cloud_kind == "caldav" {
                     ui.TextInput(
                         bind: cloud_username,
                         placeholder: if cloud_kind == "icloud-drive" {
@@ -621,9 +645,29 @@ view accounts_pane() {
                 }
                 ui.TextInput(bind: cloud_name, placeholder: "The name shown for it", fill)
             }
+            if cloud_kind == "caldav" {
+                row(gap: .related, align: .center) {
+                    ui.Toggle(bind: cloud_read_only)
+                    ui.Text("Read only: nothing is ever written to this server")
+                }
+            }
             if sign_in_open == "" and sign_in_prompt == "" {
                 row(gap: .related, align: .center, wrap: true) {
-                    if cloud_kind == "nextcloud" {
+                    if cloud_kind == "caldav" {
+                        ui.Button("Connect", role: .primary) {
+                            on press: accounts
+                                .add_calendar(
+                                    accounts.accounts,
+                                    server: cloud_server,
+                                    username: cloud_username,
+                                    password: cloud_password,
+                                    name: cloud_name,
+                                    readOnly: cloud_read_only,
+                                )
+                                .then(set(cloud_password, ""))
+                                .then(set(cloud_kind, ""))
+                        }
+                    } else if cloud_kind == "nextcloud" {
                         ui.Button("Continue", role: .primary) {
                             on press: {
                                 let step = accounts.begin_sign_in(
