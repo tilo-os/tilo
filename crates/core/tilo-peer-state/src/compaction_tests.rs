@@ -240,3 +240,77 @@ tilo_test_env::scenario! {
         assert!(copy.governance().saved_presets().is_empty());
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_change_of_a_replaced_history_never_refuses_the_new_historys_number;
+
+    phase the_new_change_ahead_of_its_parent_waits_and_the_old_one_goes;
+    // A reader catching up from what its holder retained takes changes of the
+    // history a base replaced after it took the base: each waits for a change
+    // of that history, which never comes. The base's history numbers its
+    // writers' changes again from the base, and its change at a waiting old
+    // change's number can itself come ahead of what it builds on. It is taken
+    // in to wait, never refused as a duplicate number, and the old one goes.
+    {
+        let (mut peer, _, _) = workspace_with(Role::Editor);
+        let (owner_key, owner) = owner();
+        let actor = peer.workspace_actor_for(&owner.device_public_key);
+        for name in ["One", "Two", "Three", "Four"] {
+            assert!(
+                peer.governance_mut()
+                    .put_saved_presets(&[preset(name)], &owner_key, now())
+                    .unwrap()
+            );
+        }
+        let old = document_of(&peer).get_changes(&[]);
+        assert!(peer.compact_workspace(&owner, &owner_key, now()).unwrap());
+        let mut reader = newcomer();
+        handed(&mut reader, owner.device_public_key, peer.workspace_message()).unwrap();
+        let base = document_of(&peer).get_heads();
+        for name in ["Five", "Six", "Seven"] {
+            assert!(
+                peer.governance_mut()
+                    .put_saved_presets(&[preset(name)], &owner_key, now())
+                    .unwrap()
+            );
+        }
+        let new = document_of(&peer).get_changes(&base);
+        let ahead = new.get(1..).expect("the base's history goes on");
+        let numbered = ahead
+            .iter()
+            .find(|change| change.actor_id() == &actor)
+            .expect("the owner's device writes the base's history");
+        let superseded = old
+            .iter()
+            .find(|change| change.actor_id() == &actor && change.seq() == numbered.seq())
+            .expect("the history the base replaced holds the same number")
+            .clone();
+        let one = |changes: Vec<automerge::Change>| NeighbourMsg::SyncResp {
+            changes: changes
+                .into_iter()
+                .map(crate::workspace::sent_change)
+                .collect(),
+            workspace: WORKSPACE.into(),
+        };
+        let from = TransportOrigin::RetainedServerDelta(owner.device_public_key);
+        reader
+            .receive_from(from, one(vec![superseded]), now())
+            .expect("the old change, as a reader catching up replays it");
+        reader
+            .receive_from(from, one(ahead.to_vec()), now())
+            .expect("the base's change at the old one's number, ahead of its parent");
+        // The history it builds on, as the holder sends it once more.
+        reader
+            .receive_from(from, one(new.clone()), now())
+            .expect("the base's history whole");
+        assert_eq!(reader.workspace_heads(), peer.workspace_heads());
+        let names = |peer: &StatePeer| {
+            peer.governance()
+                .saved_presets()
+                .into_iter()
+                .map(|preset| preset.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&reader), names(&peer));
+    }
+}

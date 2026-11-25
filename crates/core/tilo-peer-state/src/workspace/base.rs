@@ -411,8 +411,16 @@ fn founder(doc: &AutoCommit) -> Option<String> {
 /// - or a change built on the base the receiver holds (applied, or taken
 ///   with this batch on what is applied) holds its actor's sequence number:
 ///   one history numbers each actor's changes once, so the other change is
-///   of another history. This applies to the batch and to the changes
-///   already waiting in `before`, and to what builds on such a change.
+///   of another history;
+/// - or it waits for a change the base replaced ([`REPLACED_KEY`]): that
+///   change never comes, as the base holds what it held. A reader catching
+///   up from what a holder retained takes such changes after the base, and
+///   a change of the base's history at the same number may itself come
+///   ahead of what it builds on, before anything built on the base claims
+///   the number: the two would be refused as a duplicate, with the batch.
+///
+/// This applies to the batch and to the changes already waiting in
+/// `before`, and to what builds on such a change.
 ///
 /// A document that never had a base takes the batch as it comes, unless the
 /// batch starts a history of another founding: then it is
@@ -451,7 +459,7 @@ pub(crate) fn lineage(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Linea
         }
     }
     if let Some((_, base, built)) = newest {
-        let (kept, _) = sorted(changes, &decoded, Some(base), None);
+        let (kept, _) = sorted(changes, &decoded, Some(base), None, || replaced(&built));
         let base_bytes = changes.get(base);
         return Lineage::Newer {
             base: Box::new(built),
@@ -467,7 +475,13 @@ pub(crate) fn lineage(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Linea
             replaced: Vec::new(),
         };
     };
-    let (changes, replaced) = sorted(changes, &decoded, None, Some(before.committed_document()));
+    let (changes, replaced) = sorted(
+        changes,
+        &decoded,
+        None,
+        Some(before.committed_document()),
+        || replaced(before),
+    );
     Lineage::Same { changes, replaced }
 }
 
@@ -483,13 +497,16 @@ enum Sort {
 
 /// The changes of `changes` to admit, each in the order it came, and the
 /// changes waiting in `before` to drop first. The base is `changes[base]`
-/// when the batch carries a newer one, else the base `before` holds. A change
-/// that does not decode is kept, for the admission to refuse as malformed.
+/// when the batch carries a newer one, else the base `before` holds;
+/// `replaced` answers the heads that base replaced ([`REPLACED_KEY`]), read
+/// only when a change waits. A change that does not decode is kept, for the
+/// admission to refuse as malformed.
 fn sorted(
     changes: &[Vec<u8>],
     decoded: &[Option<automerge::Change>],
     base: Option<usize>,
     before: Option<&automerge::Automerge>,
+    replaced: impl FnOnce() -> std::collections::BTreeSet<[u8; 4]>,
 ) -> (Vec<Vec<u8>>, Vec<ChangeHash>) {
     let mut sort = started(decoded, base, before);
     build_on_base(decoded, &mut sort, before);
@@ -498,6 +515,7 @@ fn sorted(
         .unwrap_or_default();
     let mut other = Other::default();
     renumbered(decoded, &mut sort, &queued, before, &mut other);
+    waiting_on_replaced(decoded, &mut sort, &queued, before, replaced, &mut other);
     built_on_other(decoded, &mut sort, &queued, &mut other);
     let kept = changes
         .iter()
@@ -611,6 +629,58 @@ fn renumbered(
     }
     for change in queued {
         if held_elsewhere(change) {
+            other.hashes.insert(change.hash());
+            other.replaced.push(change.hash());
+        }
+    }
+}
+
+/// Marks as of another history each waiting change, in the batch or in
+/// `queued`, that waits for a change the base replaced: one that is neither
+/// applied nor built on the base with this batch, and whose head the base
+/// names among those it replaced.
+fn waiting_on_replaced(
+    decoded: &[Option<automerge::Change>],
+    sort: &mut [Sort],
+    queued: &[&automerge::Change],
+    before: Option<&automerge::Automerge>,
+    replaced: impl FnOnce() -> std::collections::BTreeSet<[u8; 4]>,
+    other: &mut Other,
+) {
+    let waits = sort.contains(&Sort::Waiting);
+    if !waits
+        && queued
+            .iter()
+            .all(|change| other.hashes.contains(&change.hash()))
+    {
+        return;
+    }
+    let replaced = replaced();
+    if replaced.is_empty() {
+        return;
+    }
+    let built: std::collections::HashSet<ChangeHash> = decoded
+        .iter()
+        .zip(sort.iter())
+        .filter(|&(_, sort)| *sort == Sort::Built)
+        .filter_map(|(change, _)| change.as_ref().map(automerge::Change::hash))
+        .collect();
+    let for_replaced = |change: &automerge::Change| {
+        change.deps().iter().any(|dep| {
+            !built.contains(dep)
+                && !applied(before, dep)
+                && replaced.contains(&collab_types::governance_head(&dep.0))
+        })
+    };
+    for (change, sort) in decoded.iter().zip(sort.iter_mut()) {
+        let Some(change) = change else { continue };
+        if *sort == Sort::Waiting && for_replaced(change) {
+            *sort = Sort::Other;
+            other.hashes.insert(change.hash());
+        }
+    }
+    for change in queued {
+        if !other.hashes.contains(&change.hash()) && for_replaced(change) {
             other.hashes.insert(change.hash());
             other.replaced.push(change.hash());
         }
@@ -798,8 +868,9 @@ mod tests {
         // so the history a base replaced numbers its changes as the new one
         // does. A change of the old history that reaches a member after the
         // base, or with it, never holds the host's change at its sequence
-        // number back: once a change built on the base holds that number, the
-        // old one is dropped, waiting or arriving.
+        // number back: one waiting for a change the base replaced is dropped,
+        // and so is one whose number a change built on the base holds,
+        // waiting or arriving.
         {
             let RebasedWorkspace {
                 old,
@@ -817,18 +888,47 @@ mod tests {
             );
 
             // The old change after the base, before the host's third: it
-            // may yet be of the base's history, so it waits. The host's third
-            // change, built on the base, shows it is not, and it goes.
+            // waits for a change the base replaced, which never comes, so it
+            // is left out at once.
             let member = take(None, &base);
-            let member = take(Some(&member), &old_third);
-            assert_eq!(member.committed_document().queued_changes().count(), 1);
-            let member = take(Some(&member), &new_history);
+            let left_out = take(Some(&member), &old_third);
+            assert_eq!(left_out.committed_heads(), member.committed_heads());
+            assert_eq!(left_out.committed_document().queued_changes().count(), 0);
+
+            // One already waiting (a document that took it in before it was
+            // left out) goes once the host's third change, built on the
+            // base, claims its number.
+            let waiting = super::super::candidate(Some(&member), &old_third).unwrap();
+            assert_eq!(waiting.committed_document().queued_changes().count(), 1);
+            let member = take(Some(&waiting), &new_history);
             assert_eq!(member.committed_heads(), based.committed_heads());
             assert_eq!(member.committed_document().queued_changes().count(), 0);
             assert_eq!(
                 member.get(ROOT, "grace").unwrap().unwrap().0.as_str(),
                 Some("agent")
             );
+
+            // The host's third change ahead of its second, while the old
+            // third waits: it waits too, and the old one, which waits for a
+            // change the base replaced, goes rather than the new one being
+            // refused as a duplicate of its number.
+            let ahead = take(Some(&waiting), &new_history[1..]);
+            assert_eq!(ahead.committed_document().queued_changes().count(), 2);
+            assert!(
+                ahead
+                    .committed_document()
+                    .queued_changes()
+                    .all(|queued| queued.hash() != change(&old_third[0]).hash()),
+                "the old third is gone"
+            );
+            let caught_up = take(Some(&ahead), &new_history[..1]);
+            assert_eq!(caught_up.committed_heads(), based.committed_heads());
+            assert_eq!(caught_up.committed_document().queued_changes().count(), 0);
+            // Both in one batch, the old one first: it is left out.
+            let mut batch = old_third.clone();
+            batch.extend(new_history[1..].iter().cloned());
+            let ahead = take(Some(&take(None, &base)), &batch);
+            assert_eq!(ahead.committed_document().queued_changes().count(), 2);
 
             // The old change after the host's third: left out, the batch
             // is not refused.
@@ -838,12 +938,12 @@ mod tests {
 
             // The old change with what is left of its history, in the same batch
             // as the base: only what builds on the base is applied, and the old
-            // changes go once the host's history claims their numbers.
+            // changes, built on what the base replaced, are left out.
             let mut batch = history[1..].to_vec();
             batch.extend(base.iter().cloned());
             let member = take(Some(&old), &batch);
             assert_eq!(member.committed_heads(), vec![change(&base[0]).hash()]);
-            assert_eq!(member.committed_document().queued_changes().count(), 2);
+            assert_eq!(member.committed_document().queued_changes().count(), 0);
             let member = take(Some(&member), &new_history);
             assert_eq!(member.committed_heads(), based.committed_heads());
             assert_eq!(member.committed_document().queued_changes().count(), 0);
