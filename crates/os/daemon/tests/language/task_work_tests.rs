@@ -16,7 +16,7 @@ mod session_tests {
     use tilo_actions::{ActionAddress, ActionInvoker, ActionOutput};
     use tilo_server_protocol::WorkspaceId;
     use tilo_workspace_service::agents::task_work::{
-        Task, TaskWork, Work, task, task_id, with_place,
+        Task, TaskWork, Work, made_task, task, with_place,
     };
     use tilo_workspace_service::agents::triggered::{self, TASKS};
     use tilo_workspace_service::agents::{EngineActions, Outcome, WorkspaceActionProvider};
@@ -317,7 +317,7 @@ mod session_tests {
         ///
         /// # Panics
         /// Tasks refused it.
-        async fn act(&self, resource: &str, action: &str, arguments: Value) -> Vec<String> {
+        async fn act(&self, resource: &str, action: &str, arguments: Value) -> ActionOutput {
             let Value::Object(arguments) = arguments else {
                 panic!("arguments by name: {arguments}")
             };
@@ -340,7 +340,6 @@ mod session_tests {
             .await
             .unwrap()
             .unwrap_or_else(|refused| panic!("{named}: {refused}"))
-            .resources
         }
 
         /// A new task of Tasks titled `title`, with `more` of what a new task is given: its id.
@@ -352,7 +351,7 @@ mod session_tests {
             let made = self
                 .act(&format!("tl:{TASKS}"), "new_task", arguments)
                 .await;
-            task_id(&made[0]).unwrap().to_owned()
+            made_task(made.value.as_ref().unwrap()).unwrap().to_owned()
         }
 
         /// The task `id` as the device holds it, its work read where Tasks keeps it.

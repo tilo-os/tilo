@@ -747,6 +747,22 @@ pub fn task_id(address: &str) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
+/// The id of the task Tasks answered (`answer`, an action's value) its call made, by the address
+/// each record it made is published at (`so.tilo.tasks/<id>`).
+pub fn made_task(answer: &Value) -> Option<&str> {
+    answer
+        .get("made")?
+        .as_array()?
+        .iter()
+        .filter_map(|made| {
+            made.get("address")?
+                .as_str()?
+                .strip_prefix(TASKS)?
+                .strip_prefix('/')
+        })
+        .find(|id| !id.is_empty())
+}
+
 /// The task `id` of `workspace`, as this device holds it.
 pub async fn task(workspaces: &Workspaces, workspace: &str, id: &str) -> Option<Held> {
     workspaces

@@ -16,7 +16,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::proposals::InTracker;
 use crate::agents::task_work::{self, Held};
-use crate::agents::triggered::TASKS;
+use crate::agents::triggered::{self, TASKS};
 use crate::agents::{WorkspaceActionProvider, invoke_named};
 use crate::workspaces::Workspaces;
 use tilo_server_protocol::WorkspaceId;
@@ -127,14 +127,10 @@ impl Tracker {
         )
         .await?;
         let address = made
-            .pointer("/resources")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .find(|made| task_work::task_id(made).is_some())
-            .ok_or_else(|| format!("Tasks made no task: {made}"))?
-            .to_owned();
+            .get("value")
+            .and_then(task_work::made_task)
+            .map(|id| triggered::published(TASKS, id))
+            .ok_or_else(|| format!("Tasks made no task: {made}"))?;
         let task = self.filed(&address).await?;
         // Why it is proposed is said on the task, where its person decides it.
         let mut comment = Map::new();
