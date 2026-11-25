@@ -40,6 +40,11 @@ pub const LOG_IN: &str = "logIn";
 /// person, whose root this device keeps and whose certificate names it. Asked by the device's own
 /// account alone: a laptop's first `tilo` command, a phone's "start new".
 pub const FOUND: &str = "found";
+/// The action a daemon answers the person on this device's own connection: the id `app`'s
+/// development build runs under here. It is derived from this device's key, which only its
+/// daemon keeps, so a build that is to run as it is compiled for it asks before it compiles.
+/// Refused to whoever may not install a development build on this device.
+pub const DEV_ID: &str = "dev-id";
 /// The action a daemon answers while no person's certificate names its device: bring back a
 /// person from their recovery words (`words`) or a portable backup (`backup`, hex, with its
 /// `passphrase`), whose root this device keeps from then on, as [`FOUND`] keeps a new one's.

@@ -38,7 +38,7 @@ fn diagnostics(body: &str) -> Vec<crate::diag::Diagnostic> {
     let mut lock = IdsLock::new();
     lock.sync(&declared_names(&module), &mut SeededEntropy(3));
     let mut diags = Vec::new();
-    let env = crate::resolve::resolve(&module, &lock, &[], &mut diags);
+    let env = crate::resolve::resolve(&module, &lock, &[], None, &mut diags);
     let _ = super::check_module(&env, &module, &mut diags);
     diags
 }

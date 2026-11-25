@@ -798,6 +798,7 @@ view value(v: Value) {
 "#,
         )
         .unwrap();
+        let dev_id = tilo_app_package::dev_app_id(of, &device.public_key_bytes());
         let options = tilolang_cli::package::BuildOptions {
             dir: source,
             search: Vec::new(),
@@ -807,10 +808,20 @@ view value(v: Value) {
             version: "0.1.0".to_owned(),
             locked: false,
         };
-        let staged = tilolang_cli::package::stage_dev(&options)
+        let staged =
+            tilolang_cli::package::stage_dev(&options, &[(of.to_owned(), dev_id.clone())])
             .unwrap()
             .pop()
             .expect("the app is staged");
+        assert_eq!(staged.app, of, "the manifest names the app it builds");
+        assert_eq!(
+            staged.meta.app, dev_id,
+            "the module is the device's own development build, which it runs as"
+        );
+        assert_eq!(
+            staged.dev, dev_id,
+            "the staging names the id it was compiled for"
+        );
         // The runtimes the app names, as a session bakes them: the cache refuses an app whose
         // runtime this computer does not have.
         let display = root.join("wayland-0");
@@ -833,7 +844,6 @@ view value(v: Value) {
             .unwrap();
         }
         environment.set(runtime_bundle::RUNTIME_DIR_ENV, &runtimes);
-        assert_eq!(staged.app, of);
         let unsigned =
             tilo_app_package::Manifest::from_toml_str(
                 &std::fs::read_to_string(&staged.manifest).unwrap(),
@@ -888,6 +898,24 @@ view value(v: Value) {
             manifest.package.dev.as_ref().map(|dev| dev.of.as_str()),
             Some(of),
             "the device's marking travels with the installed build"
+        );
+        assert!(
+            manifest
+                .resources
+                .kinds
+                .iter()
+                .any(|kind| kind == &format!("tl.{id}.Value")),
+            "the build keeps its records under its own kinds: {:?}",
+            manifest.resources.kinds
+        );
+        assert!(
+            !manifest
+                .resources
+                .kinds
+                .iter()
+                .any(|kind| kind == &format!("tl.{of}.Value")),
+            "and never under the kinds of the app it builds: {:?}",
+            manifest.resources.kinds
         );
         assert!(
             store.catalog().find(of).unwrap().is_none(),

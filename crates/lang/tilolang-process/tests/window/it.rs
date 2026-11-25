@@ -26,6 +26,8 @@ mod history_window;
 
 #[path = "board.rs"]
 mod board;
+#[path = "dev_id.rs"]
+mod dev_id;
 #[path = "forms.rs"]
 mod forms;
 #[path = "gallery_close.rs"]

@@ -451,9 +451,20 @@ pub fn compile(
     search: &[PathBuf],
     rng: &mut dyn tilolang::ids::Entropy,
 ) -> Result<(Vec<tilolang::source::BuiltPackage>, Vec<PackageMeta>), tilolang::source::BuildError> {
+    compile_for(dir, search, &[], rng)
+}
+
+/// [`compile`], where the compile-as pairs say which id a package compiles as: a development
+/// build is the device's own app, which is not the id its sources declare.
+pub fn compile_for(
+    dir: &Path,
+    search: &[PathBuf],
+    compile_as: &[(String, String)],
+    rng: &mut dyn tilolang::ids::Entropy,
+) -> Result<(Vec<tilolang::source::BuiltPackage>, Vec<PackageMeta>), tilolang::source::BuildError> {
     let published = published_packages(&tilolang::source::search_of(dir, search))
         .map_err(tilolang::source::BuildError::Read)?;
-    let built = tilolang::source::compile_package(dir, search, &published, rng)?;
+    let built = tilolang::source::compile_package_for(dir, search, &published, compile_as, rng)?;
     Ok((built, published))
 }
 

@@ -29,11 +29,14 @@ const USAGE: &[(&str, &str)] = &[
         "build",
         "\
   tilolang build|package [DIR] [--search DIR]... [--out DIR] [--identity FILE]
-                         [--tilo-runtime tilo-runtime/<release>] [--version V] [--locked]
+                         [--tilo-runtime tilo-runtime/<release>] [--version V] [--locked] [--dev]
       compile the package in DIR (default: .) and the packages it uses, and write each as a
       signed Tilo app: OUT/<name>.tapp (default OUT: DIR/target). A build writes a package's
       ids lock and source catalogue when its sources changed them; --locked refuses instead,
-      as a check does, so it builds only what is committed.",
+      as a check does, so it builds only what is committed.
+      --dev stages the package instead as this device's development build of it, in
+      OUT/dev/<name>, compiled as the id the device installs it under: install it with
+      `tilo-install install OUT/dev/<name> --dev`.",
     ),
     (
         "run",
@@ -496,11 +499,13 @@ fn build(args: &[String]) -> Result<(), String> {
     let mut tilo_runtime = package::DEFAULT_TILO_RUNTIME.to_owned();
     let mut version = "0.1.0".to_owned();
     let mut locked = false;
+    let mut dev = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--search" => common.search.push(value(&mut iter, arg)?.into()),
             "--locked" => locked = true,
+            "--dev" => dev = true,
             "--out" => out = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--identity" => identity = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--tilo-runtime" => tilo_runtime = value(&mut iter, arg)?,
@@ -511,10 +516,6 @@ fn build(args: &[String]) -> Result<(), String> {
             dir => common.dir = dir.into(),
         }
     }
-    let identity = match identity {
-        Some(path) => tilolang_cli::identity_at(&path)?,
-        None => tilolang_cli::publisher_identity()?,
-    };
     let options = BuildOptions {
         out: out.unwrap_or_else(|| common.dir.join("target")),
         dir: common.dir,
@@ -523,6 +524,25 @@ fn build(args: &[String]) -> Result<(), String> {
         tilolang_runtime: package::default_tilolang_runtime(),
         version,
         locked,
+    };
+    if dev {
+        if identity.is_some() {
+            return Err(
+                "a development build is this device's own: it is never signed with --identity"
+                    .into(),
+            );
+        }
+        // The modules are compiled as the ids the device installs them under, which only the
+        // device names: they are derived from the key its daemon keeps.
+        let compile_as = dev::dev_ids(&options.dir, &options.search)?;
+        for app in package::stage_dev(&options, &compile_as)? {
+            println!("{} ({}): {}", app.app, app.title, app.dir.display());
+        }
+        return Ok(());
+    }
+    let identity = match identity {
+        Some(path) => tilolang_cli::identity_at(&path)?,
+        None => tilolang_cli::publisher_identity()?,
     };
     for app in package::build(&options, &identity)? {
         println!("{} ({}): {}", app.app, app.title, app.tapp.display());

@@ -125,6 +125,13 @@ enum Cmd {
         #[arg(long, requires = "from")]
         payload_from: Option<String>,
     },
+    /// Print the id a development build of an app runs under on this device. A build that is to
+    /// run as the device installed it is compiled for this id, which only the device names: it
+    /// is derived from the key its daemon keeps.
+    DevId {
+        /// The app's own id, as its sources declare it.
+        app: String,
+    },
     /// List the authoritative installed selections.
     List {
         /// Emit selected rows for maintained automation.
@@ -1102,6 +1109,20 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
             ignore_missing_runtime: runtime.ignore_missing_runtime,
             payload_from,
         }),
+        Cmd::DevId { app } => {
+            let answer = app_cli::device::Daemon::reach()?.call(
+                "tilo_do",
+                &serde_json::json!({"path": "devices#dev-id", "args": {"app": app}}),
+            )?;
+            let id = answer
+                .get("result")
+                .unwrap_or(&answer)
+                .get("app")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("the device named no id: {answer}"))?;
+            println!("{id}");
+            Ok(())
+        }
         Cmd::List {
             json: true,
             runtime_paths,

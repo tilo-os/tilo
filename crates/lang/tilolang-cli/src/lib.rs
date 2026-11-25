@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::pack::SigningIdentity;
 
-pub use tilolang_tilo::catalogue::compile;
+pub use tilolang_tilo::catalogue::{compile, compile_for};
 
 /// Run in a checkout, the tool compiles against the checkout's standard library, as it does
 /// against the packages beside the one it builds: an edit of it takes effect without rebuilding

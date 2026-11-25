@@ -72,21 +72,23 @@ fn analyze(
         text: source,
         base: 0,
     }];
-    analyze_module(module, ids, imports, rng, &files).map_err(|diags| finish(diags, source))
+    analyze_module(module, ids, imports, None, rng, &files).map_err(|diags| finish(diags, source))
 }
 
-/// Resolves and checks a parsed module; the diagnostics are not yet located.
+/// Resolves and checks a parsed module; the diagnostics are not yet located. A module compiled as
+/// `app`, when one is named, is that app's: its kinds and records are the ones that id names.
 fn analyze_module(
     module: ast::Module,
     ids: &IdsLock,
     imports: &[PackageMeta],
+    app: Option<&str>,
     rng: &mut dyn Entropy,
     files: &[Placed<'_>],
 ) -> Result<Analysis, Vec<Diagnostic>> {
     let mut lock = ids.clone();
     lock.sync(&declared_names(&module), rng);
     let mut diags = Vec::new();
-    let env = resolve(&module, &lock, imports, &mut diags);
+    let env = resolve(&module, &lock, imports, app, &mut diags);
     let ir = checker::check_module(&env, &module, &mut diags);
     if diags.is_empty() {
         Ok(Analysis {
@@ -215,11 +217,13 @@ fn analyze_package(
     source: &PackageSource,
     ids: &IdsLock,
     imports: &[PackageMeta],
+    app: Option<&str>,
     rng: &mut dyn Entropy,
 ) -> Result<Analysis, Vec<Diagnostic>> {
     let module = parse_package(source)?;
     let files = placed(source);
-    analyze_module(module, ids, imports, rng, &files).map_err(|diags| finish_files(diags, &files))
+    analyze_module(module, ids, imports, app, rng, &files)
+        .map_err(|diags| finish_files(diags, &files))
 }
 
 /// Compiles a package of one or more files with ids drawn from the operating system's randomness.
@@ -238,7 +242,19 @@ pub fn compile_package_source_with(
     imports: &[PackageMeta],
     rng: &mut dyn Entropy,
 ) -> Result<Compiled, Vec<Diagnostic>> {
-    let a = analyze_package(source, ids, imports, rng)?;
+    compile_package_source_for(source, ids, imports, None, rng)
+}
+
+/// [`compile_package_source_with`], compiled as the app `app` when one is named: the id a
+/// development build runs under, which is not the one its sources declare.
+pub fn compile_package_source_for(
+    source: &PackageSource,
+    ids: &IdsLock,
+    imports: &[PackageMeta],
+    app: Option<&str>,
+    rng: &mut dyn Entropy,
+) -> Result<Compiled, Vec<Diagnostic>> {
+    let a = analyze_package(source, ids, imports, app, rng)?;
     let lines = lines_of(&a.ir, &placed(source));
     let mut compiled = emit_package(a);
     crate::meta::append_locales(&mut compiled.wasm, &locales_of(source, &compiled.meta));
@@ -298,7 +314,7 @@ pub fn check_package(
     ids: &IdsLock,
     imports: &[PackageMeta],
 ) -> Vec<Diagnostic> {
-    analyze_package(source, ids, imports, &mut SeededEntropy(0))
+    analyze_package(source, ids, imports, None, &mut SeededEntropy(0))
         .err()
         .unwrap_or_default()
 }

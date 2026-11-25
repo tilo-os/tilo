@@ -34,8 +34,8 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    ALREADY_A_PERSONS, ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_KEY, Device, Direction, FOUND,
-    IDENTITIES, ISSUE, LOG_IN, OPEN_VAULT, PENDING, PROTECT_IDENTITY, PROVIDER, Place,
+    ALREADY_A_PERSONS, ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_KEY, DEV_ID, Device, Direction,
+    FOUND, IDENTITIES, ISSUE, LOG_IN, OPEN_VAULT, PENDING, PROTECT_IDENTITY, PROVIDER, Place,
     RECOVERY_WORDS, RELEASE_HALF, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE,
     Report, TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
 };
@@ -208,6 +208,17 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
                 "name",
                 ParamType::Text,
                 "What the person is called: the computer account's name when left out.",
+            )],
+        ))),
+        row(Some(descriptor(
+            DEV_ID,
+            "A development build's id",
+            "The id a development build of an app runs under on this device, which a build \
+             compiles the app as before the device installs it.",
+            &[ActionParam::required(
+                "app",
+                ParamType::Text,
+                "The app's own id, as its sources declare it.",
             )],
         ))),
         row(Some(descriptor(
@@ -1044,6 +1055,7 @@ impl Tickets {
                     request.target.address.action.as_str(),
                     INFO | ISSUE
                         | FOUND
+                        | DEV_ID
                         | RESTORE
                         | LOG_IN
                         | PENDING
@@ -1115,6 +1127,19 @@ impl Tickets {
         };
         let args = Value::Object(argument.clone());
         let action = request.target.address.action.clone();
+        // The id a development build runs under is the acting person's own to ask, as installing
+        // the build is: it is derived from this device's key, and the build is compiled for it.
+        if action == DEV_ID {
+            let personal = !tilo_api::daemon::system_daemon();
+            let answer = match dev_id_answer(caller, personal, &args, &self.0.key) {
+                Ok(answer) => answer,
+                Err(error) => return Pending::ready(Err(error)),
+            };
+            let state = InvocationState::new(invocation, succeeded(invocation, answer));
+            let receipt = state.receipt();
+            self.0.calls.lock_recover().insert(invocation, state);
+            return Pending::ready(Ok(receipt));
+        }
         // A device confined to one workspace, by a certificate for it or one placed for records of
         // it, issues no ticket: adding a computer is the person's own act on a device that keeps
         // their root, and a confined device keeps none.
@@ -1816,6 +1841,36 @@ pub(crate) fn device_info(place: &Place, key: &SigningKey) -> Value {
     })
 }
 
+/// [`DEV_ID`]'s answer for `args`, when `caller` may ask it: the admission that installs a
+/// development build on this device is the one that names the id it runs under.
+fn dev_id_answer(
+    caller: &tilo_actions::remote::Caller,
+    personal: bool,
+    args: &Value,
+    key: &SigningKey,
+) -> Result<Value, ActionCallError> {
+    package_actions::dev_build_admitted(caller, personal).map_err(refused)?;
+    dev_id(args, key).map_err(refused)
+}
+
+/// The id `app`'s development build runs under on this device, as [`DEV_ID`] answers it: the app
+/// renamed by the marking `tilo_app_package::pack::pack_dev` gives the build it signs with this
+/// device's `key`. The same derivation, so a build compiled for it runs as the device installed
+/// it.
+fn dev_id(args: &Value, key: &SigningKey) -> Result<Value, String> {
+    let app = args
+        .get("app")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|app| !app.is_empty())
+        .ok_or_else(|| {
+            "a development build's id is asked for the app it is a build of (`app`)".to_owned()
+        })?;
+    Ok(json!({
+        "app": tilo_app_package::dev_app_id(app, &key.verifying_key().to_bytes()),
+    }))
+}
+
 fn refused(reason: impl Into<String>) -> ActionCallError {
     ActionCallError::Refused {
         reason: reason.into(),
@@ -1874,4 +1929,52 @@ pub(crate) use tilo_api::daemon::enter::logged_in;
 fn reached(endpoint: &iroh::Endpoint) -> bool {
     endpoint.addr().relay_urls().next().is_some()
         || tilo_endpoint_reachability::relays().relays.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The read answers the id the device's own marking derives, to the person on its own
+    /// connection, and nothing to whoever may not install a development build.
+    #[test]
+    fn the_dev_id_read_answers_where_a_development_build_is_admitted() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let app = "org.example.notes";
+        let args = json!({ "app": app });
+        let expected = tilo_app_package::dev_app_id(app, &key.verifying_key().to_bytes());
+        for personal in [true, false] {
+            let answer = dev_id_answer(
+                &tilo_actions::remote::Caller::own_person(String::from("person")),
+                personal,
+                &args,
+                &key,
+            )
+            .expect("the person on this device's own connection asks");
+            assert_eq!(answer["app"].as_str(), Some(expected.as_str()));
+            assert!(
+                dev_id_answer(
+                    &tilo_actions::remote::Caller::local_agent(
+                        String::from("an-agent"),
+                        String::from("person"),
+                    ),
+                    personal,
+                    &args,
+                    &key,
+                )
+                .is_err(),
+                "an agent asks for no development build's id"
+            );
+        }
+        assert!(
+            dev_id_answer(
+                &tilo_actions::remote::Caller::local_system(),
+                false,
+                &args,
+                &key,
+            )
+            .is_err(),
+            "the system daemon names no development build's id for an account"
+        );
+    }
 }

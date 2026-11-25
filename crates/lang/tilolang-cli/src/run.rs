@@ -185,10 +185,6 @@ pub(crate) fn run_named(options: &RunOptions, command: &str) -> Result<(), Strin
         locked: false,
     };
     let mut dev = Dev::new(build, peers, build_dir.join("bin"), Some(&repo));
-    // The session's daemon runs after it starts, so its builds are staged here and installed
-    // once it answers: the daemon signs each as this device's development build.
-    let staged = dev.stage_for_start()?;
-
     let (sender, wakes) = mpsc::channel();
     // Watched before the session opens the app, so that a save made while it starts reaches it.
     dev.start_watching(&sender)?;
@@ -199,8 +195,10 @@ pub(crate) fn run_named(options: &RunOptions, command: &str) -> Result<(), Strin
     let lifeline = lifeline(&mut command).map_err(starting)?;
     let child = command.spawn().map_err(starting)?;
     let _session = Started::watch(child, lifeline, sender.clone());
+    // The daemon signs each build as this device's development build, and names the id it runs
+    // under, so the builds are staged once it answers.
     wait_for_file(&ready, &wakes, &sender)?;
-    dev.install_staged(&staged, Instant::now())?;
+    dev.build_and_deliver(Instant::now())?;
     dev.open()?;
     let bin = dev.bin();
     for peer in dev.peers() {

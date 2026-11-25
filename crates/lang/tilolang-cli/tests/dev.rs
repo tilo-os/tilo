@@ -20,7 +20,7 @@ fn a_saved_build_is_staged_unsigned_for_the_device() {
         version: "0.1.0".into(),
         locked: false,
     };
-    let staged = package::stage_dev(&options).unwrap().pop().unwrap();
+    let staged = package::stage_dev(&options, &[]).unwrap().pop().unwrap();
     let manifest = tilo_app_package::manifest::Manifest::from_toml_str(
         &std::fs::read_to_string(&staged.manifest).unwrap(),
     )
@@ -74,8 +74,54 @@ fn a_saved_build_is_staged_unsigned_for_the_device() {
         }
     }
     // A save is compared by its digest: the same sources stage to the same one.
-    let again = package::stage_dev(&options).unwrap().pop().unwrap();
+    let again = package::stage_dev(&options, &[]).unwrap().pop().unwrap();
     assert_eq!(again.digest, staged.digest);
+}
+
+/// A build for the device is compiled as the id the device's marking derives, while its manifest
+/// names the app it builds: the device derives the very id the module runs under, and the build's
+/// records and kinds are its own.
+#[test]
+fn a_build_for_the_device_is_compiled_as_the_id_it_runs_under() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("counter");
+    copy_package(&packages().join("counter"), &source);
+    let options = BuildOptions {
+        dir: source,
+        search: Vec::new(),
+        out: scratch.path().join("out"),
+        tilo_runtime: package::DEFAULT_TILO_RUNTIME.into(),
+        tilolang_runtime: package::default_tilolang_runtime(),
+        version: "0.1.0".into(),
+        locked: false,
+    };
+    let of = "so.tilo.lang.counter";
+    let dev = "so.tilo.lang.counter.dev.0123456789abcdef";
+    let compile_as = [(of.to_owned(), dev.to_owned())];
+    let staged = package::stage_dev(&options, &compile_as)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(staged.dev, dev, "the staging names the id it runs under");
+    assert_eq!(
+        staged.meta.app, dev,
+        "the module is the device's own app, not the one its sources declare"
+    );
+    assert_ne!(staged.app, dev, "the manifest names the app it builds");
+    let manifest = tilo_app_package::manifest::Manifest::from_toml_str(
+        &std::fs::read_to_string(&staged.manifest).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest.package.id, staged.app);
+    assert!(
+        manifest
+            .resources
+            .kinds
+            .iter()
+            .any(|kind| kind.starts_with(&format!("tl.{dev}."))),
+        "the build declares its own kinds: {:?}",
+        manifest.resources.kinds
+    );
 }
 
 /// A `tilolang dev` run again attaches to the session this login already runs: one command does

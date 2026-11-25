@@ -30,6 +30,9 @@ runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 # computer's daemon while the device runs, made in this process for the store an image build
 # names.
 package-actions = { path = "../package-actions" }
+# The connection to this computer's daemon its native endpoint answers: the reads a build asks
+# of the device, as the changes are asked of it.
+app-cli = { path = "../../os/app-cli" }
 # The workspace's trust list, read through the desktop's action API.
 tilo-control = { path = "../../desktop/control-cli" }
 clap.workspace = true

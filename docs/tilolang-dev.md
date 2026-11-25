@@ -36,10 +36,12 @@ The examples below call the result `tilolang` (`target/nested/tilolang`).
 tilolang dev apps/tl/notes --search apps/tl
 ```
 
-`tilolang dev` stages the build, starts the session, and asks the session's daemon to install
-and start it (`packages#install-dev`, then `--run-app <id>`): the daemon marks, packs and
-signs the build with the device's key, and the launcher runs it. If the run fails at any point
-after the session started, the tool stops the session: the shell, its apps and its services.
+`tilolang dev` starts the session, asks its daemon the id the app's development build runs
+under there (`devices#dev-id`), stages the build compiled as that id, and asks the daemon to
+install and start it (`packages#install-dev`, then `--run-app <id>`): the daemon marks, packs
+and signs the build with the device's key, and the launcher runs it. If the run fails at any
+point after the session started, the tool stops the session: the shell, its apps and its
+services.
 
 To work in a session that is already running, attach to it:
 
@@ -100,7 +102,8 @@ The examples below call the result `tilolang` (`target/nested/tilolang`).
 tilolang run apps/tl/notes --search apps/tl --headless --software
 ```
 
-`tilolang run` stages the build, starts the session, and asks the session's daemon to
+`tilolang run` starts the session, asks its daemon the id the app's development build runs
+under there (`devices#dev-id`), stages the build compiled as that id, and asks the daemon to
 install and start it (`packages#install-dev`, then `--run-app <id>`): the daemon marks,
 packs and signs the build with the device's key, and the launcher runs it. If the run fails
 at any point after the session started, the tool stops the session: the shell, its apps
@@ -131,13 +134,17 @@ session's History as the person's, and `undo` takes it back.
 
 There, on every save `tilolang dev`:
 
-1. compiles the package in-process (tens of milliseconds);
+1. compiles the package in-process as the id the device installs it under (tens of
+   milliseconds), which it asks the session's daemon for (`devices#dev-id`): the device's key
+   is the daemon's, and the id its marking derives is another app than the one the sources
+   declare;
 2. on an error, prints the diagnostics and stops: the app keeps running the last good
    build;
 3. stages the build as the app's manifest and payload, and the session's daemon installs
    it as this device's development build (`packages#install-dev`): the daemon marks it,
    packs it and signs it with the device's key, under the id its marking derives
-   (`<app>.dev.<device key>`). The tool reads no publisher key and signs nothing;
+   (`<app>.dev.<device key>`), which is the one the module was compiled as. The tool reads
+   no publisher key and signs nothing;
 4. says in one line what the running app does with it.
 
 ## The gallery

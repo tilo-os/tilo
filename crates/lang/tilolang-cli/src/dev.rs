@@ -90,6 +90,10 @@ pub(crate) struct Dev {
     /// The id each session's daemon installed the app under, in the sessions' order: a
     /// development build is its own on each device, and only that device names it.
     pub(crate) installed: Vec<String>,
+    /// The ids the sessions' daemon installs each app's development build under, by the app's own
+    /// id: an app's build always runs under the id its marking derives on one device, so it is
+    /// asked once.
+    asked: Vec<(String, String)>,
     delivered: HashMap<String, (String, PackageMeta)>,
     /// The checkout the tool works in, when there is one: whose sources being newer than the tool
     /// mean the tool cannot know all the types they declare.
@@ -111,6 +115,7 @@ impl Dev {
             bin,
             opened: String::new(),
             installed: Vec::new(),
+            asked: Vec::new(),
             delivered: HashMap::new(),
             repo: repo.map(Path::to_path_buf),
             sources: BTreeSet::new(),
@@ -128,13 +133,24 @@ impl Dev {
         &self.bin
     }
 
-    /// Stage the builds a session installs as it starts, before its daemon runs; the builds.
-    pub(crate) fn stage_for_start(&mut self) -> Result<Vec<package::StagedDev>, String> {
-        let staged = package::stage_dev(&self.build)?;
-        if let Some(last) = staged.last() {
-            self.opened.clone_from(&last.app);
+    /// Ask the sessions' daemon the id each package a build reads runs under as this device's
+    /// development build, when one of them is another app than the one its sources declare.
+    ///
+    /// The ids are the daemon's to name ([`Peer::dev_id`]): they are derived from the device key
+    /// the daemon alone keeps, so the tool asks them before it compiles. A package whose sources
+    /// declare no id compiles as they say, and the build's errors say what is wrong with them.
+    fn ask_dev_ids(&mut self) -> Result<(), String> {
+        let Some(peer) = self.peers.first() else {
+            return Ok(());
+        };
+        for app in declared_apps(&self.build.dir, &self.build.search)? {
+            if self.asked.iter().any(|(of, _)| *of == app) {
+                continue;
+            }
+            let id = peer.dev_id(&self.bin, &app)?;
+            self.asked.push((app, id));
         }
-        Ok(staged)
+        Ok(())
     }
 
     /// Install `staged` on every session of the delivery: each build whose sources changed goes
@@ -153,7 +169,14 @@ impl Dev {
             let plan = previous.map(|(_, meta)| compare(meta, &app.meta));
             let mut installed = Vec::with_capacity(self.peers.len());
             for peer in &self.peers {
-                installed.push(peer.install_dev(&self.bin, app)?);
+                let id = peer.install_dev(&self.bin, app)?;
+                if id != app.dev {
+                    return Err(format!(
+                        "{}: the device installed it as {id}, but it was compiled for {}",
+                        app.app, app.dev
+                    ));
+                }
+                installed.push(id);
             }
             self.installed = installed;
             report(&app.title, plan, built, saved.elapsed(), "installed");
@@ -164,8 +187,24 @@ impl Dev {
     }
 
     /// Build, and take what changed to what runs it; the builds staged, or the compile errors.
-    fn build_and_deliver(&mut self, saved: Instant) -> Result<Vec<package::StagedDev>, String> {
-        let staged = package::stage_dev(&self.build)?;
+    pub(crate) fn build_and_deliver(
+        &mut self,
+        saved: Instant,
+    ) -> Result<Vec<package::StagedDev>, String> {
+        if self.asked.is_empty() {
+            self.ask_dev_ids()?;
+        }
+        let mut staged = package::stage_dev(&self.build, &self.asked)?;
+        // A package the build newly reads, or one whose `app` declaration changed: its id is the
+        // new app's.
+        if !self.peers.is_empty()
+            && staged
+                .iter()
+                .any(|staged| !self.asked.iter().any(|(of, _)| *of == staged.app))
+        {
+            self.ask_dev_ids()?;
+            staged = package::stage_dev(&self.build, &self.asked)?;
+        }
         self.install_staged(&staged, saved)?;
         if let Some(last) = staged.last() {
             self.opened.clone_from(&last.app);
@@ -400,6 +439,39 @@ pub(crate) fn watch_into(
     watcher.start(move |events| {
         let _ = wakes.send(Wake::File(events.to_vec()));
     })
+}
+
+/// The id each package a build of `dir` reads compiles as on the device this tool runs on, by the
+/// app's own id: what `tilolang build --dev` asks, and what `tilo-install install --dev` then
+/// installs each under. Empty for a package whose sources declare no app: its own build's errors
+/// say what is wrong with them.
+///
+/// # Errors
+/// The daemon cannot be reached or refused, or its `tilo-install` cannot be run.
+pub fn dev_ids(dir: &Path, search: &[PathBuf]) -> Result<Vec<(String, String)>, String> {
+    declared_apps(dir, search)?
+        .into_iter()
+        .map(|app| {
+            session::dev_id_from(std::process::Command::new(session::install_tool(dir)), &app)
+                .map(|id| (app, id))
+        })
+        .collect()
+}
+
+/// Each app id the package in `dir` and the packages it reads declare, in dependency order.
+fn declared_apps(dir: &Path, search: &[PathBuf]) -> Result<Vec<String>, String> {
+    let mut apps: Vec<String> = Vec::new();
+    for dir in crate::package_dirs(dir, search)? {
+        let Ok(source) = tilolang::source::PackageSource::read_dir(&dir) else {
+            continue;
+        };
+        if let Some(app) = source.header().0
+            && !apps.contains(&app)
+        {
+            apps.push(app);
+        }
+    }
+    Ok(apps)
 }
 
 /// Develop the package in the session `options.session` names, or in the one the tool starts when

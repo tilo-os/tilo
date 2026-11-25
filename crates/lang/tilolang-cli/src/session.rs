@@ -114,6 +114,50 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(sha2::Sha256::digest(bytes))
 }
 
+/// The id `app`'s development build runs under on the device `command` asks: `tilo-install
+/// dev-id`, which asks the daemon (`devices#dev-id`). The device's key never leaves the daemon,
+/// so this is where a build learns what to compile the app as.
+pub(crate) fn dev_id_from(mut command: Command, app: &str) -> Result<String, String> {
+    let output = command
+        .args(["dev-id", app])
+        .output()
+        .map_err(|error| format!("asking the device for {app}'s development build: {error}"))?;
+    if !output.status.success() {
+        let said = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "asking the device for {app}'s development build: {}",
+            said.trim()
+        ));
+    }
+    let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if id.is_empty() {
+        return Err(format!(
+            "the device named no id {app}'s development build runs under"
+        ));
+    }
+    Ok(id)
+}
+
+/// The `tilo-install` that asks this computer's daemon when no session is named: the tool's own
+/// sibling, the checkout's session build beside `dir`, or one on `PATH`.
+pub(crate) fn install_tool(dir: &Path) -> PathBuf {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        let sibling = parent.join("tilo-install");
+        if sibling.is_file() {
+            return sibling;
+        }
+    }
+    if let Ok(Some(repo)) = checkout(None, dir) {
+        let tool = build_dir(&repo).join("bin").join("tilo-install");
+        if tool.is_file() {
+            return tool;
+        }
+    }
+    PathBuf::from("tilo-install")
+}
+
 /// The interfaces a nested session serves: the checkout's own declaration, which nested-session.sh
 /// hands its shell as `TILO_SYSTEM_INTERFACES`, not the host image's.
 const SYSTEM_INTERFACES: &str = "os/usr/share/tilo/system-interfaces.toml";
@@ -372,6 +416,13 @@ impl Peer {
         let id = std::fs::read_to_string(&id_file)
             .map_err(|error| format!("{}: {error}", id_file.display()))?;
         Ok(id.trim().to_owned())
+    }
+
+    /// The id the session's daemon installs `app`'s development build under: the session's
+    /// `tilo-install` asks it (`devices#dev-id`), which derives it from the device key the daemon
+    /// alone keeps. A build compiled for another id runs as no app the daemon launched.
+    pub(crate) fn dev_id(&self, bin: &Path, app: &str) -> Result<String, String> {
+        dev_id_from(self.command(&bin.join("tilo-install")), app)
     }
 
     /// Start `app` through the session's daemon, as a person's window starts: the launch the

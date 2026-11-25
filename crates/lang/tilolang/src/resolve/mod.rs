@@ -721,14 +721,18 @@ struct Resolver<'a> {
     shown_calls: Vec<(usize, usize, Span)>,
 }
 
+/// Resolve `module` against `lock` and `imports`. `app` is the id the module compiles as, when it
+/// is not the one its `app` declaration names: a development build is its own app, so its kinds
+/// and its records are its own too.
 pub fn resolve(
     module: &ast::Module,
     lock: &IdsLock,
     imports: &[PackageMeta],
+    app: Option<&str>,
     diags: &mut Vec<Diagnostic>,
 ) -> Env {
     let env = Env {
-        app: module.app.id.clone(),
+        app: app.map_or_else(|| module.app.id.clone(), str::to_owned),
         ..Env::default()
     };
     let mut r = Resolver {
@@ -2258,8 +2262,18 @@ impl Resolver<'_> {
             _ => (item, None),
         };
         let render = render.filter(|how| how != "text");
-        if let ExprKind::Call { callee, types, args } = &item.kind {
-            return self.shown_call(item, (callee.as_ref(), types.as_slice(), args.as_slice()), params, render);
+        if let ExprKind::Call {
+            callee,
+            types,
+            args,
+        } = &item.kind
+        {
+            return self.shown_call(
+                item,
+                (callee.as_ref(), types.as_slice(), args.as_slice()),
+                params,
+                render,
+            );
         }
         let (param, field) = match &item.kind {
             ExprKind::Ident(param) => (param.as_str(), None),

@@ -785,12 +785,17 @@ fn accessibility_text(acceptance: Option<&AtspiAcceptance>) -> String {
 /// the launcher reads of the app `meta`, signed by `publisher`.
 #[must_use]
 pub fn plain_manifest(meta: &PackageMeta, options: &BuildOptions, publisher: &str) -> String {
-    manifest_text(meta, None, None, &[], options, Some(publisher))
+    manifest_text(meta, &meta.app, None, None, &[], options, Some(publisher))
 }
 
-/// The manifest of the app `meta` is, signed by `publisher` (hex Ed25519 key), with the name the
-/// app gives itself in every language `catalogues` translates it in, and what the package's
-/// `app.toml` declares when it carries a program of its own (`program`).
+/// The manifest of the app `meta` is, carrying `id` as the package's id, signed by `publisher`
+/// (hex Ed25519 key), with the name the app gives itself in every language `catalogues`
+/// translates it in, and what the package's `app.toml` declares when it carries a program of its
+/// own (`program`).
+///
+/// `id` is the app's own id, which is `meta.app` but for a development build: its module is the
+/// device's own app ([`BuildOptions::app`]), while the manifest names the app it builds, from
+/// which the device derives the id it installs the build under.
 ///
 /// `publisher` is `None` for a build that is not to be signed: a development build, whose device
 /// fills in its own key as it packs it, and the desktop's, which signs nothing.
@@ -798,6 +803,7 @@ pub fn plain_manifest(meta: &PackageMeta, options: &BuildOptions, publisher: &st
 #[expect(clippy::too_many_lines, reason = "the manifest is one format template")]
 fn manifest_text(
     meta: &PackageMeta,
+    id: &str,
     accessibility: Option<&AtspiAcceptance>,
     program: Option<&SourceProgram>,
     catalogues: &[(String, String)],
@@ -918,7 +924,7 @@ mime = [{providers_mime}]
 ext = [{providers_ext}]
 schemes = [{providers_schemes}]
 {offers}"#,
-        id = toml_string(&meta.app),
+        id = toml_string(id),
         name = toml_string(&meta.title),
         category = toml_string(category),
         version = toml_string(&options.version),
@@ -1092,7 +1098,7 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> String + '_ {
 /// written, or a generated manifest does not validate.
 pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<BuiltApp>, String> {
     let publisher = hex::encode(identity.public_key_bytes());
-    let apps = assembled(options, Some(publisher.as_str()))?;
+    let apps = assembled(options, Some(publisher.as_str()), &[])?;
     deliver_all(apps, options, identity)
 }
 
@@ -1311,9 +1317,17 @@ fn publish_staged(
 /// say they are. A package's source catalogue is written from the sources into the module, never as
 /// a file. # Errors A package does not compile (the message lists the errors by file), or an ids
 /// lock cannot be written.
-fn compiled(options: &BuildOptions) -> Result<Vec<tilolang::source::BuiltPackage>, String> {
-    let (built, _) = crate::compile(&options.dir, &options.search, &mut OsEntropy::default())
-        .map_err(|e| e.to_string())?;
+fn compiled(
+    options: &BuildOptions,
+    compile_as: &[(String, String)],
+) -> Result<Vec<tilolang::source::BuiltPackage>, String> {
+    let (built, _) = crate::compile_for(
+        &options.dir,
+        &options.search,
+        compile_as,
+        &mut OsEntropy::default(),
+    )
+    .map_err(|e| e.to_string())?;
     for package in &built {
         if options.locked {
             refuse_stale(package)?;
@@ -1352,13 +1366,25 @@ struct Assembled {
     digest: String,
 }
 
-/// Compile the package in `options.dir` and those it uses, its bundle carrying those it uses. #
-/// Errors A package does not compile (the message lists the errors by file).
-fn assembled(options: &BuildOptions, publisher: Option<&str>) -> Result<Vec<Assembled>, String> {
-    let built = compiled(options)?;
+/// Compile the package in `options.dir` and those it uses, its bundle carrying those it uses. A
+/// package the compile-as pairs name is compiled as the id they give: a development build is the
+/// device's own. # Errors A package does not compile (the message lists the errors by file).
+fn assembled(
+    options: &BuildOptions,
+    publisher: Option<&str>,
+    compile_as: &[(String, String)],
+) -> Result<Vec<Assembled>, String> {
+    let built = compiled(options, compile_as)?;
     let mut apps = Vec::new();
     for (package, bundle) in built.iter().zip(tilolang_tilo::bundle::of_build(&built)) {
         let meta = &package.compiled.meta;
+        // The id the manifest names, which a development build's module does not: it is the
+        // device's own app, installed under the id its marking derives from the app it builds.
+        let id = package
+            .source
+            .header()
+            .0
+            .unwrap_or_else(|| meta.app.clone());
         let accessibility = source_accessibility(&package.dir)?;
         let program = source_program(&package.dir, meta)?;
         let files = match &program {
@@ -1367,6 +1393,7 @@ fn assembled(options: &BuildOptions, publisher: Option<&str>) -> Result<Vec<Asse
         };
         let manifest = manifest_text(
             meta,
+            &id,
             accessibility.as_ref(),
             program.as_ref(),
             &bundle.catalogues(),
@@ -1375,7 +1402,7 @@ fn assembled(options: &BuildOptions, publisher: Option<&str>) -> Result<Vec<Asse
         );
         let digest = digest(&manifest, &bundle, &files)?;
         apps.push(Assembled {
-            app: meta.app.clone(),
+            app: id,
             title: meta.title.clone(),
             meta: meta.clone(),
             manifest,
@@ -1496,6 +1523,7 @@ pub fn deliver_compiled(
     let bundle = Bundle::new(compiled, imports.iter().copied());
     let manifest = manifest_text(
         meta,
+        &meta.app,
         None,
         None,
         &bundle.catalogues(),
@@ -1525,8 +1553,11 @@ pub fn deliver_compiled(
 /// reads them. The device marks it, packs it and signs it with its own key, under the id its
 /// marking derives; the tool never sees that key and never signs.
 pub struct StagedDev {
-    /// The app's own id, the one its sources name; the installed build's differs.
+    /// The app's own id, the one its sources name and its manifest carries; the device derives
+    /// the id it installs the build under from it.
     pub app: String,
+    /// The id the module is compiled as: the device's own development build of the app.
+    pub dev: String,
     pub title: String,
     pub meta: PackageMeta,
     /// The manifest the device packs: the app's own, with no publisher filled in yet.
@@ -1539,15 +1570,19 @@ pub struct StagedDev {
 }
 
 /// Compile the packages of `options` and stage each as the directory the running device installs
-/// as its development build, under `options.out/dev`. Nothing is packed, signed or verified: the
-/// device does that, with its own key.
+/// as its development build, under `options.out/dev`. Each package the compile-as pairs name is
+/// compiled as the id they give, while its manifest names the app it builds. Nothing is packed,
+/// signed or verified: the device does that, with its own key.
 ///
 /// # Errors
 /// A package does not compile (the message lists the errors by file), or a file cannot be written.
-pub fn stage_dev(options: &BuildOptions) -> Result<Vec<StagedDev>, String> {
+pub fn stage_dev(
+    options: &BuildOptions,
+    compile_as: &[(String, String)],
+) -> Result<Vec<StagedDev>, String> {
     let staged_root = options.out.join("dev");
     let mut staged = Vec::new();
-    for app in assembled(options, None)? {
+    for app in assembled(options, None, compile_as)? {
         let dir = staged_root.join(short_name(&app.app));
         if dir.exists() {
             std::fs::remove_dir_all(&dir).map_err(io(&dir))?;
@@ -1579,6 +1614,7 @@ pub fn stage_dev(options: &BuildOptions) -> Result<Vec<StagedDev>, String> {
         let payload = payload_of(&dir)?;
         staged.push(StagedDev {
             app: app.app,
+            dev: app.meta.app.clone(),
             title: app.title,
             meta: app.meta,
             manifest,
@@ -1735,6 +1771,7 @@ mod tests {
                 engine: Some("tilo-runtime/2026.10.23-chromium".into()),
                 ..PackageMeta::default()
             },
+            "so.tilo.example",
             None,
             None,
             &[],
@@ -1748,6 +1785,7 @@ mod tests {
         assert!(
             !manifest_text(
                 &PackageMeta::default(),
+                "",
                 None,
                 None,
                 &[],
@@ -1772,6 +1810,7 @@ mod tests {
                     web: web.iter().map(|host| (*host).to_owned()).collect(),
                     ..PackageMeta::default()
                 },
+                "so.tilo.example",
                 None,
                 None,
                 &[],

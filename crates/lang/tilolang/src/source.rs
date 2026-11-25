@@ -14,7 +14,7 @@ use crate::diag::Diagnostic;
 use crate::diag::Span;
 use crate::ids::{Entropy, IdsLock};
 use crate::meta::PackageMeta;
-use crate::package::{Compiled, compile_package_source_with};
+use crate::package::{Compiled, compile_package_source_for};
 use crate::parser::parse_file_at;
 
 pub const IDS_FILE: &str = "app.ids";
@@ -491,9 +491,21 @@ pub fn compile_package(
     published: &[PackageMeta],
     rng: &mut dyn Entropy,
 ) -> Result<Vec<BuiltPackage>, BuildError> {
+    compile_package_for(root, search, published, &[], rng)
+}
+
+/// [`compile_package`], where the compile-as pairs say which id a package compiles as: a development
+/// build is the device's own app, which is not the id its sources declare.
+pub fn compile_package_for(
+    root: &Path,
+    search: &[PathBuf],
+    published: &[PackageMeta],
+    compile_as: &[(String, String)],
+    rng: &mut dyn Entropy,
+) -> Result<Vec<BuiltPackage>, BuildError> {
     let dirs =
         dependency_order_with(root, search, &apps_of(published)).map_err(BuildError::Read)?;
-    compile_dirs(&dirs, published, rng)
+    compile_dirs_as(&dirs, published, compile_as, rng)
 }
 
 #[must_use]
@@ -511,13 +523,24 @@ pub fn compile_dirs(
     extra: &[PackageMeta],
     rng: &mut dyn Entropy,
 ) -> Result<Vec<BuiltPackage>, BuildError> {
-    compile_in_order(
+    compile_dirs_as(dirs, extra, &[], rng)
+}
+
+/// [`compile_dirs`], where the compile-as pairs say which id a package compiles as.
+fn compile_dirs_as(
+    dirs: &[PathBuf],
+    extra: &[PackageMeta],
+    compile_as: &[(String, String)],
+    rng: &mut dyn Entropy,
+) -> Result<Vec<BuiltPackage>, BuildError> {
+    compile_in_order_as(
         dirs.iter().map(|dir| {
             let source = PackageSource::read_dir(dir).map_err(BuildError::Read)?;
             let ids = read_ids(dir).map_err(BuildError::Read)?;
             Ok((dir.clone(), source, ids))
         }),
         extra,
+        compile_as,
         rng,
     )
 }
@@ -533,13 +556,28 @@ pub fn compile_in_order(
     extra: &[PackageMeta],
     rng: &mut dyn Entropy,
 ) -> Result<Vec<BuiltPackage>, BuildError> {
+    compile_in_order_as(packages, extra, &[], rng)
+}
+
+/// [`compile_in_order`], where the compile-as pairs say which id a package compiles as: every other
+/// keeps the id its sources declare.
+fn compile_in_order_as(
+    packages: impl IntoIterator<Item = Result<(PathBuf, PackageSource, IdsLock), BuildError>>,
+    extra: &[PackageMeta],
+    compile_as: &[(String, String)],
+    rng: &mut dyn Entropy,
+) -> Result<Vec<BuiltPackage>, BuildError> {
     let mut out: Vec<BuiltPackage> = Vec::new();
     for package in packages {
         let (dir, source, ids) = package?;
         let mut imports = extra.to_vec();
         imports.extend(out.iter().map(|b| b.compiled.meta.clone()));
+        let app = compile_as
+            .iter()
+            .find(|(of, _)| source.header().0.as_deref() == Some(of.as_str()))
+            .map(|(_, id)| id.as_str());
         let compiled =
-            compile_package_source_with(&source, &ids, &imports, rng).map_err(|diags| {
+            compile_package_source_for(&source, &ids, &imports, app, rng).map_err(|diags| {
                 BuildError::Diagnostics {
                     dir: dir.clone(),
                     diags,
