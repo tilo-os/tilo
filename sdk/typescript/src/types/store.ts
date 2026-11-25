@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.store@fec66f37f3dc4af7";
+export const SURFACE = "so.tilo.store@b68a7236639baac4";
 
 /** The arguments of `get`. */
 export interface GetArgs {
@@ -63,6 +63,12 @@ export interface PollArgs {
 /** The arguments of `follow`. */
 export interface FollowArgs {
   a: App;
+}
+
+/** The arguments of `begin_reading`. */
+export interface BeginReadingArgs {
+  op: string;
+  ask: string;
 }
 
 /** The arguments of `begin`. */
@@ -294,7 +300,6 @@ export interface App extends tilo.Resource {
   "66hvm5fy": boolean;  // details_read
   "7l5m7ka6": boolean;  // updatable
   awr7kqfn: string;  // trouble
-  qbd5uogv: string;  // failed
   /** Gets an app the workspace does not run yet: the newest version its source offers. */
   get(): Promise<void>;
   /** Runs `get` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -409,8 +414,6 @@ export interface Store extends tilo.Resource {
   a6ibqgbw: Array<tilo.Entry<Block>>;  // blocks
   "72gq3jue": string;  // status
   sotfrvum: string;  // trouble
-  y63chpxh: string;  // flathub_trouble
-  "6udr6hps": string;  // command_trouble
   eubzl4qx: string;  // reading
   e22zgwb6: boolean;  // flatpak
   uxwwy2fl: string;  // flatpak_trouble
@@ -434,7 +437,9 @@ export interface Store extends tilo.Resource {
   begin_reading(args: {
     op: string;
     ask: string;
-  }): Promise<boolean>;
+  }): Promise<void>;
+  /** Runs `begin_reading` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  begin_readingMany(items: BeginReadingArgs[]): Promise<tilo.ActionAnswer[]>;
   /** A job the engine started for `a`, or why it did not start. */
   begin(args: {
     a: App;
@@ -593,7 +598,7 @@ export interface Store extends tilo.Resource {
 
 /** The actions `Store` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const STORE_ACTIONS = ["poll", "pollMany", "follow", "followMany", "begin_reading", "begin", "beginMany", "read_app", "read_appMany", "show_details", "show_detailsMany", "take_catalogue", "take_catalogueMany", "read_flathub", "read_flathubMany", "read_flathub_details", "read_flathub_detailsMany", "absorb_text", "absorb_remote_text", "absorb_remote_textMany", "refresh_remotes", "refresh_remotesMany", "add_remote", "add_remoteMany", "enable_remote", "enable_remoteMany", "disable_remote", "disable_remoteMany", "remote_change", "remote_changeMany", "remove_remote", "remove_remoteMany", "browse", "browseMany", "update_all", "update_allMany", "add_bot", "add_botMany", "block_app", "block_appMany", "unblock_app", "unblock_appMany", "import_package", "install_reviewed", "install_reviewedMany", "open_reference", "open_referenceMany", "open_link", "review_runtime", "draft_report", "record_moderation_case", "record_moderation_caseMany", "prepare_report", "refresh_status", "refresh_statusMany"] as const;
+export const STORE_ACTIONS = ["poll", "pollMany", "follow", "followMany", "begin_reading", "begin_readingMany", "begin", "beginMany", "read_app", "read_appMany", "show_details", "show_detailsMany", "take_catalogue", "take_catalogueMany", "read_flathub", "read_flathubMany", "read_flathub_details", "read_flathub_detailsMany", "absorb_text", "absorb_remote_text", "absorb_remote_textMany", "refresh_remotes", "refresh_remotesMany", "add_remote", "add_remoteMany", "enable_remote", "enable_remoteMany", "disable_remote", "disable_remoteMany", "remote_change", "remote_changeMany", "remove_remote", "remove_remoteMany", "browse", "browseMany", "update_all", "update_allMany", "add_bot", "add_botMany", "block_app", "block_appMany", "unblock_app", "unblock_appMany", "import_package", "install_reviewed", "install_reviewedMany", "open_reference", "open_referenceMany", "open_link", "review_runtime", "draft_report", "record_moderation_case", "record_moderation_caseMany", "prepare_report", "refresh_status", "refresh_statusMany"] as const;
 
 /** The `tl.so.tilo.store.Store` kind at `path`. */
 export function store(ws: tilo.Workspace, path: string): Store {

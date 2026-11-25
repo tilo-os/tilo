@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.weather@2eec6dbb293b7936";
+export const SURFACE = "so.tilo.weather@fedb92c4c730c9b5";
 
 /** The arguments of `use_as_default`. */
 export interface UseAsDefaultArgs {
@@ -32,11 +32,6 @@ export interface UseAsDefaultArgs {
 /** The arguments of `move_to_top`. */
 export interface MoveToTopArgs {
   place: Place;
-}
-
-/** The arguments of `move_place`. */
-export interface MovePlaceArgs {
-  ids: string[];
 }
 
 /** The arguments of `rename_place`. */
@@ -65,10 +60,6 @@ export interface ReadNextArgs {
 
 /** The arguments of `poll_weather`. */
 export interface PollWeatherArgs {
-}
-
-/** The arguments of `look_for_place`. */
-export interface LookForPlaceArgs {
 }
 
 /** The arguments of `end_search`. */
@@ -281,7 +272,6 @@ export function found(ws: tilo.Workspace, path: string): Found {
 export interface Searching extends tilo.Resource {
   fmhvvp6l: string;  // wanted
   o4whnz6t: string;  // asked
-  jwbxovvp: string;  // pending
   "5o5rohu5": Array<tilo.Entry<Found>>;  // found
   wgepvfwu: string;  // note
 }
@@ -324,12 +314,6 @@ export interface Locations extends tilo.Resource {
   }): Promise<void>;
   /** Runs `move_to_top` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   move_to_topMany(items: MoveToTopArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Moves the place a person dragged, before the one it was dropped on: the list's reorder reports the two ids in that order. */
-  move_place(args: {
-    ids: string[];
-  }): Promise<void>;
-  /** Runs `move_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  move_placeMany(items: MovePlaceArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Renames a place the person follows. */
   rename_place(args: {
     place: Place;
@@ -362,10 +346,6 @@ export interface Locations extends tilo.Resource {
   poll_weather(): Promise<void>;
   /** Runs `poll_weather` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   poll_weatherMany(items: PollWeatherArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Looks for what the person typed once it has stopped changing: the query waits one look, and the device is asked for the last query only. */
-  look_for_place(): Promise<void>;
-  /** Runs `look_for_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  look_for_placeMany(items: LookForPlaceArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Looks for places by name: the window asks the service once per query as it is typed. */
   begin_search(): Promise<Searching>;
   /** Empties the field and stops looking. */
@@ -390,7 +370,7 @@ export interface Locations extends tilo.Resource {
 
 /** The actions `Locations` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LOCATIONS_ACTIONS = ["save_place", "use_as_default", "use_as_defaultMany", "move_to_top", "move_to_topMany", "move_place", "move_placeMany", "rename_place", "rename_placeMany", "remove_place", "remove_placeMany", "stop_refresh", "stop_refreshMany", "retry_place", "retry_placeMany", "read_next", "read_nextMany", "poll_weather", "poll_weatherMany", "look_for_place", "look_for_placeMany", "begin_search", "end_search", "end_searchMany", "add_found", "accept_found", "accept_foundMany"] as const;
+export const LOCATIONS_ACTIONS = ["save_place", "use_as_default", "use_as_defaultMany", "move_to_top", "move_to_topMany", "rename_place", "rename_placeMany", "remove_place", "remove_placeMany", "stop_refresh", "stop_refreshMany", "retry_place", "retry_placeMany", "read_next", "read_nextMany", "poll_weather", "poll_weatherMany", "begin_search", "end_search", "end_searchMany", "add_found", "accept_found", "accept_foundMany"] as const;
 
 /** The `tl.so.tilo.weather.Locations` kind at `path`. */
 export function locations(ws: tilo.Workspace, path: string): Locations {

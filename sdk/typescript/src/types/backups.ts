@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.backups@ba83332b67941f8a";
+export const SURFACE = "so.tilo.backups@c80c34fc77c08786";
 
 /** Whether a stored snapshot is whole, being checked or known broken. One of "complete", "verifying", "failed". */
 export type Health = "complete" | "verifying" | "failed";
@@ -147,13 +147,6 @@ export interface CloseSnapshotArgs {
 export interface AllowOverwriteArgs {
 }
 
-/** The arguments of `fold_folder`. */
-export interface FoldFolderArgs {
-  s: Snapshot;
-  path: string;
-  folded: boolean;
-}
-
 /** Notice — `tl.tilo.host.Notice`. */
 export interface Notice extends tilo.Resource {
   notice_to: string;  // to
@@ -177,7 +170,6 @@ export function notice(ws: tilo.Workspace, path: string): Notice {
 /** Entry — `tl.so.tilo.backups.Entry`. */
 export interface Entry extends tilo.Resource {
   cvlieest: string;  // name
-  dssaufce: string;  // path
   c2m5wzf4: number;  // depth
   pfl5jyx2: number;  // size
   tzyurmps: boolean;  // folder
@@ -192,20 +184,6 @@ export function entry(ws: tilo.Workspace, path: string): Entry {
   return resourceProxy(ws, path, SURFACE, ENTRY_ACTIONS) as unknown as Entry;
 }
 
-/** Folded — `tl.so.tilo.backups.Folded`. */
-export interface Folded extends tilo.Resource {
-  yp5mxjwc: string;  // path
-}
-
-/** The actions `Folded` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const FOLDED_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.backups.Folded` kind at `path`. */
-export function folded(ws: tilo.Workspace, path: string): Folded {
-  return resourceProxy(ws, path, SURFACE, FOLDED_ACTIONS) as unknown as Folded;
-}
-
 /** Snapshot — `tl.so.tilo.backups.Snapshot`. */
 export interface Snapshot extends tilo.Resource {
   dallfwqf: string;  // label
@@ -218,7 +196,6 @@ export interface Snapshot extends tilo.Resource {
   yr6zgb2x: number;  // files_changed
   cyesgrji: string;  // failure
   "5nvgiivd": Array<tilo.Entry<Entry>>;  // files
-  sikyuvd6: Array<tilo.Entry<Folded>>;  // folded
 }
 
 /** The actions `Snapshot` reaches before it is read: `ws` calls them without a
@@ -271,7 +248,6 @@ export interface Backups extends tilo.Resource {
   x6ca2mpx: Origin;  // source_origin
   gfsjtev7: Cadence;  // source_cadence
   "3wbouwis": boolean;  // source_failing
-  ymfvuwvo: number;  // next_run
   v3i3cihq: string;  // destination_name
   kqbve5pf: number;  // used_bytes
   mdbssite: number;  // total_bytes
@@ -411,19 +387,11 @@ export interface Backups extends tilo.Resource {
   allow_overwrite(): Promise<void>;
   /** Runs `allow_overwrite` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   allow_overwriteMany(items: AllowOverwriteArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Folds a folder of the snapshot's file index away, or opens it again. */
-  fold_folder(args: {
-    s: Snapshot;
-    path: string;
-    folded: boolean;
-  }): Promise<void>;
-  /** Runs `fold_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  fold_folderMany(items: FoldFolderArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Backups` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const BACKUPS_ACTIONS = ["keep_catalog", "keep_catalogMany", "back_up_now", "back_up_nowMany", "verify", "verifyMany", "ask_restore", "ask_restoreMany", "begin_restore", "begin_restoreMany", "restore_now", "restore_nowMany", "stop_work", "stop_workMany", "poll", "pollMany", "open_snapshot", "open_snapshotMany", "set_order", "set_orderMany", "show_place", "show_placeMany", "keep_more", "keep_moreMany", "keep_fewer", "keep_fewerMany", "dismiss", "dismissMany", "choose_source", "choose_sourceMany", "choose_destination", "choose_destinationMany", "go", "goMany", "go_up", "go_upMany", "pick", "pickMany", "cancel_pick", "cancel_pickMany", "read_picker", "read_pickerMany", "start_work", "start_workMany", "close_snapshot", "close_snapshotMany", "allow_overwrite", "allow_overwriteMany", "fold_folder", "fold_folderMany"] as const;
+export const BACKUPS_ACTIONS = ["keep_catalog", "keep_catalogMany", "back_up_now", "back_up_nowMany", "verify", "verifyMany", "ask_restore", "ask_restoreMany", "begin_restore", "begin_restoreMany", "restore_now", "restore_nowMany", "stop_work", "stop_workMany", "poll", "pollMany", "open_snapshot", "open_snapshotMany", "set_order", "set_orderMany", "show_place", "show_placeMany", "keep_more", "keep_moreMany", "keep_fewer", "keep_fewerMany", "dismiss", "dismissMany", "choose_source", "choose_sourceMany", "choose_destination", "choose_destinationMany", "go", "goMany", "go_up", "go_upMany", "pick", "pickMany", "cancel_pick", "cancel_pickMany", "read_picker", "read_pickerMany", "start_work", "start_workMany", "close_snapshot", "close_snapshotMany", "allow_overwrite", "allow_overwriteMany"] as const;
 
 /** The `tl.so.tilo.backups.Backups` kind at `path`. */
 export function backups(ws: tilo.Workspace, path: string): Backups {
