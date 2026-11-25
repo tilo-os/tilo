@@ -947,6 +947,65 @@ fn the_windows_catalogue_keeps_what_an_action_takes_and_whether_it_can_run() {
     );
 }
 
+/// An action the app asks a person nothing before it runs still takes the arguments it declares:
+/// their press runs it as it stands, and an agent or the palette gives it the query it searches
+/// with. The window offers the parameters the app published, and no form before a press.
+#[test]
+fn the_windows_catalogue_keeps_the_arguments_an_action_is_asked_nothing_for() {
+    use tilo_actions::{
+        ActionArgs, ActionInput, ActionParam, ActionSpec, ExecutionLocus, ParamType, ResourceSpec,
+    };
+    let spec = ActionSpec::typed(
+        "search",
+        "Search",
+        "Search",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::optional_owned(
+            "query",
+            ParamType::Text,
+            "query: Text; when left out, `youtube.search_text` as it is when invoked",
+        )],
+        |_args| tilo_actions::EncodedAction {
+            type_id: "test.search".to_owned(),
+            payload: Vec::new(),
+        },
+    )
+    .with_immediate_per_target();
+    let resource = ResourceSpec::new("youtube:1", "test.youtube", "YouTube").with_action(spec);
+    let published = crate::catalogue::whole(&tilo_actions::api::survey(&[resource]));
+
+    let (mut app, mut window) = window();
+    send(&mut app, &[ToUi::Actions(published)]);
+    window.receive();
+    let action = &window
+        .catalogue()
+        .first()
+        .and_then(|resource| resource.actions.first())
+        .expect("the app's action is declared for the window")
+        .clone();
+    assert!(
+        matches!(action.input(), ActionInput::Immediate(_)),
+        "a press asks the person nothing"
+    );
+    assert_eq!(
+        action
+            .params()
+            .iter()
+            .map(|param| (&*param.name, param.ty, param.required))
+            .collect::<Vec<_>>(),
+        [("query", ParamType::Text, false)],
+        "the query is the caller's to give"
+    );
+    let given = serde_json::json!({ "query": "compositor" })
+        .as_object()
+        .cloned()
+        .expect("an object");
+    assert!(
+        ActionArgs::bind_json(action.params(), &given).is_ok(),
+        "a caller's query binds against what the window offers"
+    );
+}
+
 /// The window's own check of a press decides the need the app declared for the action: an
 /// undoable change of the workspace's records stays one, which an editor makes, and an outside
 /// effect stays one, which asks them first.

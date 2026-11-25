@@ -160,11 +160,13 @@ impl AppWindow {
 fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
     let address = descriptor.address.clone();
     // The app says what an invocation of its action takes, and the window lists and collects it by
-    // that same declaration.
-    let (params, placeholder) = match &descriptor.input {
-        InputSpec::None => (Vec::new(), String::new()),
+    // that same declaration. An action a person is asked nothing for still takes the arguments it
+    // declares — `search(query: …)` runs with its defaults when pressed, and a caller gives the
+    // query — so the window offers those parameters too, and asks nothing before a press.
+    let (params, placeholder, asked) = match &descriptor.input {
+        InputSpec::None => (descriptor.params.clone(), String::new(), false),
         InputSpec::Text { placeholder, .. } if !descriptor.params.is_empty() => {
-            (descriptor.params.clone(), placeholder.clone())
+            (descriptor.params.clone(), placeholder.clone(), true)
         }
         InputSpec::Text {
             prompt,
@@ -182,6 +184,7 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
                     prompt.clone(),
                 )],
                 placeholder.clone(),
+                true,
             )
         }
     };
@@ -209,6 +212,11 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
             })
         }),
     );
+    if !asked {
+        // The app asks the person nothing before it runs: their press runs it as it stands, while
+        // a caller may still give the arguments it declares.
+        spec = spec.with_immediate_per_target();
+    }
     let ty = spec.type_mut();
     ty.state.clone_from(&descriptor.state);
     ty.contract
