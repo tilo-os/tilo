@@ -112,6 +112,10 @@ pub struct ShellPress {
     pub instance: String,
     /// The resource the action acts on.
     pub resource: String,
+    /// Where in that window the person pressed, in the window's logical pixels, as the shell
+    /// drew the control: what the question stands at. `None` where the shell knows no point.
+    /// Always written: the link's encoding is positional.
+    pub at: Option<tilo_actions::remote::asked::PressPoint>,
 }
 
 /// What a shell asks of the device's documents and actions.

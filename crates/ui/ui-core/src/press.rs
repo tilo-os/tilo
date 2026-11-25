@@ -43,6 +43,27 @@ pub fn note(serial: u32) {
     NEWEST.with(|newest| newest.set(Some(serial)));
 }
 
+/// The press this window is handling answered the control standing at `rect` in it (in the
+/// window's logical pixels): a call the press makes carries the control's centre as where the
+/// person's question stands. What a key press says, which has no point of its own.
+pub fn note_control(rect: crate::kurbo::Rect) {
+    if let Some(serial) = current() {
+        tilo_actions::remote::press_points::note(serial, centre_of(rect));
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a control's place in its window is a few thousand pixels at most"
+)]
+fn centre_of(rect: crate::kurbo::Rect) -> tilo_actions::remote::asked::PressPoint {
+    let centre = rect.center();
+    tilo_actions::remote::asked::PressPoint {
+        x: centre.x.round() as i32,
+        y: centre.y.round() as i32,
+    }
+}
+
 /// Forget the newest input, so a test's press does not outlive it on a reused thread.
 #[cfg(test)]
 pub(crate) fn forget() {

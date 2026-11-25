@@ -72,6 +72,7 @@ pub mod person_accounts;
 pub mod person_connections;
 pub mod person_telling;
 pub mod person_vault;
+pub mod press_points;
 mod providers;
 mod resource_read;
 pub mod search;
@@ -2447,6 +2448,11 @@ pub struct RemoteActionFrame {
     /// press. It is transport, never part of the invocation's identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub press: Option<u32>,
+    /// Where in the window the control that press answered stands, as the window says of a key
+    /// press ([`press_points`]): what the person's question stands at when the compositor's
+    /// record of the press has no point. Like `press`, transport only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub press_at: Option<asked::PressPoint>,
 }
 
 /// Why bytes are not a usable [`RemoteActionFrame`].
@@ -2469,13 +2475,16 @@ impl RemoteActionFrame {
             message,
             workspace: None,
             press: None,
+            press_at: None,
         }
     }
 
-    /// The same request, asked by the person's press the compositor issued `serial` with.
+    /// The same request, asked by the person's press the compositor issued `serial` with, and
+    /// carrying where the control it answered stands when its window said.
     #[must_use]
     pub fn pressed(mut self, press: Option<u32>) -> Self {
         self.press = press;
+        self.press_at = press.and_then(press_points::of);
         self
     }
 

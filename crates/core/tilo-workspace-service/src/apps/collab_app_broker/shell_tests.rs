@@ -760,6 +760,7 @@ async fn an_apps_connection_is_refused_the_persons_shell() {
             pressed: Some(runtime_collab::wire::shell::ShellPress {
                 instance: "another-app's-window".to_owned(),
                 resource: "device:server".to_owned(),
+                at: None,
             }),
         },
     )
@@ -814,7 +815,7 @@ async fn remote_action(
     record: &Record,
     message: tilo_actions::remote::RemoteActionMessage,
 ) -> tilo_actions::remote::RemoteActionMessage {
-    pressed_action(browser, record, message, None).await
+    pressed_action(browser, record, message, (None, None)).await
 }
 
 /// What the daemon answers `message`, sent on the Browser's connection about `record`, naming
@@ -823,11 +824,12 @@ async fn pressed_action(
     browser: &mut Endpoint,
     record: &Record,
     message: tilo_actions::remote::RemoteActionMessage,
-    press: Option<u32>,
+    (press, press_at): (Option<u32>, Option<tilo_actions::remote::asked::PressPoint>),
 ) -> tilo_actions::remote::RemoteActionMessage {
     use tilo_actions::remote::RemoteActionFrame;
     let mut frame = RemoteActionFrame::new(message);
     frame.press = press;
+    frame.press_at = press_at;
     let answered = browser
         .call(Operation::Command {
             record: record.clone(),
@@ -1203,10 +1205,14 @@ async fn a_press_that_asks_first_is_kept_where_it_was_pressed() {
         .asked_store()
         .expect("the daemon keeps asked records");
 
-    // The compositor saw the person press the Browser's window at (140, 62), and one press
-    // in another window.
+    // The compositor saw the person press the Browser's window at (140, 62), press a key in
+    // it, and press in another window.
     let point = PressPoint { x: 140, y: 62 };
-    for (window, serial, at) in [(WINDOW, 5, Some(point)), (WINDOW + 1, 6, None)] {
+    for (window, serial, at) in [
+        (WINDOW, 5, Some(point)),
+        (WINDOW, 7, None),
+        (WINDOW + 1, 6, None),
+    ] {
         assert_eq!(
             host.shell
                 .call(ShellCall::Press { window, serial, at })
@@ -1216,11 +1222,13 @@ async fn a_press_that_asks_first_is_kept_where_it_was_pressed() {
         );
     }
 
-    // Raise the Browser's call for the page's prompt `prompt` naming the press `serial`: kept
-    // as its one asked record, which says where it was pressed.
+    // Raise the Browser's call for the page's prompt `prompt` naming the press `serial`, its
+    // window saying the control the press answered stands at `control`: kept as its one asked
+    // record, which says where it was pressed.
     let raised = async |browser: &mut Endpoint,
                         prompt: (u32, &str, &str),
-                        serial: Option<u32>|
+                        serial: Option<u32>,
+                        control: Option<PressPoint>|
            -> Option<Pressed> {
         let request = asking_for(&host.workspace, PAGE, prompt);
         let invocation = request.invocation;
@@ -1229,7 +1237,7 @@ async fn a_press_that_asks_first_is_kept_where_it_was_pressed() {
                 browser,
                 &channel,
                 RemoteActionMessage::Invoke(request),
-                serial
+                (serial, control)
             )
             .await,
             RemoteActionMessage::Receipt(InvocationReceipt {
@@ -1248,29 +1256,69 @@ async fn a_press_that_asks_first_is_kept_where_it_was_pressed() {
         asked.asked.pressed.clone()
     };
 
-    assert_eq!(
-        raised(&mut browser, (7, "https://meet.example", "camera"), Some(5)).await,
+    let in_window = |at| {
         Some(Pressed {
             device: hex::encode(workspaces.device_cert().device_public_key),
             app: BROWSER.to_owned(),
             instance: WINDOW.to_string(),
             resource: PAGE.to_owned(),
-            at: Some(point),
-        }),
+            at,
+        })
+    };
+    // Where the Browser says the control a press answered stands, which the compositor never saw.
+    let control = PressPoint { x: 610, y: 400 };
+    assert_eq!(
+        raised(
+            &mut browser,
+            (7, "https://meet.example", "camera"),
+            Some(5),
+            None
+        )
+        .await,
+        in_window(Some(point)),
         "the question stands at the press in the Browser's window"
     );
     assert_eq!(
         raised(
             &mut browser,
+            (10, "https://meet.example", "camera"),
+            Some(5),
+            Some(control)
+        )
+        .await,
+        in_window(Some(point)),
+        "where a pointer pressed is the compositor's word, never the app's"
+    );
+    assert_eq!(
+        raised(
+            &mut browser,
+            (11, "https://meet.example", "microphone"),
+            Some(7),
+            Some(control)
+        )
+        .await,
+        in_window(Some(control)),
+        "a key press stands at the control its window says the key answered"
+    );
+    assert_eq!(
+        raised(
+            &mut browser,
             (8, "https://meet.example", "microphone"),
-            None
+            None,
+            Some(control)
         )
         .await,
         None,
         "a call no press made stands in no window"
     );
     assert_eq!(
-        raised(&mut browser, (9, "https://meet.example", "camera"), Some(6)).await,
+        raised(
+            &mut browser,
+            (9, "https://meet.example", "camera"),
+            Some(6),
+            Some(control)
+        )
+        .await,
         None,
         "a press in another window is not this one's"
     );

@@ -660,6 +660,10 @@ impl JoinedChannel {
         let viewed = self.opened_for().filter(|_| current.agent_id.is_none());
         let person = viewed.unwrap_or_else(|| current.caller(&route.cluster_id));
         let press = request.press;
+        // Where the control a key press answered stands, as the app's window says: its word
+        // places a question only in its own window, for a press the compositor attested there,
+        // and never over the point a pointer's press brought.
+        let press_at = request.press_at;
         // A step the action of an invocation delivered to this very connection declares is that
         // invocation's: its provider is told which one, as it was delivered, never as the call
         // says.
@@ -774,7 +778,10 @@ impl JoinedChannel {
                 Some((provider, caller, invoke)) => {
                     // A call the person's press in this connection's window made asks there.
                     let pressed = if super::app_asks::waits_for_yes(&answer) {
-                        state.pressed_in_window(peer_id, press).await
+                        state
+                            .pressed_in_window(peer_id, press)
+                            .await
+                            .map(|(window, at)| (window, at.or(press_at)))
                     } else {
                         None
                     };

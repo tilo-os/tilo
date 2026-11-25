@@ -62,6 +62,54 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority
     }
 }
 
+/// An app whose every call asks its person first.
+struct AsksFirst;
+
+impl tilo_actions::remote::ActionProvider for AsksFirst {
+    fn query(
+        &self,
+        _: &Caller,
+        _: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
+    > {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionCallError::UnknownAction,
+        ))
+    }
+
+    fn invoke(
+        &self,
+        _: &Caller,
+        _: InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        tilo_actions::remote::Pending::ready(Err(tilo_actions::remote::ActionCallError::asks(
+            tilo_actions::remote::asked::AskedFacts {
+                verb: "refresh".into(),
+                ..tilo_actions::remote::asked::AskedFacts::default()
+            },
+        )))
+    }
+
+    fn observe(
+        &self,
+        _: &Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _: &Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
+    }
+}
+
 #[tokio::test]
 #[allow(
     clippy::significant_drop_tightening,
@@ -187,6 +235,57 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         appearance: None,
         signed: None,
     };
+    // The person's own shell runs a call they pressed at a point of a window, and the call waits
+    // for their yes: its question keeps the window, and where in it they pressed.
+    let store = tilo_actions::remote::asked::AskedStore::opened(None, None, Vec::new()).unwrap();
+    let asked_here = super::super::asked::DeviceAsked::new(
+        Arc::clone(&store),
+        Arc::default(),
+        Box::new(|_| Err("nothing waits from before".to_owned())),
+    );
+    let pressed_run = RuntimeActionProvider {
+        session: provider.session.as_ref().map(|session| {
+            Arc::new(AdmittedRuntimeSession {
+                policy_time: session.policy_time.clone(),
+                provider: Arc::new(AsksFirst),
+                admission: Arc::clone(&session.admission),
+                agent: None,
+                projection: Some(owner.clone()),
+                pressed: Some(runtime_collab::wire::shell::ShellPress {
+                    instance: "p1".to_owned(),
+                    resource: "files.entry:/tmp/synthetic-report".to_owned(),
+                    at: Some(tilo_actions::remote::asked::PressPoint { x: 412, y: 96 }),
+                }),
+                own_shell: true,
+            })
+        }),
+        asked: Some(asked_here),
+        ..provider.clone()
+    };
+    let pressed_call = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        ..request.clone()
+    };
+    assert!(matches!(
+        pressed_run.invoke(&owner, pressed_call).poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let pressed: Vec<_> = store
+        .waiting_in(&workspace_id)
+        .into_iter()
+        .map(|waiting| waiting.asked.pressed)
+        .collect();
+    assert_eq!(
+        pressed,
+        vec![Some(tilo_actions::remote::asked::Pressed {
+            device: hex::encode(provider.workspaces.device_cert().device_public_key),
+            app: String::new(),
+            instance: "p1".to_owned(),
+            resource: "files.entry:/tmp/synthetic-report".to_owned(),
+            at: Some(tilo_actions::remote::asked::PressPoint { x: 412, y: 96 }),
+        })],
+        "the question stands where in the window the person pressed"
+    );
     let mut pending = provider.invoke(&owner, request.clone());
     assert!(matches!(pending.poll_ready(), PendingPoll::Waiting));
     turn();

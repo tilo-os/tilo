@@ -2761,6 +2761,14 @@ impl AppWindow {
         }
     }
 
+    /// The key press this window handles answered the control `key`: its place in the window is
+    /// where a question the call it makes raises stands. A control not laid out says nothing.
+    fn note_key_control(&self, key: Option<&str>) {
+        if let Some(rect) = key.and_then(|key| rect_of(self.body.as_ref(), key)) {
+            ui::press::note_control(rect);
+        }
+    }
+
     fn focused_control(&self) -> Option<String> {
         fn focused(widget: &dyn Widget) -> Option<String> {
             if widget.is_focused()
@@ -2925,6 +2933,15 @@ impl AppWindow {
     pub fn shell_mut(&mut self) -> Option<&mut NavShell> {
         self.shell()
     }
+}
+
+/// Whether `event` is a key going down: a press the person made with the keyboard.
+fn is_key_press(event: &ui::winit::event::WindowEvent) -> bool {
+    matches!(
+        event,
+        ui::winit::event::WindowEvent::KeyboardInput { event: key, .. }
+            if key.state == ui::winit::event::ElementState::Pressed && !key.repeat
+    )
 }
 
 fn composed_key(level: Level, key: &str) -> String {
@@ -3938,6 +3955,11 @@ impl ui::widget::Decorator for AppWindow {
         {
             self.pointed_after = Some(self.fired);
         }
+        // A key answers the control the keyboard is in, unless a control declares it (below):
+        // where a question its call raises stands.
+        if is_key_press(event) {
+            self.note_key_control(self.focused_control().as_deref());
+        }
         if self.hold_typing(event) || self.enter_moves_on(event, ctx.modifiers.state()) {
             *ctx.handled = true;
             return;
@@ -3982,6 +4004,7 @@ impl ui::widget::Decorator for AppWindow {
             }
             // The control that declares the action runs it.
             Press::Run(node_key, event) => {
+                self.note_key_control(Some(&node_key));
                 self.act(UiEvent::Fire(node_key, event, None, None));
                 self.take_events();
             }
