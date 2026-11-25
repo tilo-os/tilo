@@ -440,7 +440,7 @@ impl<R: Resource, A> Replica<R, A> {
     /// just joined would hold.
     #[must_use]
     pub fn fork(&mut self) -> Self {
-        let replica = Self {
+        Self {
             doc: self.doc.fork(),
             registry: ActionRegistry::with(crate::group::register::<R>),
             log: Vec::new(),
@@ -456,8 +456,7 @@ impl<R: Resource, A> Replica<R, A> {
             now_ms: self.now_ms,
             reader: None,
             marker: std::marker::PhantomData,
-        };
-        replica
+        }
     }
 
     /// Exchange every change with `other`, as sync does.
