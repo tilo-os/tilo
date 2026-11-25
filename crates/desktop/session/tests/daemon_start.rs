@@ -50,3 +50,30 @@ fn a_session_on_its_daemon_serving_the_seat_starts_and_answers() {
         "the session shows the person's workspaces it read through the daemon"
     );
 }
+
+/// The shell offers an app's actions in the workspace in front, as its search and launcher read
+/// them from the device's dispatch: the session asks the dispatch in each workspace it shows, so
+/// an app the person opened there is listed with its actions.
+#[test]
+fn the_shell_lists_an_opened_apps_actions_in_its_workspace() {
+    use tilo_session::AppActions as _;
+    let mut fixture =
+        crate::common::linked::Builder::of(crate::common::linked::DEFAULT_APP).start();
+    let apps = std::rc::Rc::clone(&fixture.apps);
+    let workspace = fixture.workspace.clone();
+    let listed = crate::common::wait_for(
+        &mut fixture.session,
+        "the app's actions in the shell's listing",
+        |session| {
+            session.step(Duration::from_millis(5)).expect("a frame");
+            apps.published(&workspace)
+                .into_iter()
+                .find(|published| published.app == crate::common::linked::DEFAULT_APP)
+        },
+    );
+    assert_eq!(
+        listed.workspace, workspace,
+        "listed in the workspace in front"
+    );
+    assert!(!listed.actions.is_empty(), "the app's actions are listed");
+}

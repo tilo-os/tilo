@@ -154,31 +154,51 @@ impl ShellDispatch {
         result
     }
 
-    /// Every action the apps publish on the device's dispatch that the shell's person is offered,
-    /// as rows of each app's listing, read on the dispatch's own runtime: what the shell offers in
-    /// its search and on an app's links, whether the app is open or closed.
+    /// Every action the apps publish on the device's dispatch that the shell's person is offered in
+    /// each of `workspaces`, as rows of each app's listing, read on the dispatch's own runtime: what
+    /// the shell offers in its search and on an app's links, whether the app is open or closed. Each
+    /// workspace is asked on its own, as the dispatch admits the person there; one that refuses
+    /// (one this device is not admitted to yet) lists nothing, and the others still list theirs:
+    /// the answer fails only when every workspace named refused, saying why the first did.
     #[must_use]
-    pub fn app_actions(&self) -> Pending<Result<Vec<tilo_actions::remote::CatalogueRow>, String>> {
+    pub fn app_actions(
+        &self,
+        workspaces: Vec<String>,
+    ) -> Pending<Result<Vec<tilo_actions::remote::CatalogueRow>, String>> {
         let (done, result) = tilo_actions::remote::pending();
         let shell = self.0.shell.clone();
         self.0.runtime.spawn(async move {
-            done.complete(
-                Self::app_rows(&shell)
-                    .await
-                    .map_err(|error| error.to_string()),
-            );
+            let mut rows = Vec::new();
+            let mut refused = None;
+            let mut answered = workspaces.is_empty();
+            for workspace in workspaces {
+                match Self::app_rows(&shell, &workspace).await {
+                    Ok(listed) => {
+                        answered = true;
+                        rows.extend(listed);
+                    }
+                    Err(error) => {
+                        refused.get_or_insert_with(|| format!("{workspace}: {error}"));
+                    }
+                }
+            }
+            done.complete(match refused {
+                Some(error) if !answered => Err(error),
+                _ => Ok(rows),
+            });
         });
         result
     }
 
     async fn app_rows(
         shell: &ShellClient,
+        workspace: &str,
     ) -> Result<Vec<tilo_actions::remote::CatalogueRow>, ActionCallError> {
         let publishers = CatalogueQuery {
             max_results: 0,
             ..CatalogueQuery::default()
         };
-        let providers = Self::page(shell, publishers).await?.providers;
+        let providers = Self::page(shell, workspace, publishers).await?.providers;
         let mut rows = Vec::new();
         for provider in providers {
             if tilo_actions::remote::application_provider(&provider.provider).is_none() {
@@ -190,7 +210,7 @@ impl ShellDispatch {
                 ..CatalogueQuery::default()
             };
             loop {
-                let page = Self::page(shell, query.clone()).await?;
+                let page = Self::page(shell, workspace, query.clone()).await?;
                 rows.extend(
                     tilo_actions::remote::expand(page.rows)
                         .into_iter()
@@ -206,14 +226,15 @@ impl ShellDispatch {
         Ok(rows)
     }
 
-    /// One page of the person's catalogue, asked of the daemon.
+    /// One page of the person's catalogue in `workspace`, asked of the daemon.
     async fn page(
         shell: &ShellClient,
+        workspace: &str,
         query: CatalogueQuery,
     ) -> Result<CataloguePage, ActionCallError> {
         match Self::ask(
             shell,
-            None,
+            Some(workspace.to_owned()),
             RemoteActionMessage::CatalogueRequest {
                 correlation: 0,
                 query,

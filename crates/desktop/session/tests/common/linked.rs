@@ -314,17 +314,16 @@ impl Fixture {
         let arguments = Map::from_iter([("shortcut".to_owned(), shortcut)]);
         let request = crate::common::invocation(&target, &Value::Object(arguments), None, None);
         let (shell, workspace) = (self.shell.clone(), self.workspace.clone());
-        let receipt = self
-            .answered(async move { shell.invoke_receipt(Some(&workspace), request).await })
-            .unwrap_or_else(|why| panic!("the person saves their shortcut: {why}"));
-        assert!(
-            matches!(
-                receipt.status,
-                tilo_actions::remote::ReceiptStatus::Completed { .. }
-            ),
-            "the workspace saved the shortcut: {:?}",
-            receipt.status
-        );
+        // The save is followed until it ends, as the person's own save is: it may be accepted
+        // first and committed a moment later.
+        self.answered(async move {
+            shell
+                .link()?
+                .dispatch()
+                .settled(Some(workspace), request)
+                .await
+        })
+        .unwrap_or_else(|why| panic!("the person saves their shortcut: {why}"));
     }
 
     /// Step the session until the shell shows the workspace's saved shortcut `id`, where the

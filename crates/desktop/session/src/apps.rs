@@ -125,6 +125,10 @@ pub struct Apps {
     items: items::Items,
     /// What the apps publish on the device's dispatch, as last read ([`AppActions::published`]).
     published: Arc<std::sync::Mutex<PublishedRows>>,
+    /// The workspaces the shell holds, by id, as the loop's last pass read them: what the apps'
+    /// published rows are asked in. Read on the pass rather than where the rows are read, which
+    /// may be inside the desktop's own pass.
+    shown_workspaces: RefCell<Vec<String>>,
 }
 
 /// The rows of what the apps publish, as the device's dispatch last answered them, and whether a
@@ -132,6 +136,8 @@ pub struct Apps {
 #[derive(Default)]
 struct PublishedRows {
     rows: Vec<tilo_actions::remote::CatalogueRow>,
+    /// The shell's workspaces the rows were read in: a workspace that came or went is read again.
+    workspaces: Vec<String>,
     read_at: Option<std::time::Instant>,
     reading: bool,
 }
@@ -407,6 +413,7 @@ impl Apps {
             reach: reach::Reach::default(),
             items: items::Items::default(),
             published: Arc::default(),
+            shown_workspaces: RefCell::default(),
             state: RefCell::new(State {
                 environment,
                 x11: None,
@@ -1100,6 +1107,7 @@ impl Apps {
         self.follow_items();
         self.follow_ended();
         self.follow_policy();
+        self.follow_workspaces();
         #[cfg(target_os = "linux")]
         self.follow_kept();
         #[cfg(target_os = "linux")]
@@ -1912,31 +1920,53 @@ impl Apps {
         self.deliver(target, arguments, &workspace)
     }
 
-    /// What the apps publish on the device's dispatch, as last read: read again on the
-    /// dispatch's runtime once it is older than [`PUBLISHED_FRESH`], waking the loop when the
-    /// answer lands, so a search shows what was read and is shown again with what changed.
+    /// Keep the workspaces the shell holds, by the ids the device's dispatch names them by.
+    fn follow_workspaces(&self) {
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return;
+        };
+        let handle = desktop.with_policy(|policy| policy.handle().clone());
+        let workspaces = handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .map(tilo_desktop_model::Workspace::id)
+                .filter(|id| !id.is_nil())
+                .map(|id| id.to_string())
+                .collect()
+        });
+        *self.shown_workspaces.borrow_mut() = workspaces;
+    }
+
+    /// What the apps publish on the device's dispatch in each of the shell's workspaces, as last
+    /// read: read again on the dispatch's runtime once it is older than [`PUBLISHED_FRESH`] or the
+    /// shell's workspaces changed, waking the loop when the answer lands, so a search shows what
+    /// was read and is shown again with what changed. Each row's provider names the workspace it
+    /// is published in.
     pub(crate) fn published_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
         let (dispatch, wake) = {
             let state = self.state.borrow();
             (state.dispatch.clone(), state.wake.clone())
         };
+        let workspaces = self.shown_workspaces.borrow().clone();
         let mut held = self
             .published
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let stale = held
-            .read_at
-            .is_none_or(|read| read.elapsed() >= PUBLISHED_FRESH);
+        let stale = held.workspaces != workspaces
+            || held
+                .read_at
+                .is_none_or(|read| read.elapsed() >= PUBLISHED_FRESH);
         let rows = held.rows.clone();
         if let Some(dispatch) = dispatch
             && stale
             && !held.reading
         {
             held.reading = true;
+            held.workspaces.clone_from(&workspaces);
             // The answer may land before it is waited on, and is then taken on this thread.
             drop(held);
             let published = Arc::clone(&self.published);
-            dispatch.app_actions().then(move |answer| {
+            dispatch.app_actions(workspaces).then(move |answer| {
                 let mut held = published
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
