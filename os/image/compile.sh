@@ -176,7 +176,8 @@ if [[ ${1:-} == --apps ]]; then
   files+=(apps language-packs)
   # The tilolang packages the app plan names are built with `tilolang` and run by the
   # thin `tilolang-process` the packing bakes into their runtime bundle, whose manifest
-  # (`crates/lang/tilolang-process/tilo-runtime.toml`) names its version.
+  # (`crates/lang/tilolang-process/tilo-runtime.toml`) and standard library
+  # (`crates/lang/tilolang/std`) name its version.
   for f in "${files[@]}" runtime-bundle-publisher.hex thin-apps app-models prebuilt-apps prebuilt-runtime fonts app-plan.json \
       tilolang crates; do
     [[ -e $from/$f ]] || continue
@@ -190,7 +191,8 @@ if [[ ${1:-} == --apps ]]; then
   if [[ -f $out/app-plan.json ]] \
       && python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("tilolang") else 1)' \
            "$out/app-plan.json"; then
-    for f in tilolang crates/lang/tilolang-process/tilo-runtime.toml; do
+    for f in tilolang crates/lang/tilolang-process/tilo-runtime.toml \
+        crates/lang/tilolang/std/app.tl crates/lang/tilolang/std/app.ids; do
       [[ -e $out/$f ]] \
         || { echo "compile.sh --apps: $from has no $f, which the app plan's tilolang packages are built and run with" >&2; exit 1; }
     done
@@ -618,6 +620,10 @@ if [[ -d apps/tl ]]; then
   cp -a apps/tl "$out/apps/"
 fi
 install -D -m 0644 crates/lang/tilolang-process/tilo-runtime.toml "$out/crates/lang/tilolang-process/tilo-runtime.toml"
+# The standard library the runtime carries keys its version (tools/apps/tilolang_packages.sh).
+for f in app.tl app.ids; do
+  install -D -m 0644 "crates/lang/tilolang/std/$f" "$out/crates/lang/tilolang/std/$f"
+done
 python3 -I tools/apps/language_packs.py build . "$out/language-packs"
 if [[ $TILO_PREBUILT_APPS != 1 ]]; then
   python3 -I tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts "$out/fonts" --scope product

@@ -228,6 +228,7 @@ thread_local! {
     static HOLDINGS: RefCell<Option<Arriving<(), WorkspaceUnreachable>>> =
         const { RefCell::new(None) };
     static RETRY: Cell<bool> = const { Cell::new(false) };
+    #[cfg(feature = "model")]
     static FOLLOWERS: RefCell<Vec<crate::permissions::WeakPermissions>> =
         const { RefCell::new(Vec::new()) };
     /// The spinner step an empty state painted last, and where (scene pixels) a new pose
@@ -354,9 +355,11 @@ fn tell(sync: Option<WorkspaceSync>) -> bool {
             .as_ref()
             .filter(|told| told.sync.before_first_sync())
             .map_or_else(crate::time::now, |told| told.since);
+        #[cfg(feature = "model")]
         let writable = sync.as_ref().and_then(|sync| sync.writable);
         *told = sync.map(|sync| Told { sync, since });
         drop(told);
+        #[cfg(feature = "model")]
         if let Some(writable) = writable {
             follow(writable);
         }
@@ -368,6 +371,7 @@ fn tell(sync: Option<WorkspaceSync>) -> bool {
 /// Let `permissions`, a workspace launch's, follow the workspace's grants: when the shell
 /// says the app may write the workspace now, or may not any more, they become an author's
 /// or a viewer's at once ([`WorkspaceSync::writable`]).
+#[cfg(feature = "model")]
 pub fn follow_participation(permissions: &crate::permissions::SharedPermissions) {
     FOLLOWERS.with(|followers| {
         let mut followers = followers.borrow_mut();
@@ -379,6 +383,7 @@ pub fn follow_participation(permissions: &crate::permissions::SharedPermissions)
     }
 }
 
+#[cfg(feature = "model")]
 fn follow(writable: bool) {
     let live: Vec<_> = FOLLOWERS.with(|followers| {
         let mut followers = followers.borrow_mut();
@@ -393,6 +398,7 @@ fn follow(writable: bool) {
     }
 }
 
+#[cfg(feature = "model")]
 fn rebase(permissions: &crate::permissions::SharedPermissions, writable: bool) {
     let next = permissions.borrow().with_participation(writable);
     if let Some(next) = next {
@@ -741,6 +747,7 @@ mod tests {
         let _ = take_spinner_damage();
     }
 
+    #[cfg(feature = "model")]
     #[test]
     fn a_launch_opened_read_only_becomes_writable_when_its_authorship_arrives_and_back() {
         use crate::permissions::{

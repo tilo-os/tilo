@@ -18,7 +18,7 @@ fn semantics_of(node: &InspectionNode, id: &str) -> Option<AccessNode> {
 /// source does not have are refused.
 #[test]
 fn opening_an_activity_is_remembered() {
-    let mut feed = Replica::<Feed>::new();
+    let mut feed = Replica::<Feed>::new().in_app("so.tilo.model", "Model");
     for id in [1, 2, 3, 4, 5, 6, 2] {
         feed.apply(Feed::OPEN_ACTIVITY.with(id))
             .expect("open an activity");

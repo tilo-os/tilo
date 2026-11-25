@@ -260,6 +260,10 @@ pub struct TabDescriptor {
     /// The name of the app the tab is a window of: said after the title, lighter, where another
     /// tab of the bar reads the same and is another app's ([`TabBar::qualifier`]).
     pub app_name: Option<String>,
+    /// What the tab is called where the pill says its window's name instead — a window named for
+    /// its title and app whose tab shows the title alone. A reader hears the pill as `title`; this
+    /// is the name a caller finds and presses the tab by, at the pill.
+    pub name: Option<String>,
 }
 
 impl TabDescriptor {
@@ -272,6 +276,7 @@ impl TabDescriptor {
             attention: false,
             named: false,
             app_name: None,
+            name: None,
         }
     }
 }
@@ -4235,7 +4240,7 @@ impl Widget for TabBar {
                             }),
                     );
                 }
-                match self.marks.get(&t.id) {
+                let mut node = match self.marks.get(&t.id) {
                     Some(mark) if mark.is_control() => {
                         let mut node = node.with_description(mark.description());
                         node.children.push(
@@ -4255,7 +4260,22 @@ impl Widget for TabBar {
                     }
                     Some(mark) => node.with_description(mark.description()),
                     None => node,
+                };
+                // The pill says its window's name, as its window's bar does; the tab it is goes by
+                // its own name too, so a caller — a script or an agent — presses it here.
+                let own = t
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty() && *name != t.title);
+                if let Some(name) = own {
+                    node.children.push(
+                        drawn(&hits, AccessNode::new(Role::Button))
+                            .with_name(name.to_owned())
+                            .with_action_target(format!("tab:{}", t.id)),
+                    );
                 }
+                node
             })
             .collect();
         if self.new_tab {
@@ -6631,6 +6651,7 @@ mod tests {
                         attention: false,
                         named: false,
                         app_name: None,
+                        name: None,
                     }],
                     1,
                 );
@@ -6683,6 +6704,7 @@ mod tests {
                         attention: false,
                         named: false,
                         app_name: None,
+                        name: None,
                     }],
                     1,
                 );

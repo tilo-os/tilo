@@ -28,8 +28,8 @@ use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::native::{DeviceLink, NativeDevice, connect, vault};
 use crate::support::{
-    Device, TestHost, enrol, hears, ready, restart_host, route, said, say, start_host, start_peer,
-    start_peer_with_store, wait_for, workspace,
+    Device, TestHost, enrol, hears, person_of, ready, restart_host, route, said, say, start_host,
+    start_peer, start_peer_with_store, wait_for, workspace,
 };
 
 /// The epoch `peer` seals under.
@@ -56,6 +56,8 @@ async fn session(host: &TestHost, root: &SigningKey, device: &Device) -> DeviceL
 /// the browser seals.
 struct Laptop {
     native: NativeDevice,
+    /// The person the laptop writes as.
+    person: [u8; 32],
     note: AutoCommit,
     seq: u64,
 }
@@ -72,6 +74,7 @@ impl Laptop {
         .await;
         Self {
             native,
+            person: root.verifying_key().to_bytes(),
             note: AutoCommit::new(),
             seq: 0,
         }
@@ -84,7 +87,7 @@ impl Laptop {
         let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document);
         let attestation =
             document_attestation_id(&route.app_id, &route.cluster_id, &route.document);
-        let mutation = say(&mut self.note, text);
+        let mutation = say(&mut self.note, self.person, text);
         // A sealed change names its action; one in the clear is the whole note instead.
         let mutation = if clear {
             collab_types::DocumentMutation::Snapshot(self.note.save())
@@ -194,7 +197,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     let peer = page();
     ready(&[&peer]).await;
     // Written before it holds the keys: held, then sealed once admitted.
-    let edit = say(&mut AutoCommit::new(), "from the browser");
+    let edit = say(&mut AutoCommit::new(), person_of(&peer), "from the browser");
     peer.write(route(), &edit).unwrap();
 
     // The host admits the browser when its signed request arrives, and the
@@ -298,7 +301,11 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     first.send(Cmd::OpenRoute(route())).unwrap();
-    let edit = say(&mut AutoCommit::new(), "before the reload");
+    let edit = say(
+        &mut AutoCommit::new(),
+        person_of(&first),
+        "before the reload",
+    );
     first.write(route(), &edit).unwrap();
     // The edit is kept with the channel state while it waits for its keys.
     wait_for("the held edit to be stored", || {
@@ -357,7 +364,11 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         .unwrap();
     peer.send(Cmd::OpenRoute(route())).unwrap();
     ready(&[&peer]).await;
-    let edit = say(&mut AutoCommit::new(), "before the genesis");
+    let edit = say(
+        &mut AutoCommit::new(),
+        person_of(&peer),
+        "before the genesis",
+    );
     peer.write(route(), &edit).unwrap();
 
     laptop.native.join().await;

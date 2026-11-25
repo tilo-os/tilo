@@ -206,7 +206,7 @@ mod tests {
 
         phase lessons_add_up_and_forgetting_leaves_nothing;
         {
-            let mut record = Replica::<Learned>::new();
+            let mut record = Replica::<Learned>::new().in_app("so.tilo.model", "Model");
             record
                 .apply(learn(lesson(&[("good", "mood"), ("", "hello")])))
                 .unwrap();
@@ -243,7 +243,7 @@ mod tests {
 
         phase two_devices_learning_at_once_count_both;
         {
-            let mut first = Replica::<Learned>::new();
+            let mut first = Replica::<Learned>::new().in_app("so.tilo.model", "Model");
             first.apply(learn(lesson(&[("good", "mood")]))).unwrap();
             let mut second = first.fork();
             first.apply(learn(lesson(&[("good", "mood")]))).unwrap();
@@ -255,7 +255,7 @@ mod tests {
 
         phase a_full_context_learns_no_new_words;
         {
-            let mut record = Replica::<Learned>::new();
+            let mut record = Replica::<Learned>::new().in_app("so.tilo.model", "Model");
             let words: Vec<String> = (0..=MAX_LEARNED_WORDS_PER_CONTEXT)
                 .map(|index| format!("word{index}"))
                 .collect();

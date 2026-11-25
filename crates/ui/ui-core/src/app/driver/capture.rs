@@ -32,7 +32,7 @@ impl Driver {
         approval: Option<&tilo_actions::remote::asked::Approval>,
         ambient: &tilo_actions::ActionContext,
     ) -> Result<ResourceOperationStart, ApiError> {
-        let actor = tilo_actions::Actor::Member(self.app.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(self.app.local_author.clone());
         let argument = format!(
             "{}{}",
             tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -125,7 +125,7 @@ impl Driver {
                 Some(ambient.cloned().unwrap_or_default().with_invoker(invoker)),
             ),
             None => (
-                tilo_actions::Actor::Member(self.app.collaboration.local_author.clone()),
+                tilo_actions::Actor::Member(self.app.local_author.clone()),
                 ambient.cloned(),
             ),
         };
@@ -148,7 +148,7 @@ impl Driver {
         let runs_here = spec.is_some_and(|spec| {
             spec.kind == tilo_actions::OperationKind::Document
                 && spec.contract.execution == tilo_actions::ExecutionMode::Immediate
-        }) && actor.member_id() == Some(&self.app.collaboration.local_author)
+        }) && actor.member_id() == Some(&self.app.local_author)
             && self.component_instance_id().is_some()
             && instance.is_none_or(|instance| self.component_instance_id() == Some(instance));
         if runs_here {

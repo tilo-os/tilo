@@ -20,8 +20,25 @@ use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
 pub const RUNTIME_BIN: &str = "bin/tilolang-process";
 /// The tilolang runtime a build names its apps run on: the build this tool's own tilolang side
-/// is ([`tilolang_tilo::RUNTIME`]), so what it builds and what a host carries are one id.
-pub const DEFAULT_TILOLANG_RUNTIME: &str = tilolang_tilo::RUNTIME;
+/// is ([`tilolang_tilo::runtime`]), keyed by the standard library it compiles with, so what it
+/// builds and what a host carries are one id.
+#[must_use]
+pub fn default_tilolang_runtime() -> String {
+    tilolang_tilo::runtime()
+}
+
+/// Write the standard library this tool compiles with, compiled, into `dir` as a tilolang runtime
+/// bundle includes it: `tilo.std.wasm`, which the bundle keeps as `lib/tilo.std.wasm`
+/// (`runtime_portal::process_link::STD_FILE`). Answers the file written.
+///
+/// # Errors
+/// The file cannot be written.
+pub fn write_std(dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(io(dir))?;
+    let file = dir.join("tilo.std.wasm");
+    std::fs::write(&file, &tilolang::stdlib::compiled().wasm).map_err(io(&file))?;
+    Ok(file)
+}
 pub const DEFAULT_TILO_RUNTIME: &str = "tilo-runtime/2026.07";
 
 /// Where a tilolang app runs: where its runtime runs (`crates/lang/tilolang-process/tilo-runtime.toml`), as a

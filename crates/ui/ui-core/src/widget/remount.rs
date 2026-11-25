@@ -52,6 +52,13 @@ impl<'a> Remount<'a> {
         self.theme
     }
 
+    /// The tree and the widget each of its nodes lays out, as the remount has left them so far:
+    /// for a widget that keeps where its descendants stand, read again after they changed.
+    #[must_use]
+    pub fn laid_out(&self) -> (&TaffyTree<()>, &HashMap<NodeId, *mut dyn Widget>) {
+        (self.taffy, self.node_map)
+    }
+
     /// Build `child`'s layout into the tree, for the widget remounting,
     /// whose node is `owner`, to place under its own nodes through
     /// [`Self::set_children`]. Returns its node.

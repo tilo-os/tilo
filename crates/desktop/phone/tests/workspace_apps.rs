@@ -147,7 +147,7 @@ bin = "bin/tilo-phone"
 type = "gui"
 "#,
         tapp = TILO_RUNTIME,
-        tilolang = tilolang_tilo::RUNTIME,
+        tilolang = tilolang_tilo::runtime(),
         publisher = hex::encode(identity.public_key_bytes()),
     ))
     .unwrap();

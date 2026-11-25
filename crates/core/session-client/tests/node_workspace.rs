@@ -31,7 +31,6 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_session_client::{Cmd, Link, Outbox};
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
-use automerge::transaction::Transactable as _;
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -58,7 +57,7 @@ use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
 use crate::support::https::DevHttps;
-use crate::support::{commit_change, ready, start_peer, wait_for};
+use crate::support::{person_of, ready, set_field, start_peer, wait_for};
 
 const INSTALL_TOKEN: &str = "provisioned-install-token-0123";
 /// Text only the document's readers ever see.
@@ -114,13 +113,11 @@ async fn workspaces(peer: &Link, request: WorkspacesRequest) -> WorkspacesReply 
 }
 
 /// The document's first state and a later change to it.
-fn plan() -> (Vec<u8>, Vec<u8>) {
+fn plan(writer: &Link) -> (Vec<u8>, Vec<u8>) {
     let mut doc = automerge::AutoCommit::new();
-    doc.put(automerge::ROOT, "title", SECRET).unwrap();
-    commit_change(&mut doc);
+    set_field(&mut doc, person_of(writer), "note", "title", SECRET);
     let snapshot = doc.save();
-    doc.put(automerge::ROOT, "owner", "Ada").unwrap();
-    commit_change(&mut doc);
+    set_field(&mut doc, person_of(writer), "note", "owner", "Ada");
     (snapshot, doc.save_incremental())
 }
 
@@ -316,7 +313,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         cluster_id: acme.workspace.clone(),
         document: "plan".into(),
     };
-    let (snapshot, change) = plan();
+    let (snapshot, change) = plan(&ada);
     ada.write(route.clone(), &DocumentMutation::Snapshot(snapshot.clone()))
         .unwrap();
     ada.write(

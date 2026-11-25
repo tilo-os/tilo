@@ -1091,4 +1091,4 @@ pub mod __private {
     }
 }
 
-pub mod profiling;
+pub use tilo_resource_plain::profiling;

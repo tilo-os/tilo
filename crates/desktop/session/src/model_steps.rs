@@ -32,7 +32,7 @@ use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 use crate::workspace_view::WorkspaceView;
 
 /// Each step, with what it is called and whether it only reads.
-const STEPS: [(&str, &str, bool); 18] = [
+const STEPS: [(&str, &str, bool); 21] = [
     (
         model_providers::LIST,
         "List the workspace's model providers",
@@ -117,6 +117,21 @@ const STEPS: [(&str, &str, bool); 18] = [
     (
         model_providers::CANCEL_SIGN_IN,
         "Stop signing in to a model provider",
+        false,
+    ),
+    (
+        model_providers::SEARCH_HUB_MODELS,
+        "Search Hugging Face for a model this computer runs",
+        true,
+    ),
+    (
+        model_providers::SHOW_HUB_MODEL,
+        "Describe a Hugging Face model this computer runs",
+        true,
+    ),
+    (
+        model_providers::INSTALL_HUB_MODEL,
+        "Download a Hugging Face model to this computer",
         false,
     ),
 ];

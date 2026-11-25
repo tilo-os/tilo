@@ -139,8 +139,10 @@ never changes an id that grants and records already name.
   readable by that member alone and sealed under their keys, in the same
   workspace. There is no per-person store.
 - What an app's code may reach (paths, devices, network hosts) is a separate
-  grant, given at install or through a picker. An app acting for a person
-  does only what both may.
+  grant, given at install or through a picker. Installing an app into a workspace
+  grants it its own records, the resources under its app id, as a recorded grant the
+  members see and may revoke; anything beyond them it asks for. An app acting for a
+  person does only what both may.
 - A visitor with no identity (joining a wait list, reading a public
   directory) is a caller too: the page makes a key on the visitor's device
   and signs each call with it, and a grant to any key names exactly the
@@ -1225,7 +1227,9 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   call's answer is secret is decided from its action's declaration where every invocation
   record is written, never per path; a secret answer is never kept in a record. Only an app
   the device launched and attested acts as itself: the seats name it from the process, and no
-  caller's own claim does. A project
+  caller's own claim does. A deletion carries every case its deleted
+  tests proved onto what replaces it, in the same push; a case whose behaviour is missing
+  there is restored, never dropped. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds

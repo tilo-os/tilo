@@ -1956,6 +1956,7 @@ d-djpxekrm = Person in der Liste
 d-vyjuo52r = Zeile einer Person
     .w-someone = Jemand
     .w-joined = Beigetreten um { $joined }
+    .w-go-where-works = Dorthin gehen, wo { $name } arbeitet
 
 d-uw37p3tz = Titel der Liste
     .w-who-is-here = Wer hier ist

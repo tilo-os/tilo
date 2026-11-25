@@ -54,7 +54,7 @@ pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, Os
                 search: vec![source.clone(), packages()],
                 out: root.join("tapps"),
                 tilo_runtime: package::DEFAULT_TILO_RUNTIME.to_owned(),
-                tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+                tilolang_runtime: package::default_tilolang_runtime(),
                 version: "0.1.0".to_owned(),
                 // The scratch copy's ids lock is the build's to write, as a developer's tree is.
                 locked: false,
@@ -95,7 +95,7 @@ pub fn install_source(name: &str, source: &str) {
             search: vec![root.join("tl"), packages()],
             out: root.join("tapps"),
             tilo_runtime: package::DEFAULT_TILO_RUNTIME.to_owned(),
-            tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+            tilolang_runtime: package::default_tilolang_runtime(),
             version: "0.1.0".to_owned(),
             locked: false,
         },
@@ -136,11 +136,15 @@ fn runtime_bundles(root: &Path, data: &Path) -> Vec<(&'static str, OsString)> {
     let signer = root.join("runtime-publisher.json");
     std::fs::write(&signer, bundles.to_json_bytes()).unwrap();
     let version = |runtime: &'static str| runtime.split_once('/').unwrap().1;
+    // The tilolang runtime carries the standard library the apps are built against, which none of
+    // them does.
+    let tilolang = package::default_tilolang_runtime();
+    let std = package::write_std(root).unwrap();
     bundle(
         data,
-        version(package::DEFAULT_TILOLANG_RUNTIME),
+        tilolang.split_once('/').unwrap().1,
         &signer,
-        &[],
+        std::slice::from_ref(&std),
         std::slice::from_ref(&host),
     );
     // The Tilo runtime carries the pinned font catalog the product's bundles carry, at the
@@ -211,8 +215,10 @@ fn runtime_package(root: &Path, store: &Path) {
             .unwrap();
         assert!(status.success(), "{} is signed", file.display());
     }
+    package::write_std(&payload.join("lib")).unwrap();
     let identity = tilolang_cli::identity_at(&root.join("runtime-publisher.json")).unwrap();
-    let version = package::DEFAULT_TILOLANG_RUNTIME.split_once('/').unwrap().1;
+    let tilolang = package::default_tilolang_runtime();
+    let version = tilolang.split_once('/').unwrap().1;
     let manifest = format!(
         r#"[package]
 id = "so.tilo.runtime.tilolang"

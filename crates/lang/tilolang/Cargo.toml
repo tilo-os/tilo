@@ -14,6 +14,11 @@ homepage.workspace = true
 name = "tilolang"
 path = "src/lib.rs"
 
+# Compiles the standard library a tilolang runtime bundle carries (`lib/tilo.std.wasm`).
+[[bin]]
+name = "tilolang-std"
+path = "src/bin/tilolang-std.rs"
+
 [dependencies]
 # The tokens, spans and reference literals its parser reads, which the toolkit's editor shares.
 tilolang-lex = { version = "0.1.0", path = "../tilolang-lex" }

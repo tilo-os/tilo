@@ -4501,6 +4501,13 @@
           }
         },
         {
+          "name": "fault",
+          "doc": "The imagery the map shows cannot be loaded: carries how many of the tiles it shows have failed and how many it shows, so the view can say so in words while nothing draws (offline, or the tile server refusing). Reported when either number changes, and again with nothing failed once imagery loads.",
+          "value": {
+            "list": "int"
+          }
+        },
+        {
           "name": "at",
           "doc": "The pointer pressed the map's empty surface and let go there, a click: carries the place under it, its latitude then its longitude, for a map centred on a place.",
           "value": {
@@ -6589,6 +6596,35 @@
       ],
       "semantics": {
         "role": "Label"
+      }
+    },
+    {
+      "name": "Rule",
+      "doc": "A horizontal rule of a size the view gives it, its ends ticked: what a view measures (a map's scale bar) rather than a divider that fills its row.",
+      "props": [
+        {
+          "name": "length",
+          "doc": "How long it draws, in logical pixels. Without one it fills the row it stands in.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "ticks",
+          "doc": "A tick stands at each end, as a measurement's ends do.",
+          "type": "bool"
+        },
+        {
+          "name": "label",
+          "doc": "What it is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Separator",
+        "label": "label"
       }
     },
     {
@@ -10968,6 +11004,11 @@
           "type": {
             "option": "actor"
           }
+        },
+        {
+          "name": "label",
+          "doc": "Whether its name stands beside it, on a plate over the map: a place's name, as a map names the places it shows. A label that would cover another is left out, so a dense quarter keeps its markers legible.",
+          "type": "bool"
         }
       ],
       "semantics": {
@@ -11422,6 +11463,13 @@
         {
           "name": "title",
           "doc": "What the pill says, from the resource's title.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "name",
+          "doc": "What the tab itself is called, where the pill says its window's name instead: a window named for its title and app (`Groceries — Notes`) whose tab is the one showing `Groceries`. A reader hears the pill as its title, and a caller finds this tab here by its own name.",
           "type": {
             "option": "text"
           }

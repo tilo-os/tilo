@@ -21,7 +21,6 @@ fn child_at(executable: impl AsRef<std::ffi::OsStr>) -> Command {
         .env("TILO_BOOTSTRAP_TEST_CHILD", "1")
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
-        .env_remove("TILO_RUNTIME_STANDALONE")
         .env_remove("TILO_RUNTIME_CONNECTION_OWNER_PID")
         .env_remove("TILO_RUNTIME_BINARY")
         .env_remove("XDG_CURRENT_DESKTOP");
@@ -264,8 +263,7 @@ tilo_test_env::scenario! {
             .args(["--exact", "bootstrap_child", "--nocapture"])
             .env("TILO_BOOTSTRAP_TEST_CHILD", "1")
             .env("TILO_SVC_COLLAB_FD", "bad")
-            .env_remove("TILO_SVC_IDENTITY_FD")
-            .env("TILO_RUNTIME_STANDALONE", "1");
+            .env_remove("TILO_SVC_IDENTITY_FD");
         assert_eq!(
             current.output_locked().unwrap().status.code(),
             Some(21),
@@ -274,7 +272,6 @@ tilo_test_env::scenario! {
         for owner in ["unknown", "0"] {
             let output = child()
                 .env("TILO_RUNTIME_CONNECTION_OWNER_PID", owner)
-                .env("TILO_RUNTIME_STANDALONE", "1")
                 .output_locked()
                 .unwrap();
             assert_eq!(output.status.code(), Some(21), "case owner {owner}");
@@ -285,19 +282,8 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase bootstrap_attaches_standalone_inherited_or_through_the_host;
+    phase bootstrap_attaches_inherited_or_through_the_host;
     {
-        let output = child()
-            .env("TILO_RUNTIME_STANDALONE", "1")
-            .env("TILO_RUNTIME_BINARY", "/must-not-run")
-            .output_locked()
-            .unwrap();
-        assert!(output.status.success(), "case explicit standalone");
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("RETURNED"),
-            "case explicit standalone"
-        );
-
         {
             let (a, _a_peer) = UnixStream::pair().unwrap();
             let (b, _b_peer) = UnixStream::pair().unwrap();
@@ -366,7 +352,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase bootstrap_hides_ancestor_metadata_and_standalone_ignores_it;
+    phase bootstrap_hides_ancestor_metadata_and_a_stale_connection_attaches;
     {
         let (a, _a_peer) = UnixStream::pair().unwrap();
         let (b, _b_peer) = UnixStream::pair().unwrap();
@@ -387,19 +373,29 @@ tilo_test_env::scenario! {
             "case ancestor hidden"
         );
 
+        let root = std::env::temp_dir().join(format!("tilo-bootstrap-attach-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let host = root.join("host");
+        std::fs::write(&host, "#!/bin/sh\nprintf 'ATTACHED\\n'\n").unwrap();
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
         let output = child()
             .env(
                 "TILO_RUNTIME_CONNECTION_OWNER_PID",
                 std::process::id().to_string(),
             )
             .env("TILO_SVC_COLLAB_FD", "closed-ancestor-fd")
-            .env("TILO_RUNTIME_STANDALONE", "1")
+            .env("TILO_RUNTIME_BINARY", &host)
             .output_locked()
             .unwrap();
         assert!(
             output.status.success(),
-            "case standalone ignores ancestor: {}",
+            "case stale connection attaches: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("ATTACHED"),
+            "a stale descriptor name is not a connection this process received"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

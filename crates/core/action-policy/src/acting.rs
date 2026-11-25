@@ -72,17 +72,6 @@ impl<'a> Authority<'a> {
         for node in acting.nodes() {
             match &node.by {
                 Actor::Member(member) => match member {
-                    // An app's own connection, which no person's session made: it holds the
-                    // grants naming the app, never an empty person's.
-                    MemberId::Person(person) if person.is_empty() && node.app.is_some() => {
-                        if let Some(app) = node.app.as_ref() {
-                            others.push(
-                                policy
-                                    .party_of(Grantee::app(app.as_str()))
-                                    .with_grants(granted),
-                            );
-                        }
-                    }
                     MemberId::Person(person) => {
                         people = people.saturating_add(1);
                         let party = policy
@@ -107,7 +96,13 @@ impl<'a> Authority<'a> {
                 Actor::Automation(_) if owned => {}
                 // An app acting by itself holds the grants naming it, never a person's.
                 Actor::Automation(_) => others.push(Party::default()),
-                Actor::App(app) => others.push(policy.party_of(Grantee::app(app.as_str()))),
+                // An app acting by itself, in the process its device launched as it, holds the
+                // grants naming it, with those its device hands it from its signed manifest.
+                Actor::App(app) => others.push(
+                    policy
+                        .party_of(Grantee::app(app.as_str()))
+                        .with_grants(granted),
+                ),
             }
         }
         let mut parts = person_parts.into_iter().chain(others);
@@ -580,13 +575,22 @@ mod tests {
                 Answer::Allow,
                 Grantee::person("owner"),
             )];
-            let holding = Acting::member(MemberId::person("")).in_app(app);
+            let holding = Acting::by_app(app).in_app(app);
             assert_eq!(
                 Authority::of_acting(&holding, &policy(), &granted)
                     .decide(&node, ActionKind::Read, &Context::at_secs(1))
                     .answer,
                 Answer::Allow,
                 "the grant naming the app decides for its own connection"
+            );
+            // Someone acting through the app for nobody is not the app: it holds nothing.
+            let nobody = Acting::member(MemberId::person("")).in_app(app);
+            assert_eq!(
+                Authority::of_acting(&nobody, &policy(), &granted)
+                    .decide(&node, ActionKind::Read, &Context::at_secs(1))
+                    .answer,
+                Answer::Deny,
+                "nobody acting through the app borrows its grants"
             );
             assert_eq!(
                 Authority::of_acting(&holding, &policy(), &[])

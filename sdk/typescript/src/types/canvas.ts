@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.canvas@59ab3d6f91f4513c";
+export const SURFACE = "so.tilo.canvas@3e14d8d6498284f3";
 
 /** The arguments of `rename_layer`. */
 export interface RenameLayerArgs {
@@ -583,6 +583,10 @@ export interface Artwork extends tilo.Resource {
   compare_versions(args: {
     change: string;
   }): Promise<string | null>;
+  /** Compares the artwork with its version at `place` on the timeline, the oldest at `0.0`. At the newest the comparison is taken away, as the artwork stands as it is. */
+  compare_at(args: {
+    place: number;
+  }): Promise<string | null>;
   /** Takes the version comparison away from the surface. */
   clear_comparison(): Promise<void>;
   /** Runs `clear_comparison` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -730,7 +734,7 @@ export interface Artwork extends tilo.Resource {
 
 /** The actions `Artwork` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ARTWORK_ACTIONS = ["add_layer", "rename_layer", "rename_layerMany", "lock_layer", "lock_layerMany", "clip_layer", "clip_layerMany", "add_mask", "set_mask", "set_maskMany", "add_text", "set_medium", "set_mediumMany", "save_medium", "remove_medium", "remove_mediumMany", "move_layer_up", "move_layer_upMany", "move_layer_down", "move_layer_downMany", "duplicate_layer", "merge_layer_down", "merge_layer_downMany", "show_layer", "show_layerMany", "remove_layer", "remove_layerMany", "set_artwork", "set_artworkMany", "add_stroke", "extend_stroke", "extend_strokeMany", "top_layer", "add_shape", "remove_mark", "remove_markMany", "recolour", "recolourMany", "resize_mark", "resize_markMany", "place_picture", "select_like", "select_subject", "refine_selection", "combine_marks", "measure_marks", "set_reference", "set_referenceMany", "clear_reference", "clear_referenceMany", "compare_reference", "compare_versions", "clear_comparison", "clear_comparisonMany", "ask_selection", "select_shape", "select_lasso", "select_outline", "grow_selection", "invert_selection", "select_marks", "pick_mark", "pick_markMany", "pick_marks", "pick_marksMany", "clear_picked", "clear_pickedMany", "remove_along", "inspect_artwork", "select_area", "select_areaMany", "clear_selection", "clear_selectionMany", "fill_selection", "draw_look", "draw_lookMany", "export_picture", "export_svg", "save_artwork", "import_svg", "clear_notice", "clear_noticeMany", "start_paint", "start_paintMany", "continue_paint", "finish_paint"] as const;
+export const ARTWORK_ACTIONS = ["add_layer", "rename_layer", "rename_layerMany", "lock_layer", "lock_layerMany", "clip_layer", "clip_layerMany", "add_mask", "set_mask", "set_maskMany", "add_text", "set_medium", "set_mediumMany", "save_medium", "remove_medium", "remove_mediumMany", "move_layer_up", "move_layer_upMany", "move_layer_down", "move_layer_downMany", "duplicate_layer", "merge_layer_down", "merge_layer_downMany", "show_layer", "show_layerMany", "remove_layer", "remove_layerMany", "set_artwork", "set_artworkMany", "add_stroke", "extend_stroke", "extend_strokeMany", "top_layer", "add_shape", "remove_mark", "remove_markMany", "recolour", "recolourMany", "resize_mark", "resize_markMany", "place_picture", "select_like", "select_subject", "refine_selection", "combine_marks", "measure_marks", "set_reference", "set_referenceMany", "clear_reference", "clear_referenceMany", "compare_reference", "compare_versions", "compare_at", "clear_comparison", "clear_comparisonMany", "ask_selection", "select_shape", "select_lasso", "select_outline", "grow_selection", "invert_selection", "select_marks", "pick_mark", "pick_markMany", "pick_marks", "pick_marksMany", "clear_picked", "clear_pickedMany", "remove_along", "inspect_artwork", "select_area", "select_areaMany", "clear_selection", "clear_selectionMany", "fill_selection", "draw_look", "draw_lookMany", "export_picture", "export_svg", "save_artwork", "import_svg", "clear_notice", "clear_noticeMany", "start_paint", "start_paintMany", "continue_paint", "finish_paint"] as const;
 
 /** The `tl.so.tilo.canvas.Artwork` kind at `path`. */
 export function artwork(ws: tilo.Workspace, path: string): Artwork {

@@ -9323,12 +9323,96 @@
           },
           "request": {
             "type": "string"
+          },
+          "again": {
+            "type": "string"
           }
         },
         "required": [
           "url"
         ],
-        "description": "Downloads what an address serves into the person's Downloads, as a job of the Browser's own\nthat goes on when the window closes. A page's window raises it for a download the person\nsaved there, naming the handle its request waits under; a person or agent names an address."
+        "description": "Downloads what an address serves into the person's Downloads, as a job of the Browser's own\nthat goes on when the window closes. A page's window raises it for a download the person\nsaved there, naming the handle its request waits under, and again for one the person\nretried, naming the job it ended as (`again`); a person or agent names an address."
+      },
+      "tl.so.tilo.browser.Page.note_extension_download.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "received": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "name",
+          "url",
+          "path",
+          "received",
+          "total",
+          "error"
+        ],
+        "description": "Keeps where a download an extension started stands, as the page's engine, which saves it,\ntells: the Browser's one list shows it with the rest. The window raises it as the download\nmoves; a person, agent or script never does."
+      },
+      "tl.so.tilo.browser.Page.retry_download.Arguments": {
+        "type": "object",
+        "properties": {
+          "d": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.Download",
+            "type": "object"
+          }
+        },
+        "required": [
+          "d"
+        ],
+        "description": "Starts a download that failed or was cancelled again, from the beginning, as signed in as the\npage was: the page's window hands over what a request for the address carries from it now,\nand the download keeps the new job."
       },
       "tl.so.tilo.browser.Page.developer_tools.Arguments": {
         "type": "object",
@@ -10747,12 +10831,6 @@
         "properties": {},
         "required": [],
         "description": "Stops a download that is still going: what it saved so far is removed."
-      },
-      "tl.so.tilo.browser.Download.retry_download.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Starts a download that failed or was cancelled again, from the beginning."
       },
       "tl.so.tilo.browser.DownloadJob.$create.Arguments": {
         "type": "object",
@@ -17173,6 +17251,18 @@
         ],
         "description": "Compares the artwork with the version history names, overlaid on the surface: what changed\nbetween the two, and the changed region as it now stands where it stands."
       },
+      "tl.so.tilo.canvas.Artwork.compare_at.Arguments": {
+        "type": "object",
+        "properties": {
+          "place": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "place"
+        ],
+        "description": "Compares the artwork with its version at `place` on the timeline, the oldest at `0.0`. At\nthe newest the comparison is taken away, as the artwork stands as it is."
+      },
       "tl.so.tilo.canvas.Artwork.clear_comparison.Arguments": {
         "type": "object",
         "properties": {},
@@ -19824,12 +19914,16 @@
               }
             ]
           },
-          "recording": {}
+          "recording": {},
+          "attachments": {
+            "items": {},
+            "type": "array"
+          }
         },
         "required": [
           "body"
         ],
-        "description": "Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback\nchannel, which the first report opens.\n\nThe people who read the reports there answer, react and start a thread under one as under any\nmessage. The channel is made under one key on every device, so reports filed apart open one.\n\nA report carries a recording of what happened where one was kept (Capture's last half minute,\nor any recording the person chose): it rides on the message as its file, and the report's row\noffers to replay it."
+        "description": "Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback\nchannel, which the first report opens.\n\nThe people who read the reports there answer, react and start a thread under one as under any\nmessage. The channel is made under one key on every device, so reports filed apart open one.\n\nA report carries a recording of what happened where one was kept (Capture's last half minute,\nor any recording the person chose): it rides on the message as its file, and the report's row\noffers to replay it. What else it carries (a picture of the window it is about) rides after it."
       },
       "tl.so.tilo.chat.Conversations.message_person.Arguments": {
         "type": "object",
@@ -52091,7 +52185,9 @@
             "enum": [
               "name",
               "key",
-              "address"
+              "address",
+              "phone",
+              "website"
             ],
             "type": "string"
           },
@@ -52146,6 +52242,18 @@
           "name"
         ],
         "description": "Renames a saved place; the name a search brought is the place's until the person gives it\nanother."
+      },
+      "tl.so.tilo.maps.Place.call_place.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Calls the place's phone number, through the system's own open action."
+      },
+      "tl.so.tilo.maps.Place.open_site.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opens the place's website in the app that opens web addresses."
       },
       "tl.so.tilo.maps.Step.$create.Arguments": {
         "type": "object",
@@ -52761,7 +52869,6 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "traffic",
               "navigating"
             ],
             "type": "string"
@@ -53249,16 +53356,6 @@
           "poi"
         ],
         "description": "Shows a point of interest the map found, and opens the map on it."
-      },
-      "tl.so.tilo.maps.Atlas.toggle_traffic.Arguments": {
-        "type": "object",
-        "properties": {
-          "traffic": {
-            "type": "boolean"
-          }
-        },
-        "required": [],
-        "description": "Shows the traffic layer on the map, or takes it away."
       },
       "tl.so.tilo.maps.Atlas.download_view.Arguments": {
         "type": "object",
@@ -62391,9 +62488,7 @@
             "description": "The name of the field to set.",
             "enum": [
               "import_job",
-              "notice",
-              "album_draft_id",
-              "album_draft_name"
+              "notice"
             ],
             "type": "string"
           },
@@ -62412,8 +62507,7 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "import_stopped",
-              "album_draft_open"
+              "import_stopped"
             ],
             "type": "string"
           },
@@ -63492,6 +63586,56 @@
           "person"
         ],
         "description": "Forgets a person: their name leaves every photo they were on."
+      },
+      "tl.so.tilo.photos.AlbumDraft.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.photos.AlbumDraft.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "album",
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.photos.AlbumDraft.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.photos.AlbumDraft.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
       },
       "tl.so.tilo.photos.Unread.$create.Arguments": {
         "type": "object",
@@ -98159,6 +98303,18 @@
     {
       "app": "so.tilo.browser",
       "resource": "tl.so.tilo.browser.Page",
+      "action": "note_extension_download",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.note_extension_download.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "retry_download",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.retry_download.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
       "action": "developer_tools",
       "arguments": "#/components/schemas/tl.so.tilo.browser.Page.developer_tools.Arguments"
     },
@@ -98617,12 +98773,6 @@
       "resource": "tl.so.tilo.browser.Download",
       "action": "cancel_download",
       "arguments": "#/components/schemas/tl.so.tilo.browser.Download.cancel_download.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
-      "resource": "tl.so.tilo.browser.Download",
-      "action": "retry_download",
-      "arguments": "#/components/schemas/tl.so.tilo.browser.Download.retry_download.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -101173,6 +101323,12 @@
       "resource": "tl.so.tilo.canvas.Artwork",
       "action": "compare_versions",
       "arguments": "#/components/schemas/tl.so.tilo.canvas.Artwork.compare_versions.Arguments"
+    },
+    {
+      "app": "so.tilo.canvas",
+      "resource": "tl.so.tilo.canvas.Artwork",
+      "action": "compare_at",
+      "arguments": "#/components/schemas/tl.so.tilo.canvas.Artwork.compare_at.Arguments"
     },
     {
       "app": "so.tilo.canvas",
@@ -114496,6 +114652,18 @@
     },
     {
       "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Place",
+      "action": "call_place",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Place.call_place.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Place",
+      "action": "open_site",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Place.open_site.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
       "resource": "tl.so.tilo.maps.Step",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.maps.Step.$create.Arguments"
@@ -114901,12 +115069,6 @@
       "resource": "tl.so.tilo.maps.Atlas",
       "action": "open_poi",
       "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.open_poi.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "tl.so.tilo.maps.Atlas",
-      "action": "toggle_traffic",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.toggle_traffic.Arguments"
     },
     {
       "app": "so.tilo.maps",
@@ -118531,6 +118693,30 @@
       "resource": "tl.so.tilo.photos.Library",
       "action": "remove_person_resource",
       "arguments": "#/components/schemas/tl.so.tilo.photos.Library.remove_person_resource.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.AlbumDraft",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.AlbumDraft.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.AlbumDraft",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.AlbumDraft.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.AlbumDraft",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.AlbumDraft.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.AlbumDraft",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.AlbumDraft.$scenario.Arguments"
     },
     {
       "app": "so.tilo.photos",

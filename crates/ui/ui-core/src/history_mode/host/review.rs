@@ -390,13 +390,12 @@ impl HistoryHost {
                 current: review.reviewed_live_heads(),
                 author,
             };
-            match owner {
-                Some(owner) => owner.run_history_edit(&mut *root, &mut state.doc, &run),
-                None => {
-                    let (doc, history, _) = state.parts_mut();
-                    let action = crate::history_source::DocumentHistoryEdit::new(run.edit.clone());
-                    run.step(doc, history, &action, None)
-                }
+            if let Some(owner) = owner {
+                owner.run_history_edit(&mut *root, &mut state.doc, &run)
+            } else {
+                let (doc, history, _) = state.parts_mut();
+                let action = crate::history_source::DocumentHistoryEdit::new(run.edit.clone());
+                run.step(doc, history, &action, None)
             }
         };
         match owner {

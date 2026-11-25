@@ -36,8 +36,7 @@ fn host(profile: &Path) -> Command {
         .env("TILO_APPS_DATA_DIR", profile.join("apps"))
         .env("WAYLAND_DISPLAY", profile.join("wayland-0"))
         .env_remove("TILO_SVC_COLLAB_FD")
-        .env_remove("TILO_SVC_IDENTITY_FD")
-        .env_remove("TILO_RUNTIME_STANDALONE");
+        .env_remove("TILO_SVC_IDENTITY_FD");
     command
 }
 

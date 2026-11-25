@@ -2883,6 +2883,14 @@ impl AppBrokerState {
         ) {
             return result;
         }
+        // A `files#open` given content puts the files into the workspace's own folder; one
+        // given none is Files' open, which starts the app.
+        #[cfg(feature = "files")]
+        if let Some(result) =
+            self.start_files_open(caller, origin, request, (&workspace, &policy, now))?
+        {
+            return Ok(result);
+        }
         if let Some(result) = self.start_app_open(
             caller,
             workspace_id,

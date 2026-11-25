@@ -81,9 +81,10 @@ cargo build --locked --release \
   -p runtime-update --bin tilo-runtime-update \
   -p tilolang-process --bin tilolang-process --features tilolang-process/app-launch \
   "${targets[@]/#/--target=}"
-# The tools that seal and pack the runtime package, for this Mac.
+# The tools that seal and pack the runtime package, and compile the standard library it carries,
+# for this Mac.
 cargo build --locked --release -p tilo-runtime-bundle --bin tilo-runtime-bundle \
-  -p tilo-app-package-cli --bin tilo-app-package
+  -p tilo-app-package-cli --bin tilo-app-package -p tilolang --bin tilolang-std
 tools="$cargo_target/release"
 
 app="$out/Tilo.app"
@@ -153,7 +154,7 @@ runtime_identity="${TILO_RUNTIME_PACKAGE_IDENTITY:-$runtime_work/runtime-identit
 . tools/apps/tilolang_packages.sh
 tilolang_version="$(tilolang_runtime_version "$repo")"
 tilolang_bake_runtime "$tools/tilo-runtime-bundle" "$runtime_work/tilolang-process" \
-  "$runtime_identity" "$runtime_work/bundle" "$tilolang_version" aarch64+x86_64 \
+  "$tools/tilolang-std" "$repo" "$runtime_identity" "$runtime_work/bundle" "$tilolang_version" aarch64+x86_64 \
   "$staged/lib/gstreamer"
 tools/apps/pack-runtime-package.sh "$runtime_work/bundle" so.tilo.runtime.tilolang \
   "tilolang runtime" "$version" "$runtime_identity" "$tools" "$runtime_work/package" macos >/dev/null

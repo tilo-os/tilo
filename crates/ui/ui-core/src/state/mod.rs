@@ -1,13 +1,22 @@
-pub use collaboration::state::{DocumentFrontier, State, WritingActors, changes_beyond};
+mod replica;
+#[cfg(feature = "model")]
+pub use collaboration::state::{DocumentFrontier, WritingActors, changes_beyond};
+pub use replica::State;
 
+#[cfg(feature = "model")]
 use automerge::transaction::Transactable as _;
 #[cfg(test)]
+#[cfg(feature = "model")]
 use automerge::{AutoCommit, ObjId};
+#[cfg(feature = "model")]
 pub(crate) use collaboration::history::HistoryMoment;
+#[cfg(feature = "model")]
 use collaboration::history::same_frontier;
 pub use collaboration::history::{UndoEntry, UndoLog};
+#[cfg(feature = "model")]
 pub use collaboration::history::{write_patches, write_revert_patches, write_revert_patches_where};
 
+#[cfg(feature = "model")]
 /// What the toolkit does with an app's [`State`] beyond keeping it: merge committed history it was
 /// served, and report its undo status in words.
 pub(crate) trait StateHistory {
@@ -27,6 +36,7 @@ pub(crate) trait StateHistory {
     ) -> crate::undo::UndoStatus;
 }
 
+#[cfg(feature = "model")]
 impl StateHistory for State {
     fn defers_remote(&self) -> bool {
         self.doc.pending_ops() != 0
@@ -61,6 +71,7 @@ impl StateHistory for State {
 }
 
 #[cfg(test)]
+#[cfg(feature = "model")]
 mod tests {
     use super::*;
     use automerge::{ReadDoc, ScalarValue, transaction::Transactable};

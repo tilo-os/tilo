@@ -262,7 +262,7 @@ tilo_test_env::scenario! {
         fixture.assert_idle();
         let before = fixture.app.state.doc.save();
         let address = tilo_actions::ActionAddress::new("probe:0", "inspect:0");
-        let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(fixture.app.local_author.clone());
         let started = fixture
             .app
             .invoke_resource_action(ResourceInvocation::new(&address, &actor))

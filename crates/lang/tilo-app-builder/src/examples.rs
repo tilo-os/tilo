@@ -208,25 +208,23 @@ pub fn details(name: &str, file: Option<&str>) -> Result<serde_json::Value> {
 pub(crate) fn overlay(
     rendered: &mut Vec<(PathBuf, String)>,
     example: &Example,
-    crate_name: &str,
-    app_id: &str,
-    title: &str,
+    spec: &crate::AppSpec,
 ) -> Result<()> {
     for (path, source) in example.files {
         let mut source = (*source).to_owned();
         match *path {
             "src/lib.rs" => {
-                source = replace_const(&source, "APP_ID", app_id)
+                source = replace_const(&source, "APP_ID", &spec.app_id)
                     .with_context(|| format!("the {} example's src/lib.rs", example.name))?;
-                source = replace_const(&source, "APP_TITLE", title)
+                source = replace_const(&source, "APP_TITLE", &spec.title)
                     .with_context(|| format!("the {} example's src/lib.rs", example.name))?;
             }
-            "README.md" => source = retitle_readme(&source, title),
+            "README.md" => source = retitle_readme(&source, &spec.title),
             _ => {}
         }
         let file = std::path::Path::new(path);
         if file.extension().is_some_and(|extension| extension == "rs") {
-            source = source.replace(&example.crate_name(), crate_name);
+            source = source.replace(&example.crate_name(), &spec.crate_name);
             source = crate::rustfmt_source(&source, file)?;
         }
         let path = PathBuf::from(path);
@@ -234,6 +232,24 @@ pub(crate) fn overlay(
             Some((_, rendered)) => *rendered = source,
             None => rendered.push((path, source)),
         }
+    }
+    // The overlaid code is the app's own, so its manifest names the record kinds that
+    // code declares rather than the template's. The template's scaffold offers name the
+    // template's actions, which the code may not publish: `tilolang surface` writes the
+    // offers the app does publish.
+    let kinds = crate::resource_kinds::declared_in_sources(
+        rendered
+            .iter()
+            .filter(|(path, _)| path.starts_with("src") && path.extension().is_some_and(|ext| ext == "rs"))
+            .map(|(path, source)| (path.as_path(), source.as_str())),
+    )?;
+    let manifest = crate::app_manifest_for(spec, &kinds, false)?;
+    match rendered
+        .iter_mut()
+        .find(|(path, _)| path.as_os_str() == "tilo-app.toml")
+    {
+        Some((_, rendered)) => *rendered = manifest,
+        None => bail!("the render has no tilo-app.toml to name the example's kinds in"),
     }
     Ok(())
 }

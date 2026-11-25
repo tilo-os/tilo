@@ -9,7 +9,8 @@
 //! * `app.ids`: the ids lock it was compiled with;
 //! * `imports/<app>.wasm`: the compiled module of each package it uses, its metadata embedded
 //!   the same way, so the runtime runs their views and actions on the resources it holds of them
-//!   (a board drawing todos' rows), each package under its own authority;
+//!   (a board drawing todos' rows), each package under its own authority. The standard library
+//!   is not among them: the runtime the package names carries it (`lib/tilo.std.wasm`);
 //! * `surface.toml`: the surface generated from the metadata, which receivers decide the app's
 //!   changes against;
 //! * `icon.svg`: the app's icon, when it declares one.
@@ -104,8 +105,9 @@ fn read(path: &Path) -> Result<Vec<u8>, BundleError> {
     })
 }
 
-/// The bundle of each compiled package, in the order given: each carries the packages it uses,
-/// the standard library first and the earlier packages of the build after it.
+/// The bundle of each compiled package, in the order given: each carries the earlier packages of
+/// the build it uses. The standard library is no package's to carry: the runtime keyed by the
+/// library a package records ([`tilolang::PackageMeta::std`]) brings it.
 #[must_use]
 pub fn of_build(built: &[tilolang::source::BuiltPackage]) -> Vec<Bundle> {
     built
@@ -113,10 +115,10 @@ pub fn of_build(built: &[tilolang::source::BuiltPackage]) -> Vec<Bundle> {
         .enumerate()
         .map(|(index, package)| {
             let used = &package.compiled.meta.uses;
-            // The standard library first: every module's code may call into it, and it is compiled
-            // with Tilo rather than with the packages of this build.
-            let imports = std::iter::once(tilolang::stdlib::compiled())
-                .chain(built.iter().take(index).map(|earlier| &earlier.compiled))
+            let imports = built
+                .iter()
+                .take(index)
+                .map(|earlier| &earlier.compiled)
                 .filter(|earlier| used.contains(&earlier.meta.app));
             let scenario_only = tilolang::source::scenario_only_assets(&package.source);
             let assets = package.source.assets.iter().map(|asset| Asset {

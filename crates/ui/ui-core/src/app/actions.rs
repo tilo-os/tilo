@@ -3,6 +3,7 @@
 // Kept as an `App` implementation so custom widgets and built-in controls
 // share one authoritative action/resource route.
 
+#[cfg(feature = "model")]
 /// A broker's resolution of a resource still being read, answered once its
 /// read lands.
 pub(super) struct AwaitedResolution {
@@ -367,6 +368,7 @@ impl App {
         )
     }
 
+    #[cfg(feature = "model")]
     fn bound_broker_route(&self) -> Option<&crate::collaboration::AcceptedRoute> {
         #[cfg(test)]
         if let Some(route) = &self.actions.bound_broker_route_for_test {
@@ -374,6 +376,7 @@ impl App {
         }
         self.collaboration.manager.primary_route()
     }
+    #[cfg(feature = "model")]
     fn publication_app_id(&self) -> String {
         if crate::bound_dispatch::has_matching_broker_component(
             self.root_widget.as_ref(),
@@ -384,6 +387,7 @@ impl App {
         }
         crate::collaboration::local_app_id()
     }
+    #[cfg(feature = "model")]
     fn require_bound_broker_route(
         &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -417,6 +421,7 @@ impl App {
         })
     }
 
+    #[cfg(feature = "model")]
     /// Transport-only projection. Each component is validated with its own
     /// registry before its domain resource is assigned an opaque publication alias.
     pub(super) fn publication_resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
@@ -516,6 +521,7 @@ impl App {
         resources
     }
 
+    #[cfg(feature = "model")]
     /// Publish the live resource/action tree through the session broker.
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
@@ -556,6 +562,7 @@ impl App {
         self.publish_action_surface_after_refresh();
     }
 
+    #[cfg(feature = "model")]
     /// Publish the surface a handled input left for the frame after its
     /// sync ([`super::runtime::ActionRuntime::action_surface_owed`]), if no
     /// publication has paid for it since.
@@ -565,6 +572,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     fn publish_action_surface_after_refresh(&mut self) {
         let carried = self.publish_action_surface_on_route();
         self.settle_held_own_invocations(carried);
@@ -585,6 +593,7 @@ impl App {
     /// builds alone.
     const HELD_OWN_INVOCATION_WAIT: crate::time::Duration = crate::time::Duration::from_secs(20);
 
+    #[cfg(feature = "model")]
     /// Send an invocation of this app's own action to the session action
     /// host, on the route, after the surface that offers it. It waits here,
     /// behind any invocation made before it, while the route cannot carry
@@ -608,6 +617,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     /// Release the held own invocations, in order, once the route carries
     /// the current surface; refuse them with the connection's own reason
     /// once it has gone. Otherwise they keep waiting: the publication the
@@ -657,6 +667,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     /// Why the held own invocations wait no longer though the connection
     /// stands, once they do not: the join of the route that offers them
     /// failed, or the oldest of them waited
@@ -689,6 +700,7 @@ impl App {
         Some(why)
     }
 
+    #[cfg(feature = "model")]
     fn invoke_published_action(
         &mut self,
         id: u64,
@@ -864,6 +876,7 @@ impl App {
             .send(CollabRequest::UpdateInvocation { id, update });
     }
 
+    #[cfg(feature = "model")]
     /// What the invoker of `address` was admitted for: the action's own
     /// kind, which the admitting host checked they may perform. Only reading
     /// when it no longer resolves.
@@ -912,6 +925,7 @@ impl App {
             })
     }
 
+    #[cfg(feature = "model")]
     fn resolve_resource_invocation<'a>(
         resources: &'a [tilo_actions::ResourceSpec],
         address: &tilo_actions::ActionAddress,
@@ -920,6 +934,7 @@ impl App {
         crate::bound_dispatch::resolve_resource_invocation(resources, address, argument, None)
     }
 
+    #[cfg(feature = "model")]
     /// The canonical route the app's primary document currently syncs on.
     fn primary_document_route(&self) -> Option<crate::collaboration::RouteSpec> {
         self.collaboration
@@ -928,6 +943,7 @@ impl App {
             .map(|observation| observation.route().clone())
     }
 
+    #[cfg(feature = "model")]
     fn encode_resource_action(
         resources: &[tilo_actions::ResourceSpec],
         address: &tilo_actions::ActionAddress,
@@ -937,6 +953,7 @@ impl App {
         crate::bound_dispatch::encode_resource_action(resources, address, typed_arguments, argument)
     }
 
+    #[cfg(feature = "model")]
     /// Route keyboard history through the bound resource's declared action
     /// so compensation receives fresh admission under current permissions.
     pub(super) fn invoke_bound_history(
@@ -963,6 +980,7 @@ impl App {
         self.invoke_via_broker(&address, Some(&serde_json::Map::new()), None)
     }
 
+    #[cfg(feature = "model")]
     /// Admit a locally initiated operation at the session broker before the
     /// application performs it. The broker records the invocation first,
     /// re-resolves the live published surface and current permissions, then
@@ -994,6 +1012,7 @@ impl App {
         Ok(started)
     }
 
+    #[cfg(feature = "model")]
     fn dispatch_broker_request(
         next_request_id: &mut Option<u64>,
         connected: bool,
@@ -1045,9 +1064,11 @@ impl App {
         Ok(crate::widget::ResourceOperationStart::Accepted)
     }
 
+    #[cfg(feature = "model")]
     fn take_broker_request_id(&mut self) -> Result<u64, tilo_actions::ApiError> {
         Self::allocate_broker_request_id(&mut self.actions.next_broker_request_id)
     }
+    #[cfg(feature = "model")]
     fn allocate_broker_request_id(
         next_request_id: &mut Option<u64>,
     ) -> Result<u64, tilo_actions::ApiError> {
@@ -1061,6 +1082,7 @@ impl App {
         Ok(request_id)
     }
 
+    #[cfg(feature = "model")]
     /// This window's session API: its workspace broker connection.
     pub(super) fn broker_api(&mut self) -> BrokerApi<'_> {
         BrokerApi {
@@ -1071,6 +1093,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     fn invoke_document_resource_action(
         &mut self,
         invocation: &ResourceInvocation<'_>,
@@ -1153,7 +1176,7 @@ impl App {
                         spec,
                         encoded,
                         actor,
-                        local_author: &self.collaboration.local_author,
+                        local_author: &self.local_author,
                         broker_admitted,
                         invocation: operation_invocation,
                         source_invocation,
@@ -1177,6 +1200,7 @@ impl App {
         Ok(started)
     }
 
+    #[cfg(feature = "model")]
     fn invoke_bound_target(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
@@ -1185,6 +1209,7 @@ impl App {
         self.invoke_bound_target_with_broker(target, invocation, None)
     }
 
+    #[cfg(feature = "model")]
     fn bound_invocation_needs_broker(
         kind: tilo_actions::OperationKind,
         spec: &tilo_actions::ActionSpec,
@@ -1201,6 +1226,7 @@ impl App {
                 && spec.locus == tilo_actions::ExecutionLocus::ServerPreferred)
     }
 
+    #[cfg(feature = "model")]
     /// A record another workspace holds (a person's profile record in a window of another
     /// workspace) is admitted where it is held: the broker decides it there, never this window,
     /// which only shows what that workspace said of it.
@@ -1213,6 +1239,7 @@ impl App {
         resource.workspace.is_some() && invocation.is_none() && (has_delivery || connected)
     }
 
+    #[cfg(feature = "model")]
     /// Ask the workspace's broker for the bound call `target` names with these `arguments`,
     /// under the component's alias. The component's published surface is checked as it is
     /// published, where the live host withdraws one whose actions break their contract; the
@@ -1254,6 +1281,7 @@ impl App {
         self.invoke_via_broker(&address, arguments, argument)
     }
 
+    #[cfg(feature = "model")]
     /// Invoke the action `address` names, at the component instance `address.instance_id`
     /// names, with `arguments`: the app's own call, run where that component's owner says,
     /// never another instance that publishes the same address.
@@ -1304,7 +1332,7 @@ impl App {
             )
         })?;
         let invocation = tilo_actions::InvocationId::new();
-        let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(self.local_author.clone());
         // Run where the component's owner says, as a host's own call: the app's local path,
         // never rerouted through the broker on the action's account.
         let started = crate::bound_dispatch::invoke_resource_action(
@@ -1338,6 +1366,7 @@ impl App {
         Ok(started)
     }
 
+    #[cfg(feature = "model")]
     /// The bound `target` names the action; `request.address` is not consulted.
     fn invoke_bound_target_with_broker(
         &mut self,
@@ -1451,6 +1480,7 @@ impl App {
         Ok(started)
     }
 
+    #[cfg(feature = "model")]
     /// Invoke a registered action as this application's current local person.
     /// This uses the same current record, policy and broker checks as the palette.
     /// # Errors
@@ -1460,10 +1490,11 @@ impl App {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(self.local_author.clone());
         self.invoke_local_resource_action_as(&actor, address, arguments)
     }
 
+    #[cfg(feature = "model")]
     /// [`Self::invoke_local_resource_action`] as `actor` (an agent or a script): what the API
     /// admits for whoever asked, so what acts on this device's person alone is refused to
     /// anyone else.
@@ -1480,6 +1511,7 @@ impl App {
         result
     }
 
+    #[cfg(feature = "model")]
     fn invoke_local_resource_action_captured(
         &mut self,
         actor: &tilo_actions::Actor,
@@ -1505,6 +1537,7 @@ impl App {
         )
     }
 
+    #[cfg(feature = "model")]
     /// Route through the broker an invocation the API resolved as one that
     /// runs there ([`crate::bound_dispatch::BoundActionError::Rerouted`]):
     /// the broker is asked under the component's alias with the arguments the
@@ -1527,6 +1560,7 @@ impl App {
         )
     }
 
+    #[cfg(feature = "model")]
     pub(super) fn invoke_resource_action(
         &mut self,
         request: ResourceInvocation<'_>,
@@ -1563,6 +1597,7 @@ impl App {
         Ok(started)
     }
 
+    #[cfg(feature = "model")]
     fn invoke_unbound_resource_action(
         &mut self,
         request: &ResourceInvocation<'_>,
@@ -1589,7 +1624,7 @@ impl App {
                 &mut resources,
             );
             resources
-        } else if actor.member_id() == Some(&self.collaboration.local_author) {
+        } else if actor.member_id() == Some(&self.local_author) {
             self.collect_local_resources()
         } else {
             let key = self.ensure_resource_cache();
@@ -1601,7 +1636,7 @@ impl App {
                 .filter(|cache| cache.key == key)
                 .and_then(|cache| cache.complete.clone())
                 .unwrap_or_default();
-            if actor.member_id() == Some(&self.collaboration.local_author) {
+            if actor.member_id() == Some(&self.local_author) {
                 resources
                     .into_iter()
                     .filter_map(|resource| self.filter_resource_for_local_actor(resource))
@@ -1616,7 +1651,7 @@ impl App {
                 &self.state.doc,
                 &address.resource,
             );
-            let fallback = if actor.member_id() == Some(&self.collaboration.local_author) {
+            let fallback = if actor.member_id() == Some(&self.local_author) {
                 fallback.and_then(|resource| self.filter_resource_for_local_actor(resource))
             } else {
                 fallback
@@ -1650,7 +1685,7 @@ impl App {
         )?;
         // The local presence's tree offers an action under the least it
         // needs; this invocation needs what its value asks.
-        if actor.member_id() == Some(&self.collaboration.local_author) {
+        if actor.member_id() == Some(&self.local_author) {
             match crate::bound_dispatch::admit_local_action(
                 &self.permission_ctx,
                 (&crate::collaboration::local_app_id(), resource, resolved),
@@ -1666,19 +1701,14 @@ impl App {
         if resolved.contract.runs_on_invokers_device()
             && !crate::bound_dispatch::runs_own_device(
                 actor,
-                &self.collaboration.local_author,
+                &self.local_author,
                 broker_admitted,
                 ambient_context,
             )
         {
             return Err(crate::bound_dispatch::own_device_refusal());
         }
-        crate::invocation_scope::check_shown_here(
-            actor,
-            &self.collaboration.local_author,
-            resource,
-            resolved,
-        )?;
+        crate::invocation_scope::check_shown_here(actor, &self.local_author, resource, resolved)?;
         // Every locally initiated external effect or asynchronous document job
         // crosses the same broker
         // admission as an agent invocation before the handler touches the
@@ -1883,7 +1913,7 @@ impl App {
                                 spec: resolved,
                                 encoded,
                                 actor,
-                                local_author: &self.collaboration.local_author,
+                                local_author: &self.local_author,
                                 broker_admitted,
                                 invocation: operation_invocation,
                                 source_invocation: broker_admitted.then_some(operation_invocation),
@@ -1961,6 +1991,7 @@ impl App {
         result
     }
 
+    #[cfg(feature = "model")]
     fn service_local_control_history(&mut self) -> bool {
         #[cfg(test)]
         let probe = crate::profiling::frame_probe::span("idle.controls");
@@ -1990,6 +2021,7 @@ impl App {
         changed
     }
 
+    #[cfg(feature = "model")]
     /// Review pre-entry controls retained by the native managed History surface.
     pub fn pending_history_controls(
         &self,
@@ -1999,6 +2031,7 @@ impl App {
             .map_or_else(Vec::new, |history| history.pending_control_reviews())
     }
 
+    #[cfg(feature = "model")]
     /// Drives the production local idle body without creating a window or input.
     #[cfg(any(test, feature = "test-support"))]
     pub fn controlled_local_idle_for_test(&mut self) -> bool {
@@ -2006,6 +2039,7 @@ impl App {
         self.service_local_control_history()
     }
 
+    #[cfg(feature = "model")]
     /// Resolve queued local control intents against the current resource tree
     /// and enter through the same API/lifecycle as every other caller.
     pub(super) fn dispatch_control_invocations(&mut self) -> usize {
@@ -2042,6 +2076,7 @@ impl App {
         self.dispatch_drained_controls(registered)
     }
 
+    #[cfg(feature = "model")]
     /// Invoke, as the person here, another provider's action a control of
     /// this window is bound to ([`crate::bound_dispatch::BoundActionError::Hosted`]):
     /// the provider admits and runs it as any caller's, through the broker.
@@ -2090,6 +2125,7 @@ impl App {
         Ok(crate::widget::ResourceOperationStart::Accepted)
     }
 
+    #[cfg(feature = "model")]
     /// The provider answered the hosted invocation `request_id`
     /// ([`Self::invoke_hosted`]): what it refused is said over the window,
     /// as a refusal here is. Whether it was one.
@@ -2114,6 +2150,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "model")]
     /// The broker refused an invocation of this window's own action outright
     /// (`request_id` is none of the kinds settled before this): nothing was
     /// carried out and no handler of the app answers for it, so the person
@@ -2134,6 +2171,7 @@ impl App {
         self.refuse_in_window(&tilo_actions::ApiError::Failed(reason.clone()));
     }
 
+    #[cfg(feature = "model")]
     fn request_invocation_cancellation(&mut self, wire_id: u64) {
         if let Some(pending) = self
             .actions
@@ -2145,6 +2183,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     fn fail_pending_application_launches_on_disconnect(&mut self) -> bool {
         if self.collaboration.manager.is_connected() {
             return false;
@@ -2173,6 +2212,7 @@ impl App {
         changed
     }
 
+    #[cfg(feature = "model")]
     /// Give retained widgets a non-blocking lifecycle tick and forward every
     /// progress/item/terminal update to the broker. A terminal update removes
     /// the job before it is sent, making terminal delivery at-most-once even
@@ -2366,6 +2406,7 @@ impl App {
         changed
     }
 
+    #[cfg(feature = "model")]
     pub fn open_action_palette(&mut self) {
         let _entry = self.enter_wake_scope();
         let (key, permission_generation) = self.ensure_local_resource_cache();
@@ -2430,6 +2471,7 @@ impl App {
         self.rebuild_action_palette_admission();
     }
 
+    #[cfg(feature = "model")]
     /// Open search the way `request` asks: this app, or one part of it, with
     /// the query already typed. A standalone window shows its own palette;
     /// inside the Tilo shell the component hands the request to the shell.
@@ -2453,6 +2495,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     /// Inside a Tilo session there is one search, the shell's: hand it
     /// `request` and open nothing here. A window the shell hosts in its own
     /// process asks through its component's host intent; one running as a
@@ -2483,6 +2526,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "model")]
     /// `/` pressed with nothing focused that types it: open search of this
     /// app. A text field consumes `/` before this runs, and a focused widget
     /// that takes text (a terminal, a canvas with an IME) keeps it, so
@@ -2519,6 +2563,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "model")]
     /// A printable key no widget took, with a selection in focus and nothing
     /// focused that takes text: the person is talking about the selection.
     /// A send-to box opens on it with the key in its message, where their
@@ -2564,12 +2609,14 @@ impl App {
         true
     }
 
+    #[cfg(feature = "model")]
     /// Whether this window presents search itself. A shell hosting the app
     /// presents it instead, and receives the request as a host intent.
     fn presents_search(&self) -> bool {
         self.search_presented
     }
 
+    #[cfg(feature = "model")]
     fn rebuild_action_palette_admission(&mut self) {
         // A synchronous action may need the current canonical widget map
         // before the next redraw. Retire the old tree through the normal
@@ -2658,6 +2705,7 @@ impl App {
         self.layout.layout_dirty = true;
     }
 
+    #[cfg(feature = "model")]
     /// Open search on the app's action `address`, asking for its
     /// arguments: the session's search inside a session, the window's own
     /// outside one. Whether it opened.
@@ -2672,6 +2720,7 @@ impl App {
         self.open_action_palette_at(address)
     }
 
+    #[cfg(feature = "model")]
     fn open_action_palette_at(&mut self, address: &tilo_actions::ActionAddress) -> bool {
         self.open_action_palette();
         let activated = self
@@ -2685,6 +2734,7 @@ impl App {
         activated
     }
 
+    #[cfg(feature = "model")]
     fn filter_resource_for_local_actor(
         &self,
         resource: tilo_actions::ResourceSpec,
@@ -2693,6 +2743,7 @@ impl App {
             .permitted_resource(&crate::collaboration::local_app_id(), resource)
     }
 
+    #[cfg(feature = "model")]
     pub fn close_action_palette(&mut self) {
         self.bindings.clear();
         self.layout.node_map.clear();
@@ -2716,10 +2767,12 @@ impl App {
         Some(f(bound.component.root.as_deref_mut()?))
     }
 
+    #[cfg(feature = "model")]
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {
         self.actions.action_palette.as_deref()
     }
 
+    #[cfg(feature = "model")]
     fn refresh_action_palette_resources(&mut self) {
         // A palette can stay open while document state or the local actor's
         // permissions change. Refresh its authority snapshot immediately
@@ -2790,6 +2843,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     fn action_palette_handle_event(&mut self, event: &WindowEvent, scale: f64) -> bool {
         if matches!(event, WindowEvent::KeyboardInput { .. }) {
             return self.action_palette_handle_key(event);
@@ -2822,6 +2876,7 @@ impl App {
         self.finish_action_palette_input(consumed)
     }
 
+    #[cfg(feature = "model")]
     fn action_palette_handle_key(&mut self, event: &WindowEvent) -> bool {
         if self.actions.action_palette.is_none() {
             return false;
@@ -2843,6 +2898,7 @@ impl App {
         self.finish_action_palette_input(consumed)
     }
 
+    #[cfg(feature = "model")]
     fn finish_action_palette_input(&mut self, consumed: bool) -> bool {
         // The transition may have replaced the field or closed the overlay.
         // Re-admission below retires the old tree and preserves the real
@@ -2947,6 +3003,7 @@ impl App {
 /// row list) beyond its rows, on the wire.
 const DIRECTORY_PAGE_WIRE_BYTES: usize = ::collaboration::action_directory::PAGE_WIRE_BYTES;
 
+#[cfg(feature = "model")]
 /// Every `(resource, action)` in `resource`'s tree, to `max_depth` levels
 /// below it, whose action id or label, description, parameter names and
 /// descriptions or resource label contains `needle` (already lowercase). Each matched resource is kept without its
@@ -2984,6 +3041,7 @@ fn collect_named_actions(
     }
 }
 
+#[cfg(feature = "model")]
 /// A native window's session API ([`crate::session_api`]): the workspace
 /// broker its collaboration connection reaches.
 pub(super) struct BrokerApi<'a> {
@@ -2994,6 +3052,7 @@ pub(super) struct BrokerApi<'a> {
         &'a mut std::collections::HashMap<u64, tilo_actions::InvocationId>,
 }
 
+#[cfg(feature = "model")]
 impl BrokerApi<'_> {
     /// Retain exactly one broker request per admitted launcher invocation.
     /// The fixed cap is a failure boundary: overflowing it must refuse the
@@ -3015,6 +3074,7 @@ impl BrokerApi<'_> {
     }
 }
 
+#[cfg(feature = "model")]
 impl crate::session_api::SessionApi for BrokerApi<'_> {
     fn workspace(&self) -> Option<String> {
         self.manager
@@ -3057,10 +3117,12 @@ impl App {
         self.actions.refused.push(error.to_string());
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn waiting_controls(&mut self) -> &mut Vec<crate::app_core::WaitingControl> {
         &mut self.actions.waiting_controls
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn component_awaits(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
@@ -3075,14 +3137,17 @@ impl App {
         )
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication {
         &self.actions.bound_publication
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn broker_connected(&self) -> bool {
         self.collaboration.manager.is_connected()
     }
 
+    #[cfg(feature = "model")]
     /// Whether the window publishes the action `intent` calls at all, whoever may run it: one
     /// the person's grants refuse is still theirs to press, and the workspace says why it won't.
     pub(crate) fn declares(&self, intent: &tilo_actions::ControlInvocation) -> bool {
@@ -3097,6 +3162,7 @@ impl App {
             })
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn locally_offered(&self, intent: &tilo_actions::ControlInvocation) -> bool {
         let (key, generation) = self.ensure_local_resource_cache();
         let cache = self.actions.local_resource_cache.borrow();
@@ -3108,6 +3174,7 @@ impl App {
         tilo_actions::api::resolve(resources, &intent.address).is_some()
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn invoke_bound_control(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
@@ -3116,6 +3183,7 @@ impl App {
         self.invoke_bound_target_with_broker(target, request, None)
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn invoke_outer_control(
         &mut self,
         request: &ResourceInvocation<'_>,
@@ -3123,6 +3191,7 @@ impl App {
         self.invoke_unbound_resource_action(request)
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn history_address(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -3131,6 +3200,7 @@ impl App {
         self.invoke_history_address_local(address, argument)
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn invoke_chosen_address(
         &mut self,
         request: &ResourceInvocation<'_>,
@@ -3138,15 +3208,18 @@ impl App {
         self.invoke_resource_action(*request)
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn is_host_action_resource(&self, resource: &str) -> bool {
         resource == local_input_capture::UNSAVED_RESOURCE
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn embedded_history_acted(&mut self) {
         self.needs_sync = true;
         self.layout.layout_dirty = true;
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn take_search_invocation(
         &mut self,
         intent: &tilo_actions::ControlInvocation,

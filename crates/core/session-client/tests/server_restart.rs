@@ -15,7 +15,8 @@ use tilo_session_client::{Outbox, TransportPhase};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    HostSettings, enrol, ready, restart_host_relayed, route, say, start_host_serving, start_peer,
+    HostSettings, enrol, person_of, ready, restart_host_relayed, route, say, start_host_serving,
+    start_peer,
 };
 
 /// How long a restart may stay visible to a held session once the server is back: its next dial
@@ -55,7 +56,9 @@ async fn a_held_session_is_served_again_within_seconds_of_its_server_restarting(
         .unwrap();
     ready(&[&session]).await;
     let mut note = automerge::AutoCommit::new();
-    session.write(route(), &say(&mut note, "before")).unwrap();
+    session
+        .write(route(), &say(&mut note, person_of(&session), "before"))
+        .unwrap();
     durable(&session, BACK_WITHIN).await.unwrap();
 
     drop(server.web);
@@ -64,7 +67,9 @@ async fn a_held_session_is_served_again_within_seconds_of_its_server_restarting(
     let back = Instant::now();
 
     // Nothing tells the session to reconnect: the computer's next action is simply served.
-    session.write(route(), &say(&mut note, "after")).unwrap();
+    session
+        .write(route(), &say(&mut note, person_of(&session), "after"))
+        .unwrap();
     let kept = durable(&session, BACK_WITHIN).await;
     assert!(
         kept.is_ok(),
@@ -176,7 +181,9 @@ async fn a_session_whose_server_went_silently_is_served_again_within_seconds_of_
         .unwrap();
     ready(&[&session]).await;
     let mut note = automerge::AutoCommit::new();
-    session.write(route(), &say(&mut note, "before")).unwrap();
+    session
+        .write(route(), &say(&mut note, person_of(&session), "before"))
+        .unwrap();
     durable(&session, BACK_WITHIN).await.unwrap();
 
     // The server goes, and nothing of its going reaches the session: the hop drops its farewell.
@@ -209,7 +216,9 @@ async fn a_session_whose_server_went_silently_is_served_again_within_seconds_of_
     let back = Instant::now();
 
     // Nothing tells the session to reconnect: the computer's next action is simply served.
-    session.write(route(), &say(&mut note, "after")).unwrap();
+    session
+        .write(route(), &say(&mut note, person_of(&session), "after"))
+        .unwrap();
     let kept = durable(&session, BACK_AFTER_UNANSWERED).await;
     assert!(
         kept.is_ok(),

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterable
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -132,7 +133,10 @@ def kind_of(app: dict) -> str:
 
 
 def tilolang_runtime(root: Path = ROOT) -> str | None:
-    """The tilolang runtime every tilolang app executes, as its bundle provides it.
+    """The tilolang runtime every tilolang app executes, as its bundle provides it: the build
+    its manifest declares, keyed by the standard library it carries
+    (`tilolang/<version>+tilolang.<std digest>`, as tools/apps/tilolang_packages.sh and
+    `tilolang_tilo::runtime` name it).
 
     `None` for a tree that has no tilolang runtime (a fixture root, a collection that only
     reads a few apps).
@@ -143,7 +147,14 @@ def tilolang_runtime(root: Path = ROOT) -> str | None:
     provides = tomllib.loads(manifest.read_text())["package"]["provides"]
     if not provides.startswith("tilolang/"):
         raise ValueError(f"{manifest}: provides {provides!r}, not a tilolang runtime")
-    return provides
+    return f"{provides}.{tilolang_std_digest(root)}"
+
+
+def tilolang_std_digest(root: Path = ROOT) -> str:
+    """The digest of the standard library in `root` (`tilolang::stdlib::digest`): the first 16
+    hex digits of the SHA-256 of its `app.tl` followed by its `app.ids`."""
+    std = root / "crates/lang/tilolang/std"
+    return hashlib.sha256((std / "app.tl").read_bytes() + (std / "app.ids").read_bytes()).hexdigest()[:16]
 
 
 def tilolang_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:

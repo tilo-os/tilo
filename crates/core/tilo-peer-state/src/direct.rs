@@ -366,9 +366,14 @@ struct LinkAdmit {
     /// The scope of what the link is sent ([`LinkScope::reads`]).
     #[cfg(not(target_arch = "wasm32"))]
     scope: LinkScope,
-    /// Whether the link carries only frames its own device authored: the
-    /// scope's own flag, or a device that does not keep the workspace.
+    /// Whether the link carries only frames its own device authored, as the
+    /// scope says.
     own_frames_only: bool,
+    /// Whether the link carries another device's frame only while its device
+    /// keeps the workspace: a link this side accepted. Read for each frame, so
+    /// a device named to keep the workspace after its link came up passes on
+    /// what the others wrote from then, and one no longer named stops.
+    keeping_only: bool,
     /// Whether the link may carry only the frames a device takes the
     /// workspace's records with, and nothing a member device alone may send:
     /// a link from a device that said it takes records only as it opens them.
@@ -380,14 +385,14 @@ struct LinkAdmit {
 }
 
 impl LinkAdmit {
-    /// What a link from `remote` is limited to: the scope the host admitted it
-    /// with, and, for a device that does not keep the workspace, its own
-    /// frames alone.
+    /// What a link is limited to: the scope the host admitted it with, and,
+    /// while its device does not keep the workspace, its own frames alone.
     #[cfg(not(target_arch = "wasm32"))]
-    fn of(link: &DirectSync, remote: [u8; 32], scope: LinkScope, records_only: bool) -> Self {
+    const fn of(scope: LinkScope, records_only: bool) -> Self {
         Self {
             scope,
-            own_frames_only: scope.own_frames_only || !link.keeps_workspace(remote),
+            own_frames_only: scope.own_frames_only,
+            keeping_only: true,
             records_only,
             key_access: scope.key_access,
         }
@@ -400,6 +405,7 @@ impl LinkAdmit {
             #[cfg(not(target_arch = "wasm32"))]
             scope: LinkScope::admitting(),
             own_frames_only: false,
+            keeping_only: false,
             records_only: false,
             key_access: true,
         }
@@ -410,7 +416,12 @@ impl LinkAdmit {
     /// not keep the workspace may send at all ([`Self::records_only`]), and a
     /// channel's commit only from a device admitted for its keys
     /// ([`Self::key_access`]).
-    fn permits(self, remote: [u8; 32], authored: &Authored) -> bool {
+    fn permits(
+        self,
+        remote: [u8; 32],
+        authored: &Authored,
+        keeps_workspace: impl FnOnce() -> bool,
+    ) -> bool {
         // A device the host confined to one record writes that record and no
         // other: what it sends of another is refused here, as the same scope
         // refuses to send it another's frames. A hosted environment's device is
@@ -432,7 +443,8 @@ impl LinkAdmit {
         if !self.key_access && matches!(authored.message, NeighbourMsg::MlsGovernance { .. }) {
             return false;
         }
-        !self.own_frames_only || by_remote(&authored.message, authored.from, remote)
+        by_remote(&authored.message, authored.from, remote)
+            || !(self.own_frames_only || (self.keeping_only && !keeps_workspace()))
     }
 }
 
@@ -1178,7 +1190,6 @@ impl DirectSync {
         answered.await.map_err(|_| "the link ended".to_owned())?
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     /// Whether the workspace names `device` among the devices keeping it: one
     /// that holds its records and may pass another device's frames on, rather
     /// than the device of a page or an environment that reaches one record.
@@ -2287,7 +2298,7 @@ impl DirectSync {
             return self.give_store(transport, control, scope).await;
         }
         let live = self.0.outgoing.subscribe();
-        let admit = LinkAdmit::of(self, transport.remote(), scope, opens);
+        let admit = LinkAdmit::of(scope, opens);
         self.link(transport, None, control, live, opens, admit)
             .await
     }
@@ -3352,7 +3363,7 @@ impl DirectSync {
     async fn take_content(&self, remote: [u8; 32], admit: LinkAdmit, authored: Authored) {
         let refused = if !content_frame(&authored.message) {
             Some("a link's content stream carried another frame".to_owned())
-        } else if !admit.permits(remote, &authored) {
+        } else if !admit.permits(remote, &authored, || self.keeps_workspace(remote)) {
             Some("the link's device may not send it".to_owned())
         } else {
             // A server keeping the workspace asks for the content it lacks as one of those the
@@ -3559,7 +3570,7 @@ impl DirectSync {
         // its own frames, and none but those a device that opens the records
         // it reads takes. A frame it may not send is that frame's refusal,
         // never the link's, as a frame the workspace refuses is.
-        if !admit.permits(remote, &authored) {
+        if !admit.permits(remote, &authored, || self.keeps_workspace(remote)) {
             tracing::warn!(
                 workspace = ?self.workspace().ok(),
                 remote = %short(&remote),

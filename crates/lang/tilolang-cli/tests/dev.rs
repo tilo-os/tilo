@@ -16,7 +16,7 @@ fn a_saved_build_is_staged_unsigned_for_the_device() {
         search: Vec::new(),
         out: scratch.path().join("out"),
         tilo_runtime: package::DEFAULT_TILO_RUNTIME.into(),
-        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        tilolang_runtime: package::default_tilolang_runtime(),
         version: "0.1.0".into(),
         locked: false,
     };

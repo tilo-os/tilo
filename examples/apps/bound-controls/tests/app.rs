@@ -13,7 +13,7 @@ fn edit(edit: &Edit<Preferences>) -> Invoke<Preferences> {
 #[test]
 fn edits_out_of_range_are_refused() {
     let p = Preferences::paths();
-    let mut prefs = Replica::<Preferences>::new();
+    let mut prefs = Replica::<Preferences>::new().in_app("so.tilo.model", "Model");
     assert!(prefs.apply(edit(&p.volume.set(2.0))).is_err());
     assert!(prefs.apply(edit(&p.refresh_minutes.set(0.0))).is_err());
     assert!(

@@ -666,6 +666,41 @@ pub type RecordFounding = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 #[cfg(unix)]
 pub type DeviceDaemon = Result<runtime_collab::ShellClient, String>;
 
+/// The workspace's own folder, as the dispatch reaches it: where a `files#open` given content
+/// puts its files. A host that keeps no tree of its workspaces serves none, and that open is
+/// refused there.
+pub trait FilesTreePuts: Send + Sync {
+    /// Put what `arguments` name into `workspace`'s tree, answering where each file is or how
+    /// many went in.
+    ///
+    /// `confirm` is asked once every file is named and before the tree is touched: whether the
+    /// workspace still lets the caller write its files, as a grant taken back while the content
+    /// was read takes the change away.
+    ///
+    /// # Errors
+    /// Why the tree did not take the files, in words a person reads.
+    fn put(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        acting: Option<tilo_actions::ActionContext>,
+        confirm: &dyn Fn() -> bool,
+    ) -> Result<serde_json::Value, String>;
+}
+
+#[cfg(all(feature = "files", not(target_arch = "wasm32")))]
+impl FilesTreePuts for crate::files::OpenedFiles {
+    fn put(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        acting: Option<tilo_actions::ActionContext>,
+        confirm: &dyn Fn() -> bool,
+    ) -> Result<serde_json::Value, String> {
+        crate::files::OpenedFiles::put(self, workspace, arguments, acting, confirm)
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct ProcessServices {
     /// Read-only existing-resource discovery, absent unless the host can carry it.
@@ -692,6 +727,9 @@ pub struct ProcessServices {
     /// The resources this session's services publish, which its apps read, watch and invoke;
     /// without it those calls are refused.
     pub published: Option<Arc<dyn PublishedResources>>,
+    /// The workspace's own folder, where a `files#open` given content puts its files; without it
+    /// that open is refused, and Files' open of nothing still starts the app.
+    pub files_open: Option<Arc<dyn FilesTreePuts>>,
     pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,
     pub shortcut_library: Option<Arc<dyn ShortcutLibraryServices>>,
     /// The device's keyboard shortcuts on the action api; without it they are not offered.
@@ -773,6 +811,7 @@ impl ProcessServices {
         "journal_root",
         "launcher",
         "published",
+        "files_open",
         "workspace_governance",
         "shortcut_library",
         "keyboard_shortcuts",

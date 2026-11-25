@@ -702,7 +702,11 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
             every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             while !done.load(std::sync::atomic::Ordering::SeqCst) {
                 every.tick().await;
-                let mutation = super::support::say(&mut doc, &format!("change {}", took.len()));
+                let mutation = super::support::say(
+                    &mut doc,
+                    super::support::person_of(&other),
+                    &format!("change {}", took.len()),
+                );
                 let sent = Instant::now();
                 other.write(theirs.clone(), &mutation).unwrap();
                 durable(&other).await;

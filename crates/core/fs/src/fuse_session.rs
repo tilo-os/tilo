@@ -50,7 +50,8 @@ fn end_connection(mount_point: &Path) -> io::Result<bool> {
 
     match unmount(mount_point, UnmountFlags::empty()) {
         Ok(()) => return Ok(true),
-        Err(Errno::PERM | Errno::INVAL) => return Ok(false),
+        Err(Errno::PERM) => return end_connection_unprivileged(mount_point),
+        Err(Errno::INVAL) => return Ok(false),
         Err(Errno::BUSY) => {}
         Err(error) => return Err(error.into()),
     }
@@ -66,6 +67,67 @@ fn end_connection(mount_point: &Path) -> io::Result<bool> {
     // its open files fail with `ENOTCONN` and the workers' reads end.
     unmount(mount_point, UnmountFlags::FORCE | UnmountFlags::DETACH)?;
     Ok(true)
+}
+
+/// Unmount the filesystem at `mount_point` as a user who may not unmount: through
+/// [`FUSERMOUNT`], and one still in use has its connection aborted first.
+///
+/// fuser's own unmount here is `fusermount3 -u -z`, a lazy detach: a folder still in use (a
+/// shell standing in it, an editor holding a file, this daemon's own watches) keeps its
+/// connection, so the session thread never returns and whatever its filesystem holds (the
+/// workspace's stores, its runtime's tasks) outlives the holder that ended. The connection is
+/// this user's to abort, at the FUSE control filesystem's entry for the mount's device.
+#[cfg(target_os = "linux")]
+fn end_connection_unprivileged(mount_point: &Path) -> io::Result<bool> {
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")?;
+    let Some((listed, connection)) = fuse_connection_at(&mountinfo, mount_point) else {
+        // Not mounted any more: whoever unmounted it ended its connection.
+        return Ok(true);
+    };
+    if fusermount(&listed, false)? {
+        return Ok(true);
+    }
+    if std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some() {
+        eprintln!("unmount: busy; aborting connection {connection}");
+    }
+    let abort = Path::new("/sys/fs/fuse/connections")
+        .join(connection.to_string())
+        .join("abort");
+    std::fs::write(&abort, b"1").map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "the folder at {} is in use and its FUSE connection could not be ended at {}: \
+                 {error}",
+                listed.display(),
+                abort.display()
+            ),
+        )
+    })?;
+    // Aborted, the mount answers ENOTCONN until it is detached from the tree.
+    if !fusermount(&listed, true)? {
+        return Err(io::Error::other(format!(
+            "{FUSERMOUNT} could not detach the folder at {}",
+            listed.display()
+        )));
+    }
+    Ok(true)
+}
+
+/// Run `fusermount3 -u` on `listed`, lazily when `detach`: whether it unmounted.
+#[cfg(target_os = "linux")]
+fn fusermount(listed: &Path, detach: bool) -> io::Result<bool> {
+    let mut command = std::process::Command::new(FUSERMOUNT);
+    command.arg("-u").arg("-q");
+    if detach {
+        command.arg("-z");
+    }
+    let output = command
+        .arg("--")
+        .arg(listed)
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    Ok(output.status.success())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -125,7 +187,7 @@ pub fn clear_stale_mount(at: &Path) -> io::Result<()> {
 /// octal escape: a folder in a home reached through a symlink (`/home` on an image-based
 /// Fedora is `/var/home`) is listed under the real one. Only `at`'s parent is resolved; the
 /// mount point itself is never touched.
-fn fuse_mount_at(mounts: &str, at: &Path) -> Option<PathBuf> {
+pub(crate) fn fuse_mount_at(mounts: &str, at: &Path) -> Option<PathBuf> {
     let real = at
         .parent()
         .and_then(|parent| parent.canonicalize().ok())
@@ -138,6 +200,33 @@ fn fuse_mount_at(mounts: &str, at: &Path) -> Option<PathBuf> {
         let kind = fields.next()?;
         (kind.starts_with("fuse") && (point == at || real.as_ref() == Some(&point)))
             .then_some(point)
+    })
+}
+
+/// The FUSE mount `mountinfo` (as `/proc/self/mountinfo` reads) lists for `at`, and its
+/// connection: the number its entry in the FUSE control filesystem is named by, the mount's
+/// device (`major << 20 | minor`).
+#[cfg(any(target_os = "linux", test))]
+fn fuse_connection_at(mountinfo: &str, at: &Path) -> Option<(PathBuf, u32)> {
+    let real = at
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .zip(at.file_name())
+        .map(|(parent, name)| parent.join(name));
+    mountinfo.lines().find_map(|line| {
+        let (mount, filesystem) = line.split_once(" - ")?;
+        let mut fields = mount.split(' ');
+        let device = fields.nth(2)?;
+        let point = PathBuf::from(unescape(fields.nth(1)?));
+        let kind = filesystem.split(' ').next()?;
+        if !(kind == "fuse" || kind.starts_with("fuse."))
+            || !(point == at || real.as_ref() == Some(&point))
+        {
+            return None;
+        }
+        let (major, minor) = device.split_once(':')?;
+        let connection = major.parse::<u32>().ok()? << 20 | minor.parse::<u32>().ok()?;
+        Some((point, connection))
     })
 }
 
@@ -165,7 +254,31 @@ fn unescape(field: &str) -> std::ffi::OsString {
 
 #[cfg(test)]
 mod tests {
-    use super::fuse_mount_at;
+    use super::{fuse_connection_at, fuse_mount_at};
+
+    /// A FUSE mount's connection is named by its device, as the control filesystem names it;
+    /// another filesystem at the same path, or a FUSE mount elsewhere, is not it.
+    #[test]
+    fn a_fuse_mount_s_connection_is_its_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let at = home.join("Pat Home");
+        let escaped = at.to_str().unwrap().replace(' ', "\\040");
+        let mountinfo = format!(
+            "25 1 0:22 / {escaped} rw,relatime - tmpfs tmpfs rw\n\
+             33 25 0:356 / {escaped} rw,nosuid,nodev - fuse tilo rw,user_id=1001\n\
+             34 25 0:357 / {escaped}2 rw,nosuid,nodev - fuse tilo rw,user_id=1001\n"
+        );
+        assert_eq!(fuse_connection_at(&mountinfo, &at), Some((at.clone(), 356)));
+        let typed = mountinfo.replace("- fuse tilo", "- fuse.tilo tilo");
+        assert_eq!(fuse_connection_at(&typed, &at), Some((at.clone(), 356)));
+        let major = mountinfo.replace("0:356", "1:2");
+        assert_eq!(
+            fuse_connection_at(&major, &at),
+            Some((at.clone(), 1 << 20 | 2))
+        );
+        assert_eq!(fuse_connection_at(&mountinfo, &home.join("Other")), None);
+    }
 
     #[test]
     fn a_mount_in_a_home_reached_through_a_symlink_is_found_under_its_real_path() {

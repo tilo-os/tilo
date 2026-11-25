@@ -24,7 +24,6 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use automerge::transaction::Transactable as _;
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -36,7 +35,7 @@ use tilo_session_client::{Cmd, Event, Events, Link, MemoryPeerStore, Outbox as _
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{
-    commit_change, enrol, enter_page, start_workspace_host_relaying, wait_keyed, written,
+    enrol, enter_page, person_of, set_field, start_workspace_host_relaying, wait_keyed, written,
 };
 
 fn new_key() -> SigningKey {
@@ -86,10 +85,9 @@ fn notes(lounge: &str, record: &str) -> DocumentRoute {
 
 /// A change to `doc` setting `key`, as the write a page publishes: the first write of a record is
 /// the whole document, every one after it the change since.
-fn say(doc: &mut automerge::AutoCommit, key: &str, text: &str) -> DocumentMutation {
+fn say(doc: &mut automerge::AutoCommit, writer: &Link, key: &str, text: &str) -> DocumentMutation {
     let before = doc.get_heads();
-    doc.put(automerge::ROOT, key, text).unwrap();
-    commit_change(doc);
+    set_field(doc, person_of(writer), "note", key, text);
     if before.is_empty() {
         DocumentMutation::Snapshot(doc.save())
     } else {
@@ -229,7 +227,7 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
     .await;
     author.send(Cmd::Join(workspace_id)).unwrap();
     let mut doc = automerge::AutoCommit::new();
-    let whole = say(&mut doc, "supplier", "A contract");
+    let whole = say(&mut doc, &author, "supplier", "A contract");
     written(&author, &written_document, &whole).await;
 
     // A page comes in holding nothing and opens both records, one of which the workspace has
@@ -276,7 +274,7 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
     // Now the record nobody wrote is written whole. However many landings the page was told of
     // for it, every one of them was a record the page held.
     let mut fresh = automerge::AutoCommit::new();
-    let founding = say(&mut fresh, "first", "one note");
+    let founding = say(&mut fresh, &author, "first", "one note");
     written(&author, &fresh_record, &founding).await;
     until(
         "read the record as it was written",
@@ -288,8 +286,8 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
 
     // Two changes written back to back reach the page together: one landing, and one read of it
     // holds both.
-    let second = say(&mut fresh, "second", "another");
-    let third = say(&mut fresh, "third", "and more");
+    let second = say(&mut fresh, &author, "second", "another");
+    let third = say(&mut fresh, &author, "third", "and more");
     author.send(Cmd::OpenRoute(fresh_record.clone())).unwrap();
     wait_keyed(&author, &fresh_record).await;
     author.write(fresh_record.clone(), &second).unwrap();

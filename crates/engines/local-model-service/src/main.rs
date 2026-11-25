@@ -100,42 +100,6 @@ enum Action {
     /// Ask the root-owned hardware policy for this machine's exact signed
     /// `BootPack` and enqueue it for immutable deployment staging.
     StageAccelerator,
-    /// Search Hugging Face for models with GGUF or safetensors files.
-    HubSearch {
-        #[arg(long)]
-        query: String,
-        /// `gguf` or `safetensors`.
-        #[arg(long, default_value = "gguf")]
-        format: String,
-        /// The workspace's Hugging Face token, handed by whoever asked for the search. A
-        /// terminal has none of its own.
-        #[arg(skip)]
-        token: Option<String>,
-    },
-    /// Describe a Hugging Face model, named by id or URL, at a pinned
-    /// commit: its variants, their sizes and fit, and its licence.
-    HubModel {
-        #[arg(long)]
-        reference: String,
-        /// The workspace's Hugging Face token, handed by whoever asked.
-        #[arg(skip)]
-        token: Option<String>,
-    },
-    /// Download one variant of a Hugging Face model at a commit `hub-model`
-    /// reported, accepting its licence.
-    HubInstall {
-        #[arg(long)]
-        repo: String,
-        #[arg(long)]
-        revision: String,
-        #[arg(long)]
-        variant: String,
-        #[arg(long)]
-        accept_license: bool,
-        /// The workspace's Hugging Face token, handed by whoever asked for the download.
-        #[arg(skip)]
-        token: Option<String>,
-    },
     /// Copy a GGUF file, given as standard input, into the model store. The
     /// person chose it in the file chooser; `name` is its file name. The
     /// service only ever reads the handle it is given, never a path.
@@ -143,9 +107,6 @@ enum Action {
         #[arg(long)]
         name: String,
     },
-    /// Retired: what this answered is the workspace's model provider's, as
-    /// Settings' AI page shows it.
-    HubAccount,
     /// Sign in with Hugging Face by entering a code on another device: the
     /// workspace keeps the token as the model provider's key, through the
     /// published `models#set-key`.
@@ -815,34 +776,7 @@ fn rpc_action(command: &Action) -> Result<RpcAction, String> {
             model: model.clone(),
         }),
         Action::StageAccelerator => Ok(RpcAction::StageAccelerator),
-        Action::HubSearch {
-            query,
-            format,
-            token,
-        } => Ok(RpcAction::HubSearch {
-            query: query.clone(),
-            format: format.clone(),
-            token: token.clone(),
-        }),
-        Action::HubModel { reference, token } => Ok(RpcAction::HubModel {
-            reference: reference.clone(),
-            token: token.clone(),
-        }),
-        Action::HubInstall {
-            repo,
-            revision,
-            variant,
-            accept_license,
-            token,
-        } => Ok(RpcAction::HubInstall {
-            repo: repo.clone(),
-            revision: revision.clone(),
-            variant: variant.clone(),
-            accept_license: *accept_license,
-            token: token.clone(),
-        }),
         Action::ImportFile { name } => Ok(RpcAction::ImportFile { name: name.clone() }),
-        Action::HubAccount => Ok(RpcAction::HubAccount),
         Action::HubSignOut { provider: None } => Ok(RpcAction::HubSignOut),
         Action::RecoverOrphan { .. }
         | Action::HubSignOut { provider: Some(_) }
@@ -946,7 +880,9 @@ fn same_user(stream: &UnixStream) -> bool {
         && unsafe { credentials.assume_init().uid } == rustix::process::geteuid().as_raw()
 }
 
-fn cli_for_rpc(action: RpcAction) -> Cli {
+/// The local command one RPC action runs here: the Hub actions and the retired ones have no
+/// terminal form, and are answered by [`serve_action`] beside it.
+fn cli_for_rpc(action: RpcAction) -> Option<Cli> {
     let command = match action {
         RpcAction::Snapshot => Action::Snapshot {
             format: "json".into(),
@@ -964,40 +900,20 @@ fn cli_for_rpc(action: RpcAction) -> Cli {
         RpcAction::Stop { model } => Action::Stop { model },
         RpcAction::Remove { model } => Action::Remove { model },
         RpcAction::StageAccelerator => Action::StageAccelerator,
-        RpcAction::HubSearch {
-            query,
-            format,
-            token,
-        } => Action::HubSearch {
-            query,
-            format,
-            token,
-        },
-        RpcAction::HubModel { reference, token } => Action::HubModel { reference, token },
-        RpcAction::HubInstall {
-            repo,
-            revision,
-            variant,
-            accept_license,
-            token,
-        } => Action::HubInstall {
-            repo,
-            revision,
-            variant,
-            accept_license,
-            token,
-        },
         RpcAction::ImportFile { name } => Action::ImportFile { name },
-        RpcAction::HubAccount => Action::HubAccount,
         RpcAction::HubSignOut => Action::HubSignOut { provider: None },
+        RpcAction::HubSearch { .. }
+        | RpcAction::HubModel { .. }
+        | RpcAction::HubInstall { .. }
+        | RpcAction::HubAccount => return None,
     };
-    Cli {
+    Some(Cli {
         root: None,
         catalog: None,
         keys: None,
         artifact_dir: None,
         command,
-    }
+    })
 }
 
 fn serve_requests(
@@ -1066,9 +982,66 @@ fn serve_client(mut stream: UnixStream) {
         );
         return;
     }
-    serve_requests(&mut stream, |action, file| {
-        run_local(cli_for_rpc(action), file, FileCopy::Beside)
-    });
+    serve_requests(&mut stream, serve_action);
+}
+
+/// Answer one request: the Hugging Face hub actions the workspace's models provider sends,
+/// and the retired answers it may still meet, or a local command.
+fn serve_action(action: RpcAction, file: Option<File>) -> Result<Option<String>, String> {
+    match action {
+        RpcAction::HubSearch {
+            query,
+            format,
+            token,
+        } => hub_search(&query, &format, token.as_deref()).map(Some),
+        RpcAction::HubModel { reference, token } => {
+            let (root, catalog_path, key_path) = manager_paths(None, None, None)?;
+            let catalog = load_catalog(&catalog_path, &key_path)?;
+            return hub_model(&catalog, &root, &reference, token.as_deref()).map(Some);
+        }
+        RpcAction::HubInstall {
+            repo,
+            revision,
+            variant,
+            accept_license,
+            token,
+        } => {
+            let (root, catalog_path, key_path) = manager_paths(None, None, None)?;
+            let catalog = load_catalog(&catalog_path, &key_path)?;
+            let mut service = LocalModelService::open(
+                &root,
+                ManagerTransport::new(None, &catalog).map_err(|error| error.to_string())?,
+                SystemdSupervisor,
+            )
+            .map_err(|error| error.to_string())?;
+            let workers = Workers {
+                root: &root,
+                catalog: &catalog_path,
+                keys: &key_path,
+                artifact_dir: None,
+            };
+            hub_install(
+                (&mut service, &workers, &catalog),
+                &local_hardware(&root)?,
+                (&repo, &revision, &variant, accept_license),
+                token.as_deref(),
+            )?;
+            return Ok(None);
+        }
+        RpcAction::HubAccount => {
+            return Err(
+                "The workspace's model providers hold the Hugging Face sign-in now: \
+                        read it in Settings' AI page"
+                    .to_owned(),
+            );
+        }
+        action => {
+            let Some(cli) = cli_for_rpc(action) else {
+                return Err("not a local model action".into());
+            };
+            return run_local(cli, file, FileCopy::Beside);
+        }
+    }
 }
 
 fn serve(socket: &Path) -> Result<Option<String>, String> {
@@ -1137,24 +1110,39 @@ fn selected_catalog(cli: &Cli, catalog: &Path, keys: &Path) -> Result<CatalogPay
 
 fn paths(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     validate_developer_mode(cli)?;
+    manager_paths(
+        cli.root.as_deref(),
+        cli.catalog.as_deref(),
+        cli.keys.as_deref(),
+    )
+}
+
+/// The model store and the signed catalog and keys it reads: the developer's own choices, or
+/// the per-user store a service of this login uses.
+fn manager_paths(
+    root: Option<&Path>,
+    catalog: Option<&Path>,
+    keys: Option<&Path>,
+) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     // The model manager is deliberately a per-user service: Settings never
     // needs root or a writable image path to provision a model. Keep override
     // rejection when someone mistakenly elevates the normal user binary.
     let elevated = rustix::process::geteuid().as_raw() == 0;
-    if elevated && (cli.root.is_some() || cli.catalog.is_some() || cli.keys.is_some()) {
+    if elevated && (root.is_some() || catalog.is_some() || keys.is_some()) {
         return Err("path overrides are forbidden for the privileged model manager".into());
     }
     Ok((
-        cli.root
-            .clone()
+        root.map(Path::to_owned)
             .or_else(user_model_root)
             .ok_or("no data home for the model store: set HOME or pass --root")?,
-        cli.catalog.clone().unwrap_or_else(|| {
-            PathBuf::from("/usr/share/tilo/system-extensions/local-model-catalog.json")
-        }),
-        cli.keys.clone().unwrap_or_else(|| {
-            PathBuf::from("/usr/share/tilo/system-extensions/local-model-keys.json")
-        }),
+        catalog.map_or_else(
+            || PathBuf::from("/usr/share/tilo/system-extensions/local-model-catalog.json"),
+            Path::to_owned,
+        ),
+        keys.map_or_else(
+            || PathBuf::from("/usr/share/tilo/system-extensions/local-model-keys.json"),
+            Path::to_owned,
+        ),
     ))
 }
 
@@ -1307,14 +1295,6 @@ fn run_without_store(command: &Action, root: &Path) -> Option<Result<Option<Stri
                 .map(|()| None)
                 .map_err(|error| error.to_string())
         }
-        Action::HubAccount => Err("The workspace's model providers hold the Hugging Face \
-                                   sign-in now: read it in Settings' AI page"
-            .to_owned()),
-        Action::HubSearch {
-            query,
-            format,
-            token,
-        } => hub_search(query, format, token.as_deref()).map(Some),
         Action::HubSignOut { provider } => hub_client::sign_out(provider.as_deref()),
         _ => return None,
     })
@@ -1356,9 +1336,6 @@ fn run_local(cli: Cli, file: Option<File>, copy: FileCopy) -> Result<Option<Stri
         .map(Some);
     }
     let catalog = selected_catalog(&cli, &catalog_path, &key_path)?;
-    if let Action::HubModel { reference, token } = &cli.command {
-        return hub_model(&catalog, &root, reference, token.as_deref()).map(Some);
-    }
     let mut service = open_cli_service(&cli, &root, &catalog)?;
     let workers = Workers {
         root: &root,
@@ -1377,18 +1354,6 @@ fn run_local(cli: Cli, file: Option<File>, copy: FileCopy) -> Result<Option<Stri
             &catalog,
             (&model, revision.as_deref()),
             accept_license,
-        )?,
-        Action::HubInstall {
-            repo,
-            revision,
-            variant,
-            accept_license,
-            token,
-        } => hub_install(
-            (&mut service, &workers, &catalog),
-            &local_hardware(&root)?,
-            (&repo, &revision, &variant, accept_license),
-            token.as_deref(),
         )?,
         Action::ImportFile { name } => {
             return import_file(service, catalog, root, (&name, file), copy).map(|()| None);
@@ -1428,11 +1393,8 @@ fn run_local(cli: Cli, file: Option<File>, copy: FileCopy) -> Result<Option<Stri
         // The dispatcher answers these itself and never hands them over.
         Action::RecoverOrphan { .. }
         | Action::Snapshot { .. }
-        | Action::HubSearch { .. }
-        | Action::HubModel { .. }
         | Action::HubSignIn { .. }
         | Action::HubSignOut { .. }
-        | Action::HubAccount
         | Action::Serve { .. } => {
             return Err("not a local model action".into());
         }
@@ -1497,7 +1459,7 @@ fn release_for(
         .ok_or_else(|| "model is neither in the signed catalog nor added on this device".into())
 }
 
-/// What `hub-model` answers: the model `reference` names, as a person may pick from it.
+/// What a Hub model request answers: the model `reference` names, as a person may pick from it.
 fn hub_model(
     catalog: &CatalogPayload,
     root: &Path,
@@ -1995,7 +1957,7 @@ mod tests {
             ])
             .unwrap();
             assert!(validate_developer_inputs(&serve, 1000, false).is_err());
-            let plain = cli_for_rpc(RpcAction::Snapshot);
+            let plain = cli_for_rpc(RpcAction::Snapshot).unwrap();
             assert!(plain.artifact_dir.is_none());
         }
 
@@ -2655,32 +2617,28 @@ mod tests {
             ));
         }
 
-        phase hub_verbs_cross_the_service_and_their_worker_does_not;
-        // Settings reaches the Hub verbs through the service; the worker that
-        // downloads a pick is never proxied, and its argument is checked.
+        phase the_hub_verbs_are_the_providers_and_a_terminal_has_none;
+        // The workspace's models provider asks the Hub through the service; a
+        // terminal has no verb for a search, a description or a download, and
+        // the worker that downloads a pick is never proxied.
         {
-            let install = Cli::try_parse_from([
-                "manager",
-                "hub-install",
-                "--repo=acme/Chat-GGUF",
-                &format!("--revision={}", "a".repeat(40)),
-                "--variant=Q4_K_M",
-                "--accept-license",
-            ])
-            .unwrap();
-            let action = rpc_action(&install.command).unwrap();
-            let wire = serde_json::to_string(&action).unwrap();
+            for verb in ["hub-search", "hub-model", "hub-install", "hub-account"] {
+                assert!(Cli::try_parse_from(["manager", verb]).is_err(), "{verb}");
+            }
+            let install = RpcAction::HubInstall {
+                repo: "acme/Chat-GGUF".into(),
+                revision: "a".repeat(40),
+                variant: "Q4_K_M".into(),
+                accept_license: true,
+                token: Some("hf_asked".into()),
+            };
+            let wire = serde_json::to_string(&install).unwrap();
             let back: RpcAction = serde_json::from_str(&wire).unwrap();
             assert!(matches!(
-                cli_for_rpc(back).command,
-                Action::HubInstall { accept_license: true, ref variant, .. } if variant == "Q4_K_M"
+                back,
+                RpcAction::HubInstall { accept_license: true, ref token, .. } if token.as_deref() == Some("hf_asked")
             ));
-            let search =
-                Cli::try_parse_from(["manager", "hub-search", "--query=-flag-looking query"]).unwrap();
-            assert!(matches!(
-                rpc_action(&search.command).unwrap(),
-                RpcAction::HubSearch { ref query, ref format, .. } if query == "-flag-looking query" && format == "gguf"
-            ));
+            assert!(cli_for_rpc(back).is_none());
             let worker =
                 Cli::try_parse_from(["manager", "worker-user", "--model", "hf/acme/x/q4_0"]).unwrap();
             assert!(rpc_action(&worker.command).is_err());

@@ -10,10 +10,12 @@ use crate::history_mode::pending_controls::{
 };
 use crate::widget::Widget;
 
+#[cfg(feature = "model")]
 mod controls;
 mod keys;
 mod tooltips;
 
+#[cfg(feature = "model")]
 pub(crate) use controls::{FollowUpControl, WaitingControl, json_argument};
 pub(crate) use keys::RootEvent;
 pub(crate) use tooltips::TooltipLayer;

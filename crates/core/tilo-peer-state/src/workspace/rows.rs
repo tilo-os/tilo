@@ -230,6 +230,26 @@ pub fn changed_rows_by(
         .collect()
 }
 
+/// The governed parts `changes` wrote to at all, read against `after`, the
+/// document holding them, whether or not the batch they are part of leaves
+/// those parts changed. `None` when an operation names an object that cannot
+/// be placed under a key.
+pub(crate) fn written_rows(
+    after: &AutoCommit,
+    changes: &[automerge::Change],
+) -> Option<Vec<GovernanceRow>> {
+    let touched = touched(after, changes)?;
+    Some(
+        GovernanceRow::ALL
+            .into_iter()
+            .filter(|row| {
+                *row != GovernanceRow::Log
+                    && row.keys().iter().any(|key| touched.contains_key(*key))
+            })
+            .collect(),
+    )
+}
+
 /// Where operations wrote under one document key.
 #[derive(Debug)]
 pub(crate) enum Wrote {

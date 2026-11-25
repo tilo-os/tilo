@@ -194,6 +194,13 @@ pub enum ReceiptRefusal {
     /// no key of its own. `code` is the identity layer's stable name for why.
     #[error("{code}: {reason}")]
     Invocation { code: &'static str, reason: String },
+    /// A change named the record's genesis that is not its first: the record already has, or
+    /// the change builds on, what someone made. Only what a record starts with is its genesis;
+    /// every later change names the app's action that makes it.
+    #[error(
+        "a record's genesis is its first change, and this record already has what someone made"
+    )]
+    GenesisAfterContent,
 }
 
 /// The node of the published tree `action` acts on in `record`.

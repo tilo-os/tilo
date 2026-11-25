@@ -84,6 +84,28 @@ impl ServiceDocuments {
     }
 }
 
+impl ServiceDocuments {
+    /// [`DeviceDocuments::read`], awaited: what code on the service's own runtime reads with,
+    /// never blocking a thread on it.
+    ///
+    /// # Errors
+    /// The service holds no such workspace, or the read is refused.
+    pub async fn read_awaited(
+        &self,
+        workspace: &str,
+        (app, resource): (&str, &str),
+        since: &[[u8; 32]],
+    ) -> Result<DocumentRead, String> {
+        let workspaces = self
+            .0
+            .copies()
+            .ok_or("this device's workspace service holds no workspaces")?;
+        workspaces
+            .own_read(workspace, (app, resource), since, MAX_DEVICE_DOCUMENT_BYTES)
+            .await
+    }
+}
+
 impl DeviceDocuments for ServiceDocuments {
     fn read(
         &self,

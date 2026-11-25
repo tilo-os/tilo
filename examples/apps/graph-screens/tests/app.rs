@@ -6,7 +6,7 @@ use ui::{UiGraphHandle, UiNode};
 
 #[test]
 fn creating_a_project_needs_a_name_and_clears_the_draft() {
-    let mut projects = Replica::<Projects>::new();
+    let mut projects = Replica::<Projects>::new().in_app("so.tilo.model", "Model");
     assert!(projects.apply(Projects::CREATE.invoke()).is_err());
     projects
         .apply(Invoke::edit(&Projects::paths().draft.replace("Atlas")).expect("an edit"))

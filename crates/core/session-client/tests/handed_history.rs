@@ -5,14 +5,13 @@
 //! its writes, to the full record and to every other, reach the host, and a wait for them ends
 //! once the compaction that carries the writes it folded is kept.
 
-use automerge::transaction::Transactable as _;
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::{Cmd, Outbox as _};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    WORKSPACE, commit_change, enrol, enter, entry_grant, route, start_host_plain, workspace,
+    WORKSPACE, enrol, enter, entry_grant, person_of, route, set_field, start_host_plain, workspace,
 };
 
 /// More writes than a record's sealed history holds (4096) before it is compacted.
@@ -102,13 +101,11 @@ async fn handed_keys_then_writes(keys: Keys) {
 
     // One record takes more than its sealed history holds, then another record is written.
     let mut doc = automerge::AutoCommit::new();
-    doc.put(automerge::ROOT, "founded", true).unwrap();
-    commit_change(&mut doc);
+    set_field(&mut doc, person_of(&peer), "note", "founded", true);
     peer.write(tree.clone(), &DocumentMutation::Snapshot(doc.save()))
         .unwrap();
     for change in 0..CHANGES {
-        doc.put(automerge::ROOT, "count", change as u64).unwrap();
-        commit_change(&mut doc);
+        set_field(&mut doc, person_of(&peer), "note", "count", change as u64);
         peer.write(
             tree.clone(),
             &DocumentMutation::Incremental(doc.save_incremental()),
@@ -116,8 +113,13 @@ async fn handed_keys_then_writes(keys: Keys) {
         .unwrap();
     }
     let mut other = automerge::AutoCommit::new();
-    other.put(automerge::ROOT, "task", "write it down").unwrap();
-    commit_change(&mut other);
+    set_field(
+        &mut other,
+        person_of(&peer),
+        "note",
+        "task",
+        "write it down",
+    );
     peer.write(tasks.clone(), &DocumentMutation::Snapshot(other.save()))
         .unwrap();
 

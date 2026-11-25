@@ -26,8 +26,8 @@ use tilo_session_client::device::{Entering, entry_request};
 use tilo_user_identity::{DeviceCert, UserIdentity};
 
 use crate::support::{
-    commit_change, enrol, enter_page, hears, in_workspace, start_workspace_host_relaying, wait_for,
-    wait_keyed,
+    enrol, enter_page, hears, in_workspace, person_of, set_field, start_workspace_host_relaying,
+    wait_for, wait_keyed,
 };
 use collab_types::WorkspaceId;
 
@@ -37,12 +37,10 @@ fn new_key() -> SigningKey {
 
 /// A change to the desktop of `base`, in an entry `key` of its own, by a
 /// writer of its own.
-fn change(base: &mut automerge::AutoCommit, key: &str) -> DocumentMutation {
-    use automerge::transaction::Transactable as _;
+fn change(base: &mut automerge::AutoCommit, writer: &Link, key: &str) -> DocumentMutation {
     let mut doc = base.fork();
     doc.save_incremental();
-    doc.put(automerge::ROOT, key, key).unwrap();
-    commit_change(&mut doc);
+    set_field(&mut doc, person_of(writer), "desktop", key, key);
     DocumentMutation::Incremental(doc.save_incremental())
 }
 
@@ -131,10 +129,8 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
     // A member writes the desktop first.
     let member = enter("Member").await;
     let mut base = {
-        use automerge::transaction::Transactable as _;
         let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "windows", "none").unwrap();
-        commit_change(&mut doc);
+        set_field(&mut doc, person_of(&member), "desktop", "windows", "none");
         doc
     };
     member
@@ -146,14 +142,14 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
     hears(&newcomer, &desktop, "windows").await;
 
     // Keyed, it writes, and the member reads that.
-    let written = change(&mut base, "newcomer");
+    let written = change(&mut base, &newcomer, "newcomer");
     newcomer.write(desktop.clone(), &written).unwrap();
     hears(&member, &desktop, "newcomer").await;
 
     // Someone else arrives: the group moves to a later epoch, which the
     // newcomer follows, reading what is sealed under it.
     let later = enter("Later").await;
-    let after = change(&mut base, "later");
+    let after = change(&mut base, &later, "later");
     later.write(desktop.clone(), &after).unwrap();
     hears(&newcomer, &desktop, "later").await;
 
@@ -161,10 +157,10 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
     newcomer.send(Cmd::Reconnect).unwrap();
     in_workspace(&newcomer, lounge.workspace_id).await;
     wait_keyed(&newcomer, &desktop).await;
-    let again = change(&mut base, "member-again");
+    let again = change(&mut base, &member, "member-again");
     member.write(desktop.clone(), &again).unwrap();
     hears(&newcomer, &desktop, "member-again").await;
-    let back = change(&mut base, "newcomer-back");
+    let back = change(&mut base, &newcomer, "newcomer-back");
     newcomer.write(desktop.clone(), &back).unwrap();
     hears(&later, &desktop, "newcomer-back").await;
 

@@ -743,6 +743,12 @@ readers = [
 ]
 
 [[cargo]]
+package = "app-cli"
+# The runtime fetch test builds an app against an edited copy of the standard library's source.
+inputs = ["crates/lang/tilolang/std/"]
+readers = ["crates/os/app-cli/tests/runtime_fetch.rs"]
+
+[[cargo]]
 package = "tilo-api"
 # The sign-in tests build a host's answers from the fixture file the API's image ships, so a
 # change to either checks and tests the other.
@@ -916,9 +922,13 @@ inputs = [
   "crates/sdk/tilo-app-window/locales/en-US.ftl",
   "crates/core/tilo-contact-directory/surface.json",
   "crates/core/tilo-workspace-service/workspace-surface.toml",
+  # The runtime's version is keyed alike by the packing's shell helper and by the crate.
+  "tools/apps/tilolang_packages.sh",
+  "crates/lang/tilolang-process/tilo-runtime.toml",
 ]
 readers = [
   "crates/lang/tilolang-tilo/examples/write_rate.rs",
+  "crates/lang/tilolang-tilo/src/lib.rs",
   "crates/lang/tilolang-tilo/src/platform_apps.rs",
   "crates/lang/tilolang-tilo/src/shell.rs",
   "crates/lang/tilolang-tilo/src/surface.rs",
@@ -982,6 +992,7 @@ readers = [
   "crates/lang/tilolang-tilo/tests/rich_text.rs",
   "crates/lang/tilolang-tilo/tests/scenarios.rs",
   "crates/lang/tilolang-tilo/tests/surface.rs",
+  "crates/lang/tilolang-tilo/tests/triggers.rs",
   "crates/lang/tilolang-tilo/tests/tube.rs",
   "crates/lang/tilolang-tilo/tests/windows_apps.rs",
   "crates/lang/tilolang-tilo/tests/words.rs",
@@ -1592,6 +1603,7 @@ package = "tilolang-workspace"
 # that serves workspaces reads them.
 inputs = [
   "apps/tl/chat/",
+  "apps/tl/clocks/",
   "apps/tl/discord/",
   "apps/tl/discussion/",
   "apps/tl/notes/",
@@ -1602,10 +1614,11 @@ readers = ["crates/lang/tilolang-workspace/src/records.rs"]
 
 [[cargo]]
 package = "tilo-daemon"
-# The agents' and triggers' tests run Chat, Tasks and Mail from their sources, through the
+# The agents', triggers' and wakeups' tests run Chat, Tasks, Mail and Clocks from their sources, through the
 # language runtime the daemon links and mounts.
 inputs = [
   "apps/tl/chat/",
+  "apps/tl/clocks/",
   "apps/tl/contacts/",
   "apps/tl/discussion/",
   "apps/tl/mail/",
@@ -1615,6 +1628,7 @@ inputs = [
 readers = [
   "crates/os/daemon/tests/language/task_work_tests.rs",
   "crates/os/daemon/tests/language/triggers_tests.rs",
+  "crates/os/daemon/tests/language/wakeups_tests.rs",
 ]
 
 [[cargo]]

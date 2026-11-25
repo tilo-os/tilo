@@ -3,7 +3,8 @@
 # A tilolang package is an app of its own whose payload is its compiled module; its manifest
 # names this runtime as its entrypoint (`[entrypoint] runtime = "tilolang/<version>"`,
 # `bin = "bin/tilolang-process"`). The launcher mounts the bundle read-only, executes
-# `bin/tilolang-process` and points it at the package's payload with `TILO_APP_MODULE`. The same
+# `bin/tilolang-process` and points it at the package's payload with `TILO_APP_MODULE`; the device
+# hands the process the standard library the bundle carries beside the package's own module. The same
 # binary is the host the device starts for a workspace's instances of the app
 # (`tilo-launcher tilolang-process`).
 #
@@ -16,6 +17,9 @@ id       = "so.tilo.runtime.tilolang"
 name     = "tilolang runtime"
 version  = "0.1.0"
 kind     = "runtime"
+# The build this manifest declares. A baked bundle provides it keyed by the standard library it
+# carries (`lib/tilo.std.wasm`): `tilolang/0.1.0+tilolang.<std digest>`, the runtime every package
+# compiled against that library names (tools/apps/tilolang_packages.sh, `tilolang_tilo::runtime`).
 provides = "tilolang/0.1.0+tilolang"
 # Where the runtime runs, and so where a tilolang app runs: as a Linux binary, baked into the OS
 # image beside the Tilo runtime and executed by the session's launcher (a Tilo OS device is a

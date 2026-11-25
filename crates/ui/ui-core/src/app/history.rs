@@ -7,12 +7,15 @@
     reason = "private implementation module shares its enclosing host types"
 )]
 use super::*;
+#[cfg(feature = "model")]
 use crate::history_mode::api::HISTORY_OPERATION;
+#[cfg(feature = "model")]
 use crate::history_mode::frame::FrameworkInputFrame;
 use crate::widget::Widget;
 use crate::widget::search_request::SEARCH_OPERATION;
 
 impl App {
+    #[cfg(feature = "model")]
     /// # Errors
     /// Refuses missing, stale, foreign or unsupported installed owner registrations.
     pub fn validate_history_registration(
@@ -20,8 +23,88 @@ impl App {
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         self.tree().validate_history_registration()
     }
+    /// Whether the app's own widget takes input: always, unless the window's History is open
+    /// over it.
+    pub(super) fn app_live(&self) -> bool {
+        #[cfg(feature = "model")]
+        let live = self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_interactive());
+        #[cfg(not(feature = "model"))]
+        let live = true;
+        live
+    }
+
+    /// Whether the window shows its live app: no History stands in its place.
+    pub(super) fn app_visible(&self) -> bool {
+        #[cfg(feature = "model")]
+        let visible = self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_visible());
+        #[cfg(not(feature = "model"))]
+        let visible = true;
+        visible
+    }
+
+    /// Whether input reaches the live app: no History presented over it takes it.
+    pub(super) fn app_live_input(&self) -> bool {
+        #[cfg(feature = "model")]
+        let live = self
+            .history
+            .as_ref()
+            .is_none_or(|history| !history.captures_input());
+        #[cfg(not(feature = "model"))]
+        let live = true;
+        live
+    }
+
+    /// Whether the window's History has a review open over the app.
+    pub(super) fn history_review_open(&self) -> bool {
+        #[cfg(feature = "model")]
+        let open = self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.review_is_open());
+        #[cfg(not(feature = "model"))]
+        let open = false;
+        open
+    }
+
+    /// The window's History, as the widget it presents.
+    pub(super) fn history_widget(&self) -> Option<&dyn Widget> {
+        #[cfg(feature = "model")]
+        let history = self
+            .history
+            .as_deref()
+            .map(|history| history as &dyn Widget);
+        #[cfg(not(feature = "model"))]
+        let history = None;
+        history
+    }
+
+    /// Whether the window presents a History beside its app.
+    pub(super) fn presents_history(&self) -> bool {
+        #[cfg(feature = "model")]
+        let presents = self.history.is_some();
+        #[cfg(not(feature = "model"))]
+        let presents = false;
+        presents
+    }
+
+    /// Whether the app's tree shows a History of its own (a surface that embeds one).
+    pub(super) fn embeds_history(&self) -> bool {
+        #[cfg(feature = "model")]
+        let embeds = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
+        #[cfg(not(feature = "model"))]
+        let embeds = false;
+        embeds
+    }
+
     pub(super) fn history_presentation_roots(&self) -> Vec<&dyn Widget> {
         let mut roots = Vec::new();
+        #[cfg(feature = "model")]
         if let Some(history) = &self.history {
             roots.push(history.as_ref() as &dyn Widget);
         }
@@ -34,25 +117,25 @@ impl App {
             roots.push(palette as &dyn Widget);
             return roots;
         }
-        if self
-            .history
-            .as_ref()
-            .is_none_or(|history| history.live_interactive())
-        {
+        if self.app_live() {
             roots.push(self.root_widget.as_ref());
         }
         roots
     }
     pub(super) fn discard_history_local_intents(&mut self) {
+        #[cfg(feature = "model")]
         if let Some(history) = &mut self.history {
             history.discard_pending_output(self.root_widget.as_mut());
-        } else {
+            return;
+        }
+        {
             let _ = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
             while crate::widget::controls::take_control_invocation(self.root_widget.as_mut())
                 .is_some()
             {}
         }
     }
+    #[cfg(feature = "model")]
     pub(super) fn capture_history_entry(&mut self) {
         let captured = self.history.as_mut().is_some_and(|history| {
             history.captures_input()
@@ -135,6 +218,7 @@ impl App {
         }
         crate::history_mode::embedded::capture_entries(self.root_widget.as_mut(), &self.state.doc);
     }
+    #[cfg(feature = "model")]
     /// Reconcile the document routes with the tree, and refresh History
     /// where it needs it: the window's own, and the surfaces in the tree.
     ///
@@ -284,7 +368,20 @@ impl App {
         self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
+    /// Whether History's own chrome (the window's, or one the app embeds) takes `event`.
     pub(super) fn history_controls_event(&mut self, event: &WindowEvent, scale: f64) -> bool {
+        #[cfg(feature = "model")]
+        let controls = self.history_takes_event(event, scale);
+        #[cfg(not(feature = "model"))]
+        let controls = {
+            let _ = (event, scale);
+            false
+        };
+        controls
+    }
+
+    #[cfg(feature = "model")]
+    fn history_takes_event(&mut self, event: &WindowEvent, scale: f64) -> bool {
         let nested = crate::history_mode::embedded::observe_event(
             self.root_widget.as_mut(),
             event,
@@ -335,6 +432,7 @@ impl App {
         }
         controls
     }
+    #[cfg(feature = "model")]
     /// Called before ordinary shortcuts, palettes, live pointer capture or
     /// event finalization. Admitted external lifecycles keep their own polling.
     pub(super) fn dispatch_framework_history_event(
@@ -424,6 +522,7 @@ impl App {
         self.layout.layout_dirty = true;
         true
     }
+    #[cfg(feature = "model")]
     pub(super) fn settle_history_presentation(&mut self) -> bool {
         self.refresh_document_routes();
         if crate::history_mode::embedded::has_review(self.root_widget.as_ref()) {
@@ -434,7 +533,7 @@ impl App {
                 self.root_widget.as_mut(),
                 &mut self.state,
                 &self.permission_ctx,
-                &self.collaboration.local_author,
+                &self.local_author,
             );
             if !restored.is_empty() {
                 self.needs_sync = true;
@@ -485,7 +584,7 @@ impl App {
                 &mut self.state,
                 self.root_widget.as_mut(),
                 &self.permission_ctx,
-                &self.collaboration.local_author,
+                &self.local_author,
             );
             let restored = history.take_restored_source();
             if changed {
@@ -510,6 +609,7 @@ impl App {
         false
     }
 
+    #[cfg(feature = "model")]
     /// Sync and publish what a History write changed in `source`.
     fn publish_history_write(
         &mut self,
@@ -528,6 +628,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     /// Called only after native exit layout, focus, drawing and publication.
     /// A deferred or failed frame retains its leases until a later completion.
     pub(super) fn finish_history_return_frame(&mut self) {
@@ -554,6 +655,7 @@ impl App {
         if encoded.type_id == SEARCH_OPERATION {
             return self.search_presented;
         }
+        #[cfg(feature = "model")]
         if encoded.type_id == HISTORY_OPERATION {
             return self.history.is_some();
         }
@@ -586,7 +688,7 @@ impl App {
             ));
         }
         let exported = self.bindings.exported_nodes(&self.layout.node_map);
-        if self.history.is_some()
+        if self.presents_history()
             || self
                 .actions
                 .action_palette
@@ -623,11 +725,10 @@ impl App {
     /// this node — never at the composition root, which also holds History's
     /// own chrome.
     pub(super) fn live_app_node(&self) -> Option<taffy::NodeId> {
-        let live = self
-            .history
-            .as_ref()
-            .is_none_or(|history| history.live_interactive());
-        if live && let Some(node) = self.history.as_ref().and_then(|h| h.live_layout_node()) {
+        #[cfg(feature = "model")]
+        if self.app_live()
+            && let Some(node) = self.history.as_ref().and_then(|h| h.live_layout_node())
+        {
             return Some(node);
         }
         self.layout.root_node
@@ -644,6 +745,7 @@ impl App {
             *handled = true;
             return true;
         }
+        #[cfg(feature = "model")]
         if self.history_controls_event(event, scale) {
             // History's own chrome took this input: what widgets queued runs in no frame that
             // follows it, so the entry (or return) it asks for seals the live queue instead.
@@ -662,10 +764,7 @@ impl App {
         }
         let history_handled = *handled;
         if !history_handled
-            && self
-                .history
-                .as_ref()
-                .is_none_or(|history| history.live_interactive())
+            && self.app_live()
             && let Some(root) = self.live_app_node()
         {
             self.root_widget.handle_event(
@@ -685,6 +784,7 @@ impl App {
         history_handled
     }
 
+    #[cfg(feature = "model")]
     /// The History API's addresses: a History control in the app's tree
     /// (its header row) is bound to the same API.
     pub(super) fn refresh_history_controls(
@@ -703,11 +803,17 @@ impl App {
 
     pub(super) fn history_local_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources = self.close_admission.resources();
-        resources.extend(self.history.as_ref().map(|history| history.api_resource()));
+        #[cfg(feature = "model")]
+        {
+            resources.extend(self.history.as_ref().map(|history| history.api_resource()));
+        }
         if self.search_presented {
             resources.push(crate::widget::search_request::search_resource());
         }
-        resources.extend(self.unsaved_changes_resources());
+        #[cfg(feature = "model")]
+        {
+            resources.extend(self.unsaved_changes_resources());
+        }
         #[cfg(feature = "native")]
         resources.extend(self.zoom_resource());
         resources
@@ -740,6 +846,7 @@ impl App {
         if encoded.type_id == crate::close_admission::OPERATION {
             return self.invoke_close_encoded(encoded);
         }
+        #[cfg(feature = "model")]
         if encoded.type_id == super::local_input_capture::UNSAVED_OPERATION {
             return self.retry_unsaved_changes();
         }
@@ -752,6 +859,7 @@ impl App {
             self.open_search(request);
             return Ok(());
         }
+        #[cfg(feature = "model")]
         if encoded.type_id == HISTORY_OPERATION {
             self.history
                 .as_mut()
@@ -806,15 +914,18 @@ impl App {
             return;
         }
 
-        let width = self.layout.last_layout_logical.map_or(900.0, |size| size.0);
-        self.refresh_framework_history(width);
-        let status = self.window_status();
-        crate::history_mode::embedded::refresh(
-            self.root_widget.as_mut(),
-            &self.state.doc,
-            width,
-            status.as_ref(),
-        );
+        #[cfg(feature = "model")]
+        {
+            let width = self.layout.last_layout_logical.map_or(900.0, |size| size.0);
+            self.refresh_framework_history(width);
+            let status = self.window_status();
+            crate::history_mode::embedded::refresh(
+                self.root_widget.as_mut(),
+                &self.state.doc,
+                width,
+                status.as_ref(),
+            );
+        }
         // The palette owns its measured overlay geometry. Admit its absolute
         // leaf as a separate presentation root so app/legacy authority and
         // inactive boundaries cannot leak into the host confirmation surface.
@@ -830,6 +941,7 @@ impl App {
                     &mut self.layout.node_map,
                 )
             });
+        #[cfg(feature = "model")]
         if let Some(history) = &mut self.history {
             let root = history.build_composition(
                 self.root_widget.as_mut(),
@@ -874,6 +986,7 @@ impl App {
     }
 
     pub(super) fn apply_history_presentation(&mut self, root: taffy::NodeId) {
+        #[cfg(feature = "model")]
         if let Some(history) = &mut self.history {
             history.apply_composition(
                 self.root_widget.as_mut(),
@@ -881,10 +994,10 @@ impl App {
                 root,
                 self.layout.content_origin,
             );
-        } else {
-            self.root_widget
-                .apply_layout(&self.layout.taffy, root, self.layout.content_origin);
+            return;
         }
+        self.root_widget
+            .apply_layout(&self.layout.taffy, root, self.layout.content_origin);
     }
 
     /// Omit the automatically added History and Search controls at native
@@ -900,6 +1013,7 @@ impl App {
     /// [`Self::without_native_document_chrome`] on an app already in place.
     pub(crate) fn drop_native_document_chrome(&mut self) {
         self.native_document_chrome = false;
+        #[cfg(feature = "model")]
         if let Some(history) = &mut self.history {
             history.remove_open_button();
         }
@@ -911,20 +1025,25 @@ impl App {
     /// the window's palette.
     #[cfg(any(feature = "native", test))]
     pub(super) fn prepare_native_presentation(&mut self, chrome: crate::host_chrome::HostChrome) {
+        #[cfg(feature = "model")]
         if let Some(history) = &mut self.history {
             history.list_recent();
         }
         if chrome.draws_in_window() {
             // Native apps use their integrated header or the platform action
             // API.
+            #[cfg(feature = "model")]
             if let Some(history) = &mut self.history {
                 history.remove_fallback_bar();
                 self.layout.request_rebuild();
-            } else if self.native_document_chrome {
+                return;
+            }
+            if self.native_document_chrome {
                 self.search_presented = true;
             }
             return;
         }
+        #[cfg(feature = "model")]
         if let Some(history) = &mut self.history {
             history.remove_open_button();
             self.layout.request_rebuild();
@@ -940,6 +1059,7 @@ impl App {
     /// bar is hidden, and its header drops its own search button.
     pub(crate) fn set_window_presents_history(&mut self, tab_presents: bool) {
         self.set_window_presents_bar(tab_presents);
+        #[cfg(feature = "model")]
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
             history.set_open_button(!tab_presents);
@@ -948,6 +1068,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     /// The History control the window shows for this app, if it has a
     /// History to open: the one its root widget offers
     /// ([`crate::widget::WindowHistory`]: a window showing the system's
@@ -959,6 +1080,7 @@ impl App {
         )
     }
 
+    #[cfg(feature = "model")]
     /// The window's History control was pressed: run it on the History the
     /// root widget offers, else on this app's History API, as the History
     /// shortcut does.
@@ -979,13 +1101,14 @@ impl App {
     /// Present the window's History in the app's own header rather than a
     /// fallback bar of its own, and search as the window's palette.
     pub fn present_history_in_header(&mut self) {
+        #[cfg(feature = "model")]
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
             self.layout.request_rebuild();
-        } else {
-            self.search_presented = true;
-            self.invalidate_widget_resource_cache();
+            return;
         }
+        self.search_presented = true;
+        self.invalidate_widget_resource_cache();
     }
 }
 

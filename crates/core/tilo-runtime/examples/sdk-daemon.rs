@@ -103,7 +103,6 @@ fn run() -> Result<ExitCode> {
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
         .env_remove("TILO_SVC_NATIVE_FD")
-        .env_remove("TILO_RUNTIME_STANDALONE")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log)

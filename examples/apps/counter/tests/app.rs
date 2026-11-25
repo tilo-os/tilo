@@ -12,7 +12,7 @@ fn set(count: i64) -> Invoke<Counter> {
 /// test what the model allows and refuses.
 #[test]
 fn edits_and_verbs_validate_and_a_refusal_changes_nothing() {
-    let mut counter = Replica::<Counter>::new();
+    let mut counter = Replica::<Counter>::new().in_app("so.tilo.model", "Model");
     counter.apply(Counter::ADD.with(10)).expect("add ten");
     counter
         .apply(Counter::ADD.with(-3))

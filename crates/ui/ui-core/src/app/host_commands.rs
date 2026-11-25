@@ -113,7 +113,7 @@ impl App {
         let owned = self
             .focused_node
             .is_some_and(|node| self.bindings.owns_document(node));
-        let author = Some(&self.collaboration.local_author);
+        let author = Some(&self.local_author);
         let entry = match request {
             crate::undo::UndoRequest::Undo => {
                 self.state.undo_as(author, current_focus_idx, current_meta)
@@ -184,8 +184,7 @@ impl App {
         {
             return binding.undo_status(&mut self.state.doc).unwrap_or_default();
         }
-        self.state
-            .undo_status_snapshot(Some(&self.collaboration.local_author))
+        self.state.undo_status_snapshot(Some(&self.local_author))
     }
 }
 

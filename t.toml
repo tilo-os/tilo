@@ -387,6 +387,13 @@ packages = [
 # declares `unify` too: a run that asks for a few of its packages builds them beside
 # workspace-unify, so every shared library resolves with the features the family's whole build
 # gives it, and an ad-hoc `t cargo check -p` of a package resolves them the same way.
+#
+# It is main's gate (`gate`): every head of main asks it whatever its change reaches, and its one
+# job stands ahead of people's work in line, so a head that doesn't compile is said within minutes
+# of its push instead of waiting behind the queue. That is the check the compiler cache serves
+# warmest: every `t cargo check`, `t test` and `t cargo test` compiles these units, so a head pays
+# only for what its change moved. A package the family leaves out builds for another platform or
+# architecture (its `clippy-{arch}` family has it), so no single native check covers it.
 [[cargo]]
 name = "check"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -402,6 +409,29 @@ exclude = [
     "windows-vm", "workspace-unify",
 ]
 default = false
+gate = true
+
+# The page's compile, as main's gate beside `check`: the crates clippy-page lints, built for
+# wasm32-unknown-unknown with no lints, asked of every head of main and ranked with `check`. No
+# `wrapper`: the page's clippy configuration bans std's clocks for lints, and a compile alone
+# needs none of it. No `unify`: workspace-unify builds nothing for wasm32, and the page's own
+# build compiles each of these with the features cargo resolves for it. The packages are
+# clippy-page's, and tools/tests/test_package_sets.py fails while either list disagrees with the
+# set derived there.
+[[cargo]]
+name = "check-page"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+tool = "check"
+args = ["--locked", "--target", "wasm32-unknown-unknown"]
+gate = true
+default = false
+packages = [
+    "tilo-key-group", "tilo-browser-runtime",
+    "tilo-clipboard", "tilo-clock", "tilo-dialogs", "tilo-files", "tilo-image-codec",
+    "tilo-location", "tilo-media", "tilo-net", "tilo-notify", "tilo-peer-state", "tilo-rt",
+    "tilo-secrets", "tilo-session-client", "tilo-workspace-service",
+    "tilolang-web", "tilolang-window", "workspace-unify",
+]
 
 # The visual goldens: tilo-ui's baselines are pixels, under the filter
 # `.config/nextest-filters.toml` keeps (`golden`), on the project's builder image. That is the
@@ -1374,7 +1404,7 @@ heavy = true
 name = "real-fuse"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\nbash os/tests/tilo-session-lifecycle.sh\ncargo test --locked -p linux-vm --test hosted_share_cache -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact fs::mount_tests::a_tree_removed_takes_every_name_with_it fs::mount_tests::a_name_can_be_made_and_taken_again_and_again fs::mount_tests::a_desktop_editor_saves_with_its_person_s_access hydration::file_keys::tests::a_mounted_file_refuses_a_read_after_workspace_access_is_revoked\ncargo test --locked -p tilo-user-identity projection --lib -- --nocapture\ncargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture\ncargo test --locked -p tilo-fs namespace::journey_tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture\ncargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_document_id_and_rejects_tampering --lib -- --nocapture\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\nbash os/tests/tilo-session-lifecycle.sh\ncargo test --locked -p linux-vm --test hosted_share_cache -- --nocapture\ncargo test --locked -p tilo-fs --lib -- --exact fs::mount_tests::a_tree_removed_takes_every_name_with_it fs::mount_tests::a_name_can_be_made_and_taken_again_and_again fs::mount_tests::a_folder_in_use_is_unmounted_and_its_session_ends fs::mount_tests::a_desktop_editor_saves_with_its_person_s_access hydration::file_keys::tests::a_mounted_file_refuses_a_read_after_workspace_access_is_revoked\ncargo test --locked -p tilo-user-identity projection --lib -- --nocapture\ncargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture\ncargo test --locked -p tilo-fs namespace::journey_tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture\ncargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_document_id_and_rejects_tampering --lib -- --nocapture\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -1759,6 +1789,10 @@ wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests", "--run-ignored", "only", "-E", "test(=throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full) | test(=import_rate::an_import_lands_at_its_floor_while_the_person_works_beside_it) | test(=api_beside_import::an_import_into_another_app_never_slows_a_keys_listings)", "--test-threads", "1"]
 unify = "workspace-unify"
 packages = ["tilo-runtime"]
+# Its tests start the workspace's apps as a person's daemon does: the launcher in its sandbox, and
+# the tilolang process the apps run in, built for the job as the `test` family builds them.
+isolation = { nested = ["tilo-runtime"] }
+starts = { tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "poker:poker", "terminal:terminal"] }
 # The sizes it runs at are the ci profile's `throughput` setup step, not this family's environment:
 # there they would key every build script's and proc macro's cache entry by them.
 

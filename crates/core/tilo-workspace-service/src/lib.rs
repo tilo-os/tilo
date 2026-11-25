@@ -48,6 +48,9 @@ mod connections;
 /// Content a record references, reaching the devices that may read it.
 #[cfg(all(feature = "content", not(target_arch = "wasm32")))]
 pub mod content;
+/// What changed in the records of the workspaces a device holds.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod change_feed;
 /// A device's own documents, as its workspace service holds them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod device_documents;

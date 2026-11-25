@@ -12,7 +12,7 @@ use tilo_session_client::{Cmd, Event, FailureKind, LocalState, Outbox, Transport
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    HostSettings, enrol, holds, ready, restart_host_relayed, route, say, start_host,
+    HostSettings, enrol, holds, person_of, ready, restart_host_relayed, route, say, start_host,
     start_host_serving, start_peer, wait_for, workspace,
 };
 
@@ -45,7 +45,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
         .unwrap();
     ready(&[&peer]).await;
     let mut tree = automerge::AutoCommit::new();
-    peer.write(route(), &say(&mut tree, "desktop tree"))
+    peer.write(route(), &say(&mut tree, person_of(&peer), "desktop tree"))
         .unwrap();
     let receipt = peer.barrier().unwrap();
     wait_for("the snapshot to be durable", || async {

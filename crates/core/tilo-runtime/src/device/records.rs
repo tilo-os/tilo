@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use tilo_actions::remote::{
     ActionCallError, Caller, DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, ReadsAnswer, ResourceAddress,
-    ResourceCopy, ResourceReads, ResourceWake, device_record_space, reads_answer,
+    InvocationState, InvokeArgument, InvokeRequest, ReadsAnswer, ResourceAddress, ResourceCopy,
+    ResourceReads, ResourceWake, device_record_space, reads_answer,
 };
 use tilo_lock::MutexRecover as _;
 

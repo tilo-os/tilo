@@ -60,6 +60,7 @@ impl App {
         self.input.pointer.track_buttons(event);
         self.refresh_controls_before_input(event);
         let resources_before = self.resource_input_mark(event);
+        #[cfg(feature = "model")]
         let capture = self.begin_local_input_event(event);
         let took = deliver(
             self.root_widget.as_mut(),
@@ -75,8 +76,11 @@ impl App {
                 taffy: &self.layout.taffy,
             },
         );
-        drop(capture);
-        self.drain_local_input_capture();
+        #[cfg(feature = "model")]
+        {
+            drop(capture);
+            self.drain_local_input_capture();
+        }
         // `deliver` may change presentation-only resource declarations without touching the
         // CRDT (selected tab, open media, local mode); only bare hover that changed nothing keeps
         // the published tree.
@@ -101,10 +105,7 @@ impl App {
     /// replacement, without replaying any key press or typed input.
     pub(super) fn restore_physical_configuration(&mut self) {
         if self.close_admission.dialog.is_none()
-            && self
-                .history
-                .as_ref()
-                .is_none_or(|history| history.live_interactive())
+            && self.app_live()
             && let Some(layout) = self.input.keyboard_layout.clone()
         {
             self.root_widget
@@ -210,7 +211,10 @@ impl App {
         let handled = self.route_surface_input(window, event, synthesized_touch);
         #[cfg(test)]
         drop(route_probe);
-        self.drain_local_input_capture();
+        #[cfg(feature = "model")]
+        {
+            self.drain_local_input_capture();
+        }
         let inert = pointer_move
             && !handled
             && self.accessibility.semantic_tree_marks == marks
@@ -344,12 +348,7 @@ impl App {
             window.request_redraw();
             return true;
         }
-        if self.close_admission.dialog.is_some()
-            || self
-                .history
-                .as_ref()
-                .is_some_and(|history| !history.live_interactive())
-        {
+        if self.close_admission.dialog.is_some() || !self.app_live() {
             self.root_widget
                 .observe_physical_input(crate::widget::PhysicalInput::Focused(false));
         } else if let Some(input) = crate::widget::PhysicalInput::from_window_event(&event) {
@@ -382,7 +381,10 @@ impl App {
             // History's own chrome took this input: what widgets queued runs in no frame that
             // follows it, so the entry (or return) it asks for seals the live queue instead.
             app.input.passive_input = true;
-            app.dispatch_framework_history_event(&event, window.scale_factor());
+            #[cfg(feature = "model")]
+            {
+                app.dispatch_framework_history_event(&event, window.scale_factor());
+            }
             window.request_redraw();
             return true;
         }
@@ -411,6 +413,7 @@ impl App {
         }
         // `CursorMoved` is measured in this window's own content,
         // never the shell — see the `pointer_space` field.
+        #[cfg(feature = "model")]
         if app.presence.broadcast_scope.is_some() {
             let publication = phases.start();
             match &event {
@@ -446,6 +449,7 @@ impl App {
             phases.finish(InputPhase::Publication, publication);
         }
 
+        #[cfg(feature = "model")]
         let capture = app.begin_local_input_event(&event);
         let mut handled = false;
         let mut view_only_scroll = false;
@@ -838,8 +842,11 @@ impl App {
             window.request_redraw();
         }
 
-        drop(capture);
-        app.drain_local_input_capture();
+        #[cfg(feature = "model")]
+        {
+            drop(capture);
+            app.drain_local_input_capture();
+        }
 
         if let Some(address) = app.root_widget.take_action_palette_request()
             && app.open_search_at_action(&address)
@@ -865,10 +872,13 @@ impl App {
             && !(view_only_scroll && !history_handled && focus_target.is_none())
             && !matches!(event, WindowEvent::CursorMoved { .. });
         let publication = phases.start();
-        app.broadcast_focus_presence();
-        app.broadcast_location_presence();
-        app.broadcast_composing_presence();
-        app.broadcast_view_presence();
+        #[cfg(feature = "model")]
+        {
+            app.broadcast_focus_presence();
+            app.broadcast_location_presence();
+            app.broadcast_composing_presence();
+            app.broadcast_view_presence();
+        }
         // A publication an earlier input owes is the frame's already.
         if sync_follows || app.actions.action_surface_owed {
             app.actions.action_surface_owed = true;
@@ -1387,7 +1397,7 @@ impl App {
         // describe.
         let culls = damage.culls
             && full.is_none()
-            && self.history.is_none()
+            && !self.presents_history()
             && !crate::scene_parts::is_tracked(scene);
         let mut culling = culls.then(|| std::mem::take(&mut self.layout.cull));
         let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
@@ -1406,11 +1416,14 @@ impl App {
         drop(laying_out);
         // The surface a handled input left for this frame, now that its sync
         // ran and the frame built the tree, as a window of its own pays it.
-        #[cfg(test)]
-        let publish_probe = crate::profiling::frame_probe::span("frame.publish");
-        self.publish_owed_action_surface();
-        #[cfg(test)]
-        drop(publish_probe);
+        #[cfg(feature = "model")]
+        {
+            #[cfg(test)]
+            let publish_probe = crate::profiling::frame_probe::span("frame.publish");
+            self.publish_owed_action_surface();
+            #[cfg(test)]
+            drop(publish_probe);
+        }
         // Members' marks over the widgets, for a host that shows the
         // app as a window of its own does ([`SurfaceDamage::painting_peers`]).
         let surface_rect = KurboRect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
@@ -1518,10 +1531,7 @@ impl App {
                 return crate::scroll_copy::CopyPlan::default();
             };
             regions.extend(besides);
-            let history = self
-                .history
-                .as_deref()
-                .map(|history| history as &dyn Widget);
+            let history = self.history_widget();
             crate::scroll_copy::plan_scaled(
                 &offers,
                 &std::iter::once(root).chain(history).collect::<Vec<_>>(),
@@ -1602,8 +1612,7 @@ impl App {
                 .is_some_and(crate::action_palette::ActionPalette::is_moving)
             // History's panel moves outside the app's root (it slides in).
             || self
-                .history
-                .as_deref()
+                .history_widget()
                 .is_some_and(|history| history.needs_animation_frame())
             || self
                 .root_widget
@@ -2352,7 +2361,7 @@ mod tests {
             offered(&mut app),
             "agents and scripts see the window's zoom"
         );
-        let person = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+        let person = tilo_actions::Actor::Member(app.local_author.clone());
         app.invoke_resource_action(
             ResourceInvocation::new(&address("zoom-out"), &person).broker_admitted(true),
         )

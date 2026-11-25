@@ -234,6 +234,7 @@ pub fn take_process_intent(
 /// What the connection of an app that runs elsewhere (a tilolang host's instance) heard of the
 /// people at the app, handed to the window that presents it. That window has no connection of
 /// its own: it shows these as a native app's window shows what its own connection hears.
+#[cfg(feature = "model")]
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Heard {
     /// The workspace's member list: what each member is called and the colour they wear.
@@ -244,6 +245,7 @@ pub enum Heard {
 
 /// A presentation whose app runs elsewhere hands over what its app's connection heard of the
 /// people at it ([`Heard`]).
+#[cfg(feature = "model")]
 pub trait HearsElsewhere {
     /// Consume what arrived since this was last asked, oldest first.
     fn take_heard(&mut self) -> Vec<Heard>;
@@ -251,6 +253,7 @@ pub trait HearsElsewhere {
 
 /// Consume what `widget` heard of the people at its app ([`HearsElsewhere`]), through its
 /// capability API.
+#[cfg(feature = "model")]
 pub fn take_heard(widget: &mut (impl Widget + ?Sized)) -> Vec<Heard> {
     capability_mut::<dyn HearsElsewhere>(widget).map_or_else(Vec::new, HearsElsewhere::take_heard)
 }

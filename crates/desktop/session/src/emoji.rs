@@ -160,32 +160,52 @@ impl Emoji {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use settings_store::SettingsSource as _;
+    use ui::emoji_catalogue::Used;
 
-    /// The picker's recents are the person's settings: what one device's settings say is what
-    /// every device's picker opens with, and a pick is written back there rather than to a file
-    /// on this machine.
+    fn used(emoji: &str, uses: u32) -> Used {
+        Used {
+            emoji: emoji.to_owned(),
+            uses,
+        }
+    }
+
+    /// How often the person used each emoji is their settings: what one device's settings say is
+    /// what every device's picker opens with, and a pick is counted there rather than in a file on
+    /// this machine.
     #[test]
-    fn the_pickers_recents_are_the_persons_settings() {
+    fn the_pickers_counts_are_the_persons_settings() {
         let held = serde_json::Map::from_iter([(
             settings_store::emoji::SECTION.to_owned(),
-            serde_json::json!({ "recent": ["🎉"] }),
+            serde_json::json!({
+                "used": serde_json::to_string(&[used("🎉", 2)]).expect("the counts write"),
+            }),
         )]);
         let source = std::sync::Arc::new(settings_store::HostDocument::new(held, |_| Ok(())));
         let _scoped =
             settings_store::scoped_source(Some(std::sync::Arc::clone(&source)
                 as std::sync::Arc<dyn settings_store::SettingsSource>));
-        ui::emoji_catalogue::keep_recents_in(Box::new(PersonRecents));
+        ui::emoji_catalogue::keep_uses_in(Box::new(PersonUses));
         assert_eq!(
-            ui::emoji_catalogue::recents(),
+            ui::emoji_catalogue::frequent(),
             ["🎉"],
-            "the picker reads the settings, not this device's own list"
+            "the picker reads the settings, not this device's own counts"
         );
 
-        ui::emoji_catalogue::record_recent("🚀");
+        ui::emoji_catalogue::record_used("🚀");
+        let kept: Vec<Used> = serde_json::from_str(
+            &settings_store::emoji::used(&source.load()).expect("the pick is in the settings"),
+        )
+        .expect("the counts read");
         assert_eq!(
-            settings_store::emoji::recent(&source.load()),
-            ["🚀", "🎉"],
-            "a pick is written to the person's settings, newest first"
+            kept,
+            [used("🚀", 1), used("🎉", 2)],
+            "a pick is counted in the person's settings, most recently used first"
+        );
+        assert_eq!(
+            ui::emoji_catalogue::frequent(),
+            ["🎉", "🚀"],
+            "the emoji used most leads"
         );
     }
 }

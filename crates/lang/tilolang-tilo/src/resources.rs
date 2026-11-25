@@ -909,7 +909,7 @@ impl ResourceStore {
         let stamp = self.history_stamp("undo", invoker);
         let stamp = Stamp {
             undoes: Some(invocation.to_owned()),
-            invocation: served.unwrap_or(stamp.invocation.clone()),
+            invocation: served.unwrap_or_else(|| stamp.invocation.clone()),
             ..stamp
         };
         let own = stamp.invocation.clone();

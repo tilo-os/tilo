@@ -104,6 +104,54 @@ fn a_name_can_be_made_and_taken_again_and_again() {
     drop(runtime);
 }
 
+/// A folder still in use when it is unmounted: a file held open in it, and a process standing
+/// in it. Unmounting ends its connection whatever holds it, so the session's thread returns and
+/// the filesystem it served is let go; the file held answers that the connection is gone.
+#[test]
+fn a_folder_in_use_is_unmounted_and_its_session_ends() {
+    require_fuse!();
+    let tmp = tempfile::tempdir().unwrap();
+    let at = tmp.path().join("mnt");
+    std::fs::create_dir(&at).unwrap();
+    let (fs, runtime) = mounted(tmp.path());
+    let session = mount(fs, &at);
+
+    std::fs::write(at.join("held.txt"), b"held").unwrap();
+    let held = std::fs::File::open(at.join("held.txt")).unwrap();
+    let mut standing = std::process::Command::new("sleep")
+        .arg("600")
+        .current_dir(&at)
+        .spawn()
+        .unwrap();
+
+    let (ended, unmounted) = std::sync::mpsc::channel();
+    let mount_point = at.clone();
+    std::thread::spawn(move || {
+        let _ = ended.send(crate::fuse_session::unmount_and_join(session, &mount_point));
+    });
+    let unmounted = unmounted.recv_timeout(std::time::Duration::from_secs(30));
+    standing.kill().unwrap();
+    standing.wait().unwrap();
+    unmounted
+        .expect("the session of a folder in use did not end when it was unmounted")
+        .expect("the folder in use unmounts");
+
+    let mut read = Vec::new();
+    let error = std::io::Read::read_to_end(&mut &held, &mut read)
+        .expect_err("a file held in the folder reads nothing once its connection ended");
+    assert_eq!(
+        error.raw_os_error(),
+        Some(libc::ENOTCONN),
+        "the file held answers that its connection is gone: {error}"
+    );
+    let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap();
+    assert!(
+        crate::fuse_session::fuse_mount_at(&mounts, &at).is_none(),
+        "the folder is not mounted any more: {mounts}"
+    );
+    drop(runtime);
+}
+
 /// `rm -rf` of a tree of directories and files: every name in it goes, and the whole removal
 /// reports nothing left.
 #[test]

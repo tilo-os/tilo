@@ -1,8 +1,9 @@
 //! A question the session puts to the person about themselves: it waits on
 //! their own avatar in the top bar, never as a banner over their windows,
 //! and their answer takes it away. A bar too narrow for its words opens it
-//! across the bar's band, where it is read and answered, and folded it waits
-//! as a dot on the avatar while the avatar itself opens the person's own card.
+//! as its card under the avatar, where it is read and answered, and folded it
+//! waits as a dot on the avatar while the avatar itself opens the person's own
+//! card.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -20,6 +21,7 @@ use tilo_session::Options;
 use tilo_session::Session;
 use tilo_session::platform::notice::{Notice, Notices};
 use tilo_session_core::desktop::state::{DesktopNotifications, HostAction, HostActionSource};
+use ui::a11y::Action;
 use ui::accesskit::{Node, NodeId, Role, TreeUpdate};
 
 const SETTLE: Duration = Duration::from_millis(1);
@@ -28,6 +30,8 @@ const HEIGHT: i32 = 800;
 /// A bar too narrow to hold the ask's words beside the avatar.
 const NARROW: i32 = 420;
 const REFRESH: Duration = Duration::from_millis(16);
+/// The window the shell draws this device's screen as, as the shell names it.
+const SHELL_WINDOW: &str = "Desktop shell";
 
 /// A headless session `width` by `height` at its shell, drawn once.
 fn session_on(width: i32, height: i32) -> Session {
@@ -78,14 +82,21 @@ fn keep_identity() -> HostAction {
     }
 }
 
-/// The bar as a screen reader reads it: the window's place and its tree.
-fn bar(session: &Session) -> (usize, TreeUpdate) {
+/// The shell's window as a screen reader reads it: the place it publishes and its tree. The bar is
+/// inside it, so the test waits for the shell to draw rather than reading a window of its own.
+fn bar(session: &mut Session) -> (usize, TreeUpdate) {
+    crate::common::until(session, "the shell's window", |session| {
+        session
+            .a11y_windows()
+            .iter()
+            .any(|(_, window, _)| window == SHELL_WINDOW)
+    });
     session
         .a11y_windows()
         .into_iter()
-        .find(|(_, window, _)| window == "Top bar")
+        .find(|(_, window, _)| window == SHELL_WINDOW)
         .map(|(place, _, tree)| (place, tree))
-        .expect("the session publishes the bar its screen draws")
+        .expect("the session publishes the shell its screen draws")
 }
 
 /// The button `label` in `tree` , as a screen reader finds it.
@@ -131,9 +142,10 @@ fn press(session: &mut Session, (x, y): (f64, f64)) {
     }
 }
 
-/// The person's own avatar in the bar, as a screen reader finds it: its id and where it stands.
+/// The person's own avatar in the bar, as a screen reader finds it: its id and where it stands. The
+/// shell names it by what it opens: "You: open your card", or their name before it.
 fn avatar(tree: &TreeUpdate) -> (NodeId, (f64, f64, f64, f64)) {
-    let (id, node) = button(tree, "(you)");
+    let (id, node) = button(tree, "open your card");
     let at = place(&node);
     (id, at)
 }
@@ -216,11 +228,11 @@ fn an_ask_about_the_person_waits_on_their_avatar_until_they_answer_it() {
     );
 }
 
-/// A bar too narrow for the ask's words beside its own controls opens it across the bar's band: the
-/// question is read there and its answer is pressed there, where the person sees it, clear of the
-/// person's own face.
+/// A bar too narrow for the ask's words beside its own controls opens it as its card under the
+/// avatar: the question is read there and its answer is pressed there, where the person sees it,
+/// clear of the person's own face.
 #[test]
-fn an_ask_that_does_not_fit_the_bar_opens_across_its_band() {
+fn an_ask_that_does_not_fit_the_bar_opens_clear_of_the_person_face() {
     let _settled = ui::motion::testing::settled();
     let mut session = session_on(NARROW, HEIGHT);
     tilo_session::identity::offer(
@@ -233,24 +245,34 @@ fn an_ask_that_does_not_fit_the_bar_opens_across_its_band() {
     session.step(SETTLE).expect("a frame");
     session.step(REFRESH).expect("a frame");
 
-    let (_, tree) = bar(&session);
-    let (_, (_, _, avatar_left, band_bottom)) = avatar(&tree);
-    let (_, answer) = button(&tree, "Keep your name and work?");
+    let (_, tree) = bar(&mut session);
+    assert!(
+        tree.nodes.iter().any(|(_, node)| {
+            [node.label(), node.description()]
+                .into_iter()
+                .flatten()
+                .any(|said| said.contains("Keep your name and work?"))
+        }),
+        "the question is read in the shell's window"
+    );
+    let (_, (face_x0, face_y0, face_x1, face_y1)) = avatar(&tree);
+    let (_, answer) = button(&tree, "Keep with passkey");
     let (x0, y0, x1, y1) = place(&answer);
     assert!(
-        y0 >= 0.0 && y1 <= band_bottom,
-        "the ask's answer stands in the bar's band, which ends at {band_bottom}, not at {y0}..{y1}"
+        x0 >= 0.0 && y0 >= 0.0 && x1 <= f64::from(NARROW) && y1 <= f64::from(HEIGHT),
+        "the ask's answer stands on the display where the person sees it: {x0}..{x1}, {y0}..{y1}"
     );
     assert!(
-        x1 <= avatar_left,
-        "the ask's answer stops short of the person's own face, which begins at {avatar_left}: {x0}..{x1}"
+        x1 <= face_x0 || x0 >= face_x1 || y1 <= face_y0 || y0 >= face_y1,
+        "the ask's answer stands clear of the person's own face, which stands at \
+         {face_x0}..{face_x1}, {face_y0}..{face_y1}: {x0}..{x1}, {y0}..{y1}"
     );
     crate::common::shot(&mut session, "ask-narrow-420");
 
     press(&mut session, (f64::midpoint(x0, x1), f64::midpoint(y0, y1)));
     assert!(
         session.handle().personal_ask().is_none(),
-        "the person answered the ask across the bar"
+        "the person answered the ask where it stands"
     );
     assert!(
         session.handle().take_host_choices().is_empty(),
@@ -279,7 +301,7 @@ fn a_folded_ask_leaves_the_avatar_to_open_the_own_card() {
         "the ask folds into a dot on the avatar"
     );
     session.step(REFRESH).expect("a frame");
-    let (_, tree) = bar(&session);
+    let (place, tree) = bar(&mut session);
     let said: Vec<String> = tree
         .nodes
         .iter()
@@ -290,19 +312,34 @@ fn a_folded_ask_leaves_the_avatar_to_open_the_own_card() {
             .any(|label| label.contains("Keep your name and work?")),
         "the dot says the ask waits: {said:?}"
     );
+    let (face, _) = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| {
+            !node.is_hidden()
+                && node
+                    .label()
+                    .is_some_and(|said| said.ends_with(": open your card"))
+        })
+        .cloned()
+        .unwrap_or_else(|| panic!("the avatar says what it opens: {said:?}"));
     crate::common::shot(&mut session, "ask-narrow-420-folded");
-    let (_, (x0, y0, x1, y1)) = avatar(&tree);
-    press(&mut session, (f64::midpoint(x0, x1), f64::midpoint(y0, y1)));
-    session.step(REFRESH).expect("a frame");
+    assert!(
+        session.a11y_perform(place, face, &Action::Activate),
+        "the shell took the press on the person's own face"
+    );
     assert!(
         session.handle().personal_ask().is_some_and(|ask| !ask.open),
         "the avatar leaves the ask folded"
     );
+    // The shell opens the person's own card where the person pressed, as the session reads it: the
+    // card's own words are what a screen reader hears.
+    crate::common::wait_for(&mut session, "the person's own card", |session| {
+        session
+            .shell_says("How everyone here sees you")
+            .then_some(())
+    });
     let labels = session.accessible_labels();
-    assert!(
-        labels.iter().any(|label| label == "Your profile"),
-        "the avatar opens the person's own card: {labels:?}"
-    );
     assert!(
         labels.iter().any(|label| label == "Keep with passkey"),
         "and the card offers what the ask asks: {labels:?}"

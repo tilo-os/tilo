@@ -39,7 +39,7 @@ pub fn line(step: &Step<'_>) -> String {
 /// added outside.
 fn making(step: &Step<'_>) -> Option<String> {
     let (kind, field) = step.makes?;
-    let key = tilo_resource::label::noun_key(&format!("{kind}.{field}"));
+    let key = tilo_resource_plain::noun_key(&format!("{kind}.{field}"));
     let noun = crate::i18n::noun(&key)?;
     let record = step.record?;
     Some(widget_format(

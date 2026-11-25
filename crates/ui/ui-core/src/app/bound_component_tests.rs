@@ -769,7 +769,7 @@ fn bound_components_keep_child_binding() {
             .is_some(),
             "fixture must publish its operation before admission"
         );
-        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(app.local_author.clone());
         assert!(matches!(
             app.invoke_resource_action(
                 ResourceInvocation::new(
@@ -1015,7 +1015,7 @@ fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
     DOCUMENT_JOB_MODE.set(true);
     let mut fixture = ActionFixture::broker();
     let target = fixture.target(0, "apply");
-    let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
+    let actor = tilo_actions::Actor::Member(fixture.app.local_author.clone());
     let before = fixture
         .records
         .read(&target.binding.checkout.id, |doc| doc.clone().get_heads())
@@ -1094,7 +1094,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         let mut fixture = ActionFixture::broker();
         let outer = fixture.app.state.doc.get_heads();
         let address = tilo_actions::ActionAddress::new("bound:probe", "follow-up");
-        let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(fixture.app.local_author.clone());
         let error = fixture
             .app
             .invoke_resource_action(
@@ -1270,7 +1270,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         );
         assert_eq!(fixture.app.state.doc.get_heads(), outer);
         fixture.app.close_components();
-        let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(fixture.app.local_author.clone());
         assert!(
             fixture
                 .app
@@ -1353,7 +1353,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                 .resolve_publication_resource(&alias, "follow-up")
                 .is_none()
         );
-        let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(fixture.app.local_author.clone());
         assert!(
             fixture
                 .app
@@ -2212,7 +2212,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
         let mut fixture = ActionFixture::broker();
         let target = fixture.target(1, "follow-up");
         let resources = fixture.app.publication_resources();
-        let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(fixture.app.local_author.clone());
         let mut requests = Vec::new();
         // This boundary captures submission only; no broker acceptance is simulated.
         fixture
@@ -2342,7 +2342,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
             let target = fixture.target(1, "apply");
             let first = fixture.bindings[0].clone();
             let outer = fixture.app.state.doc.get_heads();
-            let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
+            let actor = tilo_actions::Actor::Member(fixture.app.local_author.clone());
             let result = first
                 .with_document(&mut fixture.app.state.doc, |doc, _| {
                     doc.put(ROOT, "before-nested", "A").unwrap();

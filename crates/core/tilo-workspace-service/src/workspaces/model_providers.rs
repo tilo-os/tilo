@@ -5,8 +5,11 @@
 //! The store is the one [`super::person_settings`] keeps: the workspace's
 //! model configuration and vault ([`Workspaces::workspace_root`]), reached as
 //! the workspace's policy says ([`Store::MODELS`]). Here is what changes it
-//! for a page, and the one outbound request those changes make: a provider's
-//! own list of models, asked by the host because only it holds the key.
+//! for a page, and the outbound requests made for it: a provider's own list of
+//! models, asked by the host because only it holds the key, and the Hugging
+//! Face searches and downloads this computer's model manager runs, each
+//! handed the key of the workspace's local provider for that request alone
+//! ([`local_hub`]).
 //!
 //! A member names a provider's address, so the host calls an address a
 //! person typed. Unless its operator lets it call its own network
@@ -28,9 +31,9 @@ use agent_provider_config::{
 };
 use serde_json::Value;
 use tilo_actions::remote::model_providers::{
-    self, AddModel, AddPreset, BeginSignIn, ListedModels, ListingProblem, ModelProviders,
-    ProviderView, SetAssignment, SetAssignments, SetDefault, SetEnabled, SetKey, SetReasoning,
-    WaitSignIn,
+    self, AddModel, AddPreset, BeginSignIn, InstallHubModel, ListedModels, ListingProblem,
+    ModelProviders, ProviderView, SearchHubModels, SetAssignment, SetAssignments, SetDefault,
+    SetEnabled, SetKey, SetReasoning, ShowHubModel, WaitSignIn,
 };
 use tilo_actions::remote::workspace_invocations::Spend;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
@@ -152,10 +155,13 @@ impl Workspaces {
     ) -> Result<Value, ActionCallError> {
         let action = request.target.address.action.as_str();
         let effect = match action {
-            // Asking a model reads with the key the workspace keeps.
-            model_providers::LIST | model_providers::ASK | model_providers::WAIT_SIGN_IN => {
-                tilo_action_policy::ActionKind::Read
-            }
+            // Asking a model, a search or a model's description reads with the key the
+            // workspace keeps.
+            model_providers::LIST
+            | model_providers::ASK
+            | model_providers::WAIT_SIGN_IN
+            | model_providers::SEARCH_HUB_MODELS
+            | model_providers::SHOW_HUB_MODEL => tilo_action_policy::ActionKind::Read,
             _ => tilo_action_policy::ActionKind::Undoable,
         };
         let reach = self
@@ -183,6 +189,29 @@ impl Workspaces {
         let person = reach.person;
         let by = reach.by();
         let keys = ProviderKeys::of(self.vault_for(&here, &reach.acting).serving(request), &by);
+        // Hugging Face searches and downloads go to this computer's model manager, which holds
+        // no key of its own: the workspace's local model provider key goes with each request.
+        match action {
+            model_providers::SEARCH_HUB_MODELS => {
+                let asked: SearchHubModels = argument(request, "a Hugging Face search")?;
+                return answer(
+                    &local_hub::ask((keys, &root), local_hub::Wanted::Search(asked)).await,
+                );
+            }
+            model_providers::SHOW_HUB_MODEL => {
+                let asked: ShowHubModel = argument(request, "a Hugging Face model")?;
+                return answer(
+                    &local_hub::ask((keys, &root), local_hub::Wanted::Show(asked)).await,
+                );
+            }
+            model_providers::INSTALL_HUB_MODEL => {
+                let asked: InstallHubModel = argument(request, "a Hugging Face model to download")?;
+                return answer(
+                    &local_hub::ask((keys, &root), local_hub::Wanted::Install(asked)).await,
+                );
+            }
+            _ => {}
+        }
         let reach = self.model_reach();
         if let Some(answered) = self
             .sign_in_invoke(action, person, &here, &reach, request)
@@ -339,6 +368,7 @@ fn not_kept() -> String {
     "That provider is not kept here".to_owned()
 }
 
+mod local_hub;
 mod openai;
 pub use openai::OpenAiSignIn;
 pub(super) use openai::{Grant, SignIns};
@@ -1568,5 +1598,87 @@ mod tests {
             .expect("the provider is removed");
         assert!(remaining.assignments.is_empty(), "{remaining:?}");
         assert_eq!(remaining.default_provider.as_deref(), Some(first.as_str()));
+    }
+
+    /// The download request the models provider sends this computer's manager carries the
+    /// workspace's local model provider key, and a workspace that keeps none sends none.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hub_download_carries_the_workspaces_local_provider_key() {
+        use std::io::{Read as _, Write as _};
+        use std::sync::Arc;
+        use std::sync::Mutex;
+
+        let root = temp_root();
+        let id = kept(
+            root.path(),
+            Protocol::OpenAiCompatible,
+            "http://127.0.0.1:8000/v1",
+            Destinations::Any,
+        );
+        keep_key(root.path(), &id, KEY).await;
+        let anonymous = temp_root();
+        kept(
+            anonymous.path(),
+            Protocol::OpenAiCompatible,
+            "http://127.0.0.1:8000/v1",
+            Destinations::Any,
+        );
+
+        let listener = std::os::unix::net::UnixListener::bind(root.path().join("models.sock"))
+            .expect("a model service socket");
+        let socket = root.path().join("models.sock");
+        let asked: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
+        let seen = Arc::clone(&asked);
+        let serving = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("a request");
+                let mut size = [0_u8; 4];
+                stream.read_exact(&mut size).expect("a request's length");
+                let mut body = vec![0_u8; usize::try_from(u32::from_be_bytes(size)).unwrap()];
+                stream.read_exact(&mut body).expect("a request's body");
+                seen.lock()
+                    .unwrap()
+                    .push(serde_json::from_slice(&body).expect("a typed request"));
+                let answer = br#"{"ok":true,"output":null}"#;
+                stream
+                    .write_all(&u32::try_from(answer.len()).unwrap().to_be_bytes())
+                    .and_then(|()| stream.write_all(answer))
+                    .expect("an answer");
+            }
+        });
+
+        let download = |accept_license| InstallHubModel {
+            repo: "acme/Chat-GGUF".into(),
+            revision: "abc".into(),
+            variant: "Q4_K_M".into(),
+            accept_license,
+        };
+        let (keys, path) = at(root.path());
+        super::local_hub::ask_at(
+            (keys, path),
+            &socket,
+            super::local_hub::Wanted::Install(download(true)),
+        )
+        .await
+        .expect("the manager takes the download");
+        let (keys, path) = at(anonymous.path());
+        super::local_hub::ask_at(
+            (keys, path),
+            &socket,
+            super::local_hub::Wanted::Install(download(true)),
+        )
+        .await
+        .expect("the manager takes the download");
+        serving.join().expect("the model service answered both");
+
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked[0]["action"]["verb"], "hub_install");
+        assert_eq!(asked[0]["action"]["token"], KEY);
+        assert!(
+            asked[1]["action"].get("token").is_none(),
+            "a workspace that keeps no key sends none: {}",
+            asked[1]
+        );
     }
 }

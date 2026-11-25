@@ -13,6 +13,11 @@ description = "The settings' typed schema, the theme names and the shared sectio
 # device reads it, the looks and presets a theme is named by, and the sections every app reads.
 # It has no store and no window; settings-store keeps the document and the toolkit draws it.
 
+# The settings' records are the settings app's, not a dependent app's: an app that reads the
+# schema holds no record of its own (crates/lang/tilo-app-builder/src/resource_kinds.rs).
+[package.metadata.tilo]
+apps = ["settings"]
+
 [lib]
 name = "settings_model"
 path = "src/lib.rs"

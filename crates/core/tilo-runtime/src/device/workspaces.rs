@@ -19,7 +19,7 @@ use std::{
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::invocation_record::Invocations;
-use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_identity::broker::WorkspaceMembership;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::StatePeer;
@@ -119,6 +119,9 @@ pub(crate) struct ServiceWorkspaces {
     /// The hosts of the workspaces placed on another device, once the person's services run: one
     /// connection per host and workspace, kept for every call that goes there.
     hosts: OnceLock<Arc<super::hosts::Hosts>>,
+    /// What changed in the records of these workspaces, as a watch of a whole workspace reads
+    /// it: one log a workspace for every connection, made on the first ask.
+    changes: OnceLock<Arc<tilo_workspace_service::change_feed::DocumentsFeed>>,
 }
 
 impl ServiceWorkspaces {
@@ -210,6 +213,7 @@ impl ServiceWorkspaces {
             search: OnceLock::new(),
             records: OnceLock::new(),
             hosts: OnceLock::new(),
+            changes: OnceLock::new(),
         }
     }
 
@@ -791,6 +795,25 @@ impl ServiceWorkspaces {
         &self,
     ) -> Option<Arc<dyn tilo_workspace_service::apps::services::SearchIndexServices>> {
         Some(self.search.get()?.publications())
+    }
+
+    /// What changed in the records of these workspaces: the feed a watch of a whole workspace
+    /// reads, and the documents the service holds that it reads them from.
+    pub(crate) fn change_feed(
+        &self,
+    ) -> (
+        Arc<tilo_workspace_service::change_feed::DocumentsFeed>,
+        tilo_workspace_service::device_documents::ServiceDocuments,
+    ) {
+        let feed = Arc::clone(self.changes.get_or_init(|| {
+            Arc::new(tilo_workspace_service::change_feed::DocumentsFeed::new(
+                Arc::new(ui::history_source::ThreadWords),
+            ))
+        }));
+        (
+            feed,
+            tilo_workspace_service::device_documents::ServiceDocuments::of(self.copies().clone()),
+        )
     }
 
     /// The search of the device's index, once the daemon keeps one and its broker serves.

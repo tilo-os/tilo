@@ -249,12 +249,16 @@ fn decide_op_settled(
                 .filter(|_| op.surface.is_some() || pinned.is_some())
             else {
                 let changes = changes_of(op)?;
-                return decide_as_document_edit(
+                let decided = decide_as_document_edit(
                     changes.as_deref(),
                     document,
                     allows,
                     (imported, signer),
-                );
+                )?;
+                if let Some(changes) = &changes {
+                    check_genesis_first(changes, holding)?;
+                }
+                return Ok(decided);
             };
             let surface_for =
                 |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
@@ -332,9 +336,74 @@ fn decide_op_settled(
                     written.is_some().then_some(&read as WrittenUnits<'_>);
                 check_claims(&claims, document, None, read, Some(&*surface), allows)?;
             }
+            // Decided last, so a change refused its grant says so first.
+            check_genesis_first(&changes, holding)?;
             Ok(Receipt::Admit)
         }
     }
+}
+
+/// Refuse a change named the record's genesis that is not the record's first: one that builds on
+/// a change someone made, or that arrives at a record whose copy here, `copy`, already has such a
+/// change. Only what every member derives alike (the founding identity, a derived structure)
+/// may come before it. A genesis this receiver already has is no new write and passes, as a
+/// history handed on whole carries it again.
+///
+/// A genesis is decided by the grant to create the record, never against the app's published
+/// edits; without this, any writer could name a whole-record rewrite of a record with content the
+/// record's genesis and so pass by the edits the app publishes.
+fn check_genesis_first(
+    changes: &[automerge::Change],
+    copy: Option<&automerge::Automerge>,
+) -> Result<(), ReceiptRefusal> {
+    let derived =
+        |change: &automerge::Change| crate::claim::maker_of(change) == crate::claim::Maker::Derived;
+    // The record's changes as this receiver keeps them, read whole only when a genesis it does
+    // not have yet arrives: whether a kept change is nobody's is read from what it writes, as for
+    // one received.
+    let kept_changes = std::cell::OnceCell::new();
+    let kept_derived = |record: &automerge::Automerge, hash: &automerge::ChangeHash| {
+        kept_changes
+            .get_or_init(|| record.get_changes(&[]))
+            .iter()
+            .find(|change: &&automerge::Change| change.hash() == *hash)
+            .is_some_and(derived)
+    };
+    let mut has_content = None;
+    for (at, change) in changes.iter().enumerate() {
+        let named = change.message().and_then(tilo_actions::stamp::Label::of);
+        if named
+            != Some(tilo_actions::stamp::Label::Framework(
+                FrameworkChange::Genesis,
+            ))
+            || derived(change)
+        {
+            continue;
+        }
+        if copy.is_some_and(|record| record.has_change(&change.hash())) {
+            continue;
+        }
+        let made_before = change.deps().iter().any(|dep| {
+            match changes[..at].iter().find(|earlier| earlier.hash() == *dep) {
+                Some(earlier) => !derived(earlier),
+                None => {
+                    copy.is_some_and(|record| record.has_change(dep) && !kept_derived(record, dep))
+                }
+            }
+        });
+        let content = *has_content.get_or_insert_with(|| {
+            copy.is_some_and(|record| {
+                record
+                    .get_heads()
+                    .iter()
+                    .any(|head| !kept_derived(record, head))
+            })
+        });
+        if made_before || content {
+            return Err(ReceiptRefusal::GenesisAfterContent);
+        }
+    }
+    Ok(())
 }
 
 /// A change of an app that publishes no surface (and of a document that names

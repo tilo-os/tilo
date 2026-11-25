@@ -872,6 +872,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "IMPORTS::str_to_int" = "i -> i"
 "IMPORTS::str_trim" = "i -> i"
 "IMPORTS::str_upper" = "i -> i"
+"IMPORTS::str_url_decode" = "i -> i"
 "IMPORTS::str_url_encode" = "i -> i"
 "IMPORTS::str_words" = "i -> l"
 "IMPORTS::suggest" = "i -> "

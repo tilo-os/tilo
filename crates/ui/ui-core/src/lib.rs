@@ -113,6 +113,7 @@ mod action_locus;
 /// never through this host.
 #[doc(hidden)]
 pub mod local_dispatch;
+#[cfg(feature = "model")]
 pub mod local_document_action;
 pub use action_locus::{ActionUiRoute, PaintedActionMarker};
 pub mod action_palette;
@@ -148,6 +149,7 @@ pub mod app;
 pub use collab_types::app_surface;
 pub mod auth_backdrop;
 pub mod backdrop;
+#[cfg(feature = "model")]
 pub mod call_pictures;
 pub mod caps_lock;
 /// Who the keyboard belongs to, which is who paints a caret.
@@ -323,6 +325,7 @@ pub mod mentions;
 pub mod own_paint;
 pub mod published;
 pub mod reader_hud;
+#[cfg(feature = "model")]
 pub mod remote_actions;
 pub mod render_bump_recovery;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
@@ -358,7 +361,7 @@ pub mod strip_layers;
 pub mod surface;
 /// The actions socket a session hands a surface app is a descriptor of a native process: a browser page
 /// is no surface, and no session places its window.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 pub mod surface_peer;
 pub mod surface_services;
 pub mod sysdirs;
@@ -403,10 +406,14 @@ pub mod webview;
 pub mod widget;
 pub mod window_icon;
 
+/// The model services an app's inference and provider administration travel as.
+#[cfg(feature = "model")]
+#[doc(inline)]
+pub use tilo_process_services::models;
 #[doc(inline)]
 pub use tilo_process_services::{
-    background, capture, clipboard, env, jpeg, location, models, mpris, notify, png, portal,
-    process, secrets, shell_choosers, time, wake,
+    background, capture, clipboard, env, jpeg, location, mpris, notify, png, portal, process,
+    secrets, shell_choosers, time, wake,
 };
 
 /// The AccessKit types the bridge and [`headless::Driver`] hand back, re-exported so an app crate
@@ -464,6 +471,7 @@ pub use profiling::{
 pub use reader_hud::{
     HudAction, HudControls, HudPlacement, HudSide, HudSwatch, MarkerDrag, SelectionHud,
 };
+#[cfg(feature = "model")]
 pub use remote_actions::{
     CancellationCall, CatalogueCall, ChangedCall, Followed, FollowedRead, InvocationCall,
     RemoteActions, RemoteActionsGuard, ResourceReadCall,
@@ -478,7 +486,9 @@ pub use resource::{
 };
 pub use search::{FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult};
 pub use selection::{KeySelection, SelectionModel};
-pub use state::{DocumentFrontier, State, UndoEntry, UndoLog};
+pub use state::State;
+#[cfg(feature = "model")]
+pub use state::{DocumentFrontier, UndoEntry, UndoLog};
 pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{
     AppearanceIntent, ContentSurface, SurfaceShape, Theme, WindowAppearance, resolve_theme_layers,
@@ -632,8 +642,11 @@ pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange, human_
 pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
 pub use widget::ViewPresence;
 
+#[cfg(feature = "model")]
 pub mod application;
+#[cfg(feature = "model")]
 pub mod application_view;
+#[cfg(feature = "model")]
 pub mod invocation_scope;
 pub mod native_scenario;
 #[cfg(feature = "native")]

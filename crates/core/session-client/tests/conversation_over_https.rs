@@ -124,10 +124,8 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     bob.send(Cmd::OpenDocumentAt(workspace.workspace_id, route.clone()))
         .unwrap();
     bob.send(Cmd::OpenRoute(route.clone())).unwrap();
-    let message = say(
-        &mut automerge::AutoCommit::new(),
-        "a message from Bob's page",
-    );
+    let mut conversation = automerge::AutoCommit::new();
+    let message = say(&mut conversation, bob_root_key, "a message from Bob's page");
     bob.write(route.clone(), &message).unwrap();
 
     // The host admits the page when it asks, and the desktop opens what the
@@ -139,8 +137,10 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     );
 
     // The desktop writes back, sealed the same way; the page reads it live.
+    // Alice answers in the conversation Bob started.
     let frame = say(
-        &mut automerge::AutoCommit::new(),
+        &mut conversation.fork(),
+        alice_root_key,
         "and one back from Alice's desktop",
     )
     .encode()

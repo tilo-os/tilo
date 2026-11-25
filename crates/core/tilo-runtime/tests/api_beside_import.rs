@@ -55,6 +55,9 @@ struct Counted;
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Counted {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if event.metadata().target() != "tilo_mcp::timing" {
+            return;
+        }
         #[derive(Default)]
         struct Message {
             text: Option<String>,
@@ -83,17 +86,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Counted {
 fn count() {
     static TRACED: std::sync::Once = std::sync::Once::new();
     TRACED.call_once(|| {
-        use tracing_subscriber::layer::SubscriberExt as _;
-        use tracing_subscriber::{Layer as _, util::SubscriberInitExt as _};
-        tracing_subscriber::registry()
-            .with(
-                Counted.with_filter(
-                    tracing_subscriber::filter::Targets::new()
-                        .with_target("tilo_mcp::timing", tracing::Level::DEBUG),
-                ),
-            )
-            .try_init()
-            .expect("the asks are counted: nothing else in this process traces");
+        host::also_trace(Box::new(Counted));
     });
 }
 

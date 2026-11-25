@@ -93,7 +93,7 @@ impl OutlineNode {
 /// outline leaves out.
 #[must_use]
 pub fn outline(view: &dyn Widget) -> Outline {
-    let _outlining = tilo_resource::profiling::Phase::start("ui.semantic_outline");
+    let _outlining = tilo_resource_plain::profiling::Phase::start("ui.semantic_outline");
     let mut walk = Walk {
         nodes: 0,
         omitted: 0,

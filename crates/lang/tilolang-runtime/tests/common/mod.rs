@@ -213,7 +213,11 @@ pub fn meta(mut v: Json) -> Meta {
 
 fn fill(v: &mut Json) {
     let obj = v.as_object_mut().unwrap();
-    for (key, default) in [("title", json!("")), ("module_hash", json!(""))] {
+    for (key, default) in [
+        ("title", json!("")),
+        ("module_hash", json!("")),
+        ("std", json!(tilolang::stdlib::digest())),
+    ] {
         obj.entry(key).or_insert(default);
     }
     for list in ["types", "actions", "views", "fns"] {

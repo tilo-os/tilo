@@ -63,21 +63,26 @@ runtime_package() {
   archive=/target/windows/x86_64/gstreamer/gstreamer-runtime-x86_64.tar.zst
   (cd "$(dirname -- "$archive")" && sha256sum --check --strict --quiet "$(basename -- "$archive").sha256")
   zstd -dc --quiet "$archive" | tar -xf - -C "$closure"
-  # The tools that seal and pack it, for this machine.
+  # The tools that seal and pack it, and compile the standard library it carries, for this
+  # machine: the library is wasm, the same for every device.
   cargo build --locked --release -p tilo-runtime-bundle --bin tilo-runtime-bundle \
-    -p tilo-app-package-cli --bin tilo-app-package
+    -p tilo-app-package-cli --bin tilo-app-package -p tilolang --bin tilolang-std
   tools="${CARGO_TARGET_DIR:-target}/release"
   identity="${TILO_RUNTIME_PACKAGE_IDENTITY:-$work/runtime-identity.json}"
   [ -f "$identity" ] || "$tools/tilo-runtime-bundle" key generate --out "$identity"
   # shellcheck source=/dev/null
   . tools/apps/tilolang_packages.sh
   version="$(tilolang_runtime_version "$PWD")"
+  local digest
+  digest="$("$tools/tilolang-std" crates/lang/tilolang/std --out "$work/tilo.std.wasm")"
+  [ "${version##*+tilolang.}" = "$digest" ] \
+    || { printf 'the runtime %s is keyed by another standard library (%s)\n' "$version" "$digest" >&2; exit 1; }
   local binaries=(--include-bin "$binary")
   for dll in "$closure"/bin/*.dll; do binaries+=(--include-bin "$dll"); done
   "$tools/tilo-runtime-bundle" build --binaries-only --version "$version" --arch x86_64 \
     --out "$work/bundle" --identity "$identity" "${binaries[@]}" \
     --include "$closure/lib/gstreamer-1.0" --include "$closure/libexec" \
-    --include "$closure/licenses" >/dev/null
+    --include "$closure/licenses" --include "$work/tilo.std.wasm" >/dev/null
   # What it carries of GStreamer is the reviewed closure, byte for byte: no GPL code, no encoder.
   python3 -I "$here/gstreamer_runtime.py" audit "$work/bundle" \
     /target/windows/x86_64/gstreamer/gstreamer-runtime-x86_64.json

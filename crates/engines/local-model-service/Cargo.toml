@@ -114,6 +114,8 @@ settings-store = { package = "tilo-settings-store", path = "../../desktop/settin
 wasmi = { version = "=1.1.0", default-features = false, features = ["std", "simd"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
+# The terminal client's tests answer through an action provider.
+tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 
 [lints]
 workspace = true

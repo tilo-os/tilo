@@ -49,6 +49,7 @@ imports! {
     StrSlice = "str_slice" ([H, I64, I64] -> [H]);
     StrReplace = "str_replace" ([H, H, H] -> [H]);
     StrUrlEncode = "str_url_encode" ([H] -> [H]);
+    StrUrlDecode = "str_url_decode" ([H] -> [H]);
     StrTrim = "str_trim" ([H] -> [H]);
     StrLower = "str_lower" ([H] -> [H]);
     StrUpper = "str_upper" ([H] -> [H]);

@@ -1440,9 +1440,8 @@ impl Host {
     /// being loaded here, as it does when the workspace compiles a built-in one.
     pub fn load_builtin(&self, source: &str, ids: &str) -> Result<Package, HostError> {
         let lock = IdsLock::parse(ids).map_err(|error| HostError::Compile(error.to_string()))?;
-        let named =
+        let mut imports =
             crate::platform_apps::named_platform_packages(source).map_err(HostError::Compile)?;
-        let mut imports = named.clone();
         imports.extend(
             self.inner
                 .packages
@@ -1460,20 +1459,7 @@ impl Host {
                         .join("\n"),
                 )
             })?;
-        let package = self.load_compiled(&compiled)?;
-        // The platform apps the package names are described here too, without their code: their
-        // types make the references the package writes real (`workspace.members`), and what a
-        // view reads of them comes from the readings this host serves. An app this host runs
-        // already (the workspace's own service) keeps its package.
-        for meta in named {
-            if meta.app != package.meta.app
-                && self.package(&meta.app).is_none()
-                && let Err(error) = self.inner.runtime.load_foreign(meta)
-            {
-                tracing::warn!(%error, "a platform package the app names is not described here");
-            }
-        }
-        Ok(package)
+        self.load_compiled(&compiled)
     }
 
     /// Load a compiled package and trust it (a built-in package, or the package being developed).
@@ -1583,7 +1569,18 @@ impl Host {
             self.viewer(),
             crate::members::kind_nodes(self),
         );
+        self.describe_platform_apps(&package.meta);
         Ok(Package::clone(&package))
+    }
+
+    /// Describe, in this host's runtime, the platform apps `meta` names without their code: their
+    /// types make the references the package writes real (`workspace.members`), and what a view
+    /// reads of them comes from the readings this host serves. A package is compiled against the
+    /// apps its `use`s name, so every package loaded here — compiled from source, from a module,
+    /// or in a bundle — declares the same descriptions, through this one path. An app this host
+    /// runs already keeps its package.
+    fn describe_platform_apps(&self, meta: &Meta) {
+        crate::platform_apps::load(self, &meta.uses);
     }
 
     /// Load the package of an app this host does not run, trusted: its views draw resources of
@@ -1605,6 +1602,7 @@ impl Host {
             .runtime
             .load_foreign_package(wasm, meta.clone())?;
         self.inner.authority.load(&id, &meta);
+        self.describe_platform_apps(&meta);
         Ok(())
     }
 

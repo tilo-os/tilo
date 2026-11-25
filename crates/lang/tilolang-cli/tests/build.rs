@@ -20,7 +20,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
         search: Vec::new(),
         out: scratch.path().join("out"),
         tilo_runtime: "tilo-runtime/2026.07".into(),
-        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        tilolang_runtime: package::default_tilolang_runtime(),
         version: "0.1.0".into(),
         locked: false,
     };
@@ -47,7 +47,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
         let entrypoint = manifest.entrypoint.as_ref().unwrap();
         assert_eq!(
             entrypoint.runtime.as_deref(),
-            Some(package::DEFAULT_TILOLANG_RUNTIME),
+            Some(package::default_tilolang_runtime().as_str()),
             "it runs on the tilolang runtime bundle"
         );
         assert_eq!(entrypoint.bin, Path::new(package::RUNTIME_BIN));
@@ -103,7 +103,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     );
     let installed = today_reads_notes(today, notes);
     declared_actions(&apps, &today_manifest);
-    every_payload_carries_the_standard_library(&apps, &installed);
+    no_payload_carries_the_standard_library(&apps, &installed);
 }
 
 /// The kinds of file an app's actions open (`opens:`) are what its manifest offers, so Files and
@@ -122,7 +122,7 @@ fn a_package_offers_the_files_its_actions_open() {
         search: Vec::new(),
         out: scratch.path().join("out"),
         tilo_runtime: "tilo-runtime/2026.07".into(),
-        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        tilolang_runtime: package::default_tilolang_runtime(),
         version: "0.1.0".into(),
         locked: false,
     };
@@ -213,36 +213,39 @@ fn declared_actions(apps: &[package::BuiltApp], today: &Manifest) {
     );
 }
 
-/// Every app compiles with the standard library and carries it: the package its declarations belong
-/// to is loaded wherever its code runs. Its views are the app's, expanded where it calls them, so
-/// what its module carries is their text and its functions' code.
-fn every_payload_carries_the_standard_library(
+/// Every app compiles with the standard library and carries none of it: it records the library it
+/// was built with, and names the runtime keyed by that library, which brings it. Its views are the
+/// app's, expanded where it calls them, and its functions are code the runtime's copy carries.
+fn no_payload_carries_the_standard_library(
     apps: &[package::BuiltApp],
     installed: &tilolang_tilo::bundle::Bundle,
 ) {
+    let runtime = tilolang_tilo::runtime_of(tilolang::stdlib::digest());
     for app in apps {
         assert!(
-            app.payload.join("imports/tilo.std.wasm").is_file(),
-            "{} carries the standard library",
+            !app.payload.join("imports/tilo.std.wasm").exists(),
+            "{} leaves the standard library to its runtime",
+            app.app
+        );
+        let manifest =
+            Manifest::from_toml_str(&std::fs::read_to_string(&app.manifest).unwrap()).unwrap();
+        assert_eq!(
+            manifest
+                .entrypoint
+                .as_ref()
+                .and_then(|entrypoint| entrypoint.runtime.as_deref()),
+            Some(runtime.as_str()),
+            "{} runs on the runtime of the library it was built with",
             app.app
         );
     }
-    let library = installed
-        .imports
-        .iter()
-        .find(|import| import.meta.app == "tilo.std")
-        .unwrap_or_else(|| panic!("Today carries the library: {:?}", installed.imports.len()));
+    assert_eq!(installed.meta.std, tilolang::stdlib::digest());
     assert!(
-        library.meta.views.is_empty(),
-        "the library shows nothing itself"
-    );
-    // A view of it expands into the app's, so only its text travels beside the metadata; its
-    // functions are code the app calls, and its module carries that and nothing else.
-    let lines = tilolang::meta::lines_from_wasm(&library.wasm);
-    assert_eq!(
-        lines.len(),
-        library.meta.fns.len(),
-        "the library's module carries its functions and no other code: {lines:?}"
+        installed
+            .imports
+            .iter()
+            .all(|import| import.meta.app != tilolang::stdlib::APP),
+        "Today carries no library"
     );
 }
 
@@ -280,7 +283,7 @@ fn a_package_that_uses_the_platforms_apps_builds() {
         search: Vec::new(),
         out: scratch.path().join("out"),
         tilo_runtime: "tilo-runtime/2026.07".into(),
-        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        tilolang_runtime: package::default_tilolang_runtime(),
         version: "0.1.0".into(),
         locked: false,
     };
@@ -377,7 +380,7 @@ fn the_splash_budget_a_header_declares_is_the_manifests_entrypoint_budget() {
             search: Vec::new(),
             out: scratch.path().join("out"),
             tilo_runtime: "tilo-runtime/2026.07".into(),
-            tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+            tilolang_runtime: package::default_tilolang_runtime(),
             version: "0.1.0".into(),
             locked: false,
         };
@@ -626,7 +629,7 @@ fn an_app_that_claims_a_uri_scheme_declares_it_in_its_manifest() {
         search: Vec::new(),
         out: scratch.path().join("out"),
         tilo_runtime: "tilo-runtime/2026.07".into(),
-        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        tilolang_runtime: package::default_tilolang_runtime(),
         version: "0.1.0".into(),
         locked: false,
     };
@@ -794,7 +797,7 @@ fn a_package_that_carries_a_program_ships_it_beside_its_module() {
         search: Vec::new(),
         out: scratch.path().join("out"),
         tilo_runtime: "tilo-runtime/2026.07".into(),
-        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        tilolang_runtime: package::default_tilolang_runtime(),
         version: "0.1.0".into(),
         locked: false,
     };
@@ -815,7 +818,10 @@ fn a_package_that_carries_a_program_ships_it_beside_its_module() {
         entrypoint.connection,
         "the program is the app's held connection"
     );
-    for runtime in ["bun/1.4.5+bun", package::DEFAULT_TILOLANG_RUNTIME] {
+    for runtime in [
+        "bun/1.4.5+bun",
+        package::default_tilolang_runtime().as_str(),
+    ] {
         assert!(
             manifest
                 .package
@@ -889,7 +895,7 @@ fn the_discord_bridge_packages_its_program_as_the_entrypoint() {
         search: vec![source.clone(), packages()],
         out: scratch.path().join("out"),
         tilo_runtime: "tilo-runtime/2026.07".into(),
-        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        tilolang_runtime: package::default_tilolang_runtime(),
         version: "0.1.0".into(),
         locked: false,
     };

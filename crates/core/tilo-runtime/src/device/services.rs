@@ -206,7 +206,7 @@ impl Daemon {
                 super::local::hand_to_connector(
                     &daemon,
                     connector,
-                    crate::seats::AppAt {
+                    &crate::seats::AppAt {
                         app: app.to_owned(),
                         workspace: workspace.to_owned(),
                         pid,
@@ -261,7 +261,9 @@ impl Daemon {
                     serde_json::Value::Object(serde_json::Map::new()),
                 ),
             };
-            let until = tilo_clock::now() + JOIN_WAIT;
+            let until = tilo_clock::now()
+                .checked_add(JOIN_WAIT)
+                .ok_or("the join's wait reaches past what this clock holds")?;
             let receipt = tilo_actions::remote::ActionProvider::invoke(&tree, &caller, request)
                 .wait_timeout(JOIN_WAIT)
                 .ok()
@@ -2974,6 +2976,14 @@ fn record_services(
         .workspaces
         .content_shelf()
         .map(tilo_workspace_service::content::shelf_puts);
+    // A `files#open` given content puts the files into the workspace's own folder, where this
+    // device holds its tree.
+    services.files_open = parts.workspaces.content_shelf().map(|shelf| {
+        Arc::new(tilo_workspace_service::files::OpenedFiles::new(
+            parts.workspaces.copies().clone(),
+            shelf,
+        )) as Arc<dyn tilo_workspace_service::apps::services::FilesTreePuts>
+    });
     // Who is present on which device, as this device's workspaces hear it: their links, and
     // the agent sessions this daemon serves.
     services.present_devices = Some(Arc::new(parts.workspaces.copies().clone())
@@ -4401,6 +4411,67 @@ pub struct RuntimeActionProvider {
     handed: Option<crate::seats::Hand>,
 }
 
+impl RuntimeActionProvider {
+    /// Resolves on the next write landing in a document this device's service holds, from
+    /// whichever device or app it came, or once a provider has waited as long as any may.
+    fn next_write(
+        &self,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        let mut writes = self.workspaces.copies().document_writes();
+        let (landed, wait) = tilo_actions::remote::pending();
+        drop(tilo_rt::app().handle().spawn(async move {
+            tokio::select! {
+                // A write, writes missed or the service closing: each is something to read again.
+                _ = writes.recv() => landed.complete(Ok(())),
+                // As long as any provider holds a waiting answer: the watch reads again, and
+                // asks again, rather than being told its wait was never answered.
+                () = tokio::time::sleep(tilo_actions::remote::MAX_REMOTE_WAIT) => {
+                    landed.complete(Ok(()));
+                }
+                // Nobody waits for it any more.
+                () = landed.abandoned() => {}
+            }
+        }));
+        wait
+    }
+}
+
+/// The device's feed of its workspaces' changes, read by the callers [`RuntimeActionProvider`]
+/// admits as their person: the person's own calls. An agent's run reads what its rules let it
+/// read, which a change of a whole record does not say, so it is refused.
+struct DeviceChanges(RuntimeActionProvider);
+
+impl tilo_actions::remote::ChangeFeed for DeviceChanges {
+    fn since(
+        &self,
+        caller: &Caller,
+        after: Option<&str>,
+    ) -> Pending<Result<tilo_actions::remote::ChangePage, ActionCallError>> {
+        let provider = &self.0;
+        let admitted = match &provider.session {
+            Some(session) => {
+                session.agent.is_none() && session.check(caller, &provider.workspaces).is_ok()
+            }
+            None => provider.admitted(caller),
+        };
+        if !admitted {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
+        // Read on the service's runtime, awaited there: the frame that asked never waits on a
+        // thread for the documents it reads.
+        let (feed, reads) = provider.workspaces.change_feed();
+        let (caller, after) = (caller.clone(), after.map(str::to_owned));
+        let (paged, page) = tilo_actions::remote::pending();
+        drop(tilo_rt::app().handle().spawn(async move {
+            let answer = feed
+                .page_of_service(&reads, &caller, after.as_deref())
+                .await;
+            paged.complete(answer);
+        }));
+        page
+    }
+}
+
 struct AdmittedRuntimeSession {
     policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
     provider: Arc<dyn ActionProvider + Send + Sync>,
@@ -5306,6 +5377,12 @@ impl RuntimeActionProvider {
 
 impl ActionProvider for RuntimeActionProvider {
     /// The device's one search index, read as the caller may read it.
+    /// What changed in the records of the workspace a caller works in, from the documents this
+    /// device holds: what a watch of the whole workspace reads.
+    fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
+        Some(Arc::new(DeviceChanges(self.clone())))
+    }
+
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
         self.workspaces
             .search()
@@ -5529,7 +5606,7 @@ impl ActionProvider for RuntimeActionProvider {
                 return Pending::ready(Err(ActionCallError::NotPermitted));
             };
             return super::shell_runtime::answer(
-                super::shell_runtime::Asked {
+                &super::shell_runtime::Asked {
                     workspaces: &self.workspaces,
                     dispatch: self.clone(),
                     person,
@@ -5679,6 +5756,16 @@ impl ActionProvider for RuntimeActionProvider {
             }
             self.broker.state().changed(&on_this_device(caller), scope)
         };
+        if matches!(scope, tilo_actions::remote::WatchScope::Records) {
+            // The records a watch reads are the documents this device's service holds
+            // ([`DeviceChanges`]): a write landing in any of them is news to it, whatever else
+            // the session follows.
+            let landed = self.next_write();
+            return Some(match followed {
+                Some(followed) => whichever_first(followed, landed),
+                None => landed,
+            });
+        }
         if !matches!(scope, tilo_actions::remote::WatchScope::Here) {
             return followed;
         }

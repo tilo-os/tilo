@@ -1088,21 +1088,30 @@ fn every_arranging_press_reaches_the_record_on_a_salted_device() {
         "the other place stayed in its own strip"
     );
 
-    // Close names its place too: only that place goes.
+    // Close names its place too: only that place goes. The shell keeps a window that left the
+    // layout in its reading while its frame flies back into its control, so the place close named
+    // is the one leaving, and the window it did not name reads live: once the departure has
+    // played, only the other one is there.
     invoke_as(
         &mut session,
         &place_resource(window),
         "close",
         &serde_json::json!({}),
     );
-    assert_eq!(
-        strip_of(&session, window),
-        None,
-        "close reached the place it named"
+    assert!(
+        place_of(&session, window).is_some_and(|place| place.leaving),
+        "close reached the place it named: it is the window on its way out"
     );
+    assert!(
+        place_of(&session, other).is_some_and(|place| !place.leaving),
+        "and closed no other place: the other window stands"
+    );
+    crate::common::wait_for(&mut session, "the closed place to go", |session| {
+        place_of(session, window).is_none().then_some(())
+    });
     assert_eq!(
         strip_of(&session, other),
         Some(other_strip),
-        "and closed no other place"
+        "the other place stayed in its own strip"
     );
 }

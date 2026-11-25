@@ -33,6 +33,10 @@ pub struct TabItemProps {
     pub item: Option<ResourceId>,
     /// What the pill says, from the resource's title.
     pub title: Option<String>,
+    /// What the tab itself is called, where the pill says its window's name instead: a window
+    /// named for its title and app (`Groceries — Notes`) whose tab is the one showing `Groceries`.
+    /// A reader hears the pill as its title, and a caller finds this tab here by its own name.
+    pub name: Option<String>,
     /// A glyph before the title, from the resource's type.
     pub icon: Option<Icon>,
     /// The frame is waiting for the person on this tab: a dot at the pill's
@@ -81,6 +85,7 @@ impl TabItemProps {
             attention: self.attention,
             named: false,
             app_name: None,
+            name: self.name.clone(),
         }
     }
 
@@ -91,6 +96,7 @@ impl TabItemProps {
             key: self.key.clone(),
             item: self.item.clone(),
             title: self.title.clone(),
+            name: self.name.clone(),
             icon: self.icon,
             attention: self.attention,
             modified: self.modified,
@@ -265,6 +271,7 @@ impl Tabs {
             || held.tabs.iter().zip(&props.tabs).any(|(a, b)| {
                 a.key != b.key
                     || a.title != b.title
+                    || a.name != b.name
                     || a.icon != b.icon
                     || a.attention != b.attention
                     || a.modified != b.modified

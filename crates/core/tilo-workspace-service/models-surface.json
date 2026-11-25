@@ -256,6 +256,62 @@
               "type": "text"
             }
           ]
+        },
+        {
+          "id": "search-hub-models",
+          "label": "Search Hugging Face for models this computer runs",
+          "kind": "read",
+          "params": [
+            {
+              "name": "query",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "format",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "show-hub-model",
+          "label": "Describe a Hugging Face model this computer runs",
+          "kind": "read",
+          "params": [
+            {
+              "name": "model",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "install-hub-model",
+          "label": "Download a Hugging Face model to this computer",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "repo",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "revision",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "variant",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "acceptLicense",
+              "required": false,
+              "type": "bool"
+            }
+          ]
         }
       ],
       "fields": [

@@ -1916,9 +1916,9 @@ fn write_signed_manifest(
             .package
             .required_runtimes
             .iter()
-            .any(|runtime| runtime == tilolang_tilo::RUNTIME)
+            .any(|runtime| *runtime == tilolang_tilo::runtime())
     {
-        manifest.package.required_runtimes = vec![tilolang_tilo::RUNTIME.to_owned()];
+        manifest.package.required_runtimes = vec![tilolang_tilo::runtime()];
     }
     // An app that names no Tilo runtime links none: its manifest is still its own, unsigned of a
     // build, and says nothing about a runtime it does not carry.

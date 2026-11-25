@@ -1144,6 +1144,7 @@ mod tests {
             key: key.to_owned(),
             item: Some(ResourceId(format!("@notes.Note:{key}"))),
             title: Some(title.to_owned()),
+            name: None,
             icon: None,
             attention: false,
             modified: false,

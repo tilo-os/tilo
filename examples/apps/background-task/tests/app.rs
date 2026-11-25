@@ -25,7 +25,7 @@ fn the_work_is_plain_testable_code() {
 
 #[test]
 fn the_limit_is_validated_and_durable() {
-    let mut search = Replica::<Search>::new();
+    let mut search = Replica::<Search>::new().in_app("so.tilo.model", "Model");
     assert!(search.apply(limit(1)).is_err());
     assert!(search.apply(limit(MAX_LIMIT + 1)).is_err());
 

@@ -34,21 +34,64 @@ pub const IDS: &str = include_str!("../std/app.ids");
 /// Where a checkout keeps the library's source, from its root.
 pub const IN_TREE: &str = "crates/lang/tilolang/std";
 
-/// The library's source this process compiles: its text, the ids it locks and the file it reads as.
+/// The library's source this process compiles: its text, the ids it locks, the file it reads as
+/// and its [`digest`].
 struct Source {
     text: String,
     ids: String,
     path: String,
+    digest: String,
+}
+
+impl Source {
+    fn new(text: String, ids: String, path: String) -> Self {
+        let digest = digest_of(&text, &ids);
+        Self {
+            text,
+            ids,
+            path,
+            digest,
+        }
+    }
 }
 
 static IN_USE: OnceLock<Source> = OnceLock::new();
 
 fn source() -> &'static Source {
-    IN_USE.get_or_init(|| Source {
-        text: SOURCE.to_owned(),
-        ids: IDS.to_owned(),
-        path: "std/app.tl".to_owned(),
-    })
+    IN_USE.get_or_init(packaged)
+}
+
+fn packaged() -> Source {
+    Source::new(SOURCE.to_owned(), IDS.to_owned(), "std/app.tl".to_owned())
+}
+
+/// How many hex digits of the SHA-256 a [`digest`] keeps.
+pub const DIGEST_LEN: usize = 16;
+
+/// The digest of a library whose source is `text` and whose ids lock is `ids`: the first
+/// [`DIGEST_LEN`] hex digits of the SHA-256 of the two, one after the other. It is taken over the
+/// source rather than the compiled module, so a script computes it from a checkout with
+/// `cat app.tl app.ids | sha256sum` and no compiler.
+#[must_use]
+pub fn digest_of(text: &str, ids: &str) -> String {
+    let mut bytes = Vec::with_capacity(text.len() + ids.len());
+    bytes.extend_from_slice(text.as_bytes());
+    bytes.extend_from_slice(ids.as_bytes());
+    let mut digest = crate::hash::sha256_hex(&bytes);
+    digest.truncate(DIGEST_LEN);
+    digest
+}
+
+/// The digest of the library this process compiles with ([`digest_of`]): what every package it
+/// compiles records ([`PackageMeta::std`]), and what keys the tilolang runtime that carries this
+/// library. Until a library is read from a checkout ([`load_from`]), the packaged copy's.
+#[must_use]
+pub fn digest() -> &'static str {
+    static PACKAGED: OnceLock<String> = OnceLock::new();
+    IN_USE.get().map_or_else(
+        || PACKAGED.get_or_init(|| digest_of(SOURCE, IDS)).as_str(),
+        |source| source.digest.as_str(),
+    )
 }
 
 /// The library the checkout at or above `dir` holds, if `dir` is in one.
@@ -72,8 +115,8 @@ pub fn load_from(dir: &Path) -> Result<(), String> {
     let text = read("app.tl")?;
     let ids = read("app.ids")?;
     let path = dir.join("app.tl").display().to_string();
-    let wanted = text.clone();
-    if IN_USE.set(Source { text, ids, path }).is_err() && source().text != wanted {
+    let wanted = digest_of(&text, &ids);
+    if IN_USE.set(Source::new(text, ids, path)).is_err() && source().digest != wanted {
         return Err(format!(
             "{}: the standard library was already read from {}",
             dir.display(),
@@ -238,6 +281,17 @@ mod tests {
             "the library's module carries its functions and the one view it draws: {lines:?}"
         );
         assert!(meta.app == APP, "the library compiles as its own package");
+        assert_eq!(
+            meta.std,
+            super::digest(),
+            "the library records itself as the library it was compiled with"
+        );
+        assert_eq!(super::digest().len(), super::DIGEST_LEN);
+        assert_ne!(
+            super::digest_of(&format!("{}\n", super::SOURCE), IDS),
+            super::digest(),
+            "an edit of the library is another library"
+        );
     }
 
     fn views(module: &crate::ast::Module) -> Vec<&crate::ast::ViewDecl> {

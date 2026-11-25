@@ -30,8 +30,9 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use tilo_desktop_search::SHOW_PEOPLE;
+use tilo_desktop_search::providers::AppEntry;
 use tilo_session::sync::{Client, Event, OwnPresence};
-use tilo_session::{AppActions, AppSocket, Launches, Lists, Options, Session};
+use tilo_session::{AppActions, AppLists, AppSocket, Launches, Lists, Options, Session};
 use tilo_session_core::desktop::verbs::{
     CHROME_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE,
 };
@@ -572,7 +573,7 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
     // How available a person is is said of them, and only of them: the one who is at their machine
     // is not told apart from the one who is away by their name alone.
     assert_eq!(
-        said.iter().filter(|word| *word == "Away").count(),
+        nodes_saying(&session, "Away"),
         1,
         "one of the two is away: {said:?}"
     );
@@ -592,8 +593,9 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
         session.step(Duration::from_millis(1)).expect("step");
     }
     let said = said_by_the_shell(&session);
-    assert!(
-        !said.iter().any(|word| word == "Away"),
+    assert_eq!(
+        nodes_saying(&session, "Away"),
+        0,
         "nobody is away now: {said:?}"
     );
 
@@ -819,7 +821,7 @@ fn assert_ada_card(session: &Session) {
         );
     }
     assert!(
-        !session.shell_says("People"),
+        !session.shell_says("People here now"),
         "the card stands in the roster's place: the roster is gone, {labels:?}"
     );
 }
@@ -881,6 +883,16 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
     let host = Rc::new(Host::default());
     let mut session = crate::common::headless(Options {
         apps: Some(host.clone() as Rc<dyn AppActions>),
+        // Chat stands on this device, as its lists name it: the card offers a conversation only
+        // where the app that holds one is here.
+        lists: Lists::fixed(AppLists {
+            applications: vec![AppEntry {
+                id: CHAT.to_owned(),
+                title: "Chat".to_owned(),
+                category: None,
+            }],
+            ..AppLists::default()
+        }),
         ..Options::default()
     });
 
@@ -890,7 +902,7 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
     // Who is here stands open, listing the people here.
     press_faces(&mut session);
     until(&mut session, "the roster lists who is here", |session| {
-        session.shell_says("People")
+        session.shell_says("People here now")
     });
     assert!(
         session.shell_control("Framework 16").is_none(),
@@ -969,14 +981,21 @@ fn a_persons_card_offers_everyone_here() {
         session.accessible_labels()
     );
     press_named(&mut session, "Back to everyone");
+    // The card leaves before what is read of the roster: the choice reaches the session's
+    // reading, and the shell draws the roster of it on a later frame.
     until(
         &mut session,
         "the roster stands in the card's place",
-        |session| session.shell_says("People"),
+        |session| session.shell_control("Back to everyone").is_none(),
     );
     assert!(
-        !session.shell_says("Who is here"),
+        session.shell_control("Back to everyone").is_none(),
         "the card gave way to the roster: {:?}",
+        session.accessible_labels()
+    );
+    assert!(
+        session.shell_says("People here now"),
+        "the roster stands in the card's place: {:?}",
         session.accessible_labels()
     );
     assert!(
@@ -1066,7 +1085,7 @@ fn own_card(presentation: fn() -> ui::application::ComponentRunnerInputs, captur
     shot(&mut session, capture);
 
     assert!(
-        session.shell_says("Who is here"),
+        session.shell_says("People"),
         "one card, the same surface another person's opens in: {:?}",
         session.accessible_labels()
     );
@@ -1589,6 +1608,24 @@ fn said_by_the_shell(session: &Session) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// How many things the shell publishes say `word` to assistive technology in its own window: a
+/// node counts once however many of its name, description and value say it, since one row may say
+/// what it is twice for different readers.
+fn nodes_saying(session: &Session, word: &str) -> usize {
+    session
+        .a11y_windows()
+        .into_iter()
+        .filter(|(_, name, _)| name == SHELL_WINDOW)
+        .flat_map(|(_, _, tree)| tree.nodes.into_iter())
+        .filter(|(_, node)| {
+            [node.label(), node.description(), node.value()]
+                .into_iter()
+                .flatten()
+                .any(|said| said == word)
+        })
+        .count()
 }
 
 /// How a screen reader is told of the news `words` name when the shell shows it: the live

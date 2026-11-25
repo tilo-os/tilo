@@ -40,7 +40,7 @@ use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{
-    admitted_to, commit_change, durable, enrol, enter_page, start_workspace_host_relaying,
+    admitted_to, durable, enrol, enter_page, person_of, set_field, start_workspace_host_relaying,
     wait_keyed,
 };
 use collab_types::WorkspaceId;
@@ -270,12 +270,14 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
     wait_keyed(&author, &chat).await;
     let mut history = automerge::AutoCommit::new();
     for message in 0..MESSAGES {
-        use automerge::transaction::Transactable as _;
         let before = history.get_heads();
-        history
-            .put(automerge::ROOT, format!("message-{message}"), "hello")
-            .unwrap();
-        commit_change(&mut history);
+        set_field(
+            &mut history,
+            person_of(&author),
+            "chat",
+            &format!("message-{message}"),
+            "hello",
+        );
         let post = if before.is_empty() {
             DocumentMutation::Snapshot(history.save())
         } else {

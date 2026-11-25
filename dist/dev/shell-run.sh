@@ -106,10 +106,11 @@ if ((build)) && [[ $profile == nested ]]; then
     say "building the nested profile (dist/dev/nested-session-build.sh)"
     TILO_NESTED_APPS="${rust_apps[*]}" "$repo_root/dist/dev/nested-session-build.sh"
 elif ((build)); then
-    say "building tilo-session, tilo-runtime, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
+    say "building tilo-session, tilo-runtime, tilolang, tilolang-std, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
     (cd "$repo_root" && cargo build --locked -p tilo-session --bin tilo-session \
         -p tilo-daemon --bin tilo-runtime \
-        -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control \
+        -p tilolang-cli --bin tilolang -p tilolang --bin tilolang-std \
+        -p tilo-control --bin tilo-control \
         -p launcher --bin tilo-launcher -p install --bin tilo-install \
         -p tilo-app-package-cli --bin tilo-app-package \
         -p nested-session-bus --bin nested-session-bus \
@@ -319,6 +320,7 @@ tilolang_version=$(tilolang_runtime_version "$repo_root") \
     || die "cannot read the tilolang runtime version"
 say "baking the tilolang runtime bundle $tilolang_version"
 tilolang_bake_runtime "$bin/tilo-runtime-bundle" "$tilolang_bin" \
+    "$bin/tilolang-std" "$repo_root" \
     "$identity" "$runtimes/$tilolang_version" "$tilolang_version" \
     || die "could not bake the tilolang runtime bundle"
 tilolang_runtime=tilolang/$tilolang_version

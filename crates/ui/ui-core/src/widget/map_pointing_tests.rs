@@ -764,3 +764,129 @@ fn the_camera_reports_where_the_person_left_it_when_it_comes_to_rest() {
         "one notch of a wheel over Munich stays over Munich: {floats:?}"
     );
 }
+
+/// A map of the world laid out for the person, looking with `camera`, reporting the place a
+/// click lands on.
+fn world_harness(queue: &crate::Intents<Fired>, camera: MapCamera) -> Driver {
+    let mut map = pointing_map(queue, camera);
+    map.world = true;
+    map.at = Event::View(Intent::new(queue, CANVAS, "at"));
+    laid_out(map)
+}
+
+fn map_camera(host: &mut Driver) -> MapCamera {
+    host.root_widget_mut()
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<Map>())
+        .expect("the root is the map")
+        .camera()
+}
+
+/// A wheel over a map of the world zooms the map about the pointer, keeping the place under the
+/// pointer where it is: a map is read by zooming, not scrolled.
+#[test]
+fn a_wheel_over_a_map_of_the_world_zooms_about_the_pointer() {
+    let queue = crate::Intents::default();
+    let camera = MapCamera {
+        origin: Point::new(100.0, 50.0),
+        zoom: 0.02,
+    };
+    let mut host = world_harness(&queue, camera);
+    let at = Point::new(500.0, 200.0);
+    let device = winit::event::DeviceId::dummy();
+    host.dispatch_to_root(&WindowEvent::CursorMoved {
+        device_id: device,
+        position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+    });
+    host.dispatch_to_root(&WindowEvent::MouseWheel {
+        device_id: device,
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+        phase: winit::event::TouchPhase::Moved,
+    });
+    let after = map_camera(&mut host);
+    assert!(
+        after.zoom > camera.zoom * 1.05,
+        "the wheel zoomed the map in: {after:?}"
+    );
+    let held = camera.to_canvas(Point::ORIGIN, at);
+    let still = after.to_canvas(Point::ORIGIN, at);
+    assert!(
+        (held - still).hypot() < 0.5,
+        "the place under the pointer stayed where it was: {held:?} then {still:?}"
+    );
+    assert_eq!(reported(&queue), Vec::new(), "zooming points at nothing");
+}
+
+/// Dragging a map of the world pans it: the map moves under the hand, and a drag is never a
+/// rectangle the person pointed with.
+#[test]
+fn dragging_a_map_of_the_world_pans_it() {
+    let queue = crate::Intents::default();
+    let camera = MapCamera {
+        origin: Point::new(20.0, 30.0),
+        zoom: 0.05,
+    };
+    let mut host = world_harness(&queue, camera);
+    let device = winit::event::DeviceId::dummy();
+    let from = Point::new(300.0, 200.0);
+    let to = Point::new(460.0, 280.0);
+    host.dispatch_to_root(&WindowEvent::CursorMoved {
+        device_id: device,
+        position: winit::dpi::PhysicalPosition::new(from.x, from.y),
+    });
+    host.dispatch_to_root(&WindowEvent::MouseInput {
+        device_id: device,
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    });
+    host.dispatch_to_root(&WindowEvent::CursorMoved {
+        device_id: device,
+        position: winit::dpi::PhysicalPosition::new(to.x, to.y),
+    });
+    host.dispatch_to_root(&WindowEvent::MouseInput {
+        device_id: device,
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    });
+    let after = map_camera(&mut host);
+    let travelled = to - from;
+    let expected = camera.origin - travelled / camera.zoom;
+    assert!(
+        (after.origin - expected).hypot() < 0.5,
+        "the map followed the hand: {:?} for {:?}",
+        after.origin,
+        expected
+    );
+    assert_eq!(after.zoom, camera.zoom, "a drag does not zoom the map");
+    assert_eq!(
+        reported(&queue),
+        Vec::new(),
+        "a drag across a map of the world points at nothing"
+    );
+}
+
+/// A click on a map of the world — a press let go where it landed — reports the place under it,
+/// so the view can open what stands there.
+#[test]
+fn a_click_on_a_map_of_the_world_reports_the_place_under_it() {
+    let queue = crate::Intents::default();
+    let zoom = 0.05;
+    let centre = mercator_project(48.1374, 11.5755);
+    let origin = centre - Vec2::new(400.0, 300.0) / zoom;
+    let mut map = pointing_map(&queue, MapCamera { origin, zoom });
+    map.world = true;
+    map.focus = Some((48.1374, 11.5755));
+    map.at = Event::View(Intent::new(&queue, CANVAS, "at"));
+    let mut host = laid_out(map);
+    host.click_at(400.0, 300.0);
+    let fired = reported(&queue);
+    let Some(Value::List(at)) = fired.first().and_then(|fired| fired.value.as_ref()) else {
+        panic!("the click reported no place: {fired:?}");
+    };
+    let near =
+        |value: &Value, want: f64| matches!(value, Value::Float(v) if (v - want).abs() < 0.001);
+    assert!(
+        near(&at[0], 48.1374) && near(&at[1], 11.5755),
+        "the click reported the place it landed on, in degrees: {at:?}"
+    );
+}

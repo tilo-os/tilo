@@ -132,7 +132,9 @@ mod cases {
                             .into();
                     }
                     InvokeOutcome::Done(_) => return outcome,
-                    other => panic!("{event} of {key} came to {other:?}"),
+                    other @ InvokeOutcome::Denied => {
+                        panic!("{event} of {key} came to {other:?}")
+                    }
                 }
             }
         }

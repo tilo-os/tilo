@@ -150,7 +150,8 @@ pub struct VerifiedInstance {
     pub app_runtime: String,
     /// The identity of the publisher whose key signed the package: the author whose host runs it.
     pub publisher: [u8; 32],
-    /// Its module, from the verified payload.
+    /// Its module, from the verified payload, with the standard library of its tilolang runtime
+    /// when that runtime is installed here.
     pub module: runtime_portal::process_link::Module,
 }
 
@@ -180,7 +181,13 @@ pub fn verified_instance(
         .map(str::to_owned)
         .ok_or_else(not_tilolang)?;
     let app_runtime = manifest.runtime.clone().ok_or_else(not_tilolang)?;
-    let module = runtime_portal::process_link::Module::read(payload_root)?;
+    let mut module = runtime_portal::process_link::Module::read(payload_root)?;
+    // The standard library is the runtime's, never the package's: a runtime that is not
+    // installed here leaves the module without it, and the instance does not run here
+    // ([`VerifiedInstance::runs_here`]).
+    if let Some(std) = super::runtime_std(&runtime)? {
+        module = module.with_std(std);
+    }
     Ok(VerifiedInstance {
         runtime,
         app_runtime,

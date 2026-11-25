@@ -2,18 +2,24 @@
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 use super::native_runner;
 use super::{
-    AccessibilityRuntime, ActionRuntime, App, AppConstructionInputs, Cell, CollaborationManager,
-    CollaborationRuntime, ContinuationRuntime, FloatingRuntime, HistoryRuntime, InputRuntime,
-    Instant, LayoutRuntime, NodeId, PaletteSource, PermissionContext, PresenceCtx, PresenceRuntime,
-    State, TextRenderer, Theme, Widget, WindowRuntime,
+    AccessibilityRuntime, ActionRuntime, App, AppConstructionInputs, Cell, FloatingRuntime,
+    InputRuntime, Instant, LayoutRuntime, NodeId, PaletteSource, PresenceCtx, State, TextRenderer,
+    Theme, Widget, WindowRuntime,
+};
+#[cfg(feature = "model")]
+use super::{
+    CollaborationManager, CollaborationRuntime, ContinuationRuntime, HistoryRuntime,
+    PermissionContext, PresenceRuntime,
 };
 use crate::semantic_document_read::retirement::RootRetirementPrelude;
 
+#[cfg(feature = "model")]
 pub(super) struct ComponentAssemblyOwnership {
     pub component: Option<crate::application::AppComponent>,
     pub scope: Option<crate::wake::WakeScope>,
     pub retirement: Option<RootRetirementPrelude>,
 }
+#[cfg(feature = "model")]
 impl Drop for ComponentAssemblyOwnership {
     fn drop(&mut self) {
         if let Some(retirement) = &self.retirement {
@@ -62,18 +68,22 @@ impl Drop for AppAssemblyOwnership {
 pub(super) struct AppAssemblyValues {
     #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
     pub startup_renderer: Option<Option<native_runner::startup::RendererPreparation>>,
+    #[cfg(feature = "model")]
     pub history: Option<Option<crate::history_mode::host::HistoryChrome>>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(all(any(test, feature = "test-support"), feature = "model"))]
     pub controlled_installed_history_definition:
         Option<Option<&'static crate::history_mode::HistoryDefinition>>,
     pub framework_input: Option<std::rc::Rc<Cell<bool>>>,
+    #[cfg(feature = "model")]
     pub history_key_release: Option<bool>,
+    #[cfg(feature = "model")]
     pub history_focus: Option<Option<crate::widget::layout::CompositionFocus>>,
     pub text_renderer: Option<TextRenderer>,
     pub palette_source: Option<PaletteSource>,
     pub watch_system_settings: Option<bool>,
     pub layout: Option<LayoutRuntime>,
     pub bindings: Option<crate::bound_dispatch::BoundNodeMap>,
+    #[cfg(feature = "model")]
     pub component_close_reports: Option<Vec<crate::application::ComponentCloseReport>>,
     pub close_admission: Option<crate::close_admission::Admission>,
     pub report_pointing: Option<Option<super::report_point::Pointing>>,
@@ -89,25 +99,34 @@ pub(super) struct AppAssemblyValues {
     pub theme_store_stamp: Option<Option<crate::settings_source::SettingsStamp>>,
     pub last_theme_store_check: Option<Instant>,
     pub input: Option<InputRuntime>,
+    #[cfg(feature = "model")]
     pub focus_history: Option<HistoryRuntime>,
+    #[cfg(feature = "model")]
     pub collaboration: Option<CollaborationRuntime>,
+    #[cfg(feature = "model")]
     pub action_publication_failure: Option<Option<String>>,
     pub presence_ctx: Option<PresenceCtx>,
+    #[cfg(feature = "model")]
     pub permission_ctx: Option<PermissionContext>,
+    #[cfg(feature = "model")]
     pub presence: Option<PresenceRuntime>,
     pub accessibility: Option<Box<AccessibilityRuntime>>,
     pub window: Option<WindowRuntime>,
+    #[cfg(feature = "model")]
     pub document_routes: Option<crate::history_mode::routes::OwnerDocumentRoutes>,
+    #[cfg(feature = "model")]
     pub committed_documents: Option<
         Vec<(
             crate::collaboration::RouteSpec,
             crate::collaboration::CommittedDocument,
         )>,
     >,
+    #[cfg(feature = "model")]
     pub autosave_generation: Option<u64>,
     pub actions: Option<Box<ActionRuntime>>,
     pub search_presented: Option<bool>,
     pub native_document_chrome: Option<bool>,
+    #[cfg(feature = "model")]
     pub continuation: Option<ContinuationRuntime>,
     pub profiler: Option<Option<crate::profiling::FrameProfiler>>,
     pub native_input_probe: Option<Option<Box<dyn Fn() -> serde_json::Value>>>,
@@ -163,20 +182,12 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     {
         assembly.values.startup_renderer = Some(None);
     }
-    assembly.values.history = Some(None);
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        assembly.values.controlled_installed_history_definition = Some(None);
-    }
     assembly.values.framework_input = Some(std::rc::Rc::new(Cell::new(false)));
-    assembly.values.history_key_release = Some(false);
-    assembly.values.history_focus = Some(None);
     assembly.values.text_renderer = Some(inputs.text_renderer.resolve_in_place());
     assembly.values.palette_source = Some(inputs.palette_source);
     assembly.values.watch_system_settings = Some(inputs.watch_system_settings);
     assembly.values.layout = Some(LayoutRuntime::new());
     assembly.values.bindings = Some(crate::bound_dispatch::BoundNodeMap::new());
-    assembly.values.component_close_reports = Some(vec![]);
     assembly.values.close_admission = Some(crate::close_admission::Admission::default());
     assembly.values.report_pointing = Some(None);
     assembly.values.window_box = Some(crate::widget::context_menu::ContextMenu::new());
@@ -191,16 +202,8 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     assembly.values.theme_store_stamp = Some((inputs.theme_store_stamp)());
     assembly.values.last_theme_store_check = Some(crate::time::now());
     assembly.values.input = Some(InputRuntime::new());
-    assembly.values.focus_history = Some(HistoryRuntime::new());
     let local_author = inputs.local_author.resolve_in_place();
-    assembly.values.collaboration = Some(CollaborationRuntime::new(
-        std::mem::replace(&mut inputs.collab_manager, CollaborationManager::disabled()),
-        local_author,
-    ));
-    assembly.values.action_publication_failure = Some(None);
     assembly.values.presence_ctx = Some(inputs.presence_ctx.resolve_in_place());
-    assembly.values.permission_ctx = Some(PermissionContext::permissive());
-    assembly.values.presence = Some(PresenceRuntime::new());
     assembly.screen_reader = Some((inputs.screen_reader)());
     let (Some(accessibility_theme), Some(screen_reader)) = (
         assembly.configured_theme.take(),
@@ -214,20 +217,45 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         screen_reader,
     )));
     assembly.values.window = Some(WindowRuntime::new());
-    assembly.values.document_routes =
-        Some(crate::history_mode::routes::OwnerDocumentRoutes::default());
-    assembly.values.committed_documents = Some(Vec::new());
-    assembly.values.autosave_generation = Some(0);
     assembly.values.actions = Some(Box::new(ActionRuntime::new()));
     assembly.values.search_presented = Some(false);
     assembly.values.native_document_chrome = Some(true);
+    // What Tilo's model keeps of the window: its History, sync, presence and
+    // continuation.
+    #[cfg(feature = "model")]
+    {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            assembly.values.controlled_installed_history_definition = Some(None);
+        }
+        assembly.values.history = Some(None);
+        assembly.values.history_key_release = Some(false);
+        assembly.values.history_focus = Some(None);
+        assembly.values.component_close_reports = Some(vec![]);
+        assembly.values.focus_history = Some(HistoryRuntime::new());
+        assembly.values.collaboration = Some(CollaborationRuntime::new(
+            std::mem::replace(&mut inputs.collab_manager, CollaborationManager::disabled()),
+            inputs.delivery,
+            &local_author,
+        ));
+        assembly.values.action_publication_failure = Some(None);
+        assembly.values.permission_ctx = Some(PermissionContext::permissive());
+        assembly.values.presence = Some(PresenceRuntime::new());
+        assembly.values.document_routes =
+            Some(crate::history_mode::routes::OwnerDocumentRoutes::default());
+        assembly.values.committed_documents = Some(Vec::new());
+        assembly.values.autosave_generation = Some(0);
+    }
     let Some(inputs) = assembly.inputs.as_ref() else {
         assembly.retire();
         unreachable!("App assembly owns its inputs");
     };
-    assembly.values.continuation = Some(ContinuationRuntime::new((inputs
-        .pending_continuation_restore)(
-    )));
+    #[cfg(feature = "model")]
+    {
+        assembly.values.continuation = Some(ContinuationRuntime::new((inputs
+            .pending_continuation_restore)(
+        )));
+    }
     assembly.values.profiler = Some((inputs.profiler)());
     assembly.values.native_input_probe = Some(None);
     let floating = (inputs.floating_surface_client)();
@@ -241,18 +269,23 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     let AppAssemblyValues {
         #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
             startup_renderer: Some(startup_renderer),
-        history: Some(history),
+        #[cfg(feature = "model")]
+            history: Some(history),
         #[cfg(any(test, feature = "test-support"))]
+        #[cfg(feature = "model")]
             controlled_installed_history_definition: Some(controlled_installed_history_definition),
         framework_input: Some(framework_input),
-        history_key_release: Some(history_key_release),
-        history_focus: Some(history_focus),
+        #[cfg(feature = "model")]
+            history_key_release: Some(history_key_release),
+        #[cfg(feature = "model")]
+            history_focus: Some(history_focus),
         text_renderer: Some(text_renderer),
         palette_source: Some(palette_source),
         watch_system_settings: Some(watch_system_settings),
         layout: Some(layout),
         bindings: Some(bindings),
-        component_close_reports: Some(component_close_reports),
+        #[cfg(feature = "model")]
+            component_close_reports: Some(component_close_reports),
         close_admission: Some(close_admission),
         report_pointing: Some(report_pointing),
         window_box: Some(window_box),
@@ -267,21 +300,30 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         theme_store_stamp: Some(theme_store_stamp),
         last_theme_store_check: Some(last_theme_store_check),
         input: Some(input),
-        focus_history: Some(focus_history),
-        collaboration: Some(collaboration),
-        action_publication_failure: Some(action_publication_failure),
+        #[cfg(feature = "model")]
+            focus_history: Some(focus_history),
+        #[cfg(feature = "model")]
+            collaboration: Some(collaboration),
+        #[cfg(feature = "model")]
+            action_publication_failure: Some(action_publication_failure),
         presence_ctx: Some(presence_ctx),
-        permission_ctx: Some(permission_ctx),
-        presence: Some(presence),
+        #[cfg(feature = "model")]
+            permission_ctx: Some(permission_ctx),
+        #[cfg(feature = "model")]
+            presence: Some(presence),
         accessibility: Some(accessibility),
         window: Some(window),
-        document_routes: Some(document_routes),
-        committed_documents: Some(committed_documents),
-        autosave_generation: Some(autosave_generation),
+        #[cfg(feature = "model")]
+            document_routes: Some(document_routes),
+        #[cfg(feature = "model")]
+            committed_documents: Some(committed_documents),
+        #[cfg(feature = "model")]
+            autosave_generation: Some(autosave_generation),
         actions: Some(actions),
         search_presented: Some(search_presented),
         native_document_chrome: Some(native_document_chrome),
-        continuation: Some(continuation),
+        #[cfg(feature = "model")]
+            continuation: Some(continuation),
         profiler: Some(profiler),
         native_input_probe: Some(native_input_probe),
         floating: Some(floating),
@@ -311,17 +353,22 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         wake_scope,
         state: Box::new(state),
         root_widget,
+        #[cfg(feature = "model")]
         history,
         #[cfg(any(test, feature = "test-support"))]
+        #[cfg(feature = "model")]
         controlled_installed_history_definition,
         framework_input,
+        #[cfg(feature = "model")]
         history_key_release,
+        #[cfg(feature = "model")]
         history_focus,
         text_renderer,
         palette_source,
         watch_system_settings,
         layout,
         bindings,
+        #[cfg(feature = "model")]
         component_close_reports,
         close_admission,
         report_pointing,
@@ -339,24 +386,36 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         last_theme_store_check,
         theme_schedule: None,
         input,
+        #[cfg(feature = "model")]
         focus_history,
+        #[cfg(feature = "model")]
         collaboration,
+        #[cfg(feature = "model")]
         local_input_capture: super::local_input_capture::LocalInputCapture::default(),
         presence_ctx,
+        local_author,
+        #[cfg(feature = "model")]
         permission_ctx,
+        #[cfg(feature = "model")]
         painted_permissions: crate::permissions::shared_revision(),
         theme_epoch: 0,
         frame_theme_epoch: 0,
+        #[cfg(feature = "model")]
         presence,
         accessibility,
         window,
+        #[cfg(feature = "model")]
         committed_documents,
+        #[cfg(feature = "model")]
         autosave_generation,
+        #[cfg(feature = "model")]
         document_routes,
         actions,
         search_presented,
         native_document_chrome,
+        #[cfg(feature = "model")]
         continuation,
+        #[cfg(feature = "model")]
         action_publication_failure,
         profiler,
         native_input_probe,
@@ -390,6 +449,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     // The scope is also what sends `Arrived`, so an app that never set
     // one would never catch up on anything written before it opened.
     // No workspace means no scope.
+    #[cfg(feature = "model")]
     if let Some(scope) = (inputs.startup_presence_scope)() {
         app.set_presence_broadcast_scope(Some(scope));
     }
@@ -397,10 +457,16 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     // Apply launcher-provided continuation before the first widget sync or
     // redraw.  Waiting for an input event left a restored app blank on a
     // quiet freshly-created window.
-    app.apply_pending_continuation_restore();
+    #[cfg(feature = "model")]
+    {
+        app.apply_pending_continuation_restore();
+    }
     // The first report is level-triggered.  Sending it here makes a
     // launched app visible to continuity capture even if it receives no
     // input events before the next peer asks for a checkpoint.
-    app.publish_continuation_metadata();
+    #[cfg(feature = "model")]
+    {
+        app.publish_continuation_metadata();
+    }
     app
 }

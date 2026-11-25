@@ -520,7 +520,7 @@ fn build(args: &[String]) -> Result<(), String> {
         dir: common.dir,
         search: common.search,
         tilo_runtime,
-        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+        tilolang_runtime: package::default_tilolang_runtime(),
         version,
         locked,
     };

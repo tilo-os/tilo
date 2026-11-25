@@ -185,7 +185,7 @@ struct AppHandler {
     settings_store_changed: Arc<AtomicBool>,
     /// Lives for the event loop so an idle app still hears a theme change
     /// and compositor appearance writes.
-    _settings_watch: Option<settings_store::watch::SettingsWatch>,
+    _settings_watch: Option<SettingsWatch>,
     /// What this window held the launch's place for arrived (its workspace's join): the loop ends
     /// with the window kept for the launch to open the app in.
     handing_over: bool,
@@ -2543,10 +2543,7 @@ impl AppHandler {
         // whose only moves are scrolls this window copies stays sparse.
         let boxes_before = (!structure_rebuilt
             && app.layout.layout_dirty
-            && app
-                .history
-                .as_ref()
-                .is_none_or(|history| history.live_interactive())
+            && app.app_live()
             && app.close_admission.dialog.is_none())
         .then(|| crate::damage::widget_boxes(app.root_widget.as_ref()));
         let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
@@ -3162,10 +3159,13 @@ impl AppHandler {
         }
         // The surface a handled input left for this frame, now that its sync
         // ran and the frame's availability refresh built the tree.
-        app.publish_owed_action_surface();
-        // A surface app's frame also hands the session what the app offers,
-        // as a hosted app hands its host: its resources and their actions.
-        crate::surface_peer::publish(&app.collect_resources());
+        #[cfg(feature = "model")]
+        {
+            app.publish_owed_action_surface();
+            // A surface app's frame also hands the session what the app offers,
+            // as a hosted app hands its host: its resources and their actions.
+            crate::surface_peer::publish(&app.collect_resources());
+        }
 
         if needs_followup_redraw {
             window.request_redraw();
@@ -3893,7 +3893,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             let _input = slow_event::phase("input_backlog");
             self.route_input_backlog(true);
         }
-        self.app.service_close_admission();
+        #[cfg(feature = "model")]
+        {
+            self.app.service_close_admission();
+        }
         if self.app.finish_close_if_ready() {
             self.closing.set(true);
             return;
@@ -4140,6 +4143,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         {
             let _collab = slow_event::phase("collab");
+            #[cfg(feature = "model")]
             if app.pump_collab_presence() {
                 request_primary_redraw();
             }
@@ -4241,21 +4245,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // The active page/view can change during `sync` (e.g. the initial
         // auto-select), which the post-event broadcast above wouldn't catch.
+        #[cfg(feature = "model")]
         {
-            let _broadcast = slow_event::phase("broadcast");
-            app.broadcast_location_presence();
-            app.broadcast_composing_presence();
-            app.broadcast_view_presence();
-        }
+            {
+                let _broadcast = slow_event::phase("broadcast");
+                app.broadcast_location_presence();
+                app.broadcast_composing_presence();
+                app.broadcast_view_presence();
+            }
 
-        // Without this a first peer with no input never re-syncs to seed its
-        // doc after the grace window, so a late joiner diverges.
-        if app.collaboration.manager.is_connected() && app.root_widget.needs_idle_sync() {
-            app.needs_sync = true;
-            request_primary_redraw();
-        }
+            // Without this a first peer with no input never re-syncs to seed its
+            // doc after the grace window, so a late joiner diverges.
+            if app.collaboration.manager.is_connected() && app.root_widget.needs_idle_sync() {
+                app.needs_sync = true;
+                request_primary_redraw();
+            }
 
-        app.broadcast_doc_delta();
+            app.broadcast_doc_delta();
+        }
 
         // Polling a view's topology can itself replace its widgets (Switch
         // reconciles here). Retire the old node pointers before another
@@ -4264,13 +4271,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
 
-        app.drain_local_input_capture();
+        #[cfg(feature = "model")]
+        {
+            app.drain_local_input_capture();
+        }
         let scheduled_deadline = crate::close_admission::wake_deadline(
             app.root_widget
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
-                .chain(app.local_input_capture_deadline())
+                .chain(app.model_deadline())
                 .chain(
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
@@ -4298,7 +4308,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .touch_pointer
                 .long_press_deadline()
                 .into_iter()
-                .chain(app.local_input_capture_deadline())
+                .chain(app.model_deadline())
                 .chain(app.presence_ctx.interaction_next_wake_deadline(now))
                 .chain(app.accessibility.zoom.deadline())
                 .any(|due| due <= now);
@@ -4347,7 +4357,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
-                .chain(app.local_input_capture_deadline())
+                .chain(app.model_deadline())
                 .chain(
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
@@ -5292,6 +5302,7 @@ impl App {
             crate::storage::flush_settings_writes();
             return;
         }
+        #[cfg(feature = "model")]
         if let Some(scope) = self.wake_scope.as_ref() {
             let wake = scope.handle();
             self.collaboration
@@ -5305,11 +5316,10 @@ impl App {
             .then(|| {
                 let pending = Arc::clone(&settings_store_changed);
                 let wake = crate::wake::WakeHandle::new();
-                settings_store::watch::watch_settings(move || {
+                watch_settings(move || {
                     pending.store(true, Ordering::Release);
                     wake.wake();
                 })
-                .ok()
             })
             .flatten();
         {
@@ -5354,12 +5364,16 @@ impl App {
             }
         }
         drop(settings_watch);
-        self.keep_last_writes(&wake_rx);
+        #[cfg(feature = "model")]
+        {
+            self.keep_last_writes(&wake_rx);
+        }
         // The app is dropped before the process ends, and the settings it changed are kept.
         drop(self);
         crate::storage::flush_settings_writes();
     }
 
+    #[cfg(feature = "model")]
     /// Wait, as a process with no window ends, until its workspace took what the app wrote:
     /// the workspace keeps the only copy. A window's close waits on the same barrier off its
     /// frame; with no frame to keep, this waits here. It stops once the workspace answered, said
@@ -5420,6 +5434,7 @@ impl App {
         // A transport answered on a socket of its own (a surface's session)
         // wakes the loop: what it carries is applied by a frame that would
         // otherwise never run.
+        #[cfg(feature = "model")]
         if let Some(scope) = self.wake_scope.as_ref() {
             let wake = scope.handle();
             self.collaboration
@@ -5436,11 +5451,10 @@ impl App {
                 .then(|| {
                     let pending = Arc::clone(&settings_store_changed);
                     let wake = crate::wake::WakeHandle::new();
-                    settings_store::watch::watch_settings(move || {
+                    watch_settings(move || {
                         pending.store(true, Ordering::Release);
                         wake.wake();
                     })
-                    .ok()
                 })
                 .flatten()
         };
@@ -5658,3 +5672,23 @@ fn present_hook(
 
 #[cfg(test)]
 mod early_window_tests;
+
+/// What keeps a window hearing its settings change, for as long as it lives.
+#[cfg(feature = "model")]
+type SettingsWatch = settings_store::watch::SettingsWatch;
+#[cfg(not(feature = "model"))]
+type SettingsWatch = std::sync::Arc<crate::settings_source::Listener>;
+
+/// Run `changed` whenever the settings this process reads change: with Tilo's model the profile's
+/// settings file, else the source its host installed. `None` where there is nothing to hear.
+fn watch_settings(changed: impl Fn() + Send + Sync + 'static) -> Option<SettingsWatch> {
+    #[cfg(feature = "model")]
+    let watch = settings_store::watch::watch_settings(changed).ok();
+    #[cfg(not(feature = "model"))]
+    let watch = crate::settings_source::source().map(|source| {
+        let listener: SettingsWatch = std::sync::Arc::new(changed);
+        source.changes().listen(&listener);
+        listener
+    });
+    watch
+}

@@ -107,7 +107,7 @@ host_profile=nested
 # the one a device installs: a check that runs the session as a machine's
 # account installs it where the session looks for it, and the session locks.
 host_bins=(tilo-session tilo-runtime tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
-           tilo-model-gateway tilo-ush tilo-control tilolang-process tilolang nested-session-bus
+           tilo-model-gateway tilo-ush tilo-control tilolang-process tilolang tilolang-std nested-session-bus
            fs projector-stand-in fake-model-providers tilo-unlock-helper)
 build_host() {
     local args
@@ -195,11 +195,13 @@ build_tilolang_process() {
 }
 # The `tilolang` CLI authors run against the session (`tilolang dev --session`), in
 # a build of its own for the same reason: its toolkit features stay out of the
-# host programs and the tilolang host.
+# host programs and the tilolang host. `tilolang-std` beside it compiles the
+# standard library the tilolang runtime bundle carries.
 build_tilolang_cli() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
-    cargo build --locked --timings "${args[@]}" -p tilolang-cli --bin tilolang
+    cargo build --locked --timings "${args[@]}" -p tilolang-cli --bin tilolang \
+        -p tilolang --bin tilolang-std
 }
 # --- Thin apps and the shared runtime -----------------------------------------
 # Resolved against the default collection's runtime, so the runtime is the one

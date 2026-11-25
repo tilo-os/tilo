@@ -6,7 +6,7 @@
 
 pub use fs_content::{
     ChunkRef, ChunkStats, ChunkTier, DecodeError, MAX_CHUNK_LEN, Manifest, RangeSet, SealedChunks,
-    build, build_reader, rebuild,
+    Streamed, build, build_reader, rebuild,
 };
 
 /// Content larger than this lives in the store's file-backed area; smaller

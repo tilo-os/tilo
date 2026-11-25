@@ -367,9 +367,18 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool) {
                         on detach(p: session.Place): detach_place(p)
                         for p in placed {
                             if let w = shown_window(p) {
-                                ui.TabItem(the_place(p.key), title: place_title(p), icon: w.icon)
+                                ui.TabItem(
+                                    the_place(p.key),
+                                    title: place_title(p),
+                                    name: place_own_title(p),
+                                    icon: w.icon,
+                                )
                             } else {
-                                ui.TabItem(the_place(p.key), title: place_title(p))
+                                ui.TabItem(
+                                    the_place(p.key),
+                                    title: place_title(p),
+                                    name: place_own_title(p),
+                                )
                             }
                         }
                     }
@@ -709,7 +718,7 @@ view bar_item(w: device.Window, a: device.BarAction) {
     }
 }
 
-/// The field a window's bar holds open to name the tab/// The field a window's bar holds open to name the tab: the person's own word for the window,
+/// The field a window's bar holds open to name the tab: the person's own word for the window,
 /// committed with Enter and left as it was with Escape.
 view bar_rename(w: device.Window) {
     state typed: Text = w.title

@@ -614,10 +614,9 @@ pub fn route() -> DocumentRoute {
     }
 }
 
-/// Commit what `doc` changed as a framework change, decided and recorded as the signing
-/// device's person: the genesis a record's first content is a test's stand-in for, as an app's
-/// action writes it in production. A receiver refuses a change that names no one, so every write
-/// a test makes through a document is committed here.
+/// Commit what `doc` changed as the record's genesis, decided and recorded as the signing
+/// device's person: a record's first content, which a receiver takes only while the record has
+/// nothing anyone made. A later write names the app's action that makes it ([`commit_edit`]).
 pub fn commit_change(doc: &mut AutoCommit) {
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
@@ -625,13 +624,74 @@ pub fn commit_change(doc: &mut AutoCommit) {
     );
 }
 
-/// A change to `doc` noting `text`, as the mutation a peer publishes of it: a real
-/// Automerge change, since a replica applies what it keeps. The first change of a
-/// document is the whole record, which founds it.
-pub fn say(doc: &mut AutoCommit, text: &str) -> DocumentMutation {
+/// The person `peer`'s device acts for: the root its certificate names.
+pub fn person_of(peer: &Link) -> [u8; 32] {
+    peer.engine().identity().device_cert.user_public_key
+}
+
+/// Commit what `doc` changed as the field edit at `path` of a record of `kind` by the person whose
+/// root key is `person`, labelled as the app's executor labels the edit its surface publishes
+/// ([`tilo_actions::ActionContext`]).
+pub fn commit_edit(
+    doc: &mut AutoCommit,
+    person: [u8; 32],
+    kind: &str,
+    path: Vec<tilo_actions::PathStep>,
+) {
+    let field = match path.first() {
+        Some(tilo_actions::PathStep::Field(field)) => field.clone(),
+        _ => panic!("a field edit's path starts at a field"),
+    };
+    let context = tilo_actions::ActionContext {
+        what: Some(tilo_actions::Did::Edit(tilo_actions::FieldEdit {
+            ty: kind.to_owned(),
+            field,
+            path,
+            op: tilo_actions::EditOp::Set,
+            old: None,
+            new: None,
+            args: std::collections::BTreeMap::new(),
+        })),
+        ..tilo_actions::ActionContext::for_resource(kind, kind, kind)
+    }
+    .with_invoker(tilo_actions::ActionInvoker::person(
+        tilo_action_policy::PersonId::from_root(person),
+    ));
+    let message = context.change_message().expect("a field edit names itself");
+    doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
+}
+
+/// Set `field` of `doc`, a record of `kind`, to `value` as the person whose root key is `person`,
+/// and commit it as production does: a document's first change is the record's genesis
+/// ([`commit_change`]), every later one the field edit of `field` the record's app publishes
+/// ([`commit_edit`]). `doc` has no pending change.
+pub fn set_field(
+    doc: &mut AutoCommit,
+    person: [u8; 32],
+    kind: &str,
+    field: &str,
+    value: impl Into<automerge::ScalarValue>,
+) {
+    let first = doc.get_heads().is_empty();
+    doc.put(ROOT, field, value).unwrap();
+    if first {
+        commit_change(doc);
+    } else {
+        commit_edit(
+            doc,
+            person,
+            kind,
+            vec![tilo_actions::PathStep::Field(field.to_owned())],
+        );
+    }
+}
+
+/// A change to `doc` noting `text` by the person whose root key is `person`, as the mutation a
+/// peer publishes of it: a real Automerge change, since a replica applies what it keeps. The first
+/// change of a document is the whole record, which founds it.
+pub fn say(doc: &mut AutoCommit, person: [u8; 32], text: &str) -> DocumentMutation {
     let founds = doc.get_heads().is_empty();
-    doc.put(ROOT, text, true).unwrap();
-    commit_change(doc);
+    set_field(doc, person, "note", text, true);
     if founds {
         DocumentMutation::Snapshot(doc.save())
     } else {

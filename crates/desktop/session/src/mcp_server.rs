@@ -1857,6 +1857,40 @@ impl Host {
         self
     }
 
+    /// Whether `address` is one of the person's own settings sections, which their own
+    /// workspace keeps: `settings/<section>`, or this device's
+    /// `devices/<id>/settings/<section>`. Another device's section is decided where the person
+    /// stands, so a device this person is not at is never written into their own workspace.
+    fn is_own_settings_section(address: &tilo_actions::ActionAddress) -> bool {
+        let resource = address.resource.as_str();
+        if let Some(rest) = resource.strip_prefix("devices/") {
+            let Some((device, section)) = rest.split_once("/settings/") else {
+                return false;
+            };
+            !device.is_empty()
+                && !section.is_empty()
+                && device == ui::settings_device::settings_device()
+        } else {
+            resource
+                .strip_prefix("settings/")
+                .is_some_and(|section| !section.is_empty() && !section.contains('/'))
+        }
+    }
+
+    /// The caller a settings change is asked as: the person at this device, in their own
+    /// workspace, which keeps their settings. `None` for a caller already there, and for an
+    /// app's or an agent's connection, whose part in the person's settings is decided as itself.
+    fn person_workspace_caller(caller: &Caller) -> Option<Caller> {
+        if !caller.acting().is_person() {
+            return None;
+        }
+        let own = tilo_action_policy::roles::workspace_of_person(caller.acting().person_id()?)?;
+        if caller.workspace() == Some(own.as_str()) {
+            return None;
+        }
+        Some(caller.clone().in_workspace(own))
+    }
+
     /// The answer to `request` for `caller`: the session's own step on its loop, else the device's
     /// dispatch's, which decides it as the caller itself (the person at this device as the person
     /// the session's link was made for).
@@ -1865,6 +1899,18 @@ impl Host {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // The person's settings are kept in their own workspace, which their shell never shows:
+        // a change of them is decided there, wherever the person stands in front, and never by
+        // the workspace in front's grants over what is not its own.
+        let settings = if request.target.provider
+            == tilo_actions::remote::settings_resources::PROVIDER
+            && Self::is_own_settings_section(&request.target.address)
+        {
+            Self::person_workspace_caller(caller)
+        } else {
+            None
+        };
+        let caller = settings.as_ref().unwrap_or(caller);
         // An app of a workspace this device is not admitted to yet takes part in nothing there:
         // asked of it, an action would wait for an app that never answers. It is refused now, with
         // the reason, for the person and an agent alike.
@@ -2121,16 +2167,22 @@ impl ActionProvider for Host {
             .find(|(invocation, _)| invocation == id)
             .map(|(_, update)| InvocationState::new(*id, update.clone()));
         ours.or_else(|| {
-            self.state
-                .as_ref()
-                .and_then(|dispatch| dispatch.observe(caller, id))
+            let dispatch = self.state.as_ref()?;
+            dispatch.observe(caller, id).or_else(|| {
+                // A settings change was asked in the person's own workspace, which this
+                // connection's caller does not name: it is followed there.
+                let own = Self::person_workspace_caller(caller)?;
+                dispatch.observe(&own, id)
+            })
         })
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
-        self.state
-            .as_ref()
-            .and_then(|dispatch| dispatch.next_change(caller, id))
+        let dispatch = self.state.as_ref()?;
+        dispatch.next_change(caller, id).or_else(|| {
+            let own = Self::person_workspace_caller(caller)?;
+            dispatch.next_change(&own, id)
+        })
     }
 
     fn cancel(

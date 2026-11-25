@@ -126,7 +126,7 @@ pub struct OwnerWakeSink {
 impl OwnerWakeSink {
     /// Queue a signal only if its original scope and registration remain open.
     pub fn enqueue(&self, event: WakeEvent) -> bool {
-        let _profile = tilo_resource::profiling::Phase::start(if event.requires_sync() {
+        let _profile = tilo_resource_plain::profiling::Phase::start(if event.requires_sync() {
             "ui.owner_wake.enqueue_sync"
         } else {
             "ui.owner_wake.enqueue_events"

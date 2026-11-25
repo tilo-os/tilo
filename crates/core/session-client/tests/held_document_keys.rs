@@ -72,9 +72,13 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
     )
     .await;
     laptop.join().await;
-    let frame = crate::support::say(&mut automerge::AutoCommit::new(), WRITTEN)
-        .encode()
-        .unwrap();
+    let frame = crate::support::say(
+        &mut automerge::AutoCommit::new(),
+        root.verifying_key().to_bytes(),
+        WRITTEN,
+    )
+    .encode()
+    .unwrap();
     let (metadata, sealed) = laptop.seal(&note, &frame);
     let op = SignedOp::new_unsigned_with_encryption(
         sealed,

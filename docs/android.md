@@ -174,7 +174,7 @@ on Linux. Preparing the process means:
   storage (`launch/android_env.rs`), so `tilo-paths` and every store built on
   it resolve there unchanged;
 - `LANG` follows the device locale;
-- `TILO_RUNTIME_STANDALONE=1`, since there is no runtime host to re-exec under.
+- No runtime host to re-exec under: attachment returns as it is on this platform.
 
 The activity handles every configuration change itself (rotation, resizing,
 keyboards, density, locale, theme) rather than being recreated, and ends the
@@ -252,7 +252,7 @@ directory, since fontdb cannot map a file inside an APK; the device's
   so apps show "Collaboration is unavailable; remote changes are not
   synchronized." and edits stay on the device.
 - **No Tilo sandbox.** The app is not launched under Tilo's runtime host
-  (`TILO_RUNTIME_STANDALONE=1`), so its Landlock and bubblewrap confinement
+  (there is no host to re-exec under), so its Landlock and bubblewrap confinement
   does not apply; the app runs in Android's own per-app sandbox.
 - **No in-place reload.** `dev` reinstalls and restarts the app on each change.
 - **TalkBack explore-by-touch is untested on a device.** The emulator image has

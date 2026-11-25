@@ -507,6 +507,8 @@ dependencies = [
  "tilo-runtime-bundle",
  "tilo-settings-store",
  "tilo-test-env",
+ "tilolang",
+ "tilolang-tilo",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
@@ -16264,6 +16266,7 @@ dependencies = [
  "tilo-paths",
  "tilo-presence-types",
  "tilo-resource",
+ "tilo-resource-plain",
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
@@ -19514,6 +19517,9 @@ name = "tilo-resource-plain"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "tilo-actions",
+ "tilo-clock",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -27624,6 +27630,7 @@ dependencies = [
  "tilo-libvirt-domain",
  "tilo-live",
  "tilo-liveness",
+ "tilo-local-identity",
  "tilo-locale",
  "tilo-location",
  "tilo-lock",
@@ -27677,6 +27684,7 @@ dependencies = [
  "tilo-polkit-agent",
  "tilo-portal",
  "tilo-power-mgmt",
+ "tilo-presence-types",
  "tilo-presentation",
  "tilo-printing",
  "tilo-process",
@@ -27690,6 +27698,7 @@ dependencies = [
  "tilo-render-service",
  "tilo-resource",
  "tilo-resource-macros",
+ "tilo-resource-plain",
  "tilo-resource-store",
  "tilo-rich-edit",
  "tilo-rich-text",

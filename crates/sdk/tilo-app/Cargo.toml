@@ -8,6 +8,11 @@ repository.workspace = true
 homepage.workspace = true
 description = "The Tilo application SDK: one app source for Linux, macOS and the web."
 
+# The app framework: the kinds it declares are the framework's, and the chain
+# machinery it shares is no app's own (crates/lang/tilo-app-builder/src/resource_kinds.rs).
+[package.metadata.tilo]
+framework = true
+
 # The SDK selects the platform here, and only here: the runner is a
 # target-scoped dependency, so an app's `ui = { package = "tilo-app", … }`
 # builds for Linux, macOS and wasm32 unchanged. With resolver 2 the features

@@ -245,6 +245,31 @@ pub(crate) fn probe(widget: &dyn Widget) -> (bool, bool, bool) {
     )
 }
 
+/// Nodes a surface laid over the app (an embedded History surface) keeps focus from, for one
+/// recomputation of the current layout. It owns only node ids and never survives a layout or
+/// input-capture change.
+#[derive(Default)]
+pub(crate) struct FocusRestrictions {
+    pub(crate) denied: std::collections::HashSet<NodeId>,
+}
+
+impl FocusRestrictions {
+    pub(crate) fn allows(&self, node: NodeId) -> bool {
+        !self.denied.contains(&node)
+    }
+}
+
+/// A surface the host lays over a window's app (its History) as focus order reads it: the nodes it
+/// lays out, whether it takes all input, and whether it traps focus.
+pub(crate) trait FocusSurface {
+    /// The layout nodes the surface owns.
+    fn owned_nodes(&self, taffy: &TaffyTree<()>) -> std::collections::HashSet<NodeId>;
+    /// Whether only the surface's own nodes take focus.
+    fn captures_input(&self) -> bool;
+    /// Whether the surface traps focus.
+    fn review_is_open(&self) -> bool;
+}
+
 /// Focus order over the admitted layout map from `root`, for the native
 /// window and the frame harness alike: embedded History's restrictions
 /// apply, while the host's History captures input only its nodes take
@@ -254,8 +279,8 @@ pub(crate) fn probe(widget: &dyn Widget) -> (bool, bool, bool) {
 pub(crate) fn layout_map_order(
     root: NodeId,
     taffy: &TaffyTree<()>,
-    restrictions: &crate::history_mode::embedded::FocusRestrictions,
-    history: Option<&crate::history_mode::host::HistoryHost>,
+    restrictions: &FocusRestrictions,
+    history: Option<&impl FocusSurface>,
     inspect: impl Fn(NodeId) -> Option<(bool, bool, bool)>,
 ) -> (Vec<NodeId>, bool) {
     use tilo_sort::CompactSort as _;

@@ -526,7 +526,9 @@ fn a_package_carrying_another_surface_than_its_release_names_installs_nothing() 
 /// The exact Tilo runtime build the test's host links, and the tilolang runtime it was built
 /// against: what a phone's own signed manifest names.
 const HOST_TILO_RUNTIME: &str = "tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef";
-const HOST_TILOLANG_RUNTIME: &str = tilolang_cli::package::DEFAULT_TILOLANG_RUNTIME;
+fn host_tilolang_runtime() -> String {
+    tilolang_cli::package::default_tilolang_runtime()
+}
 
 /// Declare the runtimes this test binary's host carries in itself, once for the binary, as the
 /// phone declares the ones its APK carries: the process declares them once, as its manifest is
@@ -542,7 +544,7 @@ fn host_carries() {
         .unwrap();
         let mut manifest = read.meta.manifest;
         manifest.package.runtime = Some(HOST_TILO_RUNTIME.into());
-        manifest.package.required_runtimes = vec![HOST_TILOLANG_RUNTIME.into()];
+        manifest.package.required_runtimes = vec![host_tilolang_runtime()];
         manifest
             .sign(&SigningIdentity::from_signing_key(SigningKey::from_bytes(
                 &PUBLISHER,
@@ -562,7 +564,7 @@ fn an_app_running_on_a_build_the_host_carries_installs_without_its_runtime_being
         "1.0.0",
         None,
         Some("tilo-runtime/2026.07"),
-        &[HOST_TILOLANG_RUNTIME],
+        &[host_tilolang_runtime().as_str()],
     );
     let mut release = release_of(APP, "1.0.0", &tapp);
     release.file = Some(blake3::hash(&tapp).to_hex().to_string());
@@ -633,7 +635,7 @@ id = "so.tilo.phone"
 version = "0.1.0"
 kind = "app"
 runtime = "{HOST_TILO_RUNTIME}"
-optional-runtimes = ["{HOST_TILOLANG_RUNTIME}"]
+optional-runtimes = ["{tilolang}"]
 
 [publisher]
 identity = "ed25519:{publisher}"
@@ -651,6 +653,7 @@ mode = "off"
 bin = "bin/tilo-phone"
 type = "gui"
 "#,
+        tilolang = host_tilolang_runtime(),
         publisher = hex::encode(
             SigningKey::from_bytes(&PUBLISHER)
                 .verifying_key()

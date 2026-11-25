@@ -132,10 +132,8 @@ impl Core {
                 };
                 self.ret_h(Value::Text(replaced))
             }
-            Imp::StrUrlEncode => {
-                let text = self.text(a.h(0)?)?;
-                self.ret_h(Value::Text(tilolang::text::url_encode(&text)))
-            }
+            Imp::StrUrlEncode => self.ret_text(tilolang::text::url_encode(&self.text(a.h(0)?)?)),
+            Imp::StrUrlDecode => self.ret_text(tilolang::text::url_decode(&self.text(a.h(0)?)?)),
             _ => trap("not a text import"),
         }
     }
@@ -152,6 +150,11 @@ impl Core {
             _ => tilolang::text::matches(&what, &text),
         };
         ret_i32(i32::from(yes))
+    }
+
+    /// Answer a text this import makes.
+    fn ret_text(&self, text: String) -> HResult<Option<Wasm>> {
+        self.ret_h(Value::Text(text))
     }
 
     /// A string literal of the module, read from guest memory.

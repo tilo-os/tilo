@@ -81,6 +81,50 @@ const TILE_FALLBACK_LEVELS: i64 = 4;
 const MARKER_RADIUS: f64 = 5.0;
 const MARKER_RING: f64 = 2.0;
 
+/// How far apart two markers stand before one of them is left out: closer than this they read as
+/// one dot, so the map keeps the one a person is more likely to be looking for.
+const MARKER_GAP: f64 = 24.0;
+
+/// Which markers stand where two would pile on one another: the chosen one always, then the
+/// more salient kind, and each only where no marker already kept stands within [`MARKER_GAP`].
+/// The indices come back in the order the view gave them, the topmost last.
+fn standing_markers(markers: &[(usize, MapMarkerKind, bool, Point)]) -> Vec<(usize, Point)> {
+    let mut order: Vec<usize> = (0..markers.len()).collect();
+    order.sort_by_key(|&at| {
+        let (_, kind, selected, _) = markers[at];
+        std::cmp::Reverse((selected, marker_salience(kind)))
+    });
+    let mut kept: Vec<(usize, Point)> = Vec::new();
+    for at in order {
+        let (index, _, selected, point) = markers[at];
+        if !selected
+            && kept
+                .iter()
+                .any(|(_, held)| held.distance(point) < MARKER_GAP)
+        {
+            continue;
+        }
+        kept.push((index, point));
+    }
+    kept.sort_by_key(|(index, _)| *index);
+    kept
+}
+
+/// How much a marker's kind matters where two would stand on one another: a stop and a landmark
+/// keep contested ground over a shop or a café, as a map's own labels do.
+fn marker_salience(kind: MapMarkerKind) -> u8 {
+    match kind {
+        MapMarkerKind::Current | MapMarkerKind::Start | MapMarkerKind::End => 7,
+        MapMarkerKind::Transit | MapMarkerKind::Landmark => 6,
+        MapMarkerKind::Hospital | MapMarkerKind::Museum => 5,
+        MapMarkerKind::Park => 4,
+        MapMarkerKind::Hotel | MapMarkerKind::Restaurant => 3,
+        MapMarkerKind::Cafe | MapMarkerKind::Bar => 2,
+        MapMarkerKind::Shop => 1,
+        MapMarkerKind::Other | MapMarkerKind::Poi => 0,
+    }
+}
+
 /// Draw `image` into `rect`: the tile scaled to the screen the camera puts it at.
 fn draw_tile(scene: &mut Scene, transform: Affine, image: &vello::peniko::ImageData, rect: Rect) {
     let width = f64::from(image.width).max(1.0);
@@ -319,6 +363,12 @@ pub struct MapProps {
     /// that saves what the person sees knows where they are looking.
     #[component(event(value = Vec<f64>))]
     pub rest: Event,
+    /// The imagery the map shows cannot be loaded: carries how many of the tiles it shows have
+    /// failed and how many it shows, so the view can say so in words while nothing draws
+    /// (offline, or the tile server refusing). Reported when either number changes, and again
+    /// with nothing failed once imagery loads.
+    #[component(event(value = Vec<i64>))]
+    pub fault: Event,
     /// The pointer pressed the map's empty surface and let go there, a click: carries the place
     /// under it, its latitude then its longitude, for a map centred on a place.
     #[component(event(value = Vec<f64>))]
@@ -359,6 +409,7 @@ impl Default for MapProps {
             longitude: None,
             zoom: None,
             rest: Event::None,
+            fault: Event::None,
             at: Event::None,
             marker: Event::None,
             enabled: true,
@@ -553,6 +604,10 @@ pub struct MapMarkerProps {
     /// face docks on the marker as a list row wears the member at its item. The map draws them in
     /// the presence of the window it is in, and shows none for this person's own views.
     pub presence: Option<crate::component::Person>,
+    /// Whether its name stands beside it, on a plate over the map: a place's name, as a map
+    /// names the places it shows. A label that would cover another is left out, so a dense
+    /// quarter keeps its markers legible.
+    pub label: bool,
 }
 
 crate::component::part_type!(MapMarkerProps);
@@ -739,7 +794,7 @@ pub struct Map {
     /// ink, how thick it draws in logical pixels, and whether it is dashed.
     tracks: Vec<(String, Vec<(f64, f64)>, MapTrackTone, f64, bool)>,
     /// The markers drawn over the lines: each its key, its place in degrees, what it is, whether
-    /// it is chosen, what it is called, and who else is at it.
+    /// it is chosen, what it is called, who else is at it, and whether its name stands beside it.
     markers: Vec<(
         String,
         (f64, f64),
@@ -747,11 +802,17 @@ pub struct Map {
         bool,
         Option<String>,
         Option<crate::component::Person>,
+        bool,
     )>,
     /// What the camera reports when the person's own move ends.
     rest: Event,
     /// When the camera is to be called at rest, once it has stood still that long.
     rest_due: Option<crate::time::Instant>,
+    /// What the imagery the map shows failing to load reports: the tiles failed of those shown.
+    fault: Event,
+    /// The failure the map last reported (`fault`): the tiles failed and shown it said, so the
+    /// same numbers are not said again.
+    faulted: Option<(i64, i64)>,
     /// What a click on a marker reports.
     marker_event: Event,
     /// The centre the view set since the map was last laid out, in canvas pixels, and the zoom
@@ -915,6 +976,8 @@ impl Map {
             markers: Vec::new(),
             rest: Event::None,
             rest_due: None,
+            fault: Event::None,
+            faulted: None,
             marker_event: Event::None,
             centre: Rc::default(),
             centred: Rc::default(),
@@ -1714,6 +1777,7 @@ impl Described for Map {
             longitude,
             zoom,
             rest,
+            fault,
             at,
             marker,
             enabled,
@@ -1735,6 +1799,7 @@ impl Described for Map {
         map.context = context;
         map.at = at;
         map.rest = rest;
+        map.fault = fault;
         map.marker_event = marker;
         map.enabled = enabled;
         map.description = description;
@@ -1766,6 +1831,7 @@ impl Described for Map {
                     held.selected,
                     held.name.filter(|name| !name.is_empty()),
                     held.presence,
+                    held.label,
                 )
             })
             .collect();
@@ -1838,6 +1904,7 @@ impl Described for Map {
             longitude,
             zoom,
             rest,
+            fault,
             at,
             marker,
             enabled,
@@ -1883,6 +1950,7 @@ impl Described for Map {
                     held.selected,
                     held.name.filter(|name| !name.is_empty()),
                     held.presence,
+                    held.label,
                 )
             })
             .collect();
@@ -1907,6 +1975,7 @@ impl Described for Map {
         self.frame = frame;
         self.context = context;
         self.at = at;
+        self.fault = fault;
         let focus = latitude.zip(longitude);
         let zoom = if world {
             Some(zoom.unwrap_or(MAP_ZOOM_WORLD_MIN))
@@ -2256,6 +2325,39 @@ impl Map {
         outline(scene, &rect);
     }
 
+    /// Say how the imagery the map shows is doing, when that changed: how many of the tiles it
+    /// shows failed to load of how many it shows. A view says so in words while none drew.
+    fn report_fault(&mut self, pictures: &crate::pictures::Pictures) {
+        let Some(basemap) = self.basemap.clone() else {
+            return;
+        };
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let z = self.tile_zoom();
+        let tiles = self.visible_tiles(self.shown.get(), z);
+        let count = |count: usize| i64::try_from(count).unwrap_or(i64::MAX);
+        let shown = count(tiles.len());
+        let failed = count(
+            tiles
+                .iter()
+                .filter(|(x, y)| {
+                    let source = crate::widget::PictureSource {
+                        src: Self::tile_address(&basemap, z, *x, *y),
+                    };
+                    pictures.failed(&source)
+                })
+                .count(),
+        );
+        if self.faulted != Some((failed, shown)) {
+            self.faulted = Some((failed, shown));
+            self.fault.fire(Some(crate::component::Value::List(vec![
+                crate::component::Value::Int(failed),
+                crate::component::Value::Int(shown),
+            ])));
+        }
+    }
+
     /// The zoom of the basemap whose tiles put about a tile's own pixels on a screen pixel: the
     /// level whose imagery is sharpest at this camera.
     fn tile_zoom(&self) -> i64 {
@@ -2415,8 +2517,12 @@ impl Map {
 
     /// What stands on the map at its places: a dot at each, in the ink of what it is, ringed
     /// with the surface's colour so it reads on any imagery, and a size larger with a ring while
-    /// it is the one the person chose. A dot keeps its size on screen whatever the zoom. Who of
-    /// the workspace's people has a view at a place docks on its marker.
+    /// it is the one the person chose. A dot keeps its size on screen whatever the zoom. Markers
+    /// that would pile on one another are left out, the chosen one first, so a dense quarter
+    /// keeps what a map is read for (a landmark, a stop) over what scatters (a shop). A marker
+    /// whose view says so names its place on a plate beside it, and a plate that would cover
+    /// another is left out. Who of the workspace's people has a view at a place docks on its
+    /// marker.
     fn draw_markers(
         &self,
         scene: &mut Scene,
@@ -2431,11 +2537,24 @@ impl Map {
         let camera = self.shown.get();
         let corner = self.rect.origin();
         let ring = theme.tokens.colors.surfaces.content;
-        for (_, (latitude, longitude), kind, selected, _, _) in &self.markers {
-            let at = camera.to_screen(corner, mercator_project(*latitude, *longitude));
-            if !self.rect.inflate(MARKER_RING, MARKER_RING).contains(at) {
-                continue;
-            }
+        let placed: Vec<(usize, MapMarkerKind, bool, Point)> = self
+            .markers
+            .iter()
+            .enumerate()
+            .filter_map(
+                |(index, (_, (latitude, longitude), kind, selected, _, _, _))| {
+                    let at = camera.to_screen(corner, mercator_project(*latitude, *longitude));
+                    self.rect
+                        .inflate(MARKER_RING, MARKER_RING)
+                        .contains(at)
+                        .then_some((index, *kind, *selected, at))
+                },
+            )
+            .collect();
+        let kept = standing_markers(&placed);
+        let mut stands: Vec<Point> = Vec::with_capacity(kept.len());
+        for &(index, at) in &kept {
+            let (_, _, kind, selected, _, _, _) = &self.markers[index];
             let (radius, halo) = if *selected {
                 (MARKER_RADIUS + 2.0, MARKER_RING + 1.5)
             } else {
@@ -2464,6 +2583,59 @@ impl Map {
                 None,
                 &vello::kurbo::Circle::new(at, radius),
             );
+            stands.push(at);
+        }
+        // The chosen marker's name first, then the others': a plate covers no dot and no plate
+        // already laid, so what a person reads on the map stays apart.
+        let style = theme
+            .tokens
+            .typography
+            .style(crate::tokens::TextRole::Caption);
+        let dot = 2.0 * (MARKER_RADIUS + MARKER_RING + 2.0);
+        let mut taken: Vec<Rect> = stands
+            .iter()
+            .map(|at| Rect::from_center_size(*at, (dot, dot)))
+            .collect();
+        let mut named: Vec<usize> = (0..kept.len())
+            .filter(|&at| {
+                let (marker, _) = kept[at];
+                let (_, _, _, _, name, _, label) = &self.markers[marker];
+                *label && name.is_some()
+            })
+            .collect();
+        named.sort_by_key(|&at| {
+            let (marker, _) = kept[at];
+            !self.markers[marker].3
+        });
+        for index in named {
+            let (marker_index, at) = kept[index];
+            let (_, _, _, _, name, _, _) = &self.markers[marker_index];
+            let Some(name) = name else { continue };
+            let face =
+                crate::widget::TextLineFace::styled(name, &style, crate::tokens::TextRole::Caption);
+            let (width, height) = face.measure(text);
+            let left = at.x + MARKER_RADIUS + MARKER_RING + 4.0;
+            let rect = Rect::new(left, at.y - height / 2.0, left + width, at.y + height / 2.0);
+            let plate = rect.inflate(3.0, 1.0);
+            if self.rect.intersect(plate).area() < plate.area() - 0.5 {
+                continue;
+            }
+            if taken.iter().any(|held| held.overlaps(plate)) {
+                continue;
+            }
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.content.with_alpha(0.85),
+                None,
+                &vello::kurbo::RoundedRect::from_rect(plate, 3.0),
+            );
+            face.paint(
+                &mut crate::paint::PaintCtx::new(scene, transform, text, theme),
+                rect,
+                theme.tokens.colors.text_primary,
+            );
+            taken.push(plate);
         }
         // Who is at a place docks on its marker, as a list row wears the member at its item: the
         // view gives the lens, and the window's presence names and paints them. A person's own
@@ -2471,7 +2643,8 @@ impl Map {
         let Some(presence) = env.presence else {
             return;
         };
-        for (_, (latitude, longitude), _, _, _, person) in &self.markers {
+        for (index, at) in &kept {
+            let (_, _, _, _, _, person, _) = &self.markers[*index];
             let Some(person) = person else { continue };
             let Some(member) = person.identity.member_id() else {
                 continue;
@@ -2479,8 +2652,7 @@ impl Map {
             if presence.is_own_identity(member) || env.self_member.as_ref() == Some(member) {
                 continue;
             }
-            let at = camera.to_screen(corner, mercator_project(*latitude, *longitude));
-            if !self.rect.contains(at) {
+            if !self.rect.contains(*at) {
                 continue;
             }
             let dock = Point::new(
@@ -2506,13 +2678,13 @@ impl Map {
         self.markers
             .iter()
             .rev()
-            .find(|(_, (latitude, longitude), _, _, _, _)| {
+            .find(|(_, (latitude, longitude), _, _, _, _, _)| {
                 camera
                     .to_screen(corner, mercator_project(*latitude, *longitude))
                     .distance(at)
                     <= MARKER_RADIUS + MARKER_RING
             })
-            .map(|(key, _, _, _, name, _)| name.clone().unwrap_or_else(|| key.clone()))
+            .map(|(key, _, _, _, name, _, _)| name.clone().unwrap_or_else(|| key.clone()))
     }
 
     /// Draw the region's pins, each posed by its own [`crate::motion::Placed`]: a pin that just
@@ -2619,9 +2791,22 @@ impl Map {
                 if by == Vec2::ZERO {
                     return;
                 }
-                let mut camera = self.camera;
-                camera.pan_by(by);
-                self.camera_moved(camera);
+                // A map of the world is read like a map: its wheel zooms about the pointer.
+                if self.world {
+                    let notches = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y / 50.0,
+                    };
+                    let corner = self.rect.origin();
+                    let about = self.cursor;
+                    let mut camera = self.camera;
+                    self.zoom_camera(&mut camera, corner, about, ZOOM_PER_DETENT.powf(notches));
+                    self.camera_moved(camera);
+                } else {
+                    let mut camera = self.camera;
+                    camera.pan_by(by);
+                    self.camera_moved(camera);
+                }
                 *ctx.handled = true;
             }
             // A pinch, on a touchscreen or a touchpad, zooms about the fingers, as Ctrl and a
@@ -2803,6 +2988,50 @@ impl Map {
                                     ((rect.height() - band) / zoom).round() as i64,
                                 ),
                             ]),
+                        ])));
+                    }
+                }
+                self.dirty = true;
+                *ctx.handled = true;
+            }
+            // A press on a map of the world's free surface takes hold of it, to drag it: the
+            // places on it stay where they are. A press let go without travelling is a click.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.world
+                && self.rect.contains(self.cursor)
+                && !self.over_pin(self.cursor - self.rect.origin().to_vec2()) =>
+            {
+                self.pan = Some(Pan {
+                    start: self.cursor,
+                    camera: self.camera,
+                    active: false,
+                });
+                *ctx.handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.world && self.pan.is_some() => {
+                let Some(pan) = self.pan.take() else {
+                    return;
+                };
+                // A drag moved the map; one that never travelled is a click on what stands
+                // there: a marker opens, else the place under the pointer is reported.
+                if !pan.active && self.rect.contains(self.cursor) {
+                    let from = self.camera.to_canvas(self.rect.origin(), self.cursor);
+                    self.point_at(from);
+                    if let Some(key) = self.marker_under(self.cursor) {
+                        self.marker_event
+                            .fire(Some(crate::component::Value::Text(key)));
+                    } else if self.focus.is_some() {
+                        let (latitude, longitude) = mercator_unproject(from);
+                        self.at.fire(Some(crate::component::Value::List(vec![
+                            crate::component::Value::Float(latitude),
+                            crate::component::Value::Float(longitude),
                         ])));
                     }
                 }
@@ -3100,6 +3329,7 @@ impl Widget for Map {
         }
         let pictures = crate::pictures::Pictures::window();
         self.draw_basemap(scene, transform, &pictures);
+        self.report_fault(&pictures);
         self.draw_tracks(scene, transform, theme);
         self.draw_markers(scene, transform, text, theme, &env);
         self.draw_hint(scene, transform, text, theme);
@@ -3360,6 +3590,10 @@ mod motion_tests;
 #[cfg(test)]
 #[path = "map_pointing_tests.rs"]
 mod pointing_tests;
+
+#[cfg(test)]
+#[path = "map_marker_tests.rs"]
+mod marker_tests;
 
 #[cfg(test)]
 #[path = "map_canvas_tests.rs"]

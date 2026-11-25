@@ -178,6 +178,15 @@ impl ChangeLog {
         self.take_in_versions(record, versions);
     }
 
+    /// The heads `record` stood at when it was last read whole: what a reader asks it since, to
+    /// be told it stands there still without reading it again.
+    #[must_use]
+    pub fn heads_of(&self, record: &DocumentKey) -> Option<Vec<[u8; 32]>> {
+        self.seen
+            .get(record)
+            .map(|(_, heads)| heads.iter().map(|head| head.0).collect())
+    }
+
     fn keep(&mut self, change: ResourceChanged) {
         self.last = self.last.saturating_add(1);
         self.kept.push_back((self.last, change));

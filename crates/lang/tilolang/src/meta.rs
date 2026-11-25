@@ -135,6 +135,11 @@ pub struct PackageMeta {
     pub engine: Option<String>,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
+    /// The standard library the package was compiled against ([`crate::stdlib::digest`]): its
+    /// templates are expanded into the package's code and its functions are called by it, so the
+    /// package runs only beside that library, on the tilolang runtime keyed by it.
+    #[serde(default)]
+    pub std: String,
     pub types: Vec<TypeMeta>,
     #[serde(default)]
     pub enums: Vec<EnumMeta>,

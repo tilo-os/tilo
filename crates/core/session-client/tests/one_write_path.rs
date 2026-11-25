@@ -23,7 +23,7 @@ use tilo_session_client::{Cmd, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use super::support::{
-    HostSettings, WORKSPACE, durable, enrol, ready, route, say, start_host_serving,
+    HostSettings, WORKSPACE, durable, enrol, person_of, ready, route, say, start_host_serving,
     start_peer_with_store, wait_keyed,
 };
 
@@ -68,7 +68,9 @@ async fn a_page_writes_once_and_a_restart_publishes_nothing_again() {
     wait_keyed(&first, &route()).await;
 
     let mut doc = AutoCommit::new();
-    first.write(route(), &say(&mut doc, "one")).unwrap();
+    first
+        .write(route(), &say(&mut doc, person_of(&first), "one"))
+        .unwrap();
     durable(&first).await;
 
     let held = workspaces

@@ -624,6 +624,7 @@ thread_local! {
 }
 
 /// Note an invocation the person made through a control.
+#[cfg(feature = "model")]
 pub(crate) fn note_invocation(address: &crate::bound_dispatch::BoundActionAddress, done: bool) {
     let invocation = RecentInvocation {
         at: i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX),

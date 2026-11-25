@@ -53,7 +53,7 @@ fn deferred_server_preferred_client_routes_address_without_minting() {
     let sent = std::rc::Rc::new(RefCell::new(vec![]));
     app.collaboration.manager =
         CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
-    let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+    let actor = tilo_actions::Actor::Member(app.local_author.clone());
     let result = app
         .invoke_resource_action(
             ResourceInvocation::new(

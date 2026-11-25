@@ -558,7 +558,7 @@ fn build_and_install(dir: &Path, package: &str) -> Result<String, String> {
         search: Vec::new(),
         out,
         tilo_runtime: tilolang_cli::package::DEFAULT_TILO_RUNTIME.to_owned(),
-        tilolang_runtime: tilolang_cli::package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+        tilolang_runtime: tilolang_cli::package::default_tilolang_runtime(),
         version: "0.1.0".to_owned(),
         locked: false,
     };

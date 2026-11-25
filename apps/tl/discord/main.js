@@ -514,7 +514,8 @@ export async function carryFromDiscord({
   if (event.source === "LAYOUT_CHANGED") {
     const adopted = await adoptServer({ calls, account, layout: event.payload, log });
     await keepRoles({ calls, account: adopted, layout: event.payload, asked, log });
-    await readBack({ calls, account: adopted, fetch, log });
+    // What the server said meanwhile is read once it was (re)joined, never on each change.
+    if (event.payload.fresh !== false) await readBack({ calls, account: adopted, fetch, log });
   }
   if (event.source === "COMMAND" && String(event.payload.guild_id) === String(account.guild_id)) {
     await answerSlash({ calls, account, command: event.payload, log });

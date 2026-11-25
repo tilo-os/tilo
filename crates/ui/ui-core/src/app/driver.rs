@@ -161,7 +161,7 @@ impl super::part_bar::BarWindow for Surface {
 pub struct DriverInputs {
     pub theme: Theme,
     pub text: TextRenderer,
-    pub author: crate::permissions::MemberId,
+    pub author: tilo_actions::MemberId,
 }
 
 impl DriverInputs {
@@ -171,7 +171,7 @@ impl DriverInputs {
         Self {
             theme,
             text: TextRenderer::new(),
-            author: crate::collaboration::local_user_id(),
+            author: super::local_person(),
         }
     }
 }
@@ -310,7 +310,7 @@ impl Driver {
         viewport: (u32, u32),
         theme: Theme,
         text: TextRenderer,
-        author: crate::permissions::MemberId,
+        author: tilo_actions::MemberId,
     ) -> Self {
         Self::with_inputs(
             state,
@@ -385,6 +385,7 @@ impl Driver {
         driver
     }
 
+    #[cfg(feature = "model")]
     /// Mount a prepared component without a display, GPU or service discovery.
     ///
     /// # Errors
@@ -405,6 +406,7 @@ impl Driver {
         Ok(driver)
     }
 
+    #[cfg(feature = "model")]
     /// Mount `component` in a surface of [`crate::headless::MOUNT_VIEWPORT`] with the fixture fonts
     /// and the dark theme.
     ///
@@ -427,6 +429,7 @@ impl Driver {
         Ok(driver)
     }
 
+    #[cfg(feature = "model")]
     /// Stand a managed root up and run its first frame.
     ///
     /// # Errors
@@ -449,7 +452,7 @@ impl Driver {
         viewport: (u32, u32),
         theme: Theme,
         text: TextRenderer,
-        author: crate::permissions::MemberId,
+        author: tilo_actions::MemberId,
     ) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
         Self::from_managed_root_with(
             state,
@@ -463,6 +466,7 @@ impl Driver {
         )
     }
 
+    #[cfg(feature = "model")]
     fn from_managed_root_with(
         state: State,
         root: crate::history_mode::ManagedRoot,
@@ -556,7 +560,9 @@ impl Driver {
         self.note_retained_frame();
         self.check_retained_geometry_if_due();
         // What the app asked of its broker in this frame is answered in the frame after.
-        if self.serve_peer() {
+        if let Some(serve) = self.peer.as_ref().map(|peer| peer.serve)
+            && serve(self)
+        {
             return self.run_frame();
         }
         again
@@ -1452,6 +1458,7 @@ impl Driver {
         changed
     }
 
+    #[cfg(feature = "model")]
     /// Replace the permissions the app's own document is acted on under.
     pub fn set_permission_ctx(&mut self, permissions: PermissionContext) {
         self.app.set_permission_ctx(permissions);
@@ -1809,34 +1816,7 @@ impl Driver {
         // What the window presents: History stands for the window while it is open, with the
         // app's own surface beside it as long as that surface is visible, and the palette takes
         // the window while it is up.
-        let mut root = if let Some(history) = self.app.history.as_deref() {
-            let mut presentation =
-                crate::headless::collect_inspection(history, "", &mut sibling_counts, None);
-            if let Some(palette) = self
-                .app
-                .actions
-                .action_palette
-                .as_deref()
-                .filter(|palette| palette.is_presented())
-            {
-                presentation
-                    .children
-                    .push(crate::headless::collect_inspection(
-                        palette,
-                        "",
-                        &mut sibling_counts,
-                        None,
-                    ));
-            } else if history.live_visible() {
-                presentation
-                    .children
-                    .push(crate::headless::collect_inspection(
-                        self.app.root_widget.as_ref(),
-                        "",
-                        &mut sibling_counts,
-                        None,
-                    ));
-            }
+        let mut root = if let Some(presentation) = self.history_inspection(&mut sibling_counts) {
             presentation
         } else if let Some(palette) = self
             .app
@@ -1914,6 +1894,52 @@ impl Driver {
         }
     }
 
+    /// What the window presents while its History is open: History, with the palette while it is
+    /// up, else the app's own surface while it stays visible.
+    fn history_inspection(
+        &self,
+        sibling_counts: &mut HashMap<String, usize>,
+    ) -> Option<InspectionNode> {
+        #[cfg(feature = "model")]
+        let presentation = {
+            let history = self.app.history.as_deref()?;
+            let mut presentation =
+                crate::headless::collect_inspection(history, "", sibling_counts, None);
+            if let Some(palette) = self
+                .app
+                .actions
+                .action_palette
+                .as_deref()
+                .filter(|palette| palette.is_presented())
+            {
+                presentation
+                    .children
+                    .push(crate::headless::collect_inspection(
+                        palette,
+                        "",
+                        sibling_counts,
+                        None,
+                    ));
+            } else if history.live_visible() {
+                presentation
+                    .children
+                    .push(crate::headless::collect_inspection(
+                        self.app.root_widget.as_ref(),
+                        "",
+                        sibling_counts,
+                        None,
+                    ));
+            }
+            Some(presentation)
+        };
+        #[cfg(not(feature = "model"))]
+        let presentation = {
+            let _ = sibling_counts;
+            None
+        };
+        presentation
+    }
+
     /// Certify the laid-out app against the action-native contract.
     #[must_use]
     pub fn native_app_audit(&self) -> NativeAppAudit {
@@ -1923,10 +1949,13 @@ impl Driver {
         // Shared chrome invokes the host's own APIs rather than the app's: search, and History
         // where the window serves one. A control bound to either is not stale.
         resources.push(crate::widget::search_request::search_resource());
-        resources.push(self.app.history.as_ref().map_or_else(
-            || crate::history_mode::api::history_resource(false, false),
-            |history| history.api_resource(),
-        ));
+        #[cfg(feature = "model")]
+        {
+            resources.push(self.app.history.as_ref().map_or_else(
+                || crate::history_mode::api::history_resource(false, false),
+                |history| history.api_resource(),
+            ));
+        }
         let bindings =
             crate::widget::controls::control_action_bindings(self.app.root_widget.as_ref());
         let inventoried_controls = bindings
@@ -2199,7 +2228,7 @@ impl Driver {
             .action_palette
             .as_deref()
             .is_some_and(crate::action_palette::ActionPalette::is_presented);
-        let mut update = if app.history.is_none() && !palette && app.window_box.is_drawn() {
+        let mut update = if !app.presents_history() && !palette && app.window_box.is_drawn() {
             // The box with no window around it is read over the app, as it is drawn.
             let roots: [&dyn Widget; 2] = [app.root_widget.as_ref(), &app.window_box];
             crate::accesskit_bridge::build_presentation_tree_bound(
@@ -2208,7 +2237,7 @@ impl Driver {
                 exported.focus(app.focused_node),
                 scale,
             )
-        } else if app.history.is_none() && !palette {
+        } else if !app.presents_history() && !palette {
             crate::accesskit_bridge::build_tree_update_bound(
                 app.root_widget.as_ref(),
                 &exported.nodes,
@@ -2456,10 +2485,11 @@ impl Driver {
         arguments: &serde_json::Map<String, serde_json::Value>,
         approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        let actor = tilo_actions::Actor::Member(self.app.collaboration.local_author.clone());
+        let actor = tilo_actions::Actor::Member(self.app.local_author.clone());
         self.invoke_action_as(&actor, address, arguments, approval)
     }
 
+    #[cfg(feature = "model")]
     /// [`Self::invoke_action`] for `actor`, who need not be the person at the surface: another
     /// member's or an agent's call reaches the app as the broker delivers it
     /// ([`Self::start_bound_job_within`]).
@@ -2495,7 +2525,7 @@ impl Driver {
         // admitted and delivered to the app for them, as the broker delivers it, never handed to
         // the window as one of its own.
         if let Some(member) = actor.member_id()
-            && *member != self.app.collaboration.local_author
+            && *member != self.app.local_author
         {
             let invoker = tilo_actions::ActionInvoker::member(member.clone());
             return self
@@ -2529,6 +2559,7 @@ impl Driver {
         started
     }
 
+    #[cfg(feature = "model")]
     fn invoke_resource_as(
         &mut self,
         actor: &tilo_actions::Actor,
@@ -2706,6 +2737,7 @@ impl Driver {
         self.app.control_notice()
     }
 
+    #[cfg(feature = "model")]
     /// Open the window's search as `request` asks, as the person's search key does.
     ///
     /// # Errors
@@ -2747,6 +2779,7 @@ impl Driver {
         self.app.focused_undo_status()
     }
 
+    #[cfg(feature = "model")]
     /// The pending controls History owes and what each waits on.
     #[must_use]
     pub fn pending_history_controls(
@@ -2760,12 +2793,14 @@ impl Driver {
         self.app.close_components();
     }
 
+    #[cfg(feature = "model")]
     /// What the components closed reported, without taking it.
     #[must_use]
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
         self.app.component_close_reports()
     }
 
+    #[cfg(feature = "model")]
     /// The instance id of the hosted application component, the `instance_id` its bound actions
     /// are addressed by.
     #[must_use]
@@ -2817,6 +2852,7 @@ impl Driver {
         self.app.control_notice().map(|notice| notice.text.clone())
     }
 
+    #[cfg(feature = "model")]
     /// What the components closed reported, taken.
     pub fn take_component_close_reports(
         &mut self,
@@ -2852,6 +2888,7 @@ impl Driver {
         self.run_frame();
     }
 
+    #[cfg(feature = "model")]
     /// Show the app's History.
     ///
     /// # Errors
