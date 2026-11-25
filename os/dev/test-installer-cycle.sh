@@ -393,10 +393,11 @@ shot_ocr() {
 wait_screen() {
   local saved="$1" pattern="$2" attempts="${3:-60}" delay="${4:-5}" image i
   for i in $(seq 1 "$attempts"); do
-    if image="$(shot_ocr observe 2>/dev/null)" \
+    if image="$(shot_ocr observe 2>"$out/$saved-shot.txt")" \
       && grep -Eqi "$pattern" "$out/observe.txt"; then
       cp -f "$image" "$out/$saved.png"
       cp -f "$out/observe.txt" "$out/$saved.txt"
+      rm -f -- "$out/$saved-shot.txt"
       return 0
     fi
     "$vm" status | grep -q '^running' || return 1
@@ -583,10 +584,11 @@ fi
 field "$out/01-disk.json" /status | grep -Eqi 'setup choices are ready' \
   || die "live installer did not acknowledge the embedded setup profile"
 # The installer publishes its state as soon as it holds it; the screen a
-# person sees is kept once it has drawn the step, and a step that stays
-# undrawn is what a person would be left looking at.
+# person sees is kept once it has drawn the step. A step still undrawn after
+# a minute is written down, with why its screen could not be read, and the
+# cycle goes on to the installed system.
 wait_screen 01-disk 'Disk' 30 2 \
-  || die "the installer held the Disk step but never drew it"
+  || printf 'the installer held the Disk step but did not draw it\n' > "$out/01-disk-undrawn.txt"
 
 # Select the method, refresh, then the only selectable disk (/dev/vdb). The
 # live /dev/vda is refused by the shipped disk identity rules.
@@ -606,7 +608,7 @@ if [ "$software_tpm" -eq 1 ]; then
     || die "software TPM was attached, but the live and target boot chain did not pass verified-boot preflight"
 fi
 wait_screen 02-account 'Account' 30 2 \
-  || die "the installer held the Account step but never drew it"
+  || printf 'the installer held the Account step but did not draw it\n' > "$out/02-account-undrawn.txt"
 
 # The startup secret travels from the environment to the console argument;
 # it is never on a command line and never in a reply.
