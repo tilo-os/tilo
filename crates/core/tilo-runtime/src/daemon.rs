@@ -1487,16 +1487,7 @@ impl Native {
                 let native = Arc::clone(self);
                 std::thread::Builder::new()
                     .name("tilo-native-open".into())
-                    .spawn(move || {
-                        let served = if asks_the_device_key(&stream) {
-                            native.device_only(stream, slot, seated)
-                        } else {
-                            person(stream, slot, seated)
-                        };
-                        if let Err(error) = served {
-                            tracing::debug!(%error, "a native connection was not served");
-                        }
-                    })
+                    .spawn(move || native.open_with_person(person, stream, slot, seated))
                     .map(drop)
             }
             None if !self.answers.claimed() => self.device_only(stream, slot, seated),
@@ -1504,86 +1495,108 @@ impl Native {
                 let native = Arc::clone(self);
                 std::thread::Builder::new()
                     .name("tilo-native-wait".into())
-                    .spawn(move || {
-                        // A caller following a call this device already took reads its stage
-                        // where the device keeps it: answered here, not once the person's part
-                        // starts. The call's progress is what a founding waits on.
-                        // What the device key does is answered at once too, from the key the
-                        // daemon took: never after the person's services start or a workspace is
-                        // admitted, which a signature does not depend on.
-                        if follows_a_call(&stream) || asks_the_device_key(&stream) {
-                            if let Err(error) = native.device_only(stream, slot, seated) {
-                                tracing::debug!(
-                                    %error,
-                                    "a native connection following a call was not served"
-                                );
-                            }
-                            return;
-                        }
-                        let deadline = Instant::now()
-                            .checked_add(WAITED_WITHIN)
-                            .unwrap_or_else(Instant::now);
-                        let mut told = native.started.0.lock_recover();
-                        let person = loop {
-                            if let Some(person) = native.person() {
-                                break Some(person);
-                            }
-                            let left = deadline.saturating_duration_since(Instant::now());
-                            if left.is_zero() {
-                                break None;
-                            }
-                            told = native
-                                .started
-                                .1
-                                .wait_timeout(told, left)
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .0;
-                        };
-                        drop(told);
-                        // A person's part that has not started in time is said, never waited on
-                        // for as long as it is broken: the caller would otherwise wait forever.
-                        let Some(person) = person else {
-                            // The request is read before the connection is answered: closing it
-                            // with the request unread sends the client a reset, and it reads
-                            // that instead of why it is not served.
-                            let (first, rest, descriptors) = match first_line(&stream, Vec::new()) {
-                                Ok(read) => read,
-                                Err(error) => {
-                                    tracing::debug!(%error, "a native connection was not read");
-                                    return;
-                                }
-                            };
-                            let line = first.strip_suffix(b"\n").unwrap_or(&first);
-                            // A session asking for its shell is served by the seats, which wait
-                            // for the person's services themselves: its shell starts once they
-                            // run, rather than the start being refused a few seconds in.
-                            if serde_json::from_slice::<Value>(line)
-                                .is_ok_and(|request| Seats::asks(&request))
-                            {
-                                seated.receives(descriptors);
-                                let Ok(follow) = stream.try_clone() else {
-                                    return;
-                                };
-                                let input = io::Cursor::new(first)
-                                    .chain(io::Cursor::new(rest).chain(follow));
-                                if let Err(error) = serve_seat(&stream, input, &seated) {
-                                    tracing::debug!(%error, "native seat client disconnected");
-                                }
-                                return;
-                            }
-                            crate::device::serve::refuse(
-                                &stream,
-                                "this computer has no person signed in yet: run `tilo status` to \
-                                 see how it stands, then try again",
-                            );
-                            return;
-                        };
-                        if let Err(error) = person(stream, slot, seated) {
-                            tracing::debug!(%error, "a native connection that waited while the person's services started was not served");
-                        }
-                    })
+                    .spawn(move || native.wait_for_the_person(stream, slot, seated))
                     .map(drop)
             }
+        }
+    }
+
+    /// Serve `stream` as the person's, unless its first line asks what the device key does: the
+    /// device's own actions answer that. Runs on a thread of the connection's own, so the listener
+    /// never waits on its first line.
+    fn open_with_person(
+        self: &Arc<Self>,
+        person: Arc<Take>,
+        stream: Stream,
+        slot: ConnectionSlot,
+        seated: Seated,
+    ) {
+        let served = if asks_the_device_key(&stream) {
+            self.device_only(stream, slot, seated)
+        } else {
+            person(stream, slot, seated)
+        };
+        if let Err(error) = served {
+            tracing::debug!(%error, "a native connection was not served");
+        }
+    }
+
+    /// Serve `stream`, which came while the person's services start: at once when it follows a
+    /// call or asks the device key, and otherwise once the person's part takes it, within
+    /// [`WAITED_WITHIN`], or with why it is not served.
+    fn wait_for_the_person(self: &Arc<Self>, stream: Stream, slot: ConnectionSlot, seated: Seated) {
+        // A caller following a call this device already took reads its stage
+        // where the device keeps it: answered here, not once the person's part
+        // starts. The call's progress is what a founding waits on.
+        // What the device key does is answered at once too, from the key the
+        // daemon took: never after the person's services start or a workspace is
+        // admitted, which a signature does not depend on.
+        if follows_a_call(&stream) || asks_the_device_key(&stream) {
+            if let Err(error) = self.device_only(stream, slot, seated) {
+                tracing::debug!(
+                    %error,
+                    "a native connection following a call was not served"
+                );
+            }
+            return;
+        }
+        let deadline = Instant::now()
+            .checked_add(WAITED_WITHIN)
+            .unwrap_or_else(Instant::now);
+        let mut told = self.started.0.lock_recover();
+        let person = loop {
+            if let Some(person) = self.person() {
+                break Some(person);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break None;
+            }
+            told = self
+                .started
+                .1
+                .wait_timeout(told, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        };
+        drop(told);
+        // A person's part that has not started in time is said, never waited on
+        // for as long as it is broken: the caller would otherwise wait forever.
+        let Some(person) = person else {
+            // The request is read before the connection is answered: closing it
+            // with the request unread sends the client a reset, and it reads
+            // that instead of why it is not served.
+            let (first, rest, descriptors) = match first_line(&stream, Vec::new()) {
+                Ok(read) => read,
+                Err(error) => {
+                    tracing::debug!(%error, "a native connection was not read");
+                    return;
+                }
+            };
+            let line = first.strip_suffix(b"\n").unwrap_or(&first);
+            // A session asking for its shell is served by the seats, which wait
+            // for the person's services themselves: its shell starts once they
+            // run, rather than the start being refused a few seconds in.
+            if serde_json::from_slice::<Value>(line).is_ok_and(|request| Seats::asks(&request)) {
+                seated.receives(descriptors);
+                let Ok(follow) = stream.try_clone() else {
+                    return;
+                };
+                let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
+                if let Err(error) = serve_seat(&stream, input, &seated) {
+                    tracing::debug!(%error, "native seat client disconnected");
+                }
+                return;
+            }
+            crate::device::serve::refuse(
+                &stream,
+                "this computer has no person signed in yet: run `tilo status` to \
+                 see how it stands, then try again",
+            );
+            return;
+        };
+        if let Err(error) = person(stream, slot, seated) {
+            tracing::debug!(%error, "a native connection that waited while the person's services started was not served");
         }
     }
 }
