@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use collab_types::store::wire::{Command, Reply};
-use collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
+use collaboration::{CollabEvent, CollabRequest, CollabSendError, CollaborationManager, RouteSpec};
 use tilo_resource_store::Port;
 
 use crate::wait::Wake;
