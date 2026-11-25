@@ -3,7 +3,7 @@
 //!
 //! A server of the person's is headless. This command reads the person's
 //! servers from their Servers workspace's document, through this computer's
-//! session ([`machines::SERVERS`]), and asks one of them for its health, a
+//! daemon ([`machines::SERVERS`]), and asks one of them for its health, a
 //! service's journal, a restart, a reboot, an update, a rollback, a drain or
 //! making Tilo its default start: the machine's own `server` device actions,
 //! which this computer's daemon hands to that server's, as it hands every
@@ -14,7 +14,6 @@ use anyhow::{Context as _, Result, bail};
 use clap::Subcommand;
 use serde_json::{Map, Value};
 use tilo_actions::remote::machines;
-use tilo_control::front::{self, Spelling};
 use tilo_server_protocol::servers::{PersonServer, RecoveryKey};
 use tilo_server_protocol::transport::{
     Opening, ServerAnswer, ServerOperationResult, ServerStatus, UnlockMethod,
@@ -170,23 +169,10 @@ fn list() -> Result<std::process::ExitCode> {
 }
 
 /// The disk recovery keys of the person's machines, as the vault of their
-/// Servers workspace keeps them, read through this computer's session.
+/// Servers workspace keeps them, read through this computer's daemon.
 fn recovery_keys() -> Result<Vec<RecoveryKey>> {
-    let answer = front::call_target(
-        &crate::desktop::sockets(),
-        machines::target(machines::RECOVERY_KEYS),
-        "Read your machines' disk recovery keys",
-        &serde_json::json!({}),
-        &Spelling::tilo(),
-    )
-    .map_err(anyhow::Error::msg)?;
-    serde_json::from_value(
-        answer
-            .get("result")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!([])),
-    )
-    .context("the session's list of your recovery keys does not read")
+    serde_json::from_value(read(machines::RECOVERY_KEYS)?)
+        .context("the daemon's list of your recovery keys does not read")
 }
 
 /// The saved recovery key of `server`, as the vault of the person's Servers
@@ -451,21 +437,20 @@ fn find(servers: &[PersonServer], name: &str) -> Result<PersonServer> {
 }
 
 /// The person's servers in service, as the document of their workspace
-/// names them, read through this computer's session.
+/// names them, read through this computer's daemon.
 fn servers() -> Result<Vec<PersonServer>> {
-    let answer = front::call_target(
-        &crate::desktop::sockets(),
-        machines::target(machines::SERVERS),
-        "List your servers",
-        &serde_json::json!({}),
-        &Spelling::tilo(),
-    )
-    .map_err(anyhow::Error::msg)?;
-    serde_json::from_value(
-        answer
-            .get("result")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!([])),
-    )
-    .context("the session's list of your servers does not read")
+    serde_json::from_value(read(machines::SERVERS)?)
+        .context("the daemon's list of your servers does not read")
+}
+
+/// What the person's Servers workspace answers the machine step `step`, as this computer's
+/// daemon reads it: the read a desktop makes, so a computer with none answers it as well.
+fn read(step: &str) -> Result<Value> {
+    let daemon = login::ensure_daemon()?;
+    login::runtime()?.block_on(async {
+        Calls::open_with(Reach::default(), || Ok(daemon))
+            .await?
+            .machines(step, Map::new())
+            .await
+    })
 }

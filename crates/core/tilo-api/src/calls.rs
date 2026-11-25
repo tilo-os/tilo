@@ -582,6 +582,34 @@ impl Calls {
             .map_err(|refused| refused.json())
     }
 
+    /// What the person's Servers workspace answers the machine step `step`
+    /// ([`tilo_actions::remote::machines`]) with `arguments`, read by this computer's daemon
+    /// where it holds that workspace: the read a desktop makes, with or without one.
+    ///
+    /// # Errors
+    /// These calls reach no daemon of this computer's, or the daemon refused or failed the read.
+    pub async fn machines(
+        &self,
+        step: &str,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Result<Value> {
+        let At::Daemon { line, .. } = &self.at else {
+            return Err(anyhow!(
+                "your machines are read through this computer's daemon, and these calls reach none"
+            ));
+        };
+        let provider: Provider = line.clone();
+        // The daemon decides the call as whoever connects; the caller here names nobody.
+        settled(
+            &provider,
+            tilo_actions::remote::Caller::local_person(""),
+            tilo_actions::remote::machines::target(step),
+            arguments,
+        )
+        .await
+        .map_err(|refused| anyhow!("{}", refused.body.message))
+    }
+
     /// The call lane of this app's connection ([`LineClient::carry_call`]): an app the daemon
     /// started carries one outside service's call into a workspace call on it. Any other
     /// connection carries none, and its calls are refused with why.
