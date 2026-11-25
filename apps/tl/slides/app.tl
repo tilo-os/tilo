@@ -2108,7 +2108,7 @@ view insert_tools(s: Slide, chosen: State<Text>, editing: State<Bool>) {
             on press: paste_element(s).then(set(chosen, ""))
         }
         if let e = element_in(s, chosen_key(s, chosen)) {
-            ui.Button("Copy", icon: .copy, icon_only: true, key: "Ctrl+C") {
+            ui.Button("Copy", icon: .copy, icon_only: true) {
                 on press: copy_element(e)
             }
         }
