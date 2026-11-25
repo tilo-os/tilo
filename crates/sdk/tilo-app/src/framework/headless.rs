@@ -420,6 +420,11 @@ pub(super) fn window_content(directory: &std::path::Path) -> tilo_content::Conte
 /// names its host the actions of the records it shows that another workspace holds (a person's
 /// profile records), and only a host holding that workspace decides them.
 pub trait Host {
+    /// Keep the settings of the profile at `root` a window is about to open on, before the window
+    /// first reads them, as this host keeps a person's. A host that keeps none leaves the profile
+    /// its own document. Another window on the same profile finds them as the first left them.
+    fn keeps_settings(_root: &std::path::Path) {}
+
     /// Take up the window `driver` opened for `author`, before its first frame.
     fn opened(driver: &mut Driver, author: &str);
 }
@@ -1015,6 +1020,9 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
             .as_ref()
             .filter(|(capture, _)| !capture.is_driven())
             .map(|_| ui_core::motion::testing::settled());
+        if let ui_core::storage::SettingsDocument::Profile(root) = profile.settings() {
+            H::keeps_settings(&root);
+        }
         let opened = open_app(
             &Opening::of::<A>(),
             Launch {

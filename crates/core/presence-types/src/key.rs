@@ -3,7 +3,7 @@
 //!
 //! **The postcard encoding of [`PresenceKey`] is a wire contract.** Cap'n
 //! Proto carries the key bytes opaquely and peer replication forwards the
-//! same bytes ([`crate::PeerPresence::key`]), so variant order never changes.
+//! same bytes (`tilo_collab_types::PeerPresence::key`), so variant order never changes.
 
 use serde::{Deserialize, Serialize};
 

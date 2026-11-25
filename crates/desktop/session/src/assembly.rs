@@ -294,10 +294,6 @@ pub(crate) struct Shared {
     /// act on before the player here.
     #[cfg(target_os = "linux")]
     pub(crate) live: Rc<crate::live_list::Sources>,
-    /// The running applications' tray items, which the bar shows and whose
-    /// clicks the session hands back to the applications.
-    #[cfg(target_os = "linux")]
-    pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     /// The pictures the session shows, by workspace.
     #[cfg(target_os = "linux")]
     pub(crate) wallpapers: std::sync::Arc<crate::wallpapers::Wallpapers>,
@@ -330,10 +326,6 @@ pub(crate) struct Shared {
     /// What the session opens an app through: a search row, a link, the place a notice names.
     #[cfg(target_os = "linux")]
     pub(crate) apps: Option<Rc<dyn crate::search::AppActions>>,
-    /// What programs outside Tilo ask the person, raised as asked records, and where the answers
-    /// go.
-    #[cfg(target_os = "linux")]
-    pub(crate) program_asks: crate::program_asks::ProgramAsks,
     /// What those questions tell the person without asking.
     #[cfg(target_os = "linux")]
     pub(crate) program_notices: crate::program_asks::ProgramNotices,
@@ -358,11 +350,6 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) document_reads:
         std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
-    /// The same documents as the session's own roles write them: what a layout's change reaches
-    /// its workspace through.
-    #[cfg(target_os = "linux")]
-    pub(crate) document_writes:
-        std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     /// The store of a workspace this device's own service holds, once it is open: where the apps
     /// the session runs itself keep their resources, as the apps' windows do.
     #[cfg(target_os = "linux")]
@@ -449,9 +436,6 @@ pub(crate) struct Shared {
     /// the loop last answered it: the bar's invite button and the roster's
     /// footer are offered on it.
     pub(crate) invitable: Rc<Cell<bool>>,
-    /// The person's "hide the top bar until the pointer is near it", as the
-    /// settings watch last read it.
-    pub(crate) hide_top_bar: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The controller the person last drove the desktop with: the guide
     /// leads with its buttons until a key of their own is pressed.
     pub(crate) controller: Rc<Cell<Option<ui::ControllerFamily>>>,

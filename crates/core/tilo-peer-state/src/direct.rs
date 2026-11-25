@@ -1551,6 +1551,7 @@ impl DirectSync {
                 }
             }
         }
+        drop(room);
         Ok(())
     }
 

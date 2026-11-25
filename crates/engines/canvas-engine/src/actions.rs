@@ -2459,7 +2459,7 @@ mod crop_tests {
 
     #[test]
     fn cropping_moves_the_active_selection_and_its_soft_edge() {
-        let mut art = Replica::<Artwork>::new();
+        let mut art = Replica::<Artwork>::new().in_app("so.tilo.model", "Model");
         art.apply(Artwork::SELECT.with(Select {
             rect: Some([100.0, 80.0, 50.0, 40.0]),
             feather: Some(3.0),

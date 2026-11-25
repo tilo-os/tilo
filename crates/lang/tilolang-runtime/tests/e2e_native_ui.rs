@@ -50,7 +50,7 @@ action rename(n: Note, t: Text) (label: "Rename", on: n.title != "") {
             let off = present("pin");
             assert_eq!(text_prop(&off, "label"), "Pin");
             assert_eq!(text_prop(&off, "icon"), "pin");
-            assert_eq!(off.props["on"], Value::Int(0));
+            assert_eq!(off.props["on"], Value::Bool(false));
             rt.invoke_action(
                 &me(),
                 (app.action("pin").as_str(), vec![Value::resource(&note)]),
@@ -59,7 +59,7 @@ action rename(n: Note, t: Text) (label: "Rename", on: n.title != "") {
             let on = present("pin");
             assert_eq!(text_prop(&on, "label"), "Unpin");
             assert_eq!(text_prop(&on, "icon"), "bell-off");
-            assert_eq!(on.props["on"], Value::Int(1));
+            assert_eq!(on.props["on"], Value::Bool(true));
             let rename = present("rename");
             assert_eq!(
                 rename.props.keys().collect::<Vec<_>>(),
@@ -212,7 +212,7 @@ view letter(l: Letter) {
         let send = of_kind(view.tree(), "ui.Button")[0].clone();
         assert_eq!(
             send.props.get("enabled"),
-            Some(&Value::Int(0)),
+            Some(&Value::Bool(false)),
             "{}",
             dump(view.tree())
         );
@@ -270,7 +270,7 @@ view letter(l: Letter) {
         let send = of_kind(view.tree(), "ui.ToolbarButton")[0].clone();
         assert_eq!(
             send.props.get("enabled"),
-            Some(&Value::Int(0)),
+            Some(&Value::Bool(false)),
             "{}",
             dump(view.tree())
         );
@@ -303,7 +303,7 @@ view letter(l: Letter) {
         let dates = of_kind(view.tree(), "ui.DateField");
         assert_eq!(
             dates[0].props.get("optional"),
-            Some(&Value::Int(1)),
+            Some(&Value::Bool(true)),
             "a date that may be none can be cleared"
         );
         assert!(!dates[1].props.contains_key("optional"));

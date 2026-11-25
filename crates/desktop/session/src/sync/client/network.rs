@@ -398,10 +398,6 @@ async fn carry_host(
             true
         }
         HostCmd::TakePart(connect) => actor.send(NetCmd::NativeConnect(connect)).await.is_ok(),
-        HostCmd::Content(delivery) => actor
-            .send(NetCmd::PublishRecordContent(delivery))
-            .await
-            .is_ok(),
         HostCmd::Fabric {
             user_public_key,
             target,

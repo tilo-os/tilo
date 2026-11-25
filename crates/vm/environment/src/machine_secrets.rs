@@ -141,6 +141,7 @@ fn is_item(item: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_resource::AppNamed;
     use tilo_resource::Replica;
 
     const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
@@ -155,12 +156,12 @@ mod tests {
         );
     }
 
-    fn replica() -> Replica<MachineSecrets> {
+    fn replica() -> Replica<MachineSecrets, AppNamed> {
         let mut doc = tilo_resource::Doc::new();
         tilo_resource::Fields::write_fields(&MachineSecrets::default(), &mut doc, &automerge::ROOT)
             .unwrap();
         doc.commit();
-        Replica::from_doc(doc)
+        Replica::from_doc(doc).in_app("so.tilo.model", "Model")
     }
 
     fn add(variable: &str, item: &str) -> tilo_resource::Invoke<MachineSecrets> {

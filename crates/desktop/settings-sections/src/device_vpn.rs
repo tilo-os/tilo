@@ -140,7 +140,7 @@ mod tests {
     /// needs a route; every stop and release is a request of its own.
     #[test]
     fn the_choices_change_only_through_their_actions() {
-        let mut vpn = Replica::<DeviceVpnPrefs>::new();
+        let mut vpn = Replica::<DeviceVpnPrefs>::new().in_app("so.tilo.model", "Model");
         vpn.apply(DeviceVpnPrefs::ROUTE_THROUGH.with(("tower".to_owned(), true)))
             .unwrap();
         vpn.apply(DeviceVpnPrefs::SET_KILL_SWITCH.with(true))

@@ -25,9 +25,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
-use tilo_actions::remote::{
-    self, ActionCallError, ActionProvider as _, Caller, RemoteActionFrame, RemoteActionMessage,
-};
+use tilo_actions::remote::{self, ActionCallError, Caller, RemoteActionFrame, RemoteActionMessage};
 use tilo_compositor::{Compositor, InputEvent};
 
 use tilo_session_core::desktop::overlays::Overlays;

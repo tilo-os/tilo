@@ -1169,7 +1169,10 @@ fn dispatch_by_maybe_context(
     actor: Option<&[u8]>,
     context: Option<ActionContext>,
 ) -> Result<Dispatched, ActionError> {
-    let context = context.map(|context| context.with_inferred_app(&encoded.type_id));
+    // A change names the app its record belongs to, and a caller that names none is a caller
+    // that would be decided against an app guessed from a type id: never a decision. The typed
+    // replica a system write goes through names one before it may apply at all
+    // (`tilo_resource::Replica::in_app`); an app that writes its own record does too.
     match action.locus() {
         ExecutionLocus::ClientLocal => {
             apply_steps(doc, action, encoded, (actor, context), &mut |env| {

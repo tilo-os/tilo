@@ -1115,7 +1115,7 @@ fn pairing(details: Value) -> Kind {
     let device = asked.device.clone();
     let explain = |key: &str| words(key, &[("device", &device)]);
     let title = |key: &str| words(key, &[("device", &device)]);
-    let mut code = |facts: &mut AskedFacts| {
+    let code = |facts: &mut AskedFacts| {
         if let Some(code) = &asked.code {
             facts
                 .facts

@@ -618,9 +618,13 @@ impl Admits for NativeChecks {
                     }
                 });
                 end.complete(
-                    ran.map(|receipt| ActionOutput {
-                        value: Some(serde_json::to_value(&receipt).expect("a receipt is JSON")),
-                        ..ActionOutput::default()
+                    ran.and_then(|receipt| {
+                        serde_json::to_value(&receipt)
+                            .map(|value| ActionOutput {
+                                value: Some(value),
+                                ..ActionOutput::default()
+                            })
+                            .map_err(|error| format!("the check's receipt did not encode: {error}"))
                     })
                     .map_err(|message| {
                         Box::new(ActionFailure {

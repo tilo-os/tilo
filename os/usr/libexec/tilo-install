@@ -170,8 +170,11 @@ BOOT_MOUNT_CONTRACT="${TILO_BOOT_MOUNT_CONTRACT:-/usr/libexec/tilo-boot-mount-co
 # staged, and repair UKIs. Six 160 MiB image slots plus filesystem slack need
 # 1 GiB available; requiring a 2 GiB partition also leaves room for firmware
 # metadata and any other vendor boot files already present.
-MIN_ALONGSIDE_ESP_BYTES=2147483648
 MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824
+# The partition sizes an install lays out (TILO_ESP_BYTES, TILO_BOOT_BYTES,
+# TILO_MIN_ROOT_BYTES), from the file the imager reads them from too.
+# shellcheck source=../share/tilo/install-sizes
+. "${TILO_INSTALL_SIZES:-$(dirname "$(readlink -f "$0")")/../share/tilo/install-sizes}"
 
 log()  { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -799,16 +802,14 @@ validate_partition_identity() {
     || die "$label size changed after selection; refresh disks and review again"
 }
 
-# An erase install lays out a 2 GiB EFI partition, a 1 GiB /boot and the encrypted root
-# (tilo-disk-encrypt prepare), and the root needs the 32 GiB an alongside root needs: the
-# 35 GiB the installer offers as the least Tilo size. A smaller disk is refused here, before
-# anything is written, not once the image no longer fits on a disk already erased.
-MIN_WHOLE_DISK_BYTES=37580963840
+# An erase install lays out the EFI partition, /boot and the encrypted root (tilo-disk-encrypt
+# prepare), and the root needs what an alongside root needs. A smaller disk is refused here,
+# before anything is written, not once the image no longer fits on a disk already erased.
 validate_disk_capacity() {
-  local size
+  local size minimum=$((TILO_ESP_BYTES + TILO_BOOT_BYTES + TILO_MIN_ROOT_BYTES))
   size="$(blockdev --getsize64 "$DISK")" || die "could not read the size of $DISK"
-  [ "$size" -ge "$MIN_WHOLE_DISK_BYTES" ] \
-    || die "$DISK holds $((size / 1073741824)) GiB; installing Tilo on a whole disk needs at least 35 GiB"
+  [ "$size" -ge "$minimum" ] \
+    || die "$DISK holds $((size / 1073741824)) GiB; installing Tilo on a whole disk needs at least $((minimum / 1073741824)) GiB"
 }
 
 validate_disk_identity
@@ -892,8 +893,8 @@ validate_alongside() {
     boot_type="$(blkid -p -s PART_ENTRY_TYPE -o value "$BOOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
     [ "$boot_type" = 0fc63daf-8483-4772-8e79-3d69d8477de4 ] \
       || die "$BOOT_PARTITION is not explicitly typed as a Linux boot partition"
-    [ "$(blockdev --getsize64 "$BOOT_PARTITION")" -ge 1073741824 ] \
-      || die "$BOOT_PARTITION is smaller than the 1 GiB boot minimum"
+    [ "$(blockdev --getsize64 "$BOOT_PARTITION")" -ge "$TILO_BOOT_BYTES" ] \
+      || die "$BOOT_PARTITION is smaller than the $((TILO_BOOT_BYTES / 1073741824)) GiB boot minimum"
     mountpoints="$(lsblk -nro MOUNTPOINT "$BOOT_PARTITION")" \
       || die "could not inspect $BOOT_PARTITION mount state"
     [ -z "$(printf '%s' "$mountpoints" | tr -d '[:space:]')" ] \
@@ -927,8 +928,8 @@ validate_alongside() {
     || die "$EFI_PARTITION is not an EFI System Partition"
   efi_fs="$(blkid -s TYPE -o value "$EFI_PARTITION" 2>/dev/null || true)"
   [ "$efi_fs" = vfat ] || die "$EFI_PARTITION is not a FAT EFI System Partition"
-  [ "$(blockdev --getsize64 "$EFI_PARTITION")" -ge "$MIN_ALONGSIDE_ESP_BYTES" ] \
-    || die "$EFI_PARTITION is smaller than the 2 GiB Tilo EFI minimum"
+  [ "$(blockdev --getsize64 "$EFI_PARTITION")" -ge "$TILO_ESP_BYTES" ] \
+    || die "$EFI_PARTITION is smaller than the $((TILO_ESP_BYTES / 1073741824)) GiB Tilo EFI minimum"
   fsck.fat -n "$EFI_PARTITION" >/dev/null 2>&1 \
     || die "$EFI_PARTITION is not a clean FAT filesystem; repair it before installing Tilo"
   efi_mountpoints="$(lsblk -nro MOUNTPOINT "$EFI_PARTITION")" \
@@ -947,8 +948,8 @@ validate_alongside() {
   [ "$efi_available" -ge "$MIN_ALONGSIDE_ESP_FREE_BYTES" ] \
     || die "$EFI_PARTITION has less than 1 GiB available for Tilo boot images"
   ALONGSIDE_EFI_AVAILABLE_BYTES="$efi_available"
-  [ "$(blockdev --getsize64 "$ROOT_PARTITION")" -ge 34359738368 ] \
-    || die "$ROOT_PARTITION is smaller than the 32 GiB alongside minimum"
+  [ "$(blockdev --getsize64 "$ROOT_PARTITION")" -ge "$TILO_MIN_ROOT_BYTES" ] \
+    || die "$ROOT_PARTITION is smaller than the $((TILO_MIN_ROOT_BYTES / 1073741824)) GiB alongside minimum"
   mountpoints="$(lsblk -nro MOUNTPOINT "$ROOT_PARTITION")" \
     || die "could not inspect $ROOT_PARTITION mount state"
   [ -z "$(printf '%s' "$mountpoints" | tr -d '[:space:]')" ] \

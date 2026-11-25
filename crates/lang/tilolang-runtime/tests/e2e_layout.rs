@@ -72,7 +72,7 @@ view paged(a: Album) {\n    std.page(a, canvas: true, fill: true) {\n        she
                 .collect();
             assert_eq!(titles.len(), 2);
             assert_eq!(titles[0].props["lines"], Value::Int(1));
-            assert_eq!(titles[0].props["truncate"], Value::Int(1));
+            assert_eq!(titles[0].props["truncate"], Value::Bool(true));
         }
 
         phase a_view_that_reads_space_follows_the_class_it_is_offered;
@@ -234,7 +234,7 @@ view paged(a: Album) {\n    std.page(a, canvas: true, fill: true) {\n        she
         let tree = view.tree();
         assert_eq!(
             first(tree, "page").props["full"],
-            Value::Int(1),
+            Value::Bool(true),
             "{}",
             dump(tree)
         );

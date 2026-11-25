@@ -15,6 +15,7 @@
 use collab_types::presence::Shown;
 use iroh::EndpointId;
 use tilo_desktop_model::TabId;
+#[cfg(test)]
 use tilo_session_core::desktop::host::chrome::ActiveExposure;
 
 use super::WindowShares;
@@ -33,6 +34,7 @@ impl WindowShares {
     /// What the bar says is being shared: each member that asked to see a window of this device,
     /// what the workspace calls it, whether it may control the window, and whether anything of
     /// the window goes out, which is when the bar says the member watches it.
+    #[cfg(test)]
     pub(crate) fn exposures(&self) -> Vec<ActiveExposure> {
         let hosted = self.hosted.iter().map(|(tab, hosted)| (*tab, Some(hosted)));
         // A window whose page is published is drawn by its app: nobody controls it from here.

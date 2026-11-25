@@ -13,6 +13,7 @@ pub trait PublishesPresence: Widget {
     /// Outbound presence (typically caret/selection) broadcast while this
     /// widget holds focus; the host polls the focused widget after each
     /// event and diffs it out to peers.
+    #[cfg(feature = "model")]
     fn presence_payload(
         &self,
     ) -> Option<(super::PresenceKey, crate::collaboration::PresencePayload)> {
@@ -32,6 +33,7 @@ pub trait PublishesPresence: Widget {
     /// [`crate::shared_selection::selection_of`]); a widget whose selection
     /// those cannot describe (one spanning blocks, offsets in another text)
     /// answers itself.
+    #[cfg(feature = "model")]
     fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
         None
     }
@@ -112,6 +114,7 @@ pub fn composing_draft(widget: &(impl Widget + ?Sized)) -> Option<(super::Presen
 }
 
 /// `widget`'s outbound presence.
+#[cfg(feature = "model")]
 pub fn presence_payload(
     widget: &(impl Widget + ?Sized),
 ) -> Option<(super::PresenceKey, crate::collaboration::PresencePayload)> {
@@ -119,8 +122,10 @@ pub fn presence_payload(
 }
 
 /// Nodes [`subtree_presence`] visits at most.
+#[cfg(feature = "model")]
 const SUBTREE_NODES: usize = 4096;
 /// Payloads [`subtree_presence`] returns at most.
+#[cfg(feature = "model")]
 const SUBTREE_PAYLOADS: usize = 8;
 
 /// The widget under `root` (itself included) that shows the remote caret or
@@ -217,6 +222,7 @@ pub fn agent_text_loci(
 /// tree order: where each editor's caret is even while it does not hold
 /// keyboard focus (an action moved it, or focus is elsewhere). Bounded in
 /// nodes and results.
+#[cfg(feature = "model")]
 pub fn subtree_presence(
     root: &dyn Widget,
 ) -> Vec<(super::PresenceKey, crate::collaboration::PresencePayload)> {

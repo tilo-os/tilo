@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_service::{Service, Started};
 use tilo_session_core::desktop::state::DesktopHandle;
-use tilo_session_core::desktop::workspace_settings::{AppDirectory, listed_permissions};
+use tilo_session_core::desktop::workspace_settings::listed_permissions;
 
 use crate::i18n::t;
 

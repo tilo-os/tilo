@@ -697,12 +697,6 @@ impl Shell {
         self.link.publish_layout(reading);
     }
 
-    /// Hand the shell what waits for the person's yes, which its asking view draws, whenever it
-    /// changed.
-    pub(crate) fn publish_asking(&self, questions: Vec<tilolang_tilo::shell::AskedReading>) {
-        self.link.publish_asking(questions);
-    }
-
     /// Follow the styles the device's daemon publishes (`shell.md` §6): when they moved — a
     /// package installed, reinstalled or taken away — every style package is published to the
     /// shell's parts again, so a style that failed and was reinstalled fixed draws again with no

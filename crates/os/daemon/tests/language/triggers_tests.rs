@@ -384,9 +384,11 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     let owner = hex::encode(cert.user_public_key);
     workspaces
         .author_agents(&workspace, |doc| {
-            use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
+            use tilo_workspace_agent::{OWNER, WorkspaceAgents, workspace_agents};
             let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                .as_author(&owner);
+                .in_app("so.tilo.model", "Model")
+                .as_author(&owner)
+                .in_app(OWNER, "Workspace");
             made.apply(
                 WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                     avatar: None,

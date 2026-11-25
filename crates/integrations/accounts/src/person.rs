@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use tilo_resource::{
-    Collection, Id, Invoke, Model, ModelError, Refusal, Replica, SharedResource, resource,
+    AppNamed, Collection, Id, Invoke, Model, ModelError, Refusal, Replica, SharedResource, resource,
 };
 
 use crate::{Account, AccountId, AccountTypeId};
@@ -554,7 +554,7 @@ impl AccountList {
     /// The record cannot be built, or its directory cannot be made or the file
     /// written.
     pub fn stage_in(&self, config_root: &Path) -> std::io::Result<()> {
-        let mut replica = Replica::<Self>::new();
+        let mut replica = Replica::<Self>::new().in_app(ACCOUNTS_OWNER, "Settings");
         for account in self.all() {
             replica
                 .apply_confirmed(Self::saving(&account))
@@ -576,11 +576,15 @@ pub fn staged_path_in(config_root: &Path) -> PathBuf {
 ///
 /// # Errors
 /// The staged record does not read as this record.
-pub fn staged_in(config_root: &Path) -> Result<Replica<AccountList>, String> {
+pub fn staged_in(config_root: &Path) -> Result<Replica<AccountList, AppNamed>, String> {
     let path = staged_path_in(config_root);
     match std::fs::read(&path) {
-        Ok(bytes) => Replica::load(&bytes).map_err(|error| format!("{}: {error}", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Replica::new()),
+        Ok(bytes) => Replica::load(&bytes)
+            .map(|record| record.in_app(ACCOUNTS_OWNER, "Settings"))
+            .map_err(|error| format!("{}: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(Replica::new().in_app(ACCOUNTS_OWNER, "Settings"))
+        }
         Err(error) => Err(format!("{}: {error}", path.display())),
     }
 }
@@ -591,7 +595,7 @@ pub fn staged_in(config_root: &Path) -> Result<Replica<AccountList>, String> {
 /// The record's directory cannot be made or the file cannot be written.
 pub fn keep_staged_in(
     config_root: &Path,
-    record: &mut Replica<AccountList>,
+    record: &mut Replica<AccountList, AppNamed>,
 ) -> std::io::Result<()> {
     let path = staged_path_in(config_root);
     if let Some(parent) = path.parent() {
@@ -603,6 +607,7 @@ pub fn keep_staged_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_resource::AppNamed;
     use tilo_resource::Replica;
 
     /// The workspace's accounts as version 1 kept them, each account's
@@ -618,7 +623,7 @@ mod tests {
             "tls": true,
             "folders": ["INBOX", "Sent"],
         });
-        let mut replica = Replica::<AccountList>::new();
+        let mut replica = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
         let doc = replica.doc_mut();
         evolution::fixture(
             doc,
@@ -682,7 +687,7 @@ mod tests {
         use tilo_resource::{Slot, evolution};
         let root = tilo_resource::__private::ROOT;
         let config = serde_json::json!({"host": "imap.example", "port": 993});
-        let mut replica = Replica::<AccountList>::new();
+        let mut replica = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
         let doc = replica.doc_mut();
         evolution::fixture(
             doc,
@@ -725,7 +730,7 @@ mod tests {
     fn browser_picker_projects_settings_accounts_without_crossing_identity_or_origin() {
         let root = "ab".repeat(32);
         let origin = "https://host.example";
-        let mut record = Replica::<AccountList>::new();
+        let mut record = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
         for (id, key, host, enabled) in [
             ("work", root.clone(), origin, true),
             ("disabled", root.clone(), origin, false),
@@ -782,7 +787,7 @@ mod tests {
     fn identity_publication_uses_the_shared_account_record_and_preserves_disabled_choices() {
         let root = "ab".repeat(32);
         let origin = "https://host.example";
-        let mut record = Replica::<AccountList>::new();
+        let mut record = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
         let publication = AccountList::PUBLISH_BROWSER_IDENTITY.with((
             root.clone(),
             origin.into(),
@@ -840,7 +845,7 @@ mod tests {
         assert_eq!(record.state().unwrap().len(), 1);
     }
 
-    fn save(replica: &mut Replica<AccountList>, id: &str, type_id: &str, host: &str) {
+    fn save(replica: &mut Replica<AccountList, AppNamed>, id: &str, type_id: &str, host: &str) {
         replica
             .apply(AccountList::SAVE_ACCOUNT.with((
                 id.into(),
@@ -855,7 +860,7 @@ mod tests {
 
     #[test]
     fn accounts_are_saved_by_id_and_removed() {
-        let mut replica = Replica::<AccountList>::new();
+        let mut replica = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
         save(&mut replica, "a@x.example", "email", "imap.x");
         save(&mut replica, "b@y.example", "email", "imap.y");
         save(&mut replica, "work", "caldav", "dav.example");
@@ -909,10 +914,10 @@ mod tests {
     /// what its sync says.
     #[test]
     fn the_last_device_to_report_says_how_an_accounts_sync_went() {
-        let mut replica = Replica::<AccountList>::new();
+        let mut replica = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
         save(&mut replica, "work", "caldav", "dav.example");
         let minute = 60_000;
-        let succeeded = |replica: &Replica<AccountList>| {
+        let succeeded = |replica: &Replica<AccountList, AppNamed>| {
             replica
                 .state()
                 .unwrap()
@@ -1030,7 +1035,7 @@ mod tests {
 
     /// What the account `id` keeps as its settings in `replica`; none when
     /// it is gone.
-    fn kept(replica: &Replica<AccountList>, id: &str) -> Option<serde_json::Value> {
+    fn kept(replica: &Replica<AccountList, AppNamed>, id: &str) -> Option<serde_json::Value> {
         replica
             .state()
             .unwrap()
@@ -1049,6 +1054,7 @@ mod tests {
         let mut theirs = workspace_accounts(&person);
         let mut agent = Replica::<AccountList>::load(&theirs.save())
             .unwrap()
+            .in_app("so.tilo.model", "Model")
             .as_agent_for("helper", &person);
         let elsewhere = "imap.elsewhere.example";
         agent
@@ -1096,8 +1102,10 @@ mod tests {
 
     /// The workspace's accounts as a member's device keeps them: a mail
     /// account, a calendar account, and one added and removed again.
-    fn workspace_accounts(person: &str) -> Replica<AccountList> {
-        let mut theirs = Replica::<AccountList>::new().as_invoker(person);
+    fn workspace_accounts(person: &str) -> Replica<AccountList, AppNamed> {
+        let mut theirs = Replica::<AccountList>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_invoker(person);
         theirs
             .apply(saving("ada@example.test", "email", mail("imap.example")))
             .unwrap();
@@ -1119,7 +1127,9 @@ mod tests {
     fn a_members_own_device_changes_the_accounts_as_before() {
         let person = "ab".repeat(32);
         let mut theirs = workspace_accounts(&person);
-        let mut device = Replica::<AccountList>::load(&theirs.save()).unwrap();
+        let mut device = Replica::<AccountList>::load(&theirs.save())
+            .unwrap()
+            .in_app("so.tilo.model", "Model");
         device
             .apply(saving("news@example.test", "email", mail("imap.example")))
             .unwrap();

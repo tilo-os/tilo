@@ -1087,7 +1087,8 @@ owner_run() {
   # Their own runtime directory, where the holder of their device listens: the stack's own,
   # private and short (stack_runtime).
   run=$(stack_runtime owner) || exit 1
-  XDG_RUNTIME_DIR=$run \
+  # No session bus of this login's: every stack's person here would take the same name on it.
+  env -u DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR=$run \
   HOME=$home XDG_CONFIG_HOME=$home/.config XDG_STATE_HOME=$home/.local/state \
     XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
     TILO_IDENTITY_ROOT=$home/.local/share/tilo \

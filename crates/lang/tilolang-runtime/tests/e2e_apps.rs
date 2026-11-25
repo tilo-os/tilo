@@ -1611,7 +1611,7 @@ mod cases {
         assert_eq!(tree.kind, "ui.NavShell", "{}", dump(tree));
         assert_eq!(
             of_kind(tree, "page")[0].props["full"],
-            Value::Int(1),
+            Value::Bool(true),
             "Today is a canvas the window's width: {}",
             dump(tree)
         );
@@ -1670,7 +1670,7 @@ mod cases {
         assert_eq!(quiet.len(), 1, "one quiet line: {}", dump(tree));
         assert_eq!(
             quiet[0].props.get("secondary"),
-            Some(&Value::Int(1)),
+            Some(&Value::Bool(true)),
             "quiet ink, not the page's own words: {}",
             dump(tree)
         );
@@ -1934,7 +1934,7 @@ mod cases {
             let shown = of_kind(tree, "ui.Text")[0];
             // A number that changes: a title in tabular figures.
             assert_eq!(shown.props["role"], Value::text("title"));
-            assert_eq!(shown.props["numeric"], Value::Int(1));
+            assert_eq!(shown.props["numeric"], Value::Bool(true));
             let plus = button_labelled(tree, "Increment");
             assert_eq!(plus.props["role"], Value::text("primary"));
             assert_eq!(plus.props["icon"], Value::text("plus"));
@@ -2392,7 +2392,7 @@ mod cases {
             node_with(v.tree(), "ui.Button", "label", "Delete finished tasks")
                 .props
                 .get("enabled")
-                == Some(&Value::Int(1))
+                == Some(&Value::Bool(true))
         };
         let why = |v: &ViewInstance| -> String {
             match node_with(v.tree(), "ui.Button", "label", "Delete finished tasks")

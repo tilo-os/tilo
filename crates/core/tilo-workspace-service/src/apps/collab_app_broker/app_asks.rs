@@ -199,23 +199,24 @@ impl AppBrokerState {
         }
         let invocation = request.invocation;
         // Where the person pressed it, by this device's id and the window's tab key as the
-        // session publishes them, so the shell stands the question at that press.
-        let device = self
-            .services
-            .shell
-            .as_ref()
-            .map(|shell| hex::encode(shell.workspaces.device_cert().device_public_key));
-        if let (Some((window, at)), Some(device)) = (pressed, device) {
-            asks.pressing.lock_recover().insert(
-                invocation,
-                Pressed {
-                    device,
+        // session publishes them, so the shell stands the question at that press. A call the
+        // app makes for an invocation delivered to it, with no press of its own, asks over
+        // that invocation's view: the window its connection is.
+        let stands = self.services.shell.as_ref().and_then(|shell| {
+            let device = shell.workspaces.device_cert().device_public_key;
+            match pressed {
+                Some((window, at)) => Some(Pressed {
+                    device: hex::encode(device),
                     app: app.to_owned(),
                     instance: window.to_string(),
                     resource: request.target.address.resource.clone(),
                     at,
-                },
-            );
+                }),
+                None => self.parent_view(provider.own_peer, &device, request),
+            }
+        });
+        if let Some(stands) = stands {
+            asks.pressing.lock_recover().insert(invocation, stands);
         }
         let written = records.write_asked(&workspace, caller, request, &facts);
         asks.pressing.lock_recover().remove(&invocation);
@@ -245,6 +246,37 @@ impl AppBrokerState {
             },
         };
         RemoteActionMessage::Receipt(InvocationReceipt { invocation, status })
+    }
+
+    /// Where `request`, which connection `peer`'s app makes for an invocation delivered to it,
+    /// waits for its person: over the window that connection is on `device` (its key), as a
+    /// question a press there asked, on the resource the delivered invocation acts on. `None`
+    /// for a call that continues no invocation delivered there, or a connection that is no
+    /// window.
+    pub(super) fn parent_view(
+        &self,
+        peer: u64,
+        device: &[u8; 32],
+        request: &InvokeRequest,
+    ) -> Option<Pressed> {
+        let parent = request.on_behalf_of?;
+        let window = self.window_of_peer(peer)?;
+        let original = self
+            .pending_invocations
+            .lock()
+            .ok()?
+            .values()
+            .find(|pending| pending.peer_id == peer && pending.update.invocation() == parent)?
+            .original
+            .clone()?;
+        let (app, resource) = original.acts_on();
+        Some(Pressed {
+            device: hex::encode(device),
+            app: app.to_owned(),
+            instance: window.to_string(),
+            resource: resource.to_owned(),
+            at: None,
+        })
     }
 
     /// The name the person knows app `app` by: its installed manifest's, else its id.

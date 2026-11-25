@@ -13,6 +13,7 @@ use tilo_resource::{
     ActionCx, ActionKind, Availability, Collection, Derived, Id, Invoke, JsonSchema, Model, Outbox,
     Params, Refusal, Replica, Resource, resource,
 };
+use tilo_resource::AppNamed;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Colour {
@@ -224,7 +225,7 @@ impl Wall {
 #[test]
 fn a_verbs_change_names_its_item_by_one_line() {
     let left_beside = |text: &str| {
-        let mut wall = Replica::<Wall>::new();
+        let mut wall = Replica::<Wall>::new().in_app("so.tilo.model", "Model");
         wall.apply(Wall::LEAVE.with((Id::from_raw("lobby"), text.to_owned())))
             .unwrap();
         let first = wall.state().unwrap().notes.ids().next().unwrap().clone();
@@ -261,7 +262,7 @@ fn a_verbs_change_names_its_item_by_one_line() {
 /// every replica read it.
 #[test]
 fn a_verbs_change_names_the_item_it_makes() {
-    let mut shelf = Replica::<Shelf>::new();
+    let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
     let made = shelf
         .apply(Shelf::ADD.with(("Plan the launch".to_owned(), None)))
         .unwrap();
@@ -293,7 +294,7 @@ fn a_verbs_change_names_the_item_it_makes() {
     );
 }
 
-fn published(replica: &Replica<Shelf>) -> tilo_actions::ResourceSpec {
+fn published(replica: &Replica<Shelf, AppNamed>) -> tilo_actions::ResourceSpec {
     tilo_resource::publish::<Shelf>("shelf", "Shelf", &replica.state().unwrap())
 }
 
@@ -302,7 +303,7 @@ tilo_test_env::scenario! {
 
     phase ids_and_parameter_names_are_public_names;
     {
-        let mut shelf = Replica::<Shelf>::new();
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         assert_eq!(shelf.state().unwrap().name, "New shelf");
         shelf.apply(Shelf::RENAME.with("Kitchen")).unwrap();
         assert_eq!(shelf.state().unwrap().name, "Kitchen");
@@ -332,7 +333,7 @@ tilo_test_env::scenario! {
         let text = serde_json::to_string(&schema).unwrap();
         assert!(text.contains("\"red\""), "{text}");
         assert_eq!(schema["required"], serde_json::json!(["title"]));
-        let tree = published(&Replica::<Shelf>::new());
+        let tree = published(&Replica::<Shelf>::new().in_app("so.tilo.model", "Model"));
         let add = tree.actions.iter().find(|spec| spec.id == "add").unwrap();
         let param = add
             .params()
@@ -345,7 +346,7 @@ tilo_test_env::scenario! {
                 .contains("\"green\"")
         );
         // A colour outside its type is refused when the arguments bind.
-        let mut shelf = Replica::<Shelf>::new();
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         let mut arguments = Shelf::ADD
             .with(shelf::Add {
                 title: "x".into(),
@@ -379,7 +380,7 @@ tilo_test_env::scenario! {
 
     phase item_verbs_are_offered_on_the_items_of_their_collection;
     {
-        let mut shelf = Replica::<Shelf>::new();
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         shelf
             .apply(Shelf::ADD.with(("Tea".to_owned(), None)))
             .unwrap();
@@ -414,7 +415,7 @@ tilo_test_env::scenario! {
 
     phase an_item_is_named_by_its_id_its_address_or_its_title;
     {
-        let mut shelf = Replica::<Shelf>::new();
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         shelf.apply(Shelf::ADD.with(("Tea".to_owned(), None))).unwrap();
         let id = shelf
             .state()
@@ -457,7 +458,7 @@ tilo_test_env::scenario! {
         // The wall keeps notes alone and a place is none of them: the verb is
         // handed the place as written, while no note is there yet and also
         // where a note reads as the place is called.
-        let mut wall = Replica::<Wall>::new();
+        let mut wall = Replica::<Wall>::new().in_app("so.tilo.model", "Model");
         wall.apply(Wall::LEAVE.with((Id::from_raw("lobby"), "kitchen".to_owned())))
             .unwrap();
         wall.apply(Wall::LEAVE.with((Id::from_raw("kitchen"), "Mind the step".to_owned())))
@@ -483,7 +484,7 @@ tilo_test_env::scenario! {
 
     phase a_verb_with_an_outbox_reaches_outside;
     {
-        let mut shelf = Replica::<Shelf>::new();
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         shelf.apply(Shelf::RENAME.with("Pantry")).unwrap();
         shelf
             .apply(Shelf::ADD.with(("Tea".to_owned(), None)))
@@ -532,7 +533,7 @@ tilo_test_env::scenario! {
 
     phase seed_availability_children_and_content;
     {
-        let mut shelf = Replica::<Shelf>::new();
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         // Nothing to mail on an empty shelf.
         let tree = published(&shelf);
         let mail = tree
@@ -587,7 +588,7 @@ tilo_test_env::scenario! {
     phase a_record_that_answers_no_read_declares_it;
     {
         const { assert!(!Scratch::READABLE) };
-        let scratch = Replica::<Scratch>::new();
+        let scratch = Replica::<Scratch>::new().in_app("so.tilo.model", "Model");
         let refusal = Scratch::read_content(&scratch.state().unwrap(), scratch.doc(), None)
             .expect_err("a record that answers no read has no content to answer");
         assert!(refusal.contains("does not answer reads"), "{refusal}");
@@ -605,7 +606,7 @@ tilo_test_env::scenario! {
         assert!(invoke.refusal().is_some());
         assert!(invoke.arguments.is_empty());
         assert!(wrong.try_with(("a".to_owned(),)).is_err());
-        let mut shelf = Replica::<Shelf>::new();
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         assert!(shelf.apply(invoke.clone()).is_err());
         assert!(invoke.build(0).is_err());
         assert!(
@@ -621,7 +622,7 @@ tilo_test_env::scenario! {
 
     phase item_resources_resolve_lazily_as_the_tree_publishes_them;
     {
-        let mut shelf = Replica::<Shelf>::new();
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         for title in ["Tea", "Coffee", "Cocoa"] {
             shelf
                 .apply(Shelf::ADD.with((title.to_owned(), None)))
@@ -661,7 +662,7 @@ tilo_test_env::scenario! {
 
     phase each_labelled_item_is_its_own_search_entry;
     {
-        let mut shelf = Replica::<Shelf>::new();
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         shelf
             .apply(Shelf::ADD.with(("Tea".to_owned(), None)))
             .unwrap();
@@ -680,7 +681,7 @@ tilo_test_env::scenario! {
     phase content_inputs_nested_derived_places_and_edit_effects;
     {
         use tilo_resource::Effect;
-        let shelf = Replica::<Shelf>::new();
+        let shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         let tree = published(&shelf);
         let place = tree
             .actions
@@ -758,7 +759,7 @@ tilo_test_env::scenario! {
             tilo_resource::ResourceKind::of::<Shelf>(),
         );
         assert!(single.arguments(&None).unwrap().is_empty());
-        let mut shelf = Replica::<Shelf>::new();
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         shelf.apply(add.with(("Tea".to_owned(), None))).unwrap();
         assert_eq!(shelf.state().unwrap().cards.len(), 1);
     }
@@ -766,7 +767,7 @@ tilo_test_env::scenario! {
     phase typed_secret_parameters_bind_redacted_variants_and_refuse_plaintext_arguments;
     {
         use tilo_actions::{ActionArgs, ArgValue, ParamType};
-        let mut record = Replica::<PrivateImport>::new();
+        let mut record = Replica::<PrivateImport>::new().in_app("so.tilo.model", "Model");
         let tree = tilo_resource::publish::<PrivateImport>(
             "private",
             "Private import",
@@ -1134,7 +1135,7 @@ tilo_test_env::scenario! {
 
     phase an_item_label_is_made_of_several_fields;
     {
-        let mut book = Replica::<Book>::new();
+        let mut book = Replica::<Book>::new().in_app("so.tilo.model", "Model");
         book.apply(Book::ADD.with(("Ada".to_owned(), "Lovelace".to_owned(), String::new())))
             .unwrap();
         book.apply(Book::ADD.with((
@@ -1173,7 +1174,7 @@ tilo_test_env::scenario! {
     // `label = path` names it: the value, its item resource and its search
     // entry all read so.
     {
-        let mut pins = Replica::<Pins>::new();
+        let mut pins = Replica::<Pins>::new().in_app("so.tilo.model", "Model");
         pins.apply(Pins::PIN.with("std:docs".to_owned())).unwrap();
         pins.apply(Pins::PIN.with("/srv/media".to_owned())).unwrap();
         let state = pins.state().unwrap();
@@ -1194,7 +1195,7 @@ tilo_test_env::scenario! {
 
     phase an_edit_under_a_map_key_is_about_that_entry_and_a_set_names_its_element;
     {
-        let mut reports = Replica::<Reports>::new();
+        let mut reports = Replica::<Reports>::new().in_app("so.tilo.model", "Model");
         reports
             .apply(Reports::FILE.with(("so.tilo.notes".to_owned(), "Notes crash".to_owned())))
             .unwrap();
@@ -1246,7 +1247,7 @@ tilo_test_env::scenario! {
     {
         use automerge::transaction::Transactable as _;
         use automerge::{ObjType, ReadDoc as _, ScalarValue, Value};
-        let mut book = Replica::<Book>::new();
+        let mut book = Replica::<Book>::new().in_app("so.tilo.model", "Model");
         book.apply(Book::ADD.with(("Ada".to_owned(), "Lovelace".to_owned(), String::new())))
             .unwrap();
         book.apply(Book::ADD.with(("Charles".to_owned(), "Babbage".to_owned(), String::new())))
@@ -1307,7 +1308,7 @@ tilo_test_env::scenario! {
 
     phase an_edit_inside_a_missing_map_entry_starts_the_entry;
     {
-        let mut reports = Replica::<Reports>::new();
+        let mut reports = Replica::<Reports>::new().in_app("so.tilo.model", "Model");
         let action = Reports::edit_action(
             Reports::paths()
                 .reports
@@ -1390,7 +1391,7 @@ impl Reports {
 }
 
 fn described(
-    replica: &mut Replica<Reports>,
+    replica: &mut Replica<Reports, AppNamed>,
     edit: tilo_resource::Edit<Reports>,
 ) -> tilo_actions::Described {
     let action = Reports::edit_action(edit).unwrap();
@@ -1452,7 +1453,7 @@ tilo_test_env::scenario! {
 
     phase a_place_not_loaded_still_resolves_by_id;
     {
-        let mut pages = Replica::<Pages>::new();
+        let mut pages = Replica::<Pages>::new().in_app("so.tilo.model", "Model");
         for title in ["Cover", "Contents", "Chapter one"] {
             pages.apply(Pages::ADD_PAGE.with(title.to_owned())).unwrap();
         }
@@ -1482,8 +1483,8 @@ tilo_test_env::scenario! {
     }
 }
 
-fn three_pages() -> Replica<Pages> {
-    let mut pages = Replica::<Pages>::new();
+fn three_pages() -> Replica<Pages, AppNamed> {
+    let mut pages = Replica::<Pages>::new().in_app("so.tilo.model", "Model");
     for title in ["Cover", "Contents", "Chapter one"] {
         pages.apply(Pages::ADD_PAGE.with(title.to_owned())).unwrap();
     }

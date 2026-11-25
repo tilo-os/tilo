@@ -2947,6 +2947,7 @@ fn perform_resource_action(
                         &target.address.address,
                         arguments.as_ref(),
                         argument,
+                        approval,
                     ) {
                         return Err(BoundActionError::Hosted(hosted));
                     }

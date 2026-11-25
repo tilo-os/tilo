@@ -107,7 +107,7 @@ mod cases {
     fn entry_placeholder(tree: &UiNode) -> String {
         let entry = of_kind(tree, "ui.TextInput")
             .into_iter()
-            .find(|field| field.props.get("entry") == Some(&Value::Int(1)))
+            .find(|field| field.props.get("entry") == Some(&Value::Bool(true)))
             .unwrap_or_else(|| panic!("the list ends in its entry:\n{}", dump(tree)))
             .clone();
         entry

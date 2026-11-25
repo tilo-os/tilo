@@ -161,27 +161,6 @@ impl RecordContent {
         }
     }
 
-    /// Keep `bytes` as content of `workspace`, under the scope the content put API serves a
-    /// workspace's callers from: what the session itself makes of a workspace — the picture of a
-    /// window it does not run — is read by the same addresses as what its apps store. Answers the
-    /// address the bytes are kept under.
-    ///
-    /// # Errors
-    /// The workspace names no store, or the store refused the bytes.
-    /// Keep `bytes` under `app`'s scope in `workspace` — the scope a file's content is read
-    /// under — and answer their address.
-    pub(crate) fn keep_under(
-        &self,
-        workspace: &str,
-        app: &str,
-        bytes: &[u8],
-    ) -> Result<String, String> {
-        self.on(workspace, app, |scoped| {
-            scoped.put(bytes, "application/octet-stream")
-        })
-        .map(|kept| kept.hash)
-    }
-
     /// Keep the file at `path` under `app`'s scope in `workspace`, streamed: a
     /// file the person hands to one of their other devices, which is not held
     /// whole in memory and is not bounded by the media capability's size.

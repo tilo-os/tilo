@@ -275,7 +275,7 @@ tilo_test_env::scenario! {
             .filter(|node| {
                 matches!(
                     node.props.get("inline"),
-                    Some(Value::Bool(true) | Value::Int(1))
+                    Some(Value::Bool(true))
                 )
             })
             .collect();

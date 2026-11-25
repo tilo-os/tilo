@@ -114,11 +114,13 @@ client_side = [
     "tilo-net",
     "tilo-paths",
     "tilo-platform-caps",
+    "tilo-presence-types",     # where a presence is and the hue a person wears
     "tilo-reference",          # the links an invitation is written as
     "tilo-server-client",       # device certification and the device-signer boundary
     "tilo-server-protocol",     # the server's handshake and wire messages
     "tilo-resource",           # a resource's fields, as an app publishes them
     "tilo-resource-macros",
+    "tilo-resource-plain",     # text splices, search scopes, item kinds and emoji names
     "tilo-rt",
     "tilo-seal",
     "tilo-secrets",            # where a device keeps its keys
@@ -203,6 +205,7 @@ toolkit_reaches = [
     "tilo-paths",                       # crates/platform/tilo-paths
     "tilo-platform-caps",               # crates/platform/tilo-platform-caps
     "tilo-presentation",                # crates/platform/tilo-presentation
+    "tilo-presence-types",              # crates/core/presence-types
     "tilo-process",                     # crates/platform/tilo-process
     "tilo-process-services",            # crates/sdk/tilo-process-services
     "tilo-projector",                   # crates/services/projector
@@ -211,6 +214,7 @@ toolkit_reaches = [
     "tilo-render-protocol",             # crates/ui/tilo-render-protocol
     "tilo-resource",                    # crates/core/tilo-resource
     "tilo-resource-macros",             # crates/core/tilo-resource-macros
+    "tilo-resource-plain",              # crates/core/resource-plain
     "tilo-rt",                          # crates/platform/tilo-rt
     "tilo-runtime-collab",              # crates/core/runtime-collab
     "tilo-runtime-portal",              # crates/core/runtime-portal

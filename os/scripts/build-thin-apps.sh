@@ -140,11 +140,17 @@ done
 # a workspace crate. Left at the profile's speed setting, every app paid for
 # such a library at speed size: Windows 77 KB of the VM client's code, Chat
 # 121 KB of its view and moderation crates, TOTP 163 KB of its QR decoder.
-# A crate the runtime or an engine also links keeps the runtime's setting,
-# whatever version: a second setting would build it twice and change the
-# runtime. The set reads every app in the graph, not the selected ones, so a
-# tapp's bytes do not depend on which apps a run builds. The graph is resolved
-# with the build's own features: an engine's crates are optional behind its
+# An engine no crate compiles against (Typst's, which only Typst Editor opens)
+# is such code too: one app's, loaded on its first call, and exporting only its
+# unmangled entries, so it and the libraries only it links are compiled for
+# size as well, at `s`: Typst's engine was 35.4 MB at the runtime's setting
+# and is 33.3 MB at `s`, typesetting as fast; at `z` it was 32.3 MB but took a
+# fifth more CPU time to typeset a page.
+# A crate the runtime or an engine apps compile against also links keeps the
+# runtime's setting, whatever version: a second setting would build it twice
+# and change the runtime. The set reads every app in the graph, not the
+# selected ones, so a tapp's bytes do not depend on which apps a run builds.
+# The graph is resolved with the build's own features: an engine's crates are optional behind its
 # `thin` feature, and without it the contact directory and the resource model
 # looked like app-only libraries, were built for size, and the engine that
 # links them exported every generic instance shared generics made of them.
@@ -171,20 +177,27 @@ def closure(names):
         todo.extend(deps.get(pid, ()))
     return {packages[pid]["name"] for pid in seen}
 apps = os.environ["APPS"].split()
-shared = closure(["runtime-dylib", *os.environ["ENGINES"].split()])
+engines = os.environ["ENGINES"].split()
+# An engine some crate compiles against exports what that crate links of it;
+# one no crate depends on, only its unmangled entries (`entry_graph` below).
+linked = {packages[pid]["name"] for targets in deps.values() for pid in targets}
+entry = [engine for engine in engines if engine not in linked]
+shared = closure(["runtime-dylib", *(e for e in engines if e not in entry)])
 members = set(meta["workspace_members"])
-for name in sorted(closure(apps) - shared - set(apps)):
+engine_reach = closure(entry)
+for name in sorted(closure([*apps, *entry]) - shared - set(apps)):
     pids = by_name[name]
     targets = [t for pid in pids for t in packages[pid]["targets"]]
     if any("proc-macro" in t["kind"] for t in targets):
         continue
     lib = next((t["name"] for t in targets if "lib" in t["kind"] or "rlib" in t["kind"]), None)
     member = lib is not None and any(pid in members for pid in pids)
-    print(name, lib.replace("-", "_") if member else "-")')
-    while read -r library crate; do
+    level = "s" if name in engine_reach else "z"
+    print(name, lib.replace("-", "_") if member else "-", level)')
+    while read -r library crate level; do
         [ -n "$library" ] || continue
         [[ " ${app_profiles[*]} " == *"package.\"$library\".opt-level"* ]] && continue
-        app_profiles+=(--config "profile.$PROFILE.package.\"$library\".opt-level=\"z\""
+        app_profiles+=(--config "profile.$PROFILE.package.\"$library\".opt-level=\"$level\""
                        --config "profile.$PROFILE.package.\"$library\".codegen-units=1")
         [ "$crate" = - ] || binary_crates+=("$crate")
     done <<<"$app_only"

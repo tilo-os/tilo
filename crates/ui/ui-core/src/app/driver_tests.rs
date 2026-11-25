@@ -24,7 +24,7 @@ use crate::headless::Driver;
 use crate::state::State;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::widget::{Button, Column, Container, TaffyTreeExt, TextInput, Widget};
+use crate::widget::{Banner, Button, Column, Container, TaffyTreeExt, TextInput, Widget};
 
 const WIDTH: u32 = 200;
 const HEIGHT: u32 = 100;
@@ -867,5 +867,85 @@ fn a_widget_reads_the_pen_behind_each_pointer_event_and_none_for_a_mouse() {
             ("press", None),
         ],
         "the samples themselves never reach a widget as events"
+    );
+}
+
+// ---- a named control with no place ----
+
+/// A widget that holds content it never lays out, as a page whose frame never placed it reads:
+/// only the accessibility box around its control is left, and that box sits at the origin.
+struct Unplaced {
+    content: Banner,
+    rect: Rect,
+}
+
+impl Widget for Unplaced {
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let style = taffy::Style {
+            size: taffy::Size::from_lengths(240.0, 160.0),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.content]
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(&self.content);
+    }
+
+    fn name(&self) -> &'static str {
+        "Unplaced"
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+#[test]
+fn a_named_control_with_no_laid_out_place_is_no_target_and_is_never_pressed_at_the_origin() {
+    let content =
+        Banner::warning("No page").with_secondary_action(Button::new("unplaced.control", "Go on"));
+    let mut driver = Driver::for_root(
+        State::new(),
+        Unplaced {
+            content,
+            rect: Rect::ZERO,
+        },
+        (240, 160),
+        Theme::dark(),
+    );
+    driver.relayout();
+    assert!(
+        driver.targets().get("unplaced.control").is_none(),
+        "a control nothing laid out has no place to press: {:?}",
+        driver.targets().get("unplaced.control")
+    );
+    let error = driver
+        .click_named("unplaced.control")
+        .expect_err("no place to click");
+    assert!(
+        error.contains("no addressable widget"),
+        "the click names what it could not reach, and presses nothing: {error}"
     );
 }

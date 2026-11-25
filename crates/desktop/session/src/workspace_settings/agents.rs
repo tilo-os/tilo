@@ -15,10 +15,9 @@
 
 use std::cell::RefCell;
 
-use tilo_action_policy::agent_answers::AnswerScope;
-use tilo_action_policy::{ActionKind, Answer, MemberId};
+use tilo_action_policy::{ActionKind, MemberId};
 use tilo_app::tilo_workspace_agent::{
-    Agent, KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
+    KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };
 use tilo_desktop_model::{Layout, Workspace};
 use tilo_resource::Id;

@@ -299,7 +299,7 @@ tilo_test_env::scenario! {
             assert!(
                 matches!(
                     node.props.get("navigates"),
-                    Some(Value::Bool(false) | Value::Int(0))
+                    Some(Value::Bool(false))
                 ),
                 "a row opens the note where the tree already shows it: {:?}",
                 node.props.get("navigates")

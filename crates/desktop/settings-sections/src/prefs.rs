@@ -2668,7 +2668,7 @@ mod power_storage_tests {
     #[test]
     fn power_settings_of_version_one_keep_every_timer() {
         let root = ui::tilo_resource::__private::ROOT;
-        let mut replica = Replica::<PowerPrefs>::new();
+        let mut replica = Replica::<PowerPrefs>::new().in_app("so.tilo.model", "Model");
         let doc = replica.doc_mut();
         evolution::fixture(
             doc,
@@ -2775,7 +2775,7 @@ mod notification_app_id_tests {
             ("org/example", false),
         ] {
             assert_eq!(valid_app_id(id), expected, "{id:?}");
-            let mut replica = Replica::<NotificationPrefs>::new();
+            let mut replica = Replica::<NotificationPrefs>::new().in_app("so.tilo.model", "Model");
             let result = replica.apply(NotificationPrefs::MUTE_APP.with(
                 notification_prefs::MuteApp {
                     app: id.to_owned(),
@@ -2805,7 +2805,8 @@ mod notification_app_id_tests {
             .write_fields(&mut doc, &ui::tilo_resource::__private::ROOT)
             .unwrap();
         doc.commit();
-        let mut replica = Replica::<NotificationPrefs>::from_doc(doc);
+        let mut replica =
+            Replica::<NotificationPrefs>::from_doc(doc).in_app("so.tilo.model", "Model");
 
         // Existing stored `foo.` never blocks switching Do Not Disturb.
         replica
@@ -2884,7 +2885,7 @@ mod tests {
     /// was when it names one it does not, and none follows the device again.
     #[test]
     fn a_language_is_one_the_desktop_speaks() {
-        let mut appearance = Replica::<AppearancePrefs>::new();
+        let mut appearance = Replica::<AppearancePrefs>::new().in_app("so.tilo.model", "Model");
         appearance
             .apply(AppearancePrefs::CHOOSE_LANGUAGE.with(Some("de-DE".to_owned())))
             .expect("a language the desktop speaks");

@@ -716,6 +716,15 @@ impl Driver {
                 .is_some_and(|at| at <= now)
     }
 
+    /// Run the frame a deadline made due, if one is: a window's loop draws it before the next
+    /// event, so input reaches what the clock places rather than the frame its deadline left.
+    fn serve_due_frame(&mut self) {
+        let now = crate::time::now();
+        if self.next_frame_deadline(now).is_some_and(|at| at <= now) {
+            let _ = self.poll_frame();
+        }
+    }
+
     /// Run a frame only when one is owed ([`Self::frame_owed`]), as a display's frame clock does,
     /// then serve the owner models a worker woke for this tree's components: an idle pass, as a
     /// live window's is. Whether a frame ran.
@@ -1003,6 +1012,10 @@ impl Driver {
         let Some(_pen) = self.app.input.pen.route(event) else {
             return;
         };
+        // A frame the clock made due runs before the input, as a window's loop draws what is due
+        // between events: the press lands on what that frame placed, not on the layout the
+        // deadline found.
+        self.serve_due_frame();
         crate::focus_visible::note(event);
         self.note_pointer(event);
         // A chord typed on a layout that is not Latin is the Latin chord it is on the keys: a
@@ -1258,6 +1271,7 @@ impl Driver {
     /// # Errors
     /// When no laid-out widget has that name, or it has no area.
     pub fn click_named(&mut self, name: &str) -> Result<(), String> {
+        self.serve_due_frame();
         let center = self.named_center(name)?;
         self.click_at(center.x, center.y);
         Ok(())
@@ -1268,6 +1282,7 @@ impl Driver {
     /// # Errors
     /// As [`Self::click_named`].
     pub fn tap_named(&mut self, name: &str) -> Result<(), String> {
+        self.serve_due_frame();
         let center = self.named_center(name)?;
         self.tap_at(center.x, center.y);
         Ok(())
@@ -2557,6 +2572,26 @@ impl Driver {
         // A call the workspace would not admit never runs: its caller hears why.
         if let Some(refusal) = self.own_refusal(invocation) {
             return Err(refusal);
+        }
+        // Another provider's action ends as that provider answered it.
+        match self.provider_answer(invocation) {
+            Some(tilo_actions::remote::ReceiptStatus::Completed { output }) => {
+                return Ok(crate::widget::ResourceOperationStart::Completed(
+                    output.clone(),
+                ));
+            }
+            Some(tilo_actions::remote::ReceiptStatus::Failed { error }) => {
+                return Err(jobs::failure_refusal(address, error.clone()));
+            }
+            Some(tilo_actions::remote::ReceiptStatus::Cancelled { message }) => {
+                return Err(tilo_actions::ApiError::Failed(
+                    message.clone().unwrap_or_else(|| "cancelled".to_owned()),
+                ));
+            }
+            Some(tilo_actions::remote::ReceiptStatus::Rejected { error }) => {
+                return Err(crate::session_api::api_error(error));
+            }
+            Some(tilo_actions::remote::ReceiptStatus::Accepted) | None => {}
         }
         let ended = self
             .call_updates(invocation)

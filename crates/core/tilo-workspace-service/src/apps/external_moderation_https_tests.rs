@@ -1,6 +1,8 @@
 // Included in external_moderation_rpc_tests so the same admitted RPC fixture is used.
 // The host supplies committed Store bytes and the person's approve of the exact disclosure;
 // enrollment, purpose-key signing, HTTPS, registry verification and persistence are real.
+use tilo_resource::AppNamed;
+
 mod https_completion {
     use super::*;
     use crate::apps::app_actions::{ModerationConsentPreview, ModerationConsentPurpose};
@@ -375,11 +377,13 @@ mod https_completion {
     // It cannot substitute caller-supplied bytes during the disclosure continuation.
     struct StoreOwner(std::path::PathBuf);
     impl StoreOwner {
-        fn load(&self) -> tilo_resource::Replica<store_report_fixture::Reports> {
+        fn load(&self) -> tilo_resource::Replica<store_report_fixture::Reports, AppNamed> {
             if self.0.exists() {
-                tilo_resource::Replica::load(&std::fs::read(&self.0).unwrap()).unwrap()
+                tilo_resource::Replica::load(&std::fs::read(&self.0).unwrap())
+                    .unwrap()
+                    .in_app("so.tilo.model", "Model")
             } else {
-                tilo_resource::Replica::new()
+                tilo_resource::Replica::new().in_app("so.tilo.model", "Model")
             }
         }
 
@@ -441,19 +445,21 @@ mod https_completion {
             _: Option<[u8; 32]>,
             maximum: usize,
         ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
-        Box::pin(std::future::ready((|| -> Result<NativeDocumentRead, String> {
-            self.authorize(context)?;
-            let bytes = std::fs::read(&self.0).map_err(|error| error.to_string())?;
-            if bytes.len() > maximum {
-                return Err("Store snapshot exceeds limit".into());
-            }
-            Ok(NativeDocumentRead::Captured {
-                revision: *blake3::hash(&bytes).as_bytes(),
-                heads: Vec::new(),
-                body: Box::new(ReportDocument(bytes)),
-            })
-        })()))
-    }
+            Box::pin(std::future::ready(
+                (|| -> Result<NativeDocumentRead, String> {
+                    self.authorize(context)?;
+                    let bytes = std::fs::read(&self.0).map_err(|error| error.to_string())?;
+                    if bytes.len() > maximum {
+                        return Err("Store snapshot exceeds limit".into());
+                    }
+                    Ok(NativeDocumentRead::Captured {
+                        revision: *blake3::hash(&bytes).as_bytes(),
+                        heads: Vec::new(),
+                        body: Box::new(ReportDocument(bytes)),
+                    })
+                })(),
+            ))
+        }
     }
 
     fn approved_operation(
@@ -763,6 +769,7 @@ mod https_completion {
 mod store_report_fixture {
     use std::collections::BTreeMap;
 
+    use tilo_resource::AppNamed;
     use tilo_resource::{self, Model, Refusal, resource};
 
     pub const DRAFT_STATUS: &str = "Not submitted";

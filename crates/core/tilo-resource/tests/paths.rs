@@ -1,6 +1,7 @@
 //! Typed paths, field edits at them, invariants and the storage types whose
 //! concurrent edits merge per element.
 
+use tilo_resource::AppNamed;
 use tilo_resource::{
     ActionCx, Bytes, Collection, Counter, Edit, Grid, Id, Invoke, Model, Outbox, Path, Refusal,
     Replica, Resource, Segment, Set, Settled, resource,
@@ -82,14 +83,14 @@ impl Library {
     }
 }
 
-fn edit(replica: &mut Replica<Library>, edit: &Edit<Library>) -> Result<(), String> {
+fn edit(replica: &mut Replica<Library, AppNamed>, edit: &Edit<Library>) -> Result<(), String> {
     replica
         .apply(Invoke::edit(edit).map_err(|error| error.to_string())?)
         .map(drop)
         .map_err(|error| error.to_string())
 }
 
-fn first_snippet(replica: &Replica<Library>) -> Id {
+fn first_snippet(replica: &Replica<Library, AppNamed>) -> Id {
     replica
         .state()
         .unwrap()
@@ -128,7 +129,7 @@ tilo_test_env::scenario! {
 
     phase field_edits_apply_at_their_path_and_merge;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
         let id = first_snippet(&library);
         let snippet = Library::paths().snippets.item(&id);
@@ -156,14 +157,14 @@ tilo_test_env::scenario! {
         }
         assert_eq!(library.state().unwrap(), other.state().unwrap());
         // The log replays to the same state.
-        let mut replay = Replica::<Library>::from_doc(other.doc_mut().fork());
+        let mut replay = Replica::<Library>::from_doc(other.doc_mut().fork()).in_app("so.tilo.model", "Model");
         replay.sync_with(&mut library).unwrap();
         assert_eq!(replay.state().unwrap(), library.state().unwrap());
     }
 
     phase collection_edits_insert_move_and_remove_items;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         let snippets = Library::paths().snippets;
         let titled = |title: &str| Snippet {
             title: title.into(),
@@ -172,7 +173,7 @@ tilo_test_env::scenario! {
         edit(&mut library, &snippets.insert(0, &titled("b"))).unwrap();
         edit(&mut library, &snippets.insert(0, &titled("a"))).unwrap();
         edit(&mut library, &snippets.insert(9, &titled("c"))).unwrap();
-        let order = |replica: &Replica<Library>| {
+        let order = |replica: &Replica<Library, AppNamed>| {
             replica
                 .state()
                 .unwrap()
@@ -205,7 +206,7 @@ tilo_test_env::scenario! {
 
     phase an_edit_reads_only_its_path;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
         let id = first_snippet(&library);
         library.apply(Library::NEW_SNIPPET.with("Other")).unwrap();
@@ -222,7 +223,7 @@ tilo_test_env::scenario! {
 
     phase readonly_fields_change_only_through_verbs;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
         let id = first_snippet(&library);
         let uses = Library::paths().snippets.item(&id).uses;
@@ -238,7 +239,7 @@ tilo_test_env::scenario! {
 
     phase counters_add_up_across_replicas;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         let mut other = library.fork();
         library.apply(Library::STAR.invoke()).unwrap();
         other.apply(Library::STAR.invoke()).unwrap();
@@ -251,7 +252,7 @@ tilo_test_env::scenario! {
 
     phase an_outbox_queues_entries_the_owner_settles;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         library.apply(Library::SHARE.with("ada")).unwrap();
         let state = library.state().unwrap();
         let (id, with) = state.sent.pending().next().unwrap();
@@ -279,7 +280,7 @@ tilo_test_env::scenario! {
         assert_eq!(large.len(), 4096);
         for value in [small, large, Bytes::default()] {
             assert_eq!(Bytes::from_json(&value.to_json()).unwrap(), value);
-            let mut library = Replica::<Library>::new();
+            let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
             edit(&mut library, &Library::paths().logo.set(value.clone())).unwrap();
             assert_eq!(library.state().unwrap().logo, value);
         }
@@ -311,7 +312,7 @@ tilo_test_env::scenario! {
 
     phase a_path_reads_its_value_and_names_its_tree_node;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
         let id = first_snippet(&library);
         let state = library.state().unwrap();
@@ -355,7 +356,7 @@ tilo_test_env::scenario! {
 
     phase search_finds_an_item_by_its_codes_and_variants;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
         let id = first_snippet(&library);
         edit(
@@ -385,7 +386,7 @@ tilo_test_env::scenario! {
     {
         use automerge::ReadDoc as _;
 
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         library
             .apply(Library::NEW_SNIPPET.with(library::NewSnippet {
                 title: "Deploy".into(),
@@ -432,7 +433,7 @@ tilo_test_env::scenario! {
 
     phase a_check_refuses_every_way_in;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
         let id = first_snippet(&library);
         let long = "a title that is far too long".to_owned();
@@ -463,10 +464,10 @@ tilo_test_env::scenario! {
 
     phase an_edit_outside_what_a_check_reads_does_not_read_the_record_to_check_it;
     {
-        let mut shelf = Replica::<Shelf>::new();
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
         shelf.apply(Shelf::SHELVE.with("Dune")).unwrap();
         let id = shelf.state().unwrap().books.ids().next().unwrap().clone();
-        let apply = |shelf: &mut Replica<Shelf>, edit: &Edit<Shelf>| {
+        let apply = |shelf: &mut Replica<Shelf, AppNamed>, edit: &Edit<Shelf>| {
             shelf
                 .apply(Invoke::edit(edit).map_err(|error| error.to_string())?)
                 .map(drop)
@@ -574,7 +575,7 @@ impl Misdeclared {
 #[cfg(debug_assertions)]
 #[should_panic(expected = "say that edit cannot change what it reads")]
 fn a_check_that_reads_an_undeclared_field_is_caught() {
-    let mut record = Replica::<Misdeclared>::new();
+    let mut record = Replica::<Misdeclared>::new().in_app("so.tilo.model", "Model");
     let edit = Misdeclared::paths().note.set("bad".into());
     let _ = record.apply(Invoke::edit(&edit).unwrap());
 }
@@ -584,7 +585,7 @@ tilo_test_env::scenario! {
 
     phase first_writes_into_one_row_both_survive;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         let sheet = Library::paths().sheet;
         edit(&mut library, &sheet.insert_row(0)).unwrap();
         edit(&mut library, &sheet.insert_column(0)).unwrap();
@@ -612,7 +613,7 @@ tilo_test_env::scenario! {
 
     phase rows_two_replicas_add_under_one_id_keep_both_cells;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         let sheet = Library::paths().sheet;
         edit(&mut library, &sheet.insert_column(0)).unwrap();
         let column = library
@@ -659,7 +660,7 @@ tilo_test_env::scenario! {
     phase rows_stored_as_their_order_keys_order_as_items_do_under_concurrent_inserts;
     {
         use automerge::ReadDoc as _;
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         let sheet = Library::paths().sheet;
         let snippets = Library::paths().snippets;
         let row = |id: &str, at| {
@@ -678,7 +679,7 @@ tilo_test_env::scenario! {
                 },
             )
         };
-        let both = |replica: &mut Replica<Library>, id: &str, at| {
+        let both = |replica: &mut Replica<Library, AppNamed>, id: &str, at| {
             edit(replica, &row(id, at)).unwrap();
             edit(replica, &item(id, at)).unwrap();
         };
@@ -714,7 +715,7 @@ tilo_test_env::scenario! {
 
     phase a_row_and_cell_gesture_replays_to_the_same_change;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         let sheet = Library::paths().sheet;
         edit(&mut library, &sheet.insert_column(0)).unwrap();
         let column = library
@@ -747,7 +748,7 @@ tilo_test_env::scenario! {
 
     phase grid_cells_keep_identity_when_rows_and_columns_move;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         let sheet = Library::paths().sheet;
         edit(&mut library, &sheet.insert_row(0)).unwrap();
         edit(&mut library, &sheet.insert_row(1)).unwrap();
@@ -823,7 +824,7 @@ tilo_test_env::scenario! {
 
     phase the_api_stamps_the_time_not_the_caller;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         library.set_now_ms(42);
         let value = serde_json::json!({ "op": { "action": "star", "args": {} }, "at": 7 });
         let applied = library
@@ -836,7 +837,7 @@ tilo_test_env::scenario! {
 
     phase history_records_what_an_edit_or_verb_did_and_to_which_item;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         library
             .apply(Library::NEW_SNIPPET.with("Deploy script"))
             .unwrap();
@@ -846,7 +847,7 @@ tilo_test_env::scenario! {
             &Library::paths().snippets.item(&id).favorite.set(true),
         )
         .unwrap();
-        let described = |library: &mut Replica<Library>| {
+        let described = |library: &mut Replica<Library, AppNamed>| {
             library
                 .versions()
                 .last()
@@ -887,7 +888,7 @@ tilo_test_env::scenario! {
 
     phase the_invoker_learns_the_ids_its_action_minted;
     {
-        let mut library = Replica::<Library>::new();
+        let mut library = Replica::<Library>::new().in_app("so.tilo.model", "Model");
         library.apply(Library::NEW_SNIPPET.with("One")).unwrap();
         let envelope = library
             .apply(Library::NEW_SNIPPET.with("Two"))

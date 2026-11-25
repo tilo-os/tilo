@@ -743,7 +743,7 @@ landlock = "strict"
 mode = "off"
 
 [sandbox.services]
-collab = "optional@50"
+collab = "optional@51"
 
 [entrypoint]
 bin = "app"
@@ -965,6 +965,7 @@ fn sigterm_ends_a_daemon_started_before_its_person() -> Result<()> {
     std::fs::remove_dir_all(path.join("identity"))?;
     let mut command = host(&path);
     command
+        .env("RUST_LOG", "info")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(path.join("daemon.log"))?);
@@ -978,15 +979,18 @@ fn sigterm_ends_a_daemon_started_before_its_person() -> Result<()> {
         });
     }
     let mut daemon = command.spawn_locked()?;
+    let pid = i32::try_from(daemon.id()).context("the daemon's pid")?;
     let deadline = Instant::now()
         .checked_add(LAUNCHER_START_CAP)
         .context("the start's deadline")?;
-    let pid = loop {
-        if let Ok(status) = status(&path)
-            && let Some(pid) = status.get("pid").and_then(Value::as_i64)
-            && let Ok(pid) = i32::try_from(pid)
+    // Its log says it answers, which it says after it built the stop listener: a stop sent once
+    // it said so finds the daemon hearing it, not the process it started as.
+    loop {
+        if profile
+            .log()
+            .contains("answering this device's actions on its native endpoint")
         {
-            break pid;
+            break;
         }
         if Instant::now() >= deadline {
             let _ = daemon.kill();
@@ -994,7 +998,7 @@ fn sigterm_ends_a_daemon_started_before_its_person() -> Result<()> {
             bail!("the daemon did not answer\n{}", profile.log());
         }
         std::thread::sleep(Duration::from_millis(25));
-    };
+    }
     // SAFETY: `kill(2)` with SIGTERM on the daemon this test started, the signal a stop sends.
     ensure!(
         unsafe { libc::kill(pid, libc::SIGTERM) } == 0,

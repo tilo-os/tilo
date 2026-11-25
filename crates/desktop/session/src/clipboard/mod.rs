@@ -31,7 +31,9 @@ use serde_json::{Map, Value};
 use settings_store::clipboard_history::{HISTORY, StoredCopy, StoredHistory};
 use settings_store::paste_shortcut::{self, PasteShortcut};
 use tilo_actions::{ActionOutput, ApiError, ResourceSpec};
-use tilo_compositor::clipboard_history::{Copy, History, Pull, Pulled, TEXT_MIME, kept_mime};
+use tilo_compositor::clipboard_history::{
+    Copy, History, Pull, Pulled, TEXT_MIME, is_secret, kept_mime,
+};
 use tilo_compositor::{Compositor, InputEvent, Selection};
 
 use crate::hosted::ClipboardCopy;
@@ -52,6 +54,9 @@ pub(crate) struct Clipboard {
     reading: RefCell<Option<Reading>>,
     /// The selection change the history last looked at.
     seen: Cell<u64>,
+    /// Whether what is on the clipboard now is marked secret: a password copied from the vault,
+    /// which the history keeps none of and nobody reads back but the app it is pasted into.
+    secret: Cell<bool>,
     /// When what the session itself put on the clipboard comes back off it,
     /// when it does: an invitation's link is a credential, and stays there
     /// only long enough to be pasted to the person it is for.
@@ -127,6 +132,7 @@ impl Clipboard {
             history: RefCell::new(history),
             reading: RefCell::new(None),
             seen: Cell::new(0),
+            secret: Cell::new(false),
             kept_until: Cell::new(None),
             asks: RefCell::new(Vec::new()),
             generation: Cell::new(0),
@@ -169,6 +175,7 @@ impl Clipboard {
             return;
         }
         let mimes = compositor.selection_formats(Selection::Clipboard);
+        self.secret.set(is_secret(&mimes));
         let Some(mime) = kept_mime(&mimes) else {
             self.seen.set(change);
             self.shell.read(change, None);
@@ -232,6 +239,12 @@ impl Clipboard {
     pub(crate) fn text(&self) -> Option<String> {
         use ui::clipboard::{ClipboardBackend as _, ClipboardTarget};
         self.shell.text(ClipboardTarget::Clipboard)
+    }
+
+    /// Whether what is on the clipboard now is marked secret, as the history last looked: its text
+    /// is never read, so [`Self::text`] says nothing of it.
+    pub(crate) fn holds_secret(&self) -> bool {
+        self.secret.get()
     }
 
     /// Keep the copy of a read that finished.

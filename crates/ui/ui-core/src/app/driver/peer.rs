@@ -178,6 +178,21 @@ impl Peer {
             });
     }
 
+    /// Hand the app another provider's `answer` to a call it handed that provider, and keep
+    /// what it ended as for the call's caller ([`Driver::provider_answer`]).
+    fn provide(&mut self, answer: tilo_actions::remote::RemoteActionMessage) {
+        if let tilo_actions::remote::RemoteActionMessage::Receipt(receipt) = &answer
+            && !matches!(
+                receipt.status,
+                tilo_actions::remote::ReceiptStatus::Accepted
+            )
+        {
+            self.provided
+                .push((receipt.invocation, receipt.status.clone()));
+        }
+        self.answer(Some(answer));
+    }
+
     /// Hand the app `answer` to what it asked of its broker, on its next pump.
     fn answer(&self, answer: Option<tilo_actions::remote::RemoteActionMessage>) {
         if let Some(message) = answer {
@@ -458,6 +473,12 @@ pub(super) struct Peer {
         tilo_actions::InvocationId,
         tilo_actions::remote::ActionCallError,
     )>,
+    /// What another provider answered each of the app's calls handed to it, by invocation
+    /// ([`Driver::provider_answer`]).
+    provided: Vec<(
+        tilo_actions::InvocationId,
+        tilo_actions::remote::ReceiptStatus,
+    )>,
 }
 
 impl Driver {
@@ -506,6 +527,7 @@ impl Driver {
             running: std::collections::HashMap::new(),
             receipts_owed: Vec::new(),
             refused: Vec::new(),
+            provided: Vec::new(),
         });
         self.run_frame();
     }
@@ -608,6 +630,20 @@ impl Driver {
             .iter()
             .find(|(refused, _)| *refused == invocation)
             .map(|(_, error)| crate::session_api::api_error(error))
+    }
+
+    /// What the provider the app handed its call `invocation` to answered it, as the app's
+    /// receipt carries it: none while it has not, or when the call was the app's own.
+    pub(super) fn provider_answer(
+        &self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<&tilo_actions::remote::ReceiptStatus> {
+        self.peer
+            .as_ref()?
+            .provided
+            .iter()
+            .find(|(answered, _)| *answered == invocation)
+            .map(|(_, status)| status)
     }
 
     fn peer_mut(&mut self) -> &mut Peer {
@@ -842,7 +878,7 @@ impl Driver {
                 continue;
             }
             if let Some(receipt) = peer.served_by_caller.invoke(&request, &actor) {
-                peer.answer(Some(receipt));
+                peer.provide(receipt);
                 continue;
             }
             match &peer.session {
@@ -878,7 +914,7 @@ impl Driver {
                 None => true,
             });
         for receipt in answered {
-            peer.answer(Some(RemoteActionMessage::Receipt(receipt)));
+            peer.provide(RemoteActionMessage::Receipt(receipt));
         }
         if let Some(verdicts) = peer.served_by_caller.unasked() {
             peer.exchange.borrow_mut().inbound.push_back(verdicts);

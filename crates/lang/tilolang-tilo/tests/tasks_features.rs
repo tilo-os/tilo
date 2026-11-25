@@ -825,7 +825,7 @@ fn the_line_beside_a_project_pages_title_wraps() {
         .unwrap_or_else(|| panic!("the title's line: {:#?}", view.tree()));
     assert_eq!(
         line.props.get("wrap"),
-        Some(&Value::Int(1)),
+        Some(&Value::Bool(true)),
         "the title's line wraps: {line:#?}"
     );
     for kind in ["ui.ViewTabs", "ui.MenuButton"] {

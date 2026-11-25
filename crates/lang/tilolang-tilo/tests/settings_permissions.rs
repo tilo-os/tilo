@@ -140,9 +140,9 @@ const PRIVACY: &str = r#"{
          "standing": "session", "until_unix_ms": 0, "device": "Phone", "this_device": false}
     ],
     "secrets": {"apps": [
-        {"id": "binary:/usr/bin/chromium", "name": "Chromium", "allowed": true, "uses": 42,
+        {"app": "binary:/usr/bin/chromium", "name": "Chromium", "allowed": true, "uses": 42,
          "items": 3},
-        {"id": "sandbox:so.tilo.mail", "name": "Mail", "allowed": false, "uses": 7, "items": 1}
+        {"app": "sandbox:so.tilo.mail", "name": "Mail", "allowed": false, "uses": 7, "items": 1}
     ], "read_error": null},
     "security": {"disk_encryption": "on", "secure_boot": "off", "firewall": "firewalld",
                  "firewall_error": null}

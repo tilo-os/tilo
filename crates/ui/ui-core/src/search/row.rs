@@ -204,7 +204,7 @@ impl SearchRow {
     /// The item row for `resource` (`notes.notebook/pages/<id>`) of `app`: what a hit on
     /// a resource an app publishes as items is drawn with.
     pub fn item_of(app: impl Into<String>, resource: &str) -> Option<Self> {
-        let kind = tilo_resource::items::item_kind(resource)?;
+        let kind = tilo_resource_plain::item_kind(resource)?;
         let id = resource.rsplit('/').next()?;
         Some(Self::item(app, kind, id))
     }

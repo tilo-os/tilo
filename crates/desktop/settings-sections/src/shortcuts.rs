@@ -287,7 +287,7 @@ mod tests {
     /// nothing, and a reset puts the default back.
     #[test]
     fn a_shortcut_moves_only_to_a_free_chord() {
-        let mut shortcuts = Replica::<ShortcutPrefs>::new();
+        let mut shortcuts = Replica::<ShortcutPrefs>::new().in_app("so.tilo.model", "Model");
         shortcuts
             .apply(ShortcutPrefs::REBIND.with(("quick-settings".to_owned(), "Super+J".to_owned())))
             .unwrap();
@@ -319,7 +319,7 @@ mod tests {
     /// it, and a reset gives the command back the keys its app gives it.
     #[test]
     fn an_app_command_moves_to_free_keys_and_back() {
-        let mut shortcuts = Replica::<ShortcutPrefs>::new();
+        let mut shortcuts = Replica::<ShortcutPrefs>::new().in_app("so.tilo.model", "Model");
         let rebind = |app: &str, action: &str, chord: &str| {
             ShortcutPrefs::REBIND_COMMAND.with((
                 app.to_owned(),

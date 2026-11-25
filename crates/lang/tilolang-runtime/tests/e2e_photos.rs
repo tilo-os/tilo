@@ -1443,7 +1443,7 @@ mod cases {
                 "the photo it could not read is listed, with why: {rows:?}"
             );
             // Retrying asks the device to read only the pictures that failed.
-            let mut page = page;
+            let page = page;
             let retry = Gallery::control(&page, "ui.Button", "label", "Retry failed photos");
             page.press(&retry).unwrap();
             assert_eq!(g.vision.asked.borrow().as_slice(), ["retry"]);
@@ -1566,7 +1566,7 @@ mod cases {
             assert_eq!(text_prop(failed, "title"), "Could not open this photo");
             assert_eq!(
                 failed.props.get("error"),
-                Some(&Value::Int(1)),
+                Some(&Value::Bool(true)),
                 "and shows it as the failure it is"
             );
         }

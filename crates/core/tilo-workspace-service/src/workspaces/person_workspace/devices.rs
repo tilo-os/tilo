@@ -51,6 +51,7 @@
 //! the entry of the device it names, and an entry anything else signed is no
 //! revocation and every reader leaves it out.
 
+use tilo_resource::AppNamed;
 use tilo_resource::{Collection, Id, Model, Refusal, resource};
 use tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
 use tilo_user_identity::{DeviceCert, RevocationEntry, revocation_of, revokes};
@@ -1917,7 +1918,7 @@ mod tests {
     #[test]
     fn a_device_says_its_session_and_only_a_kept_one_does() {
         let device = [7; 32];
-        let mut devices = tilo_resource::Replica::<Devices>::new();
+        let mut devices = tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
         let said = OwnerSession {
             locked: true,
             changed_ms: 1_700_000_000_000,
@@ -1971,7 +1972,7 @@ mod tests {
             at_ns: 1_000,
             until_ns: 2_000,
         };
-        let mut devices = tilo_resource::Replica::<Devices>::new();
+        let mut devices = tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
         assert!(
             devices.apply(Devices::answering(&allowed)).is_err(),
             "a device the record does not keep answers nothing"
@@ -1997,7 +1998,7 @@ mod tests {
             until_ns: 3_000,
             ..allowed.clone()
         };
-        let answers = |devices: &tilo_resource::Replica<Devices>| {
+        let answers = |devices: &tilo_resource::Replica<Devices, AppNamed>| {
             devices
                 .state()
                 .expect("the record reads")
@@ -2029,7 +2030,7 @@ mod tests {
     #[test]
     fn a_device_is_driven_by_another_only_once_it_let_it_in() {
         let (laptop, phone) = ([1; 32], [2; 32]);
-        let mut devices = tilo_resource::Replica::<Devices>::new();
+        let mut devices = tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
         assert!(
             devices
                 .apply(Devices::asking_input(&phone, &laptop, 10))
@@ -2119,7 +2120,7 @@ mod tests {
         let (office_key, shelf_key) = (hex::encode(office), hex::encode(shelf));
         let group = hex::encode([5; 16]);
         let (office_output, shelf_output) = (hex::encode([8; 16]), hex::encode([9; 16]));
-        let mut devices = tilo_resource::Replica::<Devices>::new();
+        let mut devices = tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
         for key in [&office_key, &shelf_key] {
             devices
                 .apply(Devices::KEEP_DEVICE.with((key.clone(), "00".to_owned())))
@@ -2226,7 +2227,7 @@ mod tests {
                 3,
             )))
             .expect("the office offers it");
-        let offered = |devices: &tilo_resource::Replica<Devices>| {
+        let offered = |devices: &tilo_resource::Replica<Devices, AppNamed>| {
             devices
                 .state()
                 .unwrap()
@@ -2267,7 +2268,7 @@ mod tests {
             until_ms: 61_000,
             ..SharedNotice::default()
         };
-        let mut devices = tilo_resource::Replica::<Devices>::new();
+        let mut devices = tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
         for refused in [
             SharedNotice {
                 body: "From Ada".into(),
@@ -2293,7 +2294,7 @@ mod tests {
         devices
             .apply(Devices::showing_notice(&mail, &notice))
             .expect("the desktop shows its mail on the person's other devices");
-        let kept = |devices: &tilo_resource::Replica<Devices>, id: &str| {
+        let kept = |devices: &tilo_resource::Replica<Devices, AppNamed>, id: &str| {
             devices
                 .state()
                 .unwrap()

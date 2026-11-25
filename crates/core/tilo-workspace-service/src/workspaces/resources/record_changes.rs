@@ -964,6 +964,17 @@ kind = "undoable"
             title_in(&workspaces, &workspace, "list").await.as_deref(),
             Some("List B")
         );
+
+        // A change of one record alone after it, an action of one part: kept and read as any,
+        // where the note was founded as one action with where its store places it.
+        let (list_c, _) = retitled(&mut list, "List C", &me);
+        write_part(&workspaces, &workspace, "list", list_c, None)
+            .await
+            .expect("the store keeps a change of one record");
+        assert_eq!(
+            title_in(&workspaces, &workspace, "list").await.as_deref(),
+            Some("List C")
+        );
     }
 
     /// An action whose write of one record is refused changes neither record: the other

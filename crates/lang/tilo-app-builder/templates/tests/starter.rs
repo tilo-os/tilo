@@ -9,7 +9,7 @@ fn name(text: &str) -> Invoke<Greeting> {
 
 #[test]
 fn greeting_actions_edit_the_name() {
-    let mut greeting = Replica::<Greeting>::new();
+    let mut greeting = Replica::<Greeting>::new().in_app("so.tilo.model", "Model");
     greeting.apply(name("Ada")).expect("rename");
     assert_eq!(greeting.state().expect("greeting").name, "Ada");
     greeting.apply(Greeting::CLEAR.invoke()).expect("clear");
@@ -55,7 +55,9 @@ fn the_name_survives_a_relaunch() {
 fn collaboration_updates_the_view_and_undo_preserves_peer_edits() {
     let mut app = HeadlessApp::<App>::for_person("ada").expect("the app opens");
     app.invoke(name("Ada")).expect("initial name");
-    let mut peer = Replica::<Greeting>::from_doc(app.peer_document()).as_author("grace");
+    let mut peer = Replica::<Greeting>::from_doc(app.peer_document())
+        .in_app("so.tilo.model", "Model")
+        .as_author("grace");
 
     app.invoke(name("Countess Ada")).expect("local prefix");
     let envelope = peer.apply(name("Ada Byron")).expect("peer suffix");

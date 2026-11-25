@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
         // Their other device watches one: its copy of the record arrives here,
         // as the person's own store carries it between their devices. Nothing
         // else tells this window, which has been idle since it opened.
-        let mut theirs = Replica::<Watched>::load(&read.record().document().unwrap()).unwrap();
+        let mut theirs = Replica::<Watched>::load(&read.record().document().unwrap()).unwrap().in_app("so.tilo.model", "Model");
         theirs.apply(Watched::WATCH.with("from-their-phone")).unwrap();
         read.record()
             .merge_peer_document(theirs.save())

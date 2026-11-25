@@ -1,22 +1,27 @@
+use crate::permissions::MemberId;
 use crate::time::{Duration, Instant, SystemTime};
-use collab_types::{Member, MemberId};
+#[cfg(feature = "model")]
+use collab_types::Member;
 use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
 pub mod capability;
 mod caret_tag;
 mod chat;
+#[cfg(feature = "model")]
 mod draft;
 mod faces;
 pub mod frame;
 mod geom;
 mod interaction;
 mod written;
+#[cfg(feature = "model")]
 pub use tilo_doc::written::written_by;
 mod key;
 mod labels;
 mod layer;
 mod mark;
+#[cfg(feature = "model")]
 mod members;
 mod overlay;
 mod placed;
@@ -29,6 +34,7 @@ pub use chat::{
     CURSOR_CHAT_LINGER, CURSOR_CHAT_MAX_CHARS, ChatBubble, CursorChats, POINTER_NAME_LINGER,
     ReactionFloat, single_emoji,
 };
+#[cfg(feature = "model")]
 pub use draft::DraftSaid;
 pub(crate) use faces::paint_active_ring;
 pub use faces::{Face, FaceStack};
@@ -38,8 +44,8 @@ pub use interaction::{
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use labels::{
-    is_unnamed_person, person_label, shown_name, unnamed_label, unnamed_person_label,
-    unnamed_person_short_label,
+    contains_opaque_id, human_label, is_unnamed_person, person_label, shown_name, unnamed_label,
+    unnamed_person_label, unnamed_person_short_label,
 };
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
@@ -61,6 +67,7 @@ pub(crate) use written::written_under;
 /// `None` when the workspace is the nil uuid: that value addresses nobody
 /// (`CrdtRoute::is_addressable` rejects it — an unminted workspace would
 /// otherwise make every unconfigured machine share one workspace). Fail closed.
+#[cfg(feature = "model")]
 pub fn local_workspace_key() -> Option<PresenceKey> {
     let cluster = crate::collaboration::local_cluster_id();
     if cluster.is_nil() {
@@ -94,7 +101,7 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// real edit would license markers for every caret that moves afterward.
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
-pub use collab_types::presence::{
+pub use tilo_presence_types::{
     PEER_PALETTE, agent_client, agent_identity, identity_color, identity_rgb, member_color,
     user_color,
 };
@@ -441,13 +448,14 @@ pub struct PresenceCtx {
     /// The picture each member set, as the image's own bytes, seeded from the collab roster
     /// (`CollabEvent::Context`): what an author's face draws where a view shows them, and in no
     /// record of its own.
+    #[cfg(feature = "model")]
     pictures: HashMap<MemberId, collab_types::AvatarBytes>,
     /// The person each agent or bot acts for, as the broker admitted it: a fact a history
     /// hover names, never part of the agent's name.
     acting_for: HashMap<MemberId, MemberId>,
     /// Short workspace-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
-    statuses: HashMap<MemberId, collab_types::presence::LiveStatus>,
+    statuses: HashMap<MemberId, tilo_presence_types::LiveStatus>,
     /// Broker-authenticated semantic activity, keyed by invocation. Unlike
     /// pointer/caret presence this never pretends an action caller has an
     /// input device: applications may project its stable resource anchor to
@@ -487,6 +495,7 @@ pub struct PresenceCtx {
     /// it one (a host, a bound component) through [`Self::with_permissions`]
     /// and read by guarded widgets through [`Self::permits`]. `None` checks
     /// nothing.
+    #[cfg(feature = "model")]
     permissions: std::cell::RefCell<Option<crate::permissions::PermissionContext>>,
     /// [`crate::permissions::shared_revision`] as the drawing in progress
     /// sees it. A retained drawing made under another revision is stale:
@@ -544,6 +553,7 @@ impl PresenceCtx {
 
     /// Draw with `permissions` as the authority guarded widgets check, then
     /// restore the outer one.
+    #[cfg(feature = "model")]
     pub fn with_permissions<R>(
         &self,
         permissions: crate::permissions::PermissionContext,
@@ -569,6 +579,7 @@ impl PresenceCtx {
 
     /// Whether the authority of the subtree being drawn covers `scope`.
     /// Outside any [`Self::with_permissions`] everything is allowed.
+    #[cfg(feature = "model")]
     pub fn permits(&self, scope: &crate::permissions::PermissionScope) -> bool {
         self.permissions
             .borrow()
@@ -577,8 +588,28 @@ impl PresenceCtx {
     }
 
     /// The authority of the subtree being drawn, if anyone scoped one.
+    #[cfg(feature = "model")]
     pub fn permission_context(&self) -> Option<crate::permissions::PermissionContext> {
         self.permissions.borrow().clone()
+    }
+
+    /// Whether the person the drawing in progress is for may act on what `widget` guards: what
+    /// the authority lent through `with_permissions` answers, and yes outside any. Without
+    /// Tilo's model no authority is ever lent, so everything is allowed.
+    pub fn permits_widget(&self, widget: &dyn crate::widget::Widget) -> bool {
+        #[cfg(feature = "model")]
+        {
+            use crate::permissions::WidgetAuthority as _;
+            self.permissions
+                .borrow()
+                .as_ref()
+                .is_none_or(|permissions| permissions.permits_widget(widget))
+        }
+        #[cfg(not(feature = "model"))]
+        {
+            let _ = widget;
+            true
+        }
     }
 
     /// Forget the caret name tags painted so far: a host calls it before a
@@ -1212,6 +1243,7 @@ impl PresenceCtx {
     }
 
     /// One row of the roster: who `user` is here, in the colour they wear.
+    #[cfg(feature = "model")]
     pub fn user(&self, user: &MemberId) -> Member {
         Member {
             id: user.clone(),
@@ -1486,14 +1518,6 @@ impl PresenceCtx {
         }
     }
 
-    /// Fold one inbound presence frame into this context — the whole decode of a
-    /// `RemotePresenceUpdate`. Lives on `PresenceCtx` rather than `App` because the compositor
-    /// subscribes to the identical stream, and two decoders would drift. The returned
-    /// [`RemotePresenceEffect`] names what a bare presence store can't do for itself.
-    // `payload`'s variants are all Copy but `PresencePayload` isn't, so clippy would rather see
-    // `&PresencePayload` — the same public wire-decode entrypoint called from
-    // `shell::peer_presence` and app crates, where narrowing it would ripple into call sites out of
-    // scope for this pass.
     /// When the first composer gone quiet drops out of [`Self::composing_at`]: what a frame that
     /// shows who is typing wakes for, so a writer whose window vanished stops reading as typing
     /// with nothing else happening. `None` while nobody composes.
@@ -1529,6 +1553,11 @@ impl PresenceCtx {
             .retain(|_, since| now.saturating_duration_since(*since) < COMPOSING_LINGER);
     }
 
+    /// Fold one inbound presence frame into this context — the whole decode of a
+    /// `RemotePresenceUpdate`. Lives on `PresenceCtx` rather than `App` because the compositor
+    /// subscribes to the identical stream, and two decoders would drift. The returned
+    /// [`RemotePresenceEffect`] names what a bare presence store can't do for itself.
+    #[cfg(feature = "model")]
     pub fn apply_remote_presence(
         &mut self,
         member: MemberId,
@@ -1541,6 +1570,7 @@ impl PresenceCtx {
     /// [`Self::apply_remote_presence`] with the instant the frame was heard supplied. A compositor
     /// re-placing a pointer it heard earlier (its tile moved) passes the original instant, so the
     /// move is carried rather than read as the peer moving again ([`Self::set_pointer_at`]).
+    #[cfg(feature = "model")]
     #[allow(
         clippy::too_many_lines,
         reason = "public wire-decode API called from crates outside ui; narrowing payload to &PresencePayload would require updating call sites out of scope for this pass"
@@ -1681,14 +1711,14 @@ impl PresenceCtx {
                     } else if text.chars().count() <= crate::MAX_STATUS_CHARS {
                         self.statuses.insert(
                             uid,
-                            collab_types::presence::LiveStatus {
+                            tilo_presence_types::LiveStatus {
                                 text,
                                 origin: if automatic {
-                                    collab_types::presence::StatusOrigin::Inferred {
+                                    tilo_presence_types::StatusOrigin::Inferred {
                                         generator: "remote-local-model".into(),
                                     }
                                 } else {
-                                    collab_types::presence::StatusOrigin::Manual
+                                    tilo_presence_types::StatusOrigin::Manual
                                 },
                                 updated_at: crate::time::wall(),
                             },
@@ -1746,6 +1776,7 @@ impl PresenceCtx {
         self.pointer_glides.retain(|(_, u), _| u != &uid);
         self.pointer_moved.retain(|(_, u), _| u != &uid);
         self.chats.forget(&uid);
+        #[cfg(feature = "model")]
         self.pictures.remove(&uid);
         for list in self.carets.values_mut() {
             list.retain(|(u, _)| u != &uid);
@@ -1768,19 +1799,25 @@ impl PresenceCtx {
         &self,
         user: &MemberId,
         now: SystemTime,
-    ) -> Option<&collab_types::presence::LiveStatus> {
+    ) -> Option<&tilo_presence_types::LiveStatus> {
         let status = self.statuses.get(user)?;
         match status.origin {
-            collab_types::presence::StatusOrigin::Manual => Some(status),
-            collab_types::presence::StatusOrigin::Inferred { .. }
+            tilo_presence_types::StatusOrigin::Manual => Some(status),
+            tilo_presence_types::StatusOrigin::Inferred { .. }
                 if now
                     .duration_since(status.updated_at)
                     .is_ok_and(|age| age <= crate::INFERRED_STATUS_TTL) =>
             {
                 Some(status)
             }
-            collab_types::presence::StatusOrigin::Inferred { .. } => None,
+            tilo_presence_types::StatusOrigin::Inferred { .. } => None,
         }
+    }
+}
+
+impl crate::permissions::WidgetAuthority for PresenceCtx {
+    fn permits_widget(&self, widget: &dyn crate::widget::Widget) -> bool {
+        PresenceCtx::permits_widget(self, widget)
     }
 }
 
@@ -1924,7 +1961,7 @@ mod color_override_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod remote_cursor_tests {
     use super::*;
 
@@ -2021,7 +2058,7 @@ mod remote_cursor_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod string_id_wrapper_tests {
     use super::*;
 
@@ -2538,7 +2575,7 @@ mod string_id_wrapper_tests {
 /// A session must not paint its own member, and must go on
 /// painting everybody else. Both halves are asserted here: the second
 /// is the one that keeps a fix in this area from hiding the workspace.
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod own_identity_tests {
     use super::*;
     use crate::collaboration::PresencePayload;
@@ -3042,7 +3079,7 @@ mod own_identity_tests {
 ///
 /// Two halves: which layer is entitled to paint a given arrival, and how many
 /// rows one person may occupy in the store behind it.
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod one_person_one_pointer_tests {
     use super::*;
     use crate::collaboration::PresencePayload;

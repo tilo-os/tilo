@@ -1,4 +1,5 @@
 //! The coding part of a sub-agent, through the verbs of the workspace's agents.
+use tilo_resource::AppNamed;
 
 use super::coding::{CodingHarness, CodingProcess, NewCoding};
 use super::sub_tests::{ADA, MAIN, THEN, id, kept, start_as, sub_of, team, with_main};
@@ -24,7 +25,7 @@ fn in_folder(repository: &str) -> NewCoding {
 }
 
 /// Ada's agent with a coding agent and a sub-agent that is Tilo's own loop under it.
-fn with_coder() -> Replica<WorkspaceAgents> {
+fn with_coder() -> Replica<WorkspaceAgents, AppNamed> {
     let mut agents = with_main().as_agent_for(MAIN, ADA);
     agents
         .apply(coder("Coder", in_folder("code/app/")))
@@ -341,7 +342,7 @@ fn a_stop_says_who_stopped_a_coding_agents_process() {
             });
         })
     };
-    let stopped_by = |agents: &mut Replica<WorkspaceAgents>| {
+    let stopped_by = |agents: &mut Replica<WorkspaceAgents, AppNamed>| {
         let state = agents.state().unwrap();
         let sub = sub_of(&state, "coder");
         let by = sub

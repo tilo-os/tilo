@@ -58,7 +58,7 @@ tilo_test_env::scenario! {
     // executor guessed one from the kind (`org.tilo.Test`) and every receiver
     // refused the change: a chat post never reached anyone.
     {
-        let mut tally = Replica::<Tally>::new();
+        let mut tally = Replica::<Tally>::new().in_app("so.tilo.model", "Model");
         let dispatcher = tilo_app::framework::testing::dispatcher::<Tally>(TallyApp::ID);
         dispatcher
             .submit_now(

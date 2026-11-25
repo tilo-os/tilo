@@ -16,7 +16,7 @@ mod text;
 mod triggers;
 mod views;
 
-pub(crate) use model::shortcut_text;
+pub(crate) use model::shortcut_key;
 pub use model::*;
 pub use text::*;
 

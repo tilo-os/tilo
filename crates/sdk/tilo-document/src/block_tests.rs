@@ -3,12 +3,13 @@
 //! attributed edit that replays and merges.
 
 use serde_json::json;
+use tilo_resource::AppNamed;
 use tilo_resource::Replica;
 
 use super::*;
 
 fn call(
-    replica: &mut Replica<RichText>,
+    replica: &mut Replica<RichText, AppNamed>,
     id: &str,
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -17,7 +18,7 @@ fn call(
 
 /// `call`, invoked by `writer`, whose name the text it writes carries.
 fn call_as(
-    replica: &mut Replica<RichText>,
+    replica: &mut Replica<RichText, AppNamed>,
     writer: &str,
     id: &str,
     arguments: serde_json::Value,
@@ -26,7 +27,7 @@ fn call_as(
 }
 
 fn call_enveloped(
-    replica: &mut Replica<RichText>,
+    replica: &mut Replica<RichText, AppNamed>,
     writer: &str,
     id: &str,
     arguments: serde_json::Value,
@@ -55,12 +56,12 @@ fn call_enveloped(
     Ok((answer, envelope))
 }
 
-fn read(replica: &Replica<RichText>) -> String {
+fn read(replica: &Replica<RichText, AppNamed>) -> String {
     block_actions::read_markdown_under(replica.doc(), &automerge::ROOT).unwrap()
 }
 
 /// The page as its lines, ids left off.
-fn page(replica: &Replica<RichText>) -> Vec<String> {
+fn page(replica: &Replica<RichText, AppNamed>) -> Vec<String> {
     read(replica)
         .lines()
         .map(|line| match line.rsplit_once(" ^") {
@@ -71,7 +72,7 @@ fn page(replica: &Replica<RichText>) -> Vec<String> {
 }
 
 /// The id of the block whose line starts with `prefix`, as the read shows it.
-fn id_of(replica: &Replica<RichText>, prefix: &str) -> String {
+fn id_of(replica: &Replica<RichText, AppNamed>, prefix: &str) -> String {
     read(replica)
         .lines()
         .find(|line| line.trim_start().starts_with(prefix))
@@ -82,17 +83,19 @@ fn id_of(replica: &Replica<RichText>, prefix: &str) -> String {
         )
 }
 
-fn blocks(replica: &Replica<RichText>) -> Vec<tilo_doc::snapshot::BlockView> {
+fn blocks(replica: &Replica<RichText, AppNamed>) -> Vec<tilo_doc::snapshot::BlockView> {
     let c = tilo_doc::model::open(replica.doc(), &automerge::ROOT).unwrap();
     tilo_doc::model::materialize_region(replica.doc(), &c, tilo_doc::model::Region::Body)
 }
 
-fn changes(replica: &mut Replica<RichText>) -> usize {
+fn changes(replica: &mut Replica<RichText, AppNamed>) -> usize {
     replica.doc_mut().get_changes(&[]).len()
 }
 
-fn seeded(markdown: &str) -> Replica<RichText> {
-    let mut replica = Replica::<RichText>::new().as_author("ada");
+fn seeded(markdown: &str) -> Replica<RichText, AppNamed> {
+    let mut replica = Replica::<RichText>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author("ada");
     call(
         &mut replica,
         "insert-markdown",
@@ -132,7 +135,9 @@ fn a_page_reads_as_markdown_with_an_id_on_every_line() {
 }
 
 fn a_block_of_any_kind_is_inserted_after_an_id_or_at_the_ends() {
-    let mut replica = Replica::<RichText>::new().as_author("ada");
+    let mut replica = Replica::<RichText>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author("ada");
     // The new body's empty paragraph is replaced, not left above the text.
     let first = call(
         &mut replica,
@@ -320,7 +325,7 @@ fn block_text_written_as_the_read_shows_it_means_what_its_markdown_says() {
 fn block_text_changes_only_the_characters_that_differ_and_is_attributed() {
     let mut replica = seeded("buy **oat** milk");
     let id = id_of(&replica, "buy");
-    let signed = |replica: &Replica<RichText>| -> Vec<(usize, usize)> {
+    let signed = |replica: &Replica<RichText, AppNamed>| -> Vec<(usize, usize)> {
         tilo_doc::author_runs(&blocks(replica)[0].marks)
             .into_iter()
             .map(|(start, end, _)| (start, end))

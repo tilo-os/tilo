@@ -982,19 +982,20 @@ impl ToolBuilder for NoToolBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_resource::AppNamed;
     use tilo_resource::Replica;
 
     fn image(byte: u8) -> PackageId {
         PackageId::from_bytes([byte; 32])
     }
 
-    fn replica() -> Replica<Environment> {
+    fn replica() -> Replica<Environment, AppNamed> {
         let mut doc = tilo_resource::Doc::new();
         Environment::new("Work", "2026.10", "x86_64", &image(1))
             .write_resource(&mut doc)
             .unwrap();
         doc.commit();
-        Replica::from_doc(doc)
+        Replica::from_doc(doc).in_app("so.tilo.model", "Model")
     }
 
     fn add(packages: &[&str], arch: &str, id: PackageId) -> tilo_resource::Invoke<Environment> {

@@ -66,6 +66,10 @@ fn own_settings_link(id: &str) -> Option<&'static str> {
     }
 }
 
+/// How long after the person pressed elsewhere a press on the faces does not reopen the roster:
+/// their press closed it.
+pub(crate) const DISMISS_GRACE: ui::time::Duration = ui::time::Duration::from_millis(250);
+
 /// The people resource, as the session's catalogue holds it.
 #[derive(tilo_resource::Row)]
 #[row(kind = "session", label = "People", effects = PeopleEffect)]
@@ -114,6 +118,8 @@ pub(crate) struct PeopleDevice {
     followed: RefCell<String>,
     /// Whose view the person's own input stopped, and when, while the bar still says so.
     stopped: RefCell<Option<(String, ui::time::Instant)>>,
+    /// When the panel last closed: the press that closed it does not open it again.
+    closed: RefCell<Option<ui::time::Instant>>,
 }
 
 /// What the person has typed into their own card and nothing has kept yet.
@@ -182,6 +188,7 @@ impl PeopleDevice {
             seen: RefCell::new(None),
             followed: RefCell::new(String::new()),
             stopped: RefCell::new(None),
+            closed: RefCell::new(None),
         }
     }
 
@@ -366,6 +373,13 @@ impl PeopleDevice {
         let Some(workspace) = tree.active_workspace() else {
             return Vec::new();
         };
+        // Who of the workspace's members is here, by the member presence names: one pass, so a
+        // workspace of thousands reads in the time a workspace of three does.
+        let present: std::collections::HashMap<&collab_types::MemberId, _> = workspace
+            .present
+            .iter()
+            .map(|here| (&here.member, here))
+            .collect();
         // The live session's own reading of the people, where their other devices, their accounts
         // elsewhere and the key a conversation with them is kept on are.
         let live = self.sync.as_ref().map(|sync| sync.here());
@@ -374,10 +388,7 @@ impl PeopleDevice {
             .members
             .iter()
             .filter_map(|member| {
-                let present = workspace
-                    .present
-                    .iter()
-                    .find(|present| present.member == member.id)?;
+                let present = *present.get(&member.id)?;
                 let mut person = person_of(workspace, member, present);
                 let agent = person.agent;
                 person.agent_client = if agent {
@@ -615,14 +626,23 @@ impl PeopleDevice {
                 {
                     self.surfaces.close("people");
                 } else {
-                    self.surfaces.person.borrow_mut().clear();
-                    self.surfaces.open("people");
+                    // Their press closed it a moment ago: this is that press, not another.
+                    let dismissed = self
+                        .closed
+                        .borrow_mut()
+                        .take()
+                        .is_some_and(|at| at.elapsed() < DISMISS_GRACE);
+                    if !dismissed {
+                        self.surfaces.person.borrow_mut().clear();
+                        self.surfaces.open("people");
+                    }
                 }
             }
             PeopleEffect::Close => {
                 // Closing the card keeps what was typed and not yet kept, as a field that loses
                 // focus keeps it: there is no Save button, so nothing typed is lost.
                 self.keep_typed(true);
+                *self.closed.borrow_mut() = Some(ui::time::now());
                 self.surfaces.person.borrow_mut().clear();
                 self.surfaces.close("people");
             }

@@ -18,7 +18,7 @@ view people_button() {
     let people = layout.people
     if people.is_empty() {
         ui.Button("People", icon: .users, icon_only: true, role: .bar) {
-            on press: session.toggle_people()
+            on press: device.show(device.people)
         }
     } else {
         let shown = device.people.rows.filter(p -> not p.agent).take(3)
@@ -41,11 +41,11 @@ view people_button() {
             let rest = people.len() - shown.len()
             if rest > 0 {
                 ui.Button(label, icon: .users, count: rest, icon_only: true, role: .bar) {
-                    on press: session.toggle_people()
+                    on press: device.show(device.people)
                 }
             } else {
                 ui.Button(label, icon: .users, icon_only: true, role: .bar) {
-                    on press: session.toggle_people()
+                    on press: device.show(device.people)
                 }
             }
         }
@@ -83,7 +83,7 @@ view agent_chip(a: device.Agent) {
             ui.MenuItem(a.doing, disabled: true)
         }
         ui.MenuItem("Show who is here", icon: .users) {
-            on choose: session.toggle_people()
+            on choose: device.show(device.people)
         }
         ui.MenuItem("Stop", icon: .square, destructive: true) {
             on choose: device.stop_agent(device.agents, agent: a.key)
@@ -102,30 +102,54 @@ fn is_follower(p: device.Person) -> Bool {
 /// it says moves with the workspace.
 view people() {
     let board = device.people
-    row(fill, distribute: .end, padding: .related) {
-        ui.FloatingPanel(width: if not space.compact { 400.0 }, fill: space.compact) {
-            header: {
-                row(gap: .related, align: .center, wrap: true) {
-                    stack(gap: .none) {
-                        ui.Text(people_title(board), role: .heading)
-                        // Who is here besides this person, counted as the list is: "2 here" over
-                        // one row reads as someone missing.
-                        ui.Text(here_line(board.rows.len()), role: .caption, secondary: true)
-                    }
-                    spacer
-                    ui.Button("Close", icon: .x, icon_only: true, size: .small, role: .plain) {
-                        on press: device.close(device.people)
-                    }
-                }
+    if space.compact {
+        // A phone has room for one thing at a time: the roster is a sheet at the shell's foot,
+        // between equal gutters, and a press above it puts it away. The layer places it there: a
+        // stack's own children go top to bottom.
+        layers(fill) {
+            stack(at: .bottom, padding: .related) {
+                people_panel(board, sheet: true)
             }
-            body: {
-                if board.showing != "" {
-                    person_card(board)
-                } else {
-                    roster(board)
+        }
+    } else {
+        row(fill, distribute: .end, padding: .related) {
+            people_panel(board, sheet: false)
+        }
+    }
+}
+
+/// The roster's panel: its header, the roster or a card, and nothing else. It holds the screen
+/// while it shows, so the keyboard stays in it, and a press off it closes it.
+view people_panel(board: device.People, sheet: Bool) {
+    ui.FloatingPanel(
+        width: if not sheet { 400.0 },
+        fill: sheet,
+        modal: true,
+        label: "People",
+        description: "Who is here, where they are and what they are doing",
+    ) {
+        header: {
+            row(gap: .related, align: .center, wrap: true) {
+                stack(gap: .none) {
+                    ui.Text(people_title(board), role: .heading)
+                    // Who is here besides this person, counted as the list is: "2 here" over
+                    // one row reads as someone missing.
+                    ui.Text(here_line(board.rows.len()), role: .caption, secondary: true)
+                }
+                spacer
+                ui.Button("Close", icon: .x, icon_only: true, size: .small, role: .plain) {
+                    on press: device.close(device.people)
                 }
             }
         }
+        body: {
+            if board.showing != "" {
+                person_card(board)
+            } else {
+                roster(board)
+            }
+        }
+        on dismiss: device.close(device.people)
     }
 }
 
@@ -188,18 +212,14 @@ view roster(board: device.People) {
         // A heading earns its line only where it tells one group from another: with one group the
         // roster's title already says who is here.
         let labelled = not everyone.is_empty() and not software.is_empty()
-        scroll {
-            if labelled {
-                group_heading("People")
-            }
+        // As tall as the people here, up to the room a roster takes: past it the list scrolls
+        // and builds only the rows it shows.
+        ui.VirtualList(name: "People here now", most: space.rem * 34.0) {
             for p in everyone {
-                person_row(p, board)
-            }
-            if labelled {
-                group_heading("Agents")
+                person_listed(p, board, if labelled { "People" } else { "" })
             }
             for p in software {
-                person_row(p, board)
+                person_listed(p, board, if labelled { "Agents" } else { "" })
             }
         }
     }
@@ -214,9 +234,68 @@ view roster(board: device.People) {
     }
 }
 
-/// A group's heading: which of the two kinds of member the rows under it are.
-view group_heading(title: Text) {
-    ui.Text(title, role: .label, secondary: true)
+/// One person as a row of the list who is here: what their row shows, and the actions its menu
+/// keeps reachable from the keyboard.
+view person_listed(p: device.Person, board: device.People, group: Text) {
+    let label = if p.name != "" { p.name } else { std.say("Someone") }
+    let followed = p.following or board.following == p.key
+    ui.ListItem(value: p.key, group: if group != "" { group }) {
+        person_row(p, board)
+        menu: {
+            if not p.agent {
+                ui.MenuItem("Wave at {label}", icon: .hand) {
+                    on choose: device.wave(device.people, person: p.key)
+                }
+            }
+            if followed {
+                ui.MenuItem("Stop following {label}", icon: .x) {
+                    on choose: device.unfollow(device.people)
+                }
+            } else {
+                ui.MenuItem("Follow {label}", icon: .eye) {
+                    on choose: device.follow(device.people, person: p.key)
+                }
+            }
+            if p.agent and goable(p) {
+                ui.MenuItem("Go where {label} works", icon: .arrow_right) {
+                    on choose: device.go_to(device.people, person: p.key)
+                }
+            }
+        }
+    }
+}
+
+/// What a reader hears of a person beyond their name: whether they are software, where they are,
+/// what they say they are doing, how available they are, and whether they follow this person.
+fn spoken_details(p: device.Person) -> Text {
+    let said: List<Text> = []
+    if p.agent {
+        said = said + [std.say("Agent")]
+    }
+    if p.joined != "" {
+        let joined = p.joined
+        said = said + [std.say("Joined {joined}")]
+    }
+    // The place says where they are, never the call the line under it already says.
+    if p.activity != "" or p.in_app != "" {
+        let place = where_line(p)
+        if place != "" {
+            said = said + [std.say("Now: {place}")]
+        }
+    }
+    let doing = doing_line(p)
+    if p.call != "" {
+        let call = p.call
+        said = said + [std.say("In a call: {call}")]
+    } else if doing != "" {
+        said = said + [doing]
+    } else {
+        said = said + [availability_word(p)]
+    }
+    if is_follower(p) {
+        said = said + [std.say("Follows you")]
+    }
+    return said.join("; ")
 }
 
 /// One person's row: their face in the colour the workspace gives them, their name, and the one
@@ -240,6 +319,7 @@ view person_row(p: device.Person, board: device.People) {
         name,
         secondary: if secondary != "" { secondary },
         note: if doing != "" { doing },
+        description: spoken_details(p),
         badge: if p.agent { software_tag(p) },
         mark: if p.automatic {
             // Software says what kind it is before its name, as a reader and a painter both find it:
@@ -272,18 +352,22 @@ view person_row(p: device.Person, board: device.People) {
                     wave_button(p, board, name)
                 }
                 follow_button(followed, p, name)
+                // Where software works, with the way there: pressing it brings that window
+                // forward, so what it is on stands in front of this person.
+                if p.agent and goable(p) {
+                    ui.Button(
+                        std.say("Go where {name} works"),
+                        icon: .arrow_right,
+                        icon_only: true,
+                        size: .small,
+                        role: .plain,
+                    ) {
+                        on press: device.go_to(device.people, person: p.key)
+                    }
+                }
             }
         }
         on activate: device.show_person(device.people, person: p.key)
-    }
-    if p.agent and goable(p) {
-        // Where software works: the window it is in, with the way there. Pressing it brings that
-        // window forward, so what it is on stands in front of this person.
-        row(gap: .related, align: .center) {
-            ui.Button("Go there", icon: .arrow_right, size: .small, role: .plain) {
-                on press: device.go_to(device.people, person: p.key)
-            }
-        }
     }
 }
 

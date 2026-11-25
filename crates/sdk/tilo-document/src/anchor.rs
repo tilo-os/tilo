@@ -166,6 +166,7 @@ impl Model for TextAnchor {
 
 #[cfg(test)]
 mod tests {
+    use tilo_resource::AppNamed;
     use tilo_resource::{Collection, Invoke, Model, Replica, resource};
 
     use super::*;
@@ -204,7 +205,7 @@ mod tests {
         }
     }
 
-    fn first_block(note: &Replica<Note>) -> String {
+    fn first_block(note: &Replica<Note, AppNamed>) -> String {
         let state = note.state().unwrap();
         state
             .body
@@ -216,7 +217,7 @@ mod tests {
             .to_owned()
     }
 
-    fn type_at(note: &mut Replica<Note>, block: &str, at: usize, text: &str) {
+    fn type_at(note: &mut Replica<Note, AppNamed>, block: &str, at: usize, text: &str) {
         let edit = Note::paths()
             .body
             .perform(&RichTextAction::SpliceText {
@@ -230,7 +231,7 @@ mod tests {
         note.apply(Invoke::edit(&edit).unwrap()).unwrap();
     }
 
-    fn anchored(note: &Replica<Note>) -> Option<(String, usize, usize)> {
+    fn anchored(note: &Replica<Note, AppNamed>) -> Option<(String, usize, usize)> {
         let state = note.state().unwrap();
         let (_, remark) = state.remarks.iter().next()?;
         remark.about.range(note.doc())
@@ -238,10 +239,10 @@ mod tests {
 
     #[test]
     fn an_anchor_follows_its_characters_and_writes_no_text() {
-        let mut note = Replica::<Note>::new();
+        let mut note = Replica::<Note>::new().in_app("so.tilo.model", "Model");
         let block = first_block(&note);
         type_at(&mut note, &block, 0, "hello world");
-        let text = |note: &Replica<Note>| {
+        let text = |note: &Replica<Note, AppNamed>| {
             let Ok(Some((_, body))) = note.doc().get(automerge::ROOT, "body") else {
                 return String::new();
             };

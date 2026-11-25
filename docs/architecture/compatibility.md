@@ -184,6 +184,11 @@ because it boots the staged deployment that holds them.
   there too, a line a word (`words` in the file's header): the keywords a
   declared shape may use travel inside a string, so the runtime interface
   lists them, and a word added or gone needs a higher version.
+  The runtime interface also records the wasm import table the host offers
+  (`imports` in its header), read from the host's own definitions, a line an
+  import and its signature: a module names an import and passes its
+  parameters, so one added, gone or retyped is a module another runtime
+  cannot link, and needs a higher version too.
   `tools/policy/check_interfaces.py` fails when the file, its version, the
   versions the image serves or an app's manifest differ from the code (`check`,
   in the pre-commit hook and the policy suite) and when the interface changed

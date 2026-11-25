@@ -85,10 +85,6 @@ impl StatePeer {
     /// own device: what it writes is admitted as far as the caller's grants
     /// reach where they made it (`workspace::membership`), here as on every
     /// device that receives it.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "every kind of member change, each read beside its action"
-    )]
     pub(super) fn apply_member_change(
         &mut self,
         caller: &DeviceCert,

@@ -240,8 +240,8 @@ test('the page keeps its peer store in IndexedDB across reloads, offline, and sa
 
   // IndexedDB refusing the write (the origin's storage is full): the flush fails and says why, the
   // store says so, the store is not closed over it, and what was committed before stays. Once
-  // there is room, the next flush commits the change.
-  await tab.evaluate(`openProfile('alice', 'laptop')`);
+  // there is room, the next flush commits the change. The page opened alice's store once since it
+  // came back, so the release below is its last: it flushes, and the refusal keeps it open.
   await tab.evaluate('globalThis.refuseCommits = true');
   await set('alice', 'laptop', 'refused', 'kept for the next commit');
   await assert.rejects(tab.evaluate(`${handle('alice', 'laptop')}.flush()`), /QuotaExceededError: the disk is full/);

@@ -44,7 +44,7 @@ pub struct WidgetPresence {
     carets: HashMap<PresenceKey, Vec<(MemberId, usize)>>,
     color_overrides: HashMap<MemberId, (u8, u8, u8)>,
     names: HashMap<MemberId, String>,
-    statuses: HashMap<MemberId, collab_types::presence::LiveStatus>,
+    statuses: HashMap<MemberId, tilo_presence_types::LiveStatus>,
     typing: HashMap<(MemberId, PresenceKey), Vec<TypingMark>>,
     /// Who is composing a message where, as the host last pruned it
     /// ([`PresenceCtx::prune_composing`]): a conversation's "… is typing".

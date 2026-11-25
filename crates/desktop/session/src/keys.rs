@@ -201,28 +201,6 @@ impl SwitcherKey {
             Self::Hold => None,
         }
     }
-
-    /// Carry it out on `walk` over `handle`'s windows, as the session's verb [`Self::asks`] names does.
-    pub(crate) fn walk(
-        self,
-        handle: &tilo_session_core::desktop::state::DesktopHandle,
-        walk: &Overlays,
-        walking: Option<SwitcherScope>,
-    ) {
-        use crate::windows::{commit_switcher, select_switcher, walk_switcher};
-        match self {
-            Self::Walk { back, opened } => walk_switcher(
-                handle,
-                walk,
-                walking.unwrap_or(opened),
-                if back { -1 } else { 1 },
-            ),
-            Self::Place(at) => select_switcher(handle, walk, at),
-            Self::Commit => commit_switcher(handle, walk),
-            Self::Cancel => walk.hide(Overlay::Switcher),
-            Self::Hold => {}
-        }
-    }
 }
 
 /// Alt+Tab's keys: the chord that opens the session's walk, and every key it answers while it is up.
@@ -323,20 +301,6 @@ impl WalkKeys {
             KeyClaim::Take
         };
         (self.walk.switcher_up() || (!locked && !inhibited)).then_some(claim)
-    }
-
-    /// Move the walk as `press` asks, on `handle`'s session itself: what a host without the session's
-    /// API does with the walk's keys. Whether the press was the walk's.
-    pub(crate) fn walk(
-        &self,
-        press: &Press,
-        handle: &tilo_session_core::desktop::state::DesktopHandle,
-    ) -> bool {
-        let Some(key) = self.key(press) else {
-            return false;
-        };
-        key.walk(handle, &self.walk, self.walking());
-        true
     }
 }
 

@@ -1349,8 +1349,12 @@ impl Checker<'_> {
         self.prop_text(node.clone(), "gap", Ex::str("tight"));
         self.prop_text(node.clone(), "align", Ex::str("center"));
         self.emit(host(
-            Imp::UiPropI,
-            vec![node.clone(), Ex::str("wrap"), Ex::int(1)],
+            Imp::UiPropB,
+            vec![
+                node.clone(),
+                Ex::str("wrap"),
+                Ex::new(Ek::Bool(true), Ty::Bool),
+            ],
         ));
         if let Some((b, info)) = self.page_of("facts", args, c.call.span) {
             for field in &info.fields {
@@ -1403,8 +1407,12 @@ impl Checker<'_> {
         self.bind_part(&view, d, b, field, span);
         if matches!(field.ty, Ty::Option(_)) {
             self.emit(host(
-                Imp::UiPropI,
-                vec![view.clone(), Ex::str("optional"), Ex::int(1)],
+                Imp::UiPropB,
+                vec![
+                    view.clone(),
+                    Ex::str("optional"),
+                    Ex::new(Ek::Bool(true), Ty::Bool),
+                ],
             ));
         }
         Some(view)

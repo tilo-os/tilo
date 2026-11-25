@@ -2670,3 +2670,59 @@ fn a_restarted_daemons_own_account_lists_its_workspaces_without_asking() {
     );
     device.stop().expect("the phone's daemon stops");
 }
+
+/// A daemon of the computer's binds its services' sockets in a directory only it may enter,
+/// named for the account the person is, while its native endpoint stays in the directory every
+/// account reaches: a broker's socket refuses one another account can read.
+#[test]
+fn a_system_daemons_services_are_the_accounts_and_its_native_endpoint_is_everyones() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let directory = tempfile::tempdir().unwrap();
+    let shared = directory.path().join("run");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let native = shared.join(tilo_paths::machine::DAEMON_NATIVE);
+
+    // The daemon answers at its native endpoint before anyone signs in, and a founding then makes
+    // the services' directory: the endpoint is still there, and still reached through the
+    // directory every account may enter.
+    let listener = std::os::unix::net::UnixListener::bind(&native).unwrap();
+    let services = super::service_sockets_at(&shared, true, Some(1000)).unwrap();
+    assert_eq!(services, shared.join("accounts/1000"), "the services are the account's own");
+    assert_eq!(
+        std::fs::symlink_metadata(&shared).unwrap().mode() & 0o777,
+        0o755,
+        "making the services' directory left the native endpoint's directory as every account \
+         reaches it"
+    );
+    std::os::unix::net::UnixStream::connect(&native).expect("an account reaches native.sock");
+    drop(listener);
+    let metadata = std::fs::symlink_metadata(&services).unwrap();
+    assert_eq!(
+        metadata.mode() & 0o777,
+        0o700,
+        "the services' directory is the daemon's alone: {:o}",
+        metadata.mode() & 0o777
+    );
+    assert_eq!(
+        metadata.uid(),
+        rustix::process::geteuid().as_raw(),
+        "the services' directory is the daemon's"
+    );
+    let named = super::Sockets::in_dir(&shared);
+    assert_eq!(named.native, native, "every account reaches native.sock");
+    for name in ["collab.sock", "identity.sock", "blobs.sock"] {
+        assert_eq!(services.join(name).parent(), Some(services.as_path()));
+        assert_ne!(
+            shared.join(name),
+            services.join(name),
+            "the service socket stayed in the directory every account reaches"
+        );
+    }
+
+    // One account's own daemon keeps its services beside its native endpoint, and a daemon of the
+    // computer's that serves no account yet keeps them there too.
+    assert_eq!(super::service_sockets_at(&shared, false, Some(1000)).unwrap(), shared);
+    assert_eq!(super::service_sockets_at(&shared, true, None).unwrap(), shared);
+}

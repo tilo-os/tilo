@@ -18,7 +18,6 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::admitted::offered;
 use tilo_actions::remote::settings_resources as wire;
 use tilo_actions::remote::{
     ActionCallError, Admitted, Caller, InvokeRequest, Outcome, Pending, pending,

@@ -1111,7 +1111,7 @@ impl Core {
         // A line narrower than the title and what stands beside it wraps instead of squeezing
         // them into each other: the title keeps its line, and the views and the actions stand
         // under it on a phone.
-        line.props.insert("wrap".to_owned(), Value::Int(1));
+        line.props.insert("wrap".to_owned(), Value::Bool(true));
         let line = self.push(line)?;
         self.insert(line, 0, title)?;
         self.remove(parent, index)?;
@@ -1551,16 +1551,15 @@ fn text_of(value: Option<&Value>) -> Option<&str> {
     }
 }
 
-/// A boolean prop as a tree holds it: a `Bool` prop a view writes is `1` or `0`.
+/// A boolean prop as a tree holds it.
 fn on_off(yes: bool) -> Value {
-    Value::Int(i64::from(yes))
+    Value::Bool(yes)
 }
 
 /// A boolean prop as a node holds it, off when it is not there.
 fn flag_prop(props: &BTreeMap<String, Value>, name: &str) -> bool {
     match props.get(name) {
         Some(Value::Bool(flag)) => *flag,
-        Some(Value::Int(n)) => *n != 0,
         Some(Value::Opt(Some(held))) => matches!(**held, Value::Bool(true)),
         _ => false,
     }

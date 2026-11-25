@@ -1400,14 +1400,9 @@ impl WindowShares {
                     // the tab of this session that pictures it.
                     let place = self.pictured_in(named);
                     let (title, sharer) = session.read(|tree| tab_title(tree, place));
-                    let Some(mut start) = PeerStreamStart::announced(
-                        &control,
-                        from,
-                        sync.peer(),
-                        sharer,
-                        title,
-                        true,
-                    ) else {
+                    let Some(mut start) =
+                        PeerStreamStart::announced(&control, from, sharer, title, true)
+                    else {
                         continue;
                     };
                     start.tab = place;
@@ -1499,7 +1494,7 @@ impl WindowShares {
             match heard.track {
                 Track::Page(tab) => self.page_heard(session, from, tab, &heard.body),
                 Track::Window(tab, _) => {
-                    self.picture_heard(session, sync, &workspace, from, tab, &heard.body);
+                    self.picture_heard(session, &workspace, from, tab, &heard.body);
                 }
                 _ => {}
             }
@@ -1512,7 +1507,6 @@ impl WindowShares {
     fn picture_heard(
         &mut self,
         session: &DesktopHandle,
-        sync: &Client,
         workspace: &str,
         from: EndpointId,
         tab: TabId,
@@ -1540,8 +1534,7 @@ impl WindowShares {
         }
         if object.keyframe {
             let place = self.pictured_in(tab);
-            let start =
-                session.read(|tree| picture_start(tree, sync.peer(), peer, (tab, place), &object));
+            let start = session.read(|tree| picture_start(tree, peer, (tab, place), &object));
             let Some(start) = start else {
                 tracing::debug!(tab, codec = ?object.codec, "a shared window's codec is not decoded here");
                 return;
@@ -2264,7 +2257,6 @@ const fn video_codec(codec: StreamCodec) -> tilo_live::video::Codec {
 /// takes.
 fn picture_start(
     tree: &Layout,
-    local_peer: PeerId,
     peer: PeerId,
     (tab, place): (TabId, TabId),
     object: &VideoObject,
@@ -2288,7 +2280,6 @@ fn picture_start(
     Some(PeerStreamStart {
         surface: tab,
         peer,
-        local_peer,
         width: u32::from(object.width),
         height: u32::from(object.height),
         codec: codec.wire_label().to_owned(),
@@ -2779,7 +2770,6 @@ mod window_tracks {
             start: PeerStreamStart::announced(
                 &page,
                 neighbour_wire::peer_handle(&[9; 32]),
-                11,
                 "Laptop",
                 "Browser",
                 false,

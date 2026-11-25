@@ -12,6 +12,9 @@ tilo-app = { path = "../tilo-app", default-features = false, features = ["test-s
 # What the workspace broker says of an action a window shows, in the workspace holding its record.
 tilo-broker-core = { path = "../../core/broker-core" }
 tilo-desktop-model = { path = "../../desktop/desktop-model" }
+# The person's settings as the session keeps them: resources of their workspace, here in memory.
+settings-sections = { path = "../../desktop/settings-sections", features = ["test-support"] }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 
 [dev-dependencies]
 tilo-app = { path = "../tilo-app", features = ["test-support"] }

@@ -25,7 +25,7 @@ fn secret_sync() -> tilo_seal::SecretKey {
 /// The person's floor key, made as a device holding their root makes it.
 fn floor_with_key() -> (Floor, String) {
     let made = make_key(&root(), &secret_sync().public_key().unwrap()).unwrap();
-    let mut resource = Replica::<Floor>::new();
+    let mut resource = Replica::<Floor>::new().in_app("so.tilo.model", "Model");
     resource.apply(made.action).unwrap();
     let floor = resource.state().unwrap();
     let private = floor.open_key(&secret_sync()).unwrap().to_string();
@@ -34,7 +34,7 @@ fn floor_with_key() -> (Floor, String) {
 
 /// The attic, set to follow stable, whose floor takes `key`.
 fn servers(key: &str) -> Servers {
-    let mut resource = Replica::<Servers>::new();
+    let mut resource = Replica::<Servers>::new().in_app("so.tilo.model", "Model");
     let attic = device_id(&ATTIC);
     for action in [
         Servers::ENROLL_SERVER.with((attic.as_str().to_owned(), "Attic".into(), endpoint())),
@@ -96,7 +96,7 @@ fn the_floor_key_is_signed_by_the_root_and_opens_only_with_secret_sync() {
 fn a_server_never_answers_its_own_floor_request() {
     let attic = device_id(&ATTIC).as_str().to_owned();
     let cellar = device_id(&CELLAR).as_str().to_owned();
-    let mut resource = Replica::<Floor>::new();
+    let mut resource = Replica::<Floor>::new().in_app("so.tilo.model", "Model");
     resource
         .apply(Floor::REQUEST_FLOOR_ADVANCE.with((
             attic.clone(),

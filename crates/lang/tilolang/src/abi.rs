@@ -287,6 +287,7 @@ imports! {
     UiNode = "ui_node" ([H, H] -> [H]);
     UiPropH = "ui_prop_h" ([H, H, H] -> []);
     UiPropI = "ui_prop_i" ([H, H, I64] -> []);
+    UiPropB = "ui_prop_b" ([H, H, I32] -> []);
     UiPropF = "ui_prop_f" ([H, H, F64] -> []);
     UiPropPic = "ui_prop_picture" ([H, H, H] -> []);
     UiChild = "ui_child" ([H, H] -> []);

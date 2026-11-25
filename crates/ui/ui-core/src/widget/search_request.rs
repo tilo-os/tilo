@@ -43,7 +43,7 @@ const OFFER_PARAM: &str = "offer";
 const ACTION_PARAM: &str = "action";
 const ANCHOR_PARAM: &str = "anchor";
 
-pub use tilo_resource::{ScopeDecl, scope_contains};
+pub use tilo_resource_plain::{ScopeDecl, scope_contains};
 
 /// A request to open the platform search from inside an app.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

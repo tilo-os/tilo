@@ -9,8 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Longest activity line an agent's presence carries.
-pub const MAX_ACTIVITY_BYTES: usize = 96;
+pub use tilo_presence_types::MAX_ACTIVITY_BYTES;
 
 /// One window a shell shows: the app and document it draws, its edges, and
 /// whether it is the one the person works in.

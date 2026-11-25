@@ -1144,10 +1144,7 @@ mod cases {
             .first()
             .unwrap_or_else(|| panic!("the keyboard reference: {}", dump(view.tree())));
         assert!(
-            matches!(
-                dialog.props.get("open"),
-                Some(Value::Bool(true) | Value::Int(1))
-            ),
+            matches!(dialog.props.get("open"), Some(Value::Bool(true))),
             "the reference is open over the editor: {:?}",
             dialog.props
         );

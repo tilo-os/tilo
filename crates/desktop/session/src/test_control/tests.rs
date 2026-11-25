@@ -285,6 +285,7 @@ tilo_test_env::scenario! {
                 "peers": Json::Null,
                 "sharing": {"sharing": [{"tab": "7", "workspace": "workspace-1", "viewers": []}]},
                 "notifications": [{"id": 4, "title": "Ada wrote to you", "body": "hello"}],
+                "clipboard": "the person's copy",
             }})
         };
         // Unlocked, the owner's shared sees the session as the development socket does.
@@ -309,6 +310,11 @@ tilo_test_env::scenario! {
             "what the person was told is behind the lock too"
         );
         assert_eq!(
+            locked["state"]["clipboard"],
+            Json::Null,
+            "what the person copied is behind the lock too"
+        );
+        assert_eq!(
             locked["state"]["chrome"]["overlays"],
             json!({"quick_settings": false, "overview": false})
         );
@@ -331,6 +337,11 @@ tilo_test_env::scenario! {
             shown(&app, dump(false))["state"]["notifications"],
             Json::Null,
             "what the person was told is theirs, and no app's to read"
+        );
+        assert_eq!(
+            shown(&app, dump(false))["state"]["clipboard"],
+            Json::Null,
+            "what the person copied is read through the clipboard's grant, never here"
         );
     }
 

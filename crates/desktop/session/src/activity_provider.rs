@@ -19,9 +19,7 @@ use std::sync::Arc;
 
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::workspace_activity as wire;
-use tilo_actions::remote::{
-    ActionProvider, Admitted, Caller, InvokeRequest, LiveRead, LiveView, Outcome, Pending,
-};
+use tilo_actions::remote::{Admitted, Caller, InvokeRequest, LiveRead, LiveView, Outcome, Pending};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ExecutionLocus,
     IRREVERSIBLE_TAG, InputSpec, InvocationId, OperationKind, RiskLevel,

@@ -41,7 +41,10 @@ fn a_by_app_verb_is_declared_and_published_to_no_caller() {
     let declared: Vec<&str> = Visits::declarations().iter().map(|decl| decl.id).collect();
     assert_eq!(declared, ["star"]);
 
-    let published = Replica::<Visits>::new().published().unwrap();
+    let published = Replica::<Visits>::new()
+        .in_app("so.tilo.model", "Model")
+        .published()
+        .unwrap();
     let offered: Vec<String> = published
         .actions
         .iter()
@@ -67,7 +70,9 @@ fn a_by_app_verb_is_declared_and_published_to_no_caller() {
 
 #[test]
 fn a_caller_invokes_a_by_app_verb_by_no_name_value_or_group() {
-    let mut replica = Replica::<Visits>::new().as_agent_for("eve", "ada");
+    let mut replica = Replica::<Visits>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_agent_for("eve", "ada");
 
     // By its id, the API finds no such action.
     let named = replica.apply(Visits::NOTE.with("forged")).map(drop);
@@ -97,7 +102,7 @@ fn a_caller_invokes_a_by_app_verb_by_no_name_value_or_group() {
 
 #[test]
 fn the_apps_own_code_builds_and_applies_a_by_app_verb() {
-    let mut replica = Replica::<Visits>::new();
+    let mut replica = Replica::<Visits>::new().in_app("so.tilo.model", "Model");
     let action = noting("tilo.so");
     assert!(Visits::by_app(&action));
     assert!(!Visits::by_app(

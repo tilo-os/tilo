@@ -156,6 +156,7 @@ pub mod chart_palette;
 pub mod charts;
 pub mod chrome;
 pub mod clock;
+#[cfg(feature = "model")]
 pub mod collaboration;
 pub use runtime_collab::native_media;
 pub use runtime_collab::shown_actions;
@@ -198,7 +199,9 @@ pub mod gpu;
 /// to RGB in a shader.
 pub mod gpu_video;
 pub mod headless;
+#[cfg(feature = "model")]
 pub mod history_mode;
+#[cfg(feature = "model")]
 pub mod history_source;
 #[cfg(feature = "native")]
 mod host_appearance;
@@ -236,6 +239,7 @@ pub mod launch;
 pub mod lift;
 pub mod live_activity;
 pub mod live_pictures;
+#[cfg(feature = "model")]
 pub mod local_identity;
 pub mod local_state;
 pub mod math;
@@ -311,6 +315,7 @@ pub mod host_operation {
 mod app_core;
 pub mod draw;
 pub(crate) mod draw_cull;
+#[cfg(feature = "model")]
 pub mod mentions;
 pub mod own_paint;
 pub mod published;
@@ -320,6 +325,7 @@ pub mod render_bump_recovery;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod render_thread;
 pub mod reorder;
+#[cfg(feature = "model")]
 pub mod resource;
 pub mod retained_present;
 pub mod retained_raster;
@@ -461,6 +467,7 @@ pub use remote_actions::{
 pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,
 };
+#[cfg(feature = "model")]
 pub use resource::{
     DocumentCheckout, DocumentId, DocumentRef, ResourceRefusal, ResourceSet, ResourceStore,
     ResourceType,
@@ -528,6 +535,7 @@ pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `ArtifactKind`
 // re-export flows through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
+#[cfg(feature = "model")]
 pub use history_mode::{
     HistoryController, HistoryError, HistoryResource, HistorySnapshot, PreviewSide, RestoreReview,
 };
@@ -544,30 +552,36 @@ pub use widget::history_group::{
 pub use widget::name_field::{NameField, NameFieldOutcome};
 // Re-exported so an app reaches the whole history stack through `tilo_ui::`
 // without knowing the module layout.
-pub use collab_types::presence::{
-    Availability, CallPresence, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,
-    PresenceVisibility, StatusOrigin, StatusSharing,
-};
+#[cfg(feature = "model")]
+pub use collab_types::presence::CallPresence;
+#[cfg(feature = "model")]
 pub use history_source::groups as history_groups;
+#[cfg(feature = "model")]
 pub use history_source::sentence::{
     AuthorParts, attribution_hover, author_line, author_parts, author_spoken, learn_item_names,
     wire_author_line, writer_badge,
 };
+#[cfg(feature = "model")]
 pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
     CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
     HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource, compare_entries,
-    deterministic_narrative, heads_for_entry, human_label, validate_narrative,
-    version_index_for_entry,
+    deterministic_narrative, heads_for_entry, validate_narrative, version_index_for_entry,
+};
+pub use tilo_presence_types::{
+    Availability, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,
+    PresenceVisibility, StatusOrigin, StatusSharing,
 };
 pub use widget::history::author_face;
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
 pub use gesture::{DragSelect, Granularity};
+#[cfg(feature = "model")]
 pub use history_source::invocations::{
     AgentSession, InvocationStep, forget_invocation, invocation_starting_at, read_invocations,
     record_invocation, record_invocation_with_details,
 };
+#[cfg(feature = "model")]
 pub use history_source::revert::{
     ChangeRange, KeptSlot, RevertError, RevertOutcome, Slot, latest_invocation_by, plan_revert,
     revert_invocation,
@@ -602,12 +616,15 @@ pub use tokens::{ReadingFace, TextRole, UiFace};
 
 pub use animation::Lerp;
 
+#[cfg(feature = "model")]
 pub use collaboration::PresencePayload;
+#[cfg(feature = "model")]
 pub use permissions::{
-    Access, Acting, ActionKind, CapDecision, CapOverride, Grantee, MemberId, PermissionContext,
-    PermissionScope, ResourceRef, Role, Scope as CapScope,
+    Access, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef, Role,
+    Scope as CapScope,
 };
-pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
+pub use permissions::{Acting, ActionKind, Grantee, MemberId};
+pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange, human_label};
 pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
 pub use widget::ViewPresence;
 
@@ -622,6 +639,7 @@ mod physical_input_trace;
 pub use physical_input_trace::Trace as NativePhysicalInputTrace;
 #[cfg(feature = "native")]
 pub mod input_frame;
+#[cfg(feature = "model")]
 pub mod semantic_document_read;
 pub mod semantic_outline;
 pub mod synthetic_input;

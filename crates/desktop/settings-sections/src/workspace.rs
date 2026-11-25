@@ -426,8 +426,14 @@ impl WorkspaceSettings {
     /// # Errors
     /// The settings are kept in no workspace yet, or it cannot be read.
     pub fn history(&self, section: &str) -> std::io::Result<Vec<Version>> {
+        self.history_of(section, None)
+    }
+
+    /// [`Self::history`] of `section`, of the app `app` where the section keeps each app's
+    /// preferences as a resource of its own.
+    fn history_of(&self, section: &str, app: Option<&str>) -> std::io::Result<Vec<Version>> {
         let stores = self.stores().ok_or_else(unattached)?;
-        let address = placement::address(section, None, &stores.device());
+        let address = placement::address(section, app, &stores.device());
         match stores
             .command(
                 address.holder,
@@ -798,11 +804,18 @@ impl SettingsSource for WorkspaceSettings {
         Ok(ConditionalUpdate::Stored)
     }
 
-    fn step(&self, section: &str, undo: bool, invokers: &[String]) -> std::io::Result<bool> {
+    fn step(
+        &self,
+        section: &str,
+        app: Option<&str>,
+        undo: bool,
+        invokers: &[String],
+    ) -> std::io::Result<bool> {
         self.sync();
         let stores = self.stores().ok_or_else(unattached)?;
-        let address = placement::address(section, None, &stores.device());
-        let Some((invocation, verb)) = step_of(&self.history(section)?, undo, invokers) else {
+        let address = placement::address(section, app, &stores.device());
+        let Some((invocation, verb)) = step_of(&self.history_of(section, app)?, undo, invokers)
+        else {
             return Ok(false);
         };
         let own = uuid::Uuid::new_v4().to_string();
@@ -865,8 +878,12 @@ fn step_of(versions: &[Version], undo: bool, invokers: &[String]) -> Option<(Str
             newest_first.find(|stamp| stamp.undoes.is_none() || undone_undo(&stamps, stamp))?;
         return Some((stamp.invocation.clone(), stamp.verb.clone()));
     }
-    let stamp = newest_first.next()?;
-    (stamp.undoes.is_some() && !undone_undo(&stamps, stamp))
+    // A redo already made is passed over, so steps redone one after another bring back each
+    // undo in turn, newest first; a change of theirs since the undos ends what can be redone.
+    let stamp = newest_first.find(|stamp| !undone_undo(&stamps, stamp))?;
+    stamp
+        .undoes
+        .is_some()
         .then(|| (stamp.invocation.clone(), stamp.verb.clone()))
 }
 

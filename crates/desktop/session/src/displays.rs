@@ -30,7 +30,6 @@ use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_compositor::{Compositor, OutputChange, OutputInfo, Transform};
 
-use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 
 use crate::controls::SessionCommand;
@@ -187,8 +186,6 @@ fn trusted_display_tools() -> Vec<TrustedTool> {
 pub(crate) struct Placed {
     /// The connector (`eDP-1`), which tells the displays apart.
     pub(crate) connector: String,
-    /// Whether the display is on now.
-    pub(crate) on: bool,
     /// Where it stands, logical `(x, y, w, h)` : signed, since a display left of or above the first
     /// starts below zero.
     pub(crate) rect: (i32, i32, i32, i32),
@@ -215,7 +212,6 @@ pub(crate) fn placed(outputs: &[OutputInfo]) -> Vec<Placed> {
         .filter_map(|output| {
             Some(Placed {
                 connector: output.name.clone(),
-                on: output.enabled,
                 rect: output.rect?,
                 scale: output.scale,
             })

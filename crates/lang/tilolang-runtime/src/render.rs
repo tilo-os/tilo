@@ -1125,12 +1125,7 @@ impl Core {
             Some(Value::Text(view)) if !view.is_empty() => Some(view.as_str()),
             _ => None,
         };
-        // A flag a view wrote as `row: true` reaches the node as `1`, as every flag does.
-        let row = match props.get(SHOWN_AS_ROW) {
-            Some(Value::Bool(flag)) => *flag,
-            Some(Value::Int(n)) => *n != 0,
-            _ => false,
-        };
+        let row = matches!(props.get(SHOWN_AS_ROW), Some(Value::Bool(true)));
         let chosen = match named {
             Some(_) => None,
             None if row => None,

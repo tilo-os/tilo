@@ -1,3 +1,4 @@
+use crate::AppNamed;
 use crate::{ActionCx, Collection, Id, Invoke, Model, Reactions, Replica, resource};
 use tilo_action_policy::MemberId;
 
@@ -30,17 +31,19 @@ impl Board {
     }
 }
 
-fn board(author: &str) -> Replica<Board> {
-    let mut replica = Replica::<Board>::new().as_author(author);
+fn board(author: &str) -> Replica<Board, AppNamed> {
+    let mut replica = Replica::<Board>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author(author);
     replica.set_now_ms(1_000);
     replica
 }
 
-fn card(replica: &Replica<Board>) -> Id {
+fn card(replica: &Replica<Board, AppNamed>) -> Id {
     replica.state().unwrap().cards.ids().next().unwrap().clone()
 }
 
-fn edit(replica: &mut Replica<Board>, edit: &crate::Edit<Board>) -> Result<(), String> {
+fn edit(replica: &mut Replica<Board, AppNamed>, edit: &crate::Edit<Board>) -> Result<(), String> {
     replica
         .apply(Invoke::edit(edit).unwrap())
         .map(drop)
@@ -128,7 +131,7 @@ tilo_test_env::scenario! {
         );
         assert!(edit(&mut ada, &forged).is_err());
         // A reaction is someone's.
-        let mut nobody = Replica::<Board>::new();
+        let mut nobody = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         assert!(edit(&mut nobody, &reactions.react("👍")).is_err());
     }
 
@@ -161,7 +164,7 @@ tilo_test_env::scenario! {
     {
         let mut ada = board("u_ada");
         let reactions = Board::paths().reactions;
-        let toggle = |replica: &Replica<Board>| {
+        let toggle = |replica: &Replica<Board, AppNamed>| {
             let op = replica.state().unwrap().reactions.toggle("👍", &MemberId::person("u_ada"));
             crate::Edit::<Board>::new(vec![crate::Segment::Field("reactions".into())], op)
         };

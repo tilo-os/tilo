@@ -147,7 +147,8 @@ mod tests {
             device.online = true;
             device.last_seen_unix_ms = 1;
             let converged = PersonDevices::new([device]);
-            let mut record = tilo_resource::Replica::<Devices>::new();
+            let mut record =
+                tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
             record
                 .apply(Devices::KEEP_DEVICE.with((local.as_str().to_owned(), "00".to_owned())))
                 .expect("the device is kept");

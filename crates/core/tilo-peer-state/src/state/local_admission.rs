@@ -338,12 +338,38 @@ impl StatePeer {
     /// What a sealed write of `mutation` to `record` of `app` claims: readers without the key
     /// decide the write by the claims of its changes, as a member's page names them, each naming
     /// the units its action may write by the app interface the write names. Changes that name no
-    /// action claim nothing.
+    /// action claim nothing. A write that founds a record holds it whole, and claims each change
+    /// of it that names an action: an action that founds the record is whole, for a reader of the
+    /// action's other records, once that write is here.
     pub(crate) fn sealed_claims(
         &self,
         (app, record): (&str, &str),
         mutation: &collab_types::DocumentMutation,
     ) -> Vec<collab_types::ChangeClaim> {
+        if let collab_types::DocumentMutation::Snapshot(bytes) = mutation {
+            let Some(founded) = tilo_failure::ignored!(
+                "a record that does not load claims nothing, and its readers refuse it",
+                automerge::Automerge::load(bytes).ok()
+            ) else {
+                return Vec::new();
+            };
+            let claims = founded
+                .get_changes(&[])
+                .iter()
+                .filter_map(|change| {
+                    tilo_failure::ignored!(
+                        "a change that names no action, as a record's founding, claims nothing",
+                        collab_types::claim::claims_of(
+                            std::slice::from_ref(change),
+                            collab_types::record_unit,
+                        )
+                        .ok()
+                    )
+                })
+                .flatten()
+                .collect();
+            return self.footprints((app, record), claims);
+        }
         let Some(claims) = tilo_failure::ignored!(
             "changes that name no action claim nothing",
             collab_admission::mutation_claims(mutation, collab_types::record_unit).ok()

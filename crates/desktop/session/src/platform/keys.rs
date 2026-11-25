@@ -490,18 +490,6 @@ impl Shared {
         }
     }
 
-    /// The action row the person chose in search, run through the API every caller uses, as the
-    /// app's own control would run it.
-    pub(crate) fn follow_search_actions(&self) {
-        if let Some(control) = self.desktop.take_unrouted_control() {
-            self.invocations.borrow_mut().push(Invocation {
-                address: control.address,
-                arguments: control.arguments,
-                readout: None,
-            });
-        }
-    }
-
     /// What a window's menu asked of its share with the workspace, as the window shares' own
     /// published actions: the window is shared, or no longer, by its tab.
     pub(crate) fn follow_window_share_asks(&self) {

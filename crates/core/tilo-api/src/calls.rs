@@ -582,6 +582,34 @@ impl Calls {
             .map_err(|refused| refused.json())
     }
 
+    /// What the person's Servers workspace answers the machine step `step`
+    /// ([`tilo_actions::remote::machines`]) with `arguments`, read by this computer's daemon
+    /// where it holds that workspace: the read a desktop makes, with or without one.
+    ///
+    /// # Errors
+    /// These calls reach no daemon of this computer's, or the daemon refused or failed the read.
+    pub async fn machines(
+        &self,
+        step: &str,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Result<Value> {
+        let At::Daemon { line, .. } = &self.at else {
+            return Err(anyhow!(
+                "your machines are read through this computer's daemon, and these calls reach none"
+            ));
+        };
+        let provider: Provider = line.clone();
+        // The daemon decides the call as whoever connects; the caller here names nobody.
+        settled(
+            &provider,
+            tilo_actions::remote::Caller::local_person(""),
+            tilo_actions::remote::machines::target(step),
+            arguments,
+        )
+        .await
+        .map_err(|refused| anyhow!("{}", refused.body.message))
+    }
+
     /// The call lane of this app's connection ([`LineClient::carry_call`]): an app the daemon
     /// started carries one outside service's call into a workspace call on it. Any other
     /// connection carries none, and its calls are refused with why.
@@ -850,7 +878,10 @@ impl Calls {
     ) -> Result<Value> {
         let mut arguments = json!({"path": path});
         put(&mut arguments, "cursor", cursor);
-        shaped::<answers::Resource>(self.typed(workspace, "tilo_read", arguments, None).await?)
+        read_answer(
+            path,
+            self.typed(workspace, "tilo_read", arguments, None).await?,
+        )
     }
 
     /// What the app's window shows for `path` in `workspace`, as `tilo_view` reads it, with a
@@ -1591,6 +1622,12 @@ fn action_answer(mut answer: Value) -> Result<Value> {
         fields.insert("invocation".into(), invocation);
     }
     shaped::<answers::ActionAnswer>(answer)
+}
+
+/// What `tilo_read` answered for `path`, as the resource [`Session::read`] answers: a record's
+/// reading is the resource at its path, as the API's read answers it too.
+pub(crate) fn read_answer(path: &str, read: Value) -> Result<Value> {
+    shaped::<answers::Resource>(answers::record_resource(path, read))
 }
 
 /// `value` as `T` answers it, or why it does not.

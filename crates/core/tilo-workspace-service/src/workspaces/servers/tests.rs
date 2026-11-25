@@ -1,6 +1,7 @@
 mod keeping;
 
 use super::*;
+use tilo_resource::AppNamed;
 use tilo_resource::Replica;
 
 use super::device::{DHCP, STATIC};
@@ -22,8 +23,8 @@ fn endpoint() -> String {
     .unwrap()
 }
 
-fn enrolled() -> Replica<Servers> {
-    let mut replica = Replica::<Servers>::new();
+fn enrolled() -> Replica<Servers, AppNamed> {
+    let mut replica = Replica::<Servers>::new().in_app("so.tilo.model", "Model");
     replica
         .apply(Servers::ENROLL_SERVER.with((
             device().as_str().to_owned(),
@@ -126,8 +127,10 @@ fn an_entry_names_its_relay_and_whether_it_serves_web() {
 /// another write one document holding both, not two competing roots.
 #[test]
 fn two_devices_that_each_write_the_document_first_merge_into_one() {
-    let mut left = Replica::<Servers>::from_doc(genesis(WORKSPACE).unwrap());
-    let mut right = Replica::<Servers>::from_doc(genesis(WORKSPACE).unwrap());
+    let mut left =
+        Replica::<Servers>::from_doc(genesis(WORKSPACE).unwrap()).in_app("so.tilo.model", "Model");
+    let mut right =
+        Replica::<Servers>::from_doc(genesis(WORKSPACE).unwrap()).in_app("so.tilo.model", "Model");
     assert_eq!(
         left.doc().clone().get_heads(),
         right.doc().clone().get_heads(),
@@ -157,7 +160,9 @@ fn two_devices_that_each_write_the_document_first_merge_into_one() {
 
     // What the workspace hands one device's copy once the two meet: the
     // other's whole document, merged in.
-    let mut merged = Replica::<Servers>::load(&left.save()).unwrap();
+    let mut merged = Replica::<Servers>::load(&left.save())
+        .unwrap()
+        .in_app("so.tilo.model", "Model");
     tilo_automerge::ApplyIncoming::load_incoming(merged.doc_mut(), &right.save())
         .expect("the other device's copy merges");
     let state = merged.state().unwrap();
@@ -175,7 +180,9 @@ fn the_genesis_is_empty_and_named_by_its_workspace() {
     assert_eq!(one.get_heads(), same.get_heads());
     let mut other = genesis("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a22").unwrap();
     assert_ne!(one.get_heads(), other.get_heads());
-    let replica = Replica::<Servers>::load(&one.save()).unwrap();
+    let replica = Replica::<Servers>::load(&one.save())
+        .unwrap()
+        .in_app("so.tilo.model", "Model");
     assert!(replica.state().unwrap().servers.is_empty());
 }
 
@@ -239,7 +246,7 @@ fn a_change_the_document_cannot_mean_is_refused() {
 
 /// The machine an entry configures: three drives, a bond of two interfaces, a
 /// tagged interface with a static address, and a hostname.
-fn configured() -> Replica<Servers> {
+fn configured() -> Replica<Servers, AppNamed> {
     let mut servers = enrolled();
     for (identity, role) in [
         ("ROOT1", "system"),
@@ -555,7 +562,7 @@ const NONCE: &str = "00112233445566778899aabbccddeeff";
 
 /// A machine planned to install to `disk`, leaving exactly `open` open, as the
 /// plan document both sides read.
-fn planned(disk: &str, open: &str) -> Replica<Servers> {
+fn planned(disk: &str, open: &str) -> Replica<Servers, AppNamed> {
     use install_profile_model::plan::{DiskRule, Network, Plan, SCHEMA, Token};
     let open: Vec<String> = open
         .split(',')
@@ -599,7 +606,7 @@ fn planned(disk: &str, open: &str) -> Replica<Servers> {
         },
     };
     let plan: Plan = serde_json::from_value(serde_json::to_value(&plan).unwrap()).unwrap();
-    let mut servers = Replica::<Servers>::new();
+    let mut servers = Replica::<Servers>::new().in_app("so.tilo.model", "Model");
     servers
         .apply(
             Servers::PLAN_MACHINE

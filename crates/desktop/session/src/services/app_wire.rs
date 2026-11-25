@@ -364,7 +364,6 @@ pub(crate) fn start_app_wire(
                 app_wire::Hosted {
                     live_activities: std::sync::Arc::clone(live_activities),
                     native_media: calls_service.clone(),
-                    records,
                     layout: std::sync::Arc::clone(&layout),
                     activity: activity_wire,
                     agents: services.agents.map(|roster| roster as _),

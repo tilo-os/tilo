@@ -24,9 +24,9 @@ pub const COMMANDS: [&str; 5] = [
 const TILO_ROOT_TYPE: &str = staging_handoff_model::gpt::TILO_ROOT;
 const SFDISK_MAX_BYTES: u64 = 1024 * 1024;
 const MIB: u128 = 1 << 20;
-const GIB: u128 = 1 << 30;
-const EFI_BYTES: u128 = 2 << 30;
-const MIN_ROOT_BYTES: u128 = 32 << 30;
+const EFI_BYTES: u128 = staging_handoff_model::sizes::ESP_BYTES as u128;
+const BOOT_BYTES: u128 = staging_handoff_model::sizes::BOOT_BYTES as u128;
+const MIN_ROOT_BYTES: u128 = staging_handoff_model::sizes::MIN_ROOT_BYTES as u128;
 /// Every byte count must fit a signed 64-bit integer: the shell and the kernel
 /// use that range.
 const MAX_BYTES: u128 = (1 << 63) - 1;
@@ -167,17 +167,26 @@ pub fn guided_geometry(args: &[&str]) -> std::result::Result<(), String> {
         return Err("allocation overlaps GPT metadata or exceeds the disk".into());
     }
     if efi.0 != free.0 || efi.1.saturating_sub(efi.0) != EFI_BYTES {
-        return Err("allocation requires a dedicated 2 GiB EFI partition".into());
+        return Err(format!(
+            "allocation requires a dedicated {} GiB EFI partition",
+            EFI_BYTES >> 30
+        ));
     }
     let mut previous = efi.1;
     if let Some(boot) = boot {
-        if boot.0 != previous || boot.1.saturating_sub(boot.0) < GIB {
-            return Err("allocation requires a contiguous 1 GiB boot partition".into());
+        if boot.0 != previous || boot.1.saturating_sub(boot.0) < BOOT_BYTES {
+            return Err(format!(
+                "allocation requires a contiguous {} GiB boot partition",
+                BOOT_BYTES >> 30
+            ));
         }
         previous = boot.1;
     }
     if root.0 != previous || root.1 != free.1 || root.1.saturating_sub(root.0) < MIN_ROOT_BYTES {
-        return Err("root must fill the reviewed allocation and hold at least 32 GiB".into());
+        return Err(format!(
+            "root must fill the reviewed allocation and hold at least {} GiB",
+            MIN_ROOT_BYTES >> 30
+        ));
     }
     for item in existing {
         let parts: Vec<&str> = item.split(':').collect();

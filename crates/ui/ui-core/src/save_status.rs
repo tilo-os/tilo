@@ -23,6 +23,7 @@ pub enum SaveState {
     Failed(String),
 }
 
+#[cfg(feature = "model")]
 impl From<&crate::resource::ResourceSaveStatus> for SaveState {
     fn from(status: &crate::resource::ResourceSaveStatus) -> Self {
         use crate::resource::ResourceSaveStatus;

@@ -43,8 +43,8 @@ fn published(
 }
 
 /// Notes, publishing its notebook's `create-page` (an edit), `read-page`
-/// (a read) and `retitle-mine` (an edit of the person's own record, which
-/// needs only reading) on connection [`NOTES_PEER`], and Mail its `send` on
+/// (a read), `clear-done` (destructive) and `empty-trash` (which asks its caller
+/// first) on connection [`NOTES_PEER`], and Mail its `send` on
 /// [`MAIL_PEER`]; what is delivered to Notes arrives on the receiver.
 fn publish_notes(
     rig: &Rig,
@@ -70,6 +70,11 @@ fn publish_notes(
                     let mut clear = published(notebook, "clear-done", Undoable, &[]);
                     clear.contract.risk = tilo_actions::RiskLevel::Destructive;
                     clear
+                },
+                {
+                    let mut empty = published(notebook, "empty-trash", Undoable, &[]);
+                    empty.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+                    empty
                 },
             ],
         ),
@@ -442,6 +447,61 @@ async fn a_persons_invocation_lets_its_effect_call_another_app_as_them() {
             assert!(admitted(&made), "{made:?}");
             let note = notes.try_recv().expect("Notes runs the call");
             assert_eq!(note.actor, delivered.actor, "the person who asked");
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// What a person's invocation calls of another app's action it does not declare is no part of
+/// what their yes to it covered: it is decided as their own call of that action would be. One no
+/// rule asks of them runs as them; one whose rule asks them first waits for them, standing over
+/// the window the invocation was delivered to.
+#[tokio::test(flavor = "current_thread")]
+async fn a_persons_child_call_asks_them_only_where_its_own_rule_does() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = native_person_rig(&env).await;
+            let mut notes = publish_notes(&rig, &env);
+            let app = rig.worker.handle.clone();
+            let parent = id(0xc4d1);
+            let delivered = person_asks(&rig, &env, parent).await;
+
+            // No rule asks the person before they make a page: it runs, as them.
+            let made = app_asks(&app, new_note(Some(parent))).await;
+            assert!(admitted(&made), "{made:?}");
+            let note = notes.try_recv().expect("Notes makes the page");
+            assert_eq!(note.actor, delivered.actor, "the person who asked");
+
+            // Emptying the trash asks its caller first: their yes to the invocation does not
+            // answer it, and nothing runs while it waits.
+            let empty = call(NOTES_PEER, "notes.notebook", "empty-trash", Some(parent));
+            let facts = asked(&app_asks(&app, empty.clone()).await);
+            assert_eq!(facts.verb, "empty-trash");
+            assert!(
+                notes.try_recv().is_err(),
+                "nothing runs while the person decides"
+            );
+
+            // Kept for them, the question stands over the window the invocation was delivered
+            // to, as one a press there asked.
+            rig.state.bind_window_instance_for_test(903, 41);
+            let device = env.cert.device_public_key;
+            assert_eq!(
+                rig.state.parent_view(903, &device, &empty),
+                Some(tilo_actions::remote::asked::Pressed {
+                    device: hex::encode(env.cert.device_public_key),
+                    app: env.route.app_id.clone(),
+                    instance: "41".to_owned(),
+                    resource: "workspace:atlas".to_owned(),
+                    at: None,
+                })
+            );
+            assert_eq!(
+                rig.state.parent_view(903, &device, &new_note(None)),
+                None,
+                "a call that continues nothing asks over no window of its own"
+            );
             rig.stop().await;
         })
         .await;

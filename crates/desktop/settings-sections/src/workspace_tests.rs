@@ -151,18 +151,18 @@ tilo_test_env::scenario! {
             .unwrap();
         settings.sync();
         let me = [PERSON.to_owned()];
-        assert!(settings.step("appearance", true, &me).unwrap());
+        assert!(settings.step("appearance", None, true, &me).unwrap());
         assert_eq!(mode(&settings), None, "the person's choice is taken back");
         assert_eq!(
             settings.load()["appearance"]["accent"],
             json!("teal"),
             "what the agent did stays"
         );
-        assert!(!settings.step("appearance", true, &me).unwrap(), "nothing more of theirs");
-        assert!(settings.step("appearance", false, &me).unwrap());
+        assert!(!settings.step("appearance", None, true, &me).unwrap(), "nothing more of theirs");
+        assert!(settings.step("appearance", None, false, &me).unwrap());
         assert_eq!(mode(&settings), Some(json!("dark")));
-        assert!(!settings.step("appearance", false, &me).unwrap());
-        assert!(settings.step("appearance", true, &me).unwrap(), "a redo is undone in turn");
+        assert!(!settings.step("appearance", None, false, &me).unwrap());
+        assert!(settings.step("appearance", None, true, &me).unwrap(), "a redo is undone in turn");
         assert_eq!(mode(&settings), None);
     }
 

@@ -430,7 +430,7 @@ view widget_team(unfolded: Bool) {
                 }
             }
             ui.Button("Show who is here", icon: .users, role: .plain) {
-                on press: session.toggle_people()
+                on press: device.show(device.people)
             }
         }
     }

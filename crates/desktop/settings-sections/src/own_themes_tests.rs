@@ -1,13 +1,14 @@
 //! A person's own themes, as records of their appearance: made, edited role by role,
 //! merged between two people, and refused when they would be illegible, through the same
 //! actions and edits Settings, the shell and an agent use.
+use ui::tilo_resource::AppNamed;
 
 use super::AppearancePrefs;
 use ui::theme::{Preset, PresetDesign as _, ThemeDocument, ThemeRecord};
 use ui::tilo_resource::{Edit, Id, Invoke, Replica};
 
-fn appearance_with(base: &str) -> (Replica<AppearancePrefs>, Id) {
-    let mut appearance = Replica::<AppearancePrefs>::new();
+fn appearance_with(base: &str) -> (Replica<AppearancePrefs, AppNamed>, Id) {
+    let mut appearance = Replica::<AppearancePrefs>::new().in_app("so.tilo.model", "Model");
     appearance
         .apply(AppearancePrefs::NEW_THEME.with(("mine".to_owned(), base.to_owned())))
         .expect("a preset is a base");
@@ -15,7 +16,7 @@ fn appearance_with(base: &str) -> (Replica<AppearancePrefs>, Id) {
 }
 
 fn edit(
-    appearance: &mut Replica<AppearancePrefs>,
+    appearance: &mut Replica<AppearancePrefs, AppNamed>,
     edit: &Edit<AppearancePrefs>,
 ) -> Result<(), String> {
     let invoke = Invoke::edit(edit).map_err(|error| error.to_string())?;
@@ -25,7 +26,7 @@ fn edit(
         .map_err(|error| error.to_string())
 }
 
-fn theme(appearance: &Replica<AppearancePrefs>, id: &Id) -> ThemeRecord {
+fn theme(appearance: &Replica<AppearancePrefs, AppNamed>, id: &Id) -> ThemeRecord {
     appearance.state().unwrap().themes[id].clone()
 }
 
@@ -93,17 +94,18 @@ fn edits_stay_inside_the_admitted_bands_and_the_contrast_floors() {
 fn reviewing_a_role_records_the_floors_its_value_would_break() {
     let (mut appearance, id) = appearance_with("tilo-dark");
     let kept = theme(&appearance, &id).ink.primary;
-    let review = |appearance: &mut Replica<AppearancePrefs>, role: &str, value: Option<f64>| {
-        appearance
-            .apply(
-                AppearancePrefs::REVIEW_THEME.with(super::appearance_prefs::ReviewTheme {
-                    theme: "mine".to_owned(),
-                    role: role.to_owned(),
-                    value,
-                }),
-            )
-            .unwrap();
-    };
+    let review =
+        |appearance: &mut Replica<AppearancePrefs, AppNamed>, role: &str, value: Option<f64>| {
+            appearance
+                .apply(
+                    AppearancePrefs::REVIEW_THEME.with(super::appearance_prefs::ReviewTheme {
+                        theme: "mine".to_owned(),
+                        role: role.to_owned(),
+                        value,
+                    }),
+                )
+                .unwrap();
+        };
     review(&mut appearance, "", None);
     assert!(
         theme(&appearance, &id).findings.is_empty(),
@@ -212,7 +214,7 @@ fn a_new_theme_starts_from_a_preset_or_a_theme_and_ids_are_unique() {
 
 #[test]
 fn an_imported_theme_is_written_only_when_it_is_admitted_and_legible() {
-    let mut appearance = Replica::<AppearancePrefs>::new();
+    let mut appearance = Replica::<AppearancePrefs>::new().in_app("so.tilo.model", "Model");
     let json = |document: &ThemeDocument| serde_json::to_string(document).unwrap();
     let document = Preset::DuskDark.document();
     appearance
@@ -302,7 +304,7 @@ fn an_exported_theme_imports_back_as_it_was() {
     edit(&mut ours, &paths.hue.set(Some(210.0))).unwrap();
     let exported = serde_json::to_string(&theme(&ours, &id)).unwrap();
 
-    let mut theirs = Replica::<AppearancePrefs>::new();
+    let mut theirs = Replica::<AppearancePrefs>::new().in_app("so.tilo.model", "Model");
     theirs
         .apply(AppearancePrefs::IMPORT_THEME.with((String::new(), exported)))
         .unwrap();

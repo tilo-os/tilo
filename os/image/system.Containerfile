@@ -306,7 +306,9 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 # The community workspace a computer is in by default: the vendor's site,
 # which /etc/tilo/community.toml overrides (crates/desktop/session/src/directory.rs).
-COPY os/usr/share/tilo/community.toml /usr/share/tilo/community.toml
+# The partition sizes an install lays out, which tilo-disk-encrypt (below) and the
+# installer's scripts source.
+COPY os/usr/share/tilo/community.toml os/usr/share/tilo/install-sizes /usr/share/tilo/
 # Git compares only the stat fields that sync between devices (mtime and
 # size, not inode or ctime), so a synced repository is clean everywhere
 # without re-hashing; see the snippet and docs/device-local-state.md.

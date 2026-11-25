@@ -451,21 +451,6 @@ pub(crate) fn reaching(
         .and_then(|at| walked.get(at).copied())
 }
 
-/// Each window's client, by the tab it is: what the compositor pictures where a card shows it.
-pub(crate) fn window_surfaces(tree: &Layout) -> std::collections::HashMap<u64, u64> {
-    use tilo_desktop_model::TileContent;
-    tree.workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-        .filter_map(|tab| match &tab.tile {
-            TileContent::Foreign { surface_id, .. } => Some((tab.id, *surface_id)),
-            _ => None,
-        })
-        .collect()
-}
-
 /// Bring the window the switcher's walk reached to the front, and close the switcher. The walk
 /// counts from the window in front, over the windows its scope crosses, wrapping.
 pub(crate) fn commit_switcher(handle: &DesktopHandle, walk: &Overlays) {

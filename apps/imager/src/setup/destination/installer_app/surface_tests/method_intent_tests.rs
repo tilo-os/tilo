@@ -211,6 +211,32 @@ tilo_test_env::scenario! {
         assert!(refused(&reply).is_some(), "{reply}");
     }
 
+    phase a_disk_too_small_for_tilo_is_marked_and_refused_before_begin;
+    {
+        let (mut app, mut doc, _) = fixture("ext4");
+        let mut disks = app.disks.clone();
+        disks[0].size_bytes = imager_backend::MIN_TARGET_BYTES - 1;
+        app.refresh_disks_with(disks);
+        let reply = invoke(
+            &mut app,
+            &mut doc,
+            "select-disk@installer.disk:/dev/sda",
+            &json!({}),
+        );
+        let reason = reply.pointer("/err/message").and_then(Value::as_str).unwrap_or_default();
+        assert!(
+            reason.contains("too_small: This disk is too small: Tilo needs at least 35 GiB"),
+            "{reply}"
+        );
+        assert_eq!(app.selected_disk, None);
+
+        let mut disks = app.disks.clone();
+        disks[0].size_bytes = imager_backend::MIN_TARGET_BYTES;
+        app.refresh_disks_with(disks);
+        select(&mut app, &mut doc, "/dev/sda");
+        assert_eq!(app.selected_disk, Some(0));
+    }
+
     phase missing_hardware_identity_never_remembers_erase;
     {
         let (mut app, mut doc, _) = fixture("ext4");

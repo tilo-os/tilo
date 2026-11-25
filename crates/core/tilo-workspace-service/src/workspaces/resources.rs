@@ -1067,7 +1067,7 @@ impl GovernedWorkspace {
                 // its own would — is held in a workspace that runs a version, and waits for a
                 // version nobody ever names.
                 envelope.surface = peer.running_surface(app);
-                if envelope.encryption.is_some() && !founding {
+                if envelope.encryption.is_some() {
                     peer.name_record_kinds((app, &write.doc), &mut envelope, &kinds);
                 }
                 collab_types::sign_op(&mut envelope, &*device.signer)

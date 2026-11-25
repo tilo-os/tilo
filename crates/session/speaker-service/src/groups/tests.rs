@@ -8,6 +8,7 @@ use tilo_network_actor::fabric::speaker_group::{RoomPoint, StereoSide};
 use tilo_network_actor::fabric::{
     DeviceAbout, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
 };
+use tilo_resource::AppNamed;
 use tilo_resource::Replica;
 use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
 
@@ -40,14 +41,14 @@ fn group_id(value: u8) -> SpeakerGroupId {
 
 /// The person's devices: the record of their devices and what each says live.
 struct World {
-    record: Replica<Devices>,
+    record: Replica<Devices, AppNamed>,
     fabric: PersonDevices,
 }
 
 impl World {
     fn new() -> Self {
         Self {
-            record: Replica::new(),
+            record: Replica::new().in_app("so.tilo.model", "Model"),
             fabric: PersonDevices::default(),
         }
     }

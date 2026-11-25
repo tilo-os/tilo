@@ -19,6 +19,23 @@ pub fn typed<T: DeserializeOwned + Serialize>(value: Value) -> Result<Value, Str
     serde_json::to_value(typed).map_err(|error| error.to_string())
 }
 
+/// `read`, what `tilo_read` answered for `path`, as the [`Resource`] it reads: a record's
+/// reading (`record:<app>:<record>`, `{revision, records}`, as the record API answers it) is the
+/// resource at that path whose fields are the record's value; any other read is the resource it
+/// already is.
+#[must_use]
+pub fn record_resource(path: &str, read: Value) -> Value {
+    let Some(records) = read.get("records").and_then(Value::as_array) else {
+        return read;
+    };
+    let fields = records
+        .iter()
+        .find_map(|record| record.get("value"))
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    serde_json::json!({"path": path, "fields": fields})
+}
+
 /// Every refusal, whatever route it came from.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Error {

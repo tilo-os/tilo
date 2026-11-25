@@ -934,7 +934,7 @@ installer-account-pin-note = Use at least 6 digits. Your computer limits wrong g
 installer-account-pin-confirm = Type your startup PIN again
 installer-storage-no-drives = No drives are available yet. Check that the drive is connected, then choose Refresh disks. Nothing has been changed.
 installer-storage-erase-warning = This replaces everything on the selected drive, including its other operating systems and files. Back up anything you want to keep. Nothing is erased until you review and confirm the installation.
-installer-storage-keep-guidance = Keep your other operating system and its files. Tilo needs at least 35 GiB of unallocated space or suitable empty partitions. It never shrinks or moves existing partitions. If there isn't room, you can go back safely and make space from your other operating system.
+installer-storage-keep-guidance = Keep your other operating system and its files. Tilo needs at least { $minimum } of unallocated space or suitable empty partitions. It never shrinks or moves existing partitions. If there isn't room, you can go back safely and make space from your other operating system.
 
 installer-media-title = Play more video and audio formats
 installer-media-note = Downloaded to this computer from the formats' publishers once it is online. You can turn it off in Settings.
@@ -949,7 +949,7 @@ installer-storage-use-capacity = Use N GiB for Tilo
 installer-storage-allocation-summary = Use { $capacity } for Tilo; { $remaining } remains unused. { $details }
 installer-storage-alongside-capacity = { $root } of encrypted storage for Tilo, using { $total } of unallocated space including its boot partitions.
 installer-storage-linux-no-space = No safe alongside space was found. { $preparation } Nothing has been erased; you can go back without installing.
-installer-storage-linux-preparation = Back up your files. Free space inside ext4 or Btrfs is not unallocated space: use your distribution's supported offline partitioning tools from recovery media to leave 35 GiB contiguous unallocated, then refresh disks. This installer will not automatically shrink existing filesystems, LVM, or LUKS containers. This medium is not a full live desktop.
+installer-storage-linux-preparation = Back up your files. Free space inside ext4 or Btrfs is not unallocated space: use your distribution's supported offline partitioning tools from recovery media to leave { $minimum } contiguous unallocated, then refresh disks. This installer will not automatically shrink existing filesystems, LVM, or LUKS containers. This medium is not a full live desktop.
 installer-storage-boot-guidance = If your other system is missing from Tilo's boot menu, use the computer's firmware boot picker. Existing boot entries and the default are preserved.
 installer-storage-files-guidance = Existing Linux partitions are not automatically mounted in Tilo. Files selected for import are separate from this. Set up Nextcloud separately after installation; do not share a writable sync folder between systems.
 
@@ -1229,6 +1229,7 @@ installer-blocked-recovery-unsaved-reboot = Save the recovery key off this compu
 installer-blocked-recovery-unsaved-power-off = Save the recovery key off this computer and confirm it before switching off.
 installer-blocked-installer-disk = The running installer disk cannot be used as its own destination.
 installer-blocked-read-only = This disk is hardware or policy write-protected.
+installer-blocked-disk-too-small = This disk is too small: Tilo needs at least { $minimum }.
 installer-blocked-begin-no-target = Select a disk (and, alongside, a region) before installing.
 installer-blocked-begin-recovery = Confirm you will save your recovery key first.
 installer-item-region = { $size } free at { $start }

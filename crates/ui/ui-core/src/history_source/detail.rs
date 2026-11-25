@@ -64,39 +64,7 @@ pub fn place_record(context: &tilo_actions::ActionContext) -> Option<String> {
     (!generic).then(|| label.to_owned())
 }
 
-/// `label` when a person could read it as a name; `None` when it is empty,
-/// repeats the machine `id`, or carries an identifier such as a hash or uuid.
-/// Producers fall back to ids when a record has no title yet, and those must
-/// not reach anyone reading the activity feed.
-pub fn human_label<'a>(label: &'a str, id: &str) -> Option<&'a str> {
-    let trimmed = label.trim();
-    (!trimmed.is_empty() && trimmed != id.trim() && !contains_opaque_id(trimmed)).then_some(label)
-}
-
-/// Whether `text` contains a machine identifier: a long hex run (hashes,
-/// actor and record ids), a uuid, or a long mixed letter/digit token.
-pub fn contains_opaque_id(text: &str) -> bool {
-    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-        .any(is_opaque_token)
-}
-
-fn is_opaque_token(token: &str) -> bool {
-    let has_digit = token.bytes().any(|b| b.is_ascii_digit());
-    let is_uuid = token.len() == 36
-        && token.char_indices().all(|(index, c)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                c == '-'
-            } else {
-                c.is_ascii_hexdigit()
-            }
-        });
-    let is_hex = token.len() >= 12 && has_digit && token.bytes().all(|b| b.is_ascii_hexdigit());
-    let is_mixed = token.len() >= 20
-        && has_digit
-        && token.bytes().any(|b| b.is_ascii_alphabetic())
-        && token.bytes().all(|b| b.is_ascii_alphanumeric());
-    is_uuid || is_hex || is_mixed
-}
+pub use crate::presence::{contains_opaque_id, human_label};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistorySelectionDetail {

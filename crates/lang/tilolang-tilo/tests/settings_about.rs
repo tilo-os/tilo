@@ -291,7 +291,9 @@ fn the_about_pane_lists_problems_and_opens_one_to_its_record() {
     );
     assert_eq!(sent.argument("report"), Value::text(STOPPED));
 
-    let back = labelled(view.tree(), "ui.ListRow", "Back");
+    let back = named(view.tree(), "ui.ListRow", "title", "Back")
+        .key
+        .clone();
     view.fire(&back, "activate").expect("the person goes back");
     view.poll_patches().expect("the list draws");
     assert!(

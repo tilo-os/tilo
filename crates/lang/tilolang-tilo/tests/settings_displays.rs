@@ -34,17 +34,7 @@ fn settings() -> Host {
     .expect("a host");
     host.load_compiled(&compiled).expect("the package loads");
     tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
-    // The settings sections a pane reads: a host with no session publishes none, so a pane
-    // would wait for them forever.
-    for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
-        if !published.contains("/settings/") {
-            continue;
-        }
-        let Some(root) = ResourceRef::parse_id(&published, ty.as_str()) else {
-            continue;
-        };
-        let _ = host.runtime().set_reading(&root, "{}");
-    }
+    crate::fixtures::settings_sections(&host);
     host
 }
 
@@ -312,6 +302,7 @@ const DEVICES_READING: &str = r#"{
     {
       "id": "laptop", "label": "Laptop", "online": true, "nearby": true, "local": true,
       "display": true, "wakeable": false, "audio_output": false,
+      "seen_ms": 1760003600000, "storage": [],
       "displays": [
         {
           "output": "edid:panel", "name": "Built-in display", "builtin": true,
@@ -322,6 +313,7 @@ const DEVICES_READING: &str = r#"{
     {
       "id": "tower", "label": "Tower computer", "online": true, "nearby": false, "local": false,
       "display": true, "wakeable": false, "audio_output": false,
+      "seen_ms": 1760003000000, "storage": [],
       "displays": [
         {
           "output": "edid:tower", "name": "Tower monitor", "builtin": false,

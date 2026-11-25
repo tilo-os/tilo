@@ -54,9 +54,13 @@ fn devices_reading() -> String {
     serde_json::json!({
         "devices": [
             {"id": "01".repeat(32), "label": "Ada's laptop", "online": true, "nearby": false,
-             "local": true, "display": true, "wakeable": false, "audio_output": true},
+             "local": true, "display": true, "wakeable": false, "audio_output": true,
+             "seen_ms": 1_760_003_600_000_i64,
+             "storage": []},
             {"id": "02".repeat(32), "label": "Ada's desktop", "online": true, "nearby": true,
-             "local": false, "display": true, "wakeable": true, "audio_output": false},
+             "local": false, "display": true, "wakeable": true, "audio_output": false,
+             "seen_ms": 1_760_003_000_000_i64,
+             "storage": []},
         ],
         "access": [this, other, agent, gone],
         "playing": null,

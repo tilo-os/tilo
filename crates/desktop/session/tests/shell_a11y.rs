@@ -349,17 +349,14 @@ fn the_people_list_names_each_person_and_what_they_are_doing() {
     });
     crate::common::press(&mut session, "Mia Clayton is here");
 
-    // The roster is a window of its own in the export, and each person is a row of it with what
+    // The roster is drawn in the shell's own window, and each person is a row of it with what
     // they are doing.
-    until(&mut session, "the roster's export", |session| {
-        windows(session)
-            .iter()
-            .any(|(_, name, tree)| name == "People" && holding(tree, "Mia Clayton").is_some())
+    let tree = crate::common::wait_for(&mut session, "the roster's rows", |session| {
+        shell_windows(session)
+            .into_iter()
+            .map(|(_, tree)| tree)
+            .find(|tree| holding(tree, "Mia Clayton").is_some())
     });
-    let (_, _, tree) = windows(&session)
-        .into_iter()
-        .find(|(_, name, _)| name == "People")
-        .expect("the roster's window");
     let (_, node) = labelled(&tree, "Mia Clayton");
     assert_eq!(node.role(), Role::ListItem, "the person is a row");
     assert!(

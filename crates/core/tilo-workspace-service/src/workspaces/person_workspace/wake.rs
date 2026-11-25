@@ -474,6 +474,7 @@ impl WakeAsk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_resource::AppNamed;
     use tilo_resource::Replica;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -502,7 +503,7 @@ mod tests {
         }
     }
 
-    fn keeps(record: &mut Replica<Devices>, cert: &DeviceCert, routes: &[WakeRoute]) {
+    fn keeps(record: &mut Replica<Devices, AppNamed>, cert: &DeviceCert, routes: &[WakeRoute]) {
         record
             .apply(Devices::KEEP_FACT.with((
                 hex::encode(cert.device_public_key),
@@ -524,7 +525,7 @@ mod tests {
         );
         let laptop_key = hex::encode(laptop.device_public_key);
         let server_key = hex::encode(server.device_public_key);
-        let mut record = Replica::<Devices>::new();
+        let mut record = Replica::<Devices>::new().in_app("so.tilo.model", "Model");
         keeps(&mut record, &laptop, &[route(1, "10.1.0.0/16", false)]);
         keeps(&mut record, &desktop, &[route(2, "192.168.1.0/24", false)]);
         keeps(&mut record, &server, &[route(3, "192.168.1.0/24", true)]);

@@ -8,9 +8,12 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionResource, SelectionAnchor, SelectionPlace};
 
+#[cfg(feature = "model")]
 use crate::collaboration::PresencePayload;
 use crate::floating_surface::Recipient;
+#[cfg(feature = "model")]
 use crate::presence::PresenceKey;
+#[cfg(feature = "model")]
 use crate::presence::capability::PublishesPresence;
 use crate::widget::Widget;
 use crate::widget::capability::capability;
@@ -141,6 +144,7 @@ impl SharedSelection {
     /// of characters it names, or — when the app publishes no resource to go with the
     /// words — the words quoted.
     #[must_use]
+    #[cfg(feature = "model")]
     pub fn to_attached(
         &self,
         app: Option<&str>,
@@ -245,6 +249,7 @@ impl SharedSelection {
 }
 
 /// The selection `widget` holds, if it is focused and holds one.
+#[cfg(feature = "model")]
 pub fn selection_of(widget: &(impl Widget + ?Sized)) -> Option<SharedSelection> {
     let presence = capability::<dyn PublishesPresence>(widget)?;
     if let Some(selection) = presence.shared_selection() {
@@ -291,10 +296,12 @@ pub fn selection_of(widget: &(impl Widget + ?Sized)) -> Option<SharedSelection> 
     (!selection.is_empty()).then_some(selection)
 }
 
+#[cfg(feature = "model")]
 const SUBTREE_NODES: usize = 4096;
 
 /// The selection of the focused widget under `root` (itself included): the first in tree
 /// order that holds one.
+#[cfg(feature = "model")]
 pub fn subtree_selection(root: &dyn Widget) -> Option<SharedSelection> {
     fn walk(widget: &dyn Widget, visited: &mut usize, found: &mut Option<SharedSelection>) {
         if found.is_some() || *visited >= SUBTREE_NODES {
@@ -449,6 +456,7 @@ pub const SEND: &str = "send";
 /// Send what a box held: the session's one send action ([`SEND_TO_RESOURCE`]), with `attached`
 /// resolved by the process that holds the window, in `workspace` when one is named. Off the frame
 /// thread, since the call waits for the session to take it.
+#[cfg(feature = "model")]
 pub fn deliver_send(
     request: SendToRequest,
     attached: Vec<tilo_reference::Attached>,
@@ -472,6 +480,7 @@ pub fn deliver_send(
 }
 
 /// `request` as the session's send action takes it.
+#[cfg(feature = "model")]
 fn send_arguments(
     request: &SendToRequest,
     attached: &[tilo_reference::Attached],
@@ -546,6 +555,7 @@ pub fn set_box_open(open: bool) {
 /// people and conversations, the most recent first.
 pub const SEND_TO_RESOURCE: &str = "session:send-to";
 
+#[cfg(feature = "model")]
 #[derive(Deserialize)]
 struct SendToReading {
     #[serde(default)]
@@ -554,7 +564,9 @@ struct SendToReading {
 
 /// The session's list of whom a message can go to, as this process last read it.
 struct Known {
+    #[cfg(feature = "model")]
     followed: Option<crate::collaboration::SessionResource>,
+    #[cfg(feature = "model")]
     asked: bool,
     /// `None` until the first reading arrives.
     recipients: Option<Vec<Recipient>>,
@@ -562,14 +574,26 @@ struct Known {
 }
 
 static KNOWN: std::sync::Mutex<Known> = std::sync::Mutex::new(Known {
+    #[cfg(feature = "model")]
     followed: None,
+    #[cfg(feature = "model")]
     asked: false,
     recipients: None,
     readings: 0,
 });
 
+/// The list as it stands. Without Tilo's model there is no session to follow
+/// ([`SEND_TO_RESOURCE`]), so no list arrives and nobody is offered.
+#[cfg(not(feature = "model"))]
+fn known() -> std::sync::MutexGuard<'static, Known> {
+    KNOWN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The list, with the reading that arrived since the last call taken in. The first call follows
 /// [`SEND_TO_RESOURCE`] on a worker, whose readings wake the window that called.
+#[cfg(feature = "model")]
 fn known() -> std::sync::MutexGuard<'static, Known> {
     let lock = || {
         KNOWN
@@ -631,7 +655,7 @@ pub(crate) fn set_recipients(all: Vec<Recipient>) {
     known.readings = known.readings.saturating_add(1);
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod tests {
     use super::*;
 

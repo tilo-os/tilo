@@ -2068,7 +2068,10 @@ impl App {
             },
             argument: hosted.argument,
             context: None,
-            confirmation: None,
+            // Sent again with the person's yes, the call carries it, as the device's ask sends it.
+            confirmation: hosted
+                .approval
+                .map(tilo_actions::remote::Confirmation::Asked),
             revision: None,
             wait_ms: None,
             appearance: None,

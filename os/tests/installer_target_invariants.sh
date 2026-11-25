@@ -256,7 +256,7 @@ resolver = '$(/usr/libexec/tilo-board-successor \\\n  install-update-origin'
 assert source.count(resolver) == 1
 Path(sys.argv[2]).write_text(source.replace(resolver, resolver.replace('/usr/libexec/tilo-board-successor', sys.argv[3])))
 PY
-  TILO_INSTALL_TRANSIENT=1 bash "$scratch/backend" "$@"
+  TILO_INSTALL_SIZES="$repo_root/os/usr/share/tilo/install-sizes" TILO_INSTALL_TRANSIENT=1 bash "$scratch/backend" "$@"
 )
 
 identity_error="$(
@@ -543,9 +543,9 @@ if grep -Fq -- '--alongside' "$backend" \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$part")"' "$encryptor" \
    && grep -Fq 'root, boot, and EFI partitions are not on the same disk' "$encryptor" \
    && grep -Fq 'boot partition already contains a signature' "$encryptor" \
-   && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$backend" \
+   && grep -Fq -- '-ge "$TILO_ESP_BYTES" ]' "$backend" \
    && grep -Fq 'MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824' "$backend" \
-   && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$encryptor" \
+   && grep -Fq -- '-ge "$TILO_ESP_BYTES" ]' "$encryptor" \
    && grep -Fq 'MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824' "$encryptor" \
    && grep -Fq 'fsck.fat -n "$EFI_PARTITION"' "$backend" \
    && grep -Fq 'fsck.fat -n "$esp"' "$encryptor" \

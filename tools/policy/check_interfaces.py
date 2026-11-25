@@ -47,6 +47,14 @@ side that does not know a word refuses what the other wrote with it. A list
 is written like an enum, a line for each word, so a word added or gone needs
 a higher version; a list recorded for the first time is a new type.
 
+``imports`` names the file whose ``imports! { ... }`` table is the wasm
+imports the host offers, read from the host's own definitions: a module names
+an import and passes its parameters, so an import the host does not hold, or
+one whose signature changed, is a module that cannot be linked. The table is
+written like a word list, a line for each import and its signature, so an
+import added, gone or retyped needs a higher version; a table recorded for
+the first time is a new type.
+
 ``json_roots`` names roots the interface carries as JSON although its
 ``encoding`` is a compact format: a socket can carry two protocols, and this
 check judges every root by the interface's encoding either way, since the
@@ -560,6 +568,9 @@ class Spec:
     # Constant lists of strings both sides hold alike though no type carries them,
     # each `file:CONST`: written into the schema a line a word.
     words: list[str] = field(default_factory=list)
+    # The file whose `imports! { ... }` table is the wasm imports the host offers:
+    # written into the schema like a word list, a line an import and its signature.
+    imports: str = ""
 
 
 def load_spec(path: Path) -> tuple[Spec, dict[str, str]]:
@@ -577,9 +588,12 @@ def load_spec(path: Path) -> tuple[Spec, dict[str, str]]:
         oldest_const=data.get("oldest_const", ""),
         json_roots=list(data.get("json_roots", [])),
         words=list(data.get("words", [])),
+        imports=str(data.get("imports", "")),
     )
     if spec.encoding not in ENCODINGS:
         raise InterfaceError(f"{path}: encoding must be one of {', '.join(ENCODINGS)}")
+    if not isinstance(data.get("imports", ""), str):
+        raise InterfaceError(f"{path}: `imports` names one file, not a list")
     # A file listed twice would read every type it defines twice, and the schema
     # would blame the code for defining it more than once.
     for listed in ("sources", "roots", "json_roots", "words"):
@@ -802,6 +816,32 @@ def word_list(entry: str, root: Path = ROOT) -> tuple[str, list[str]]:
     return const, words
 
 
+def imports_of(spec: Spec, root: Path = ROOT) -> dict[str, str]:
+    """The wasm imports the host's `imports! { ... }` table holds, each with the
+    parameters and result it passes (`i` i32, `l` i64, `f` f64), by import name."""
+    if not spec.imports:
+        return {}
+    text = (root / spec.imports).read_text()
+    opened = re.search(r"(?m)^imports!\s*\{", text)
+    if not opened:
+        raise InterfaceError(f"{spec.imports} declares no `imports! {{ ... }}` table")
+    close = text.find("\n}", opened.end())
+    if close < 0:
+        raise InterfaceError(f"{spec.imports}: its `imports!` table does not close")
+    rows = re.findall(
+        r'\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*"([^"]+)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\)',
+        text[opened.end() : close],
+    )
+    if not rows:
+        raise InterfaceError(f"{spec.imports}: its `imports!` table lists no import")
+    imports: dict[str, str] = {}
+    for name, params, result in rows:
+        if name in imports:
+            raise InterfaceError(f"{spec.imports}: `imports!` lists `{name}` more than once")
+        imports[name] = f"{params} -> {result}"
+    return imports
+
+
 def schema_of(spec: Spec, root: Path = ROOT) -> dict[str, str]:
     schema = rust_schema(spec, root) if spec.roots else {}
     # A word list is written like an enum, a line for the list and one for each
@@ -811,6 +851,14 @@ def schema_of(spec: Spec, root: Path = ROOT) -> dict[str, str]:
         schema[const] = "words"
         for word in words:
             schema[f"{const}::{word}"] = "word"
+    # The host's import table is written the same way: a line for the table and
+    # one for each import, its signature beside it. Both sides hold it alike, and
+    # a side that does not know an import, or reads its parameters otherwise,
+    # cannot link the other.
+    if spec.imports:
+        schema["IMPORTS"] = "imports"
+        for name, signature in imports_of(spec, root).items():
+            schema[f"IMPORTS::{name}"] = signature
     return dict(sorted(schema.items()))
 
 
@@ -1109,6 +1157,8 @@ def schema_at(revision: str, rel: str, root: Path = ROOT) -> tuple[dict, int, di
                 spec.version_const.partition(":")[0],
                 *(entry.partition(":")[0] for entry in spec.words),
             }
+            if spec.imports:
+                wanted.add(spec.imports)
             for source in wanted:
                 content = at_revision(root, revision, source)
                 if content is None:

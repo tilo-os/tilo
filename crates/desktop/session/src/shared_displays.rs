@@ -311,7 +311,7 @@ mod tests {
         {
             let root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
             let (laptop, tablet) = (device(&root, "Laptop", 5), device(&root, "Tablet", 6));
-            let mut record = tilo_resource::Replica::<Devices>::new();
+            let mut record = tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
             let shows = |cert: &DeviceCert, x: i32| {
                 let hardware = snapshot(vec![output("eDP-1", "BOE", x, 1.0, true)]);
                 Devices::KEEP_FACT.with((

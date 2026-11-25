@@ -114,8 +114,12 @@ GUID_TILO_STORE=0B6C5D38-8BA9-40AA-A1F6-DCC035F5438D
 
 # Finalization temporarily holds bootc's live UKI, the target boot bundle,
 # and a replacement UKI. A 512 MiB ESP cannot hold all three on ARM64.
-ESP_SIZE=${TILO_ESP_SIZE:-2G}
-BOOT_SIZE=${TILO_BOOT_SIZE:-1G}
+# The partition sizes an install lays out (TILO_ESP_BYTES, TILO_BOOT_BYTES,
+# TILO_MIN_ROOT_BYTES), from the file the imager reads them from too.
+# shellcheck source=../share/tilo/install-sizes
+. "${TILO_INSTALL_SIZES:-$(dirname "$(readlink -f "$0")")/../share/tilo/install-sizes}"
+ESP_SIZE=${TILO_ESP_SIZE:-$((TILO_ESP_BYTES / 1048576))M}
+BOOT_SIZE=${TILO_BOOT_SIZE:-$((TILO_BOOT_BYTES / 1048576))M}
 STORE_VOLUME="${TILO_STORE_VOLUME:-/usr/libexec/tilo-store-volume}"
 # The throwaway install key is 64 random bytes and is removed by `finish`.
 # Stretching a key with that much entropy buys nothing, while every Argon2
@@ -123,7 +127,6 @@ STORE_VOLUME="${TILO_STORE_VOLUME:-/usr/libexec/tilo-store-volume}"
 # seconds, so its slot uses the cheapest KDF. A person's passphrase keeps
 # cryptsetup's default Argon2 cost.
 INSTALL_KEY_KDF=(--pbkdf pbkdf2 --pbkdf-force-iterations 1000)
-MIN_ALONGSIDE_ESP_BYTES=2147483648
 MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824
 
 # `enrol`/`prepare` both need a place for the throwaway key. It is 0600 in a
@@ -215,8 +218,8 @@ cmd_prepare_partition() {
     || die "prepare-partition: $esp is not an EFI System Partition"
   [ "$boot_type" = "${GUID_LINUX,,}" ] \
     || die "prepare-partition: $boot is not typed as a Linux boot partition"
-  [ "$(blockdev --getsize64 "$boot")" -ge 1073741824 ] \
-    || die "prepare-partition: boot partition is smaller than 1 GiB"
+  [ "$(blockdev --getsize64 "$boot")" -ge "$TILO_BOOT_BYTES" ] \
+    || die "prepare-partition: boot partition is smaller than $((TILO_BOOT_BYTES / 1073741824)) GiB"
   boot_mountpoints="$(lsblk -nro MOUNTPOINT "$boot")" \
     || die "prepare-partition: could not inspect boot mount state"
   [ -z "$(printf '%s' "$boot_mountpoints" | tr -d '[:space:]')" ] \
@@ -227,8 +230,8 @@ cmd_prepare_partition() {
     || die "prepare-partition: boot partition already contains a signature"
   esp_fs="$(blkid -s TYPE -o value "$esp" 2>/dev/null || true)"
   [ "$esp_fs" = vfat ] || die "prepare-partition: $esp is not FAT"
-  [ "$(blockdev --getsize64 "$esp")" -ge "$MIN_ALONGSIDE_ESP_BYTES" ] \
-    || die "prepare-partition: $esp is smaller than the 2 GiB Tilo EFI minimum"
+  [ "$(blockdev --getsize64 "$esp")" -ge "$TILO_ESP_BYTES" ] \
+    || die "prepare-partition: $esp is smaller than the $((TILO_ESP_BYTES / 1073741824)) GiB Tilo EFI minimum"
   fsck.fat -n "$esp" >/dev/null 2>&1 \
     || die "prepare-partition: $esp is not a clean FAT filesystem; repair it before installing Tilo"
   esp_mountpoints="$(lsblk -nro MOUNTPOINT "$esp")" \
@@ -246,8 +249,8 @@ cmd_prepare_partition() {
   case "$esp_available" in *[!0-9]*|'') die "prepare-partition: could not read available space on $esp" ;; esac
   [ "$esp_available" -ge "$MIN_ALONGSIDE_ESP_FREE_BYTES" ] \
     || die "prepare-partition: $esp has less than 1 GiB available for Tilo boot images"
-  [ "$(blockdev --getsize64 "$part")" -ge 34359738368 ] \
-    || die "prepare-partition: $part is smaller than 32 GiB"
+  [ "$(blockdev --getsize64 "$part")" -ge "$TILO_MIN_ROOT_BYTES" ] \
+    || die "prepare-partition: $part is smaller than $((TILO_MIN_ROOT_BYTES / 1073741824)) GiB"
   mountpoints="$(lsblk -nro MOUNTPOINT "$part")" \
     || die "prepare-partition: could not inspect $part mount state"
   [ -z "$(printf '%s' "$mountpoints" | tr -d '[:space:]')" ] \

@@ -28,8 +28,6 @@ pub struct RosterRow {
     pub working_app: Option<String>,
     /// Short member intention, marked by its [`LineSource`] so model-suggested words cannot be mistaken for a direct quote.
     pub status: Option<RosterStatus>,
-    /// What they changed recently in this workspace, newest first: a row with none does not open.
-    pub recent: Vec<RecentChange>,
     pub followable: bool,
     /// How available they say they are (idle and away come on their own).
     pub availability: ui::Availability,
@@ -50,20 +48,6 @@ impl RosterRow {
         !self.member.is_person()
     }
 }
-
-/// One recent change of someone's, as History records it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecentChange {
-    /// History's own summary of it ("Edited Welcome").
-    pub text: String,
-    /// How long ago, already worded ("4 min ago").
-    pub when: String,
-    /// The History entry it opens at; `None` opens their changes.
-    pub entry: Option<[u8; 16]>,
-}
-
-/// Changes an open row lists before "Their changes" takes over.
-pub const RECENT_CHANGES_SHOWN: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterStatus {

@@ -23,7 +23,7 @@ use tilo_automation::TriggerSpec;
 use tilo_automation::dispatch::{Event, SourceEvent};
 use tilo_automation::source_change::{self, Found};
 
-use super::{Armed, Runner, dispatched, fields_of, keep_progress, kept_progress};
+use super::{Runner, dispatched, fields_of, keep_progress, kept_progress};
 
 /// The kind of record the Mail app keeps a message as.
 const MESSAGE: &str = "tl.so.tilo.mail.Message";
@@ -177,7 +177,7 @@ impl Runner {
                         }),
                     );
                 }
-                let messages = messages_in(&self.workspaces, armed).await;
+                let messages = messages_in(&self.workspaces, &armed.workspace).await;
                 let Some(heard) = self.heard.get_mut(&key) else {
                     continue;
                 };
@@ -186,38 +186,9 @@ impl Runner {
                     // Read again at the next look, whether or not anything was written.
                     continue;
                 };
-                let mut new = Vec::new();
-                for message in messages {
-                    if !message.is_arrival() {
-                        continue;
-                    }
-                    let Some(arrived) = message.arrived_ms() else {
-                        continue;
-                    };
-                    if arrived < heard.since_ms {
-                        continue;
-                    }
-                    let named = message.key();
-                    if heard.heard.contains_key(&named) {
-                        continue;
-                    }
-                    heard.heard.insert(named, arrived);
-                    if heard.looked {
-                        new.push(message);
-                    }
-                }
+                let (since_ms, looked) = (heard.since_ms, heard.looked);
+                let new = take_in(messages, &mut heard.heard, since_ms, looked);
                 heard.looked = true;
-                while heard.heard.len() > MAX_HEARD {
-                    let Some(oldest) = heard
-                        .heard
-                        .iter()
-                        .min_by_key(|(_, arrived)| **arrived)
-                        .map(|(named, _)| named.clone())
-                    else {
-                        break;
-                    };
-                    heard.heard.remove(&oldest);
-                }
                 if *heard != before {
                     let kept = heard.clone();
                     keep_progress(&self.workspaces, armed, index, &mark, &kept).await;
@@ -250,14 +221,14 @@ impl Runner {
     }
 }
 
-/// The inbox messages of `armed`'s workspace this device holds, as the Mail app keeps them.
+/// The messages `workspace` holds, as the Mail app keeps them.
 async fn messages_in(
     workspaces: &crate::workspaces::Workspaces,
-    armed: &Armed,
+    workspace: &str,
 ) -> Result<Vec<Message>, String> {
     let found = workspaces
         .store_found(
-            &armed.workspace,
+            workspace,
             tilo_resource_store::Query::of(MESSAGE, MOST_MESSAGES),
         )
         .await?;
@@ -268,4 +239,61 @@ async fn messages_in(
             fields: fields_of(&held),
         })
         .collect())
+}
+
+/// The mail that arrived in `workspace` since `heard` last took it in, each put into it: how
+/// many messages are new. The first look (`looked` false) notes where the mail stands and
+/// counts nothing, and a message a later sync rereads is not new again.
+pub(crate) async fn arrived(
+    workspaces: &crate::workspaces::Workspaces,
+    workspace: &str,
+    heard: &mut BTreeMap<String, i64>,
+    looked: bool,
+) -> Result<usize, String> {
+    let messages = messages_in(workspaces, workspace).await?;
+    Ok(take_in(messages, heard, i64::MIN, looked).len())
+}
+
+/// Take `messages` into `heard`, each by its key with when it arrived, and answer the ones that
+/// are new since it last took them in: none on the first look, which notes where the mail
+/// stands. A message that arrived before `since_ms` is not taken in at all, and past
+/// [`MAX_HEARD`] the oldest are forgotten, so one still in its inbox that old fires again rather
+/// than a message go unheard.
+fn take_in(
+    messages: Vec<Message>,
+    heard: &mut BTreeMap<String, i64>,
+    since_ms: i64,
+    looked: bool,
+) -> Vec<Message> {
+    let mut new = Vec::new();
+    for message in messages {
+        if !message.is_arrival() {
+            continue;
+        }
+        let Some(arrived) = message.arrived_ms() else {
+            continue;
+        };
+        if arrived < since_ms {
+            continue;
+        }
+        let named = message.key();
+        if heard.contains_key(&named) {
+            continue;
+        }
+        heard.insert(named, arrived);
+        if looked {
+            new.push(message);
+        }
+    }
+    while heard.len() > MAX_HEARD {
+        let Some(oldest) = heard
+            .iter()
+            .min_by_key(|(_, arrived)| **arrived)
+            .map(|(named, _)| named.clone())
+        else {
+            break;
+        };
+        heard.remove(&oldest);
+    }
+    new
 }

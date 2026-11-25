@@ -27,9 +27,6 @@ const OWNER: &str = "/usr/libexec/tilo-windows-owner";
 const RECOVERY_CONSOLE: &str = "/usr/libexec/tilo-windows-recovery-console";
 /// How long the owner's status is served before it is read again.
 const STATUS_FRESH: Duration = Duration::from_secs(2);
-/// How long a command may run before it is given up.
-const ACTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-
 /// How long a program that ended is said, after it ended.
 const ENDED_SAID: Duration = Duration::from_secs(30);
 

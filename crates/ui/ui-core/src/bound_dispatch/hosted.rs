@@ -9,16 +9,19 @@ pub(crate) struct HostedInvocation {
     /// The action as the provider publishes it.
     pub(crate) address: tilo_actions::ActionAddress,
     pub(crate) argument: tilo_actions::remote::InvokeArgument,
+    /// The person's yes, when the provider asked them and this is the call sent again with it.
+    pub(crate) approval: Option<tilo_actions::remote::asked::Approval>,
 }
 
 impl HostedInvocation {
     /// The invocation at `address` of `spec`, when another provider runs it, with its typed `arguments`
-    /// or text `argument`.
+    /// or text `argument`, carrying the person's `approval` when the call is sent again with it.
     pub(crate) fn of(
         spec: &tilo_actions::ActionSpec,
         address: &tilo_actions::ActionAddress,
         arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Option<Self> {
         let run = spec.run_by_provider()?;
         let resource = run.resource.as_deref().unwrap_or(&address.resource);
@@ -48,6 +51,7 @@ impl HostedInvocation {
             provider: run.provider.clone(),
             address: tilo_actions::ActionAddress::new(resource, action),
             argument,
+            approval: approval.cloned(),
         })
     }
 }

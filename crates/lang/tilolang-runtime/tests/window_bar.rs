@@ -121,7 +121,7 @@ mod cases {
     fn title_field(tree: &UiNode) -> &UiNode {
         let titled: Vec<&UiNode> = of_kind(tree, "ui.TextInput")
             .into_iter()
-            .filter(|field| field.props.get("title") == Some(&Value::Int(1)))
+            .filter(|field| field.props.get("title") == Some(&Value::Bool(true)))
             .collect();
         assert_eq!(titled.len(), 1, "the page edits its title:\n{}", dump(tree));
         titled[0]
@@ -215,7 +215,7 @@ mod cases {
         // lead the person there to type the item, and the button names it plainly.
         let entry = of_kind(tree, "ui.TextInput")
             .into_iter()
-            .find(|field| field.props.get("entry") == Some(&Value::Int(1)))
+            .find(|field| field.props.get("entry") == Some(&Value::Bool(true)))
             .unwrap_or_else(|| panic!("the list ends in its entry:\n{}", dump(tree)));
         assert_eq!(
             entry.props.get("key"),
@@ -344,7 +344,7 @@ mod cases {
         let (drawn, overflow): (Vec<&UiNode>, Vec<&UiNode>) = bar
             .iter()
             .filter(|node| node.kind == "ui.Button")
-            .partition(|node| node.props.get("in_menu") != Some(&Value::Int(1)));
+            .partition(|node| node.props.get("in_menu") != Some(&Value::Bool(true)));
         let buttons: Vec<String> = drawn.iter().map(|node| text_of(node, "label")).collect();
         assert_eq!(
             buttons,
@@ -778,17 +778,17 @@ view shelf(s: Shelf) {
                 "a toggle is a control of the bar, not a row of its menu:\n{}",
                 dump(tree)
             );
-            assert_eq!(toggle.props.get("icon_only"), Some(&Value::Int(1)));
+            assert_eq!(toggle.props.get("icon_only"), Some(&Value::Bool(true)));
             assert_eq!(
                 toggle.props.get("toggled"),
-                Some(&Value::Int(0)),
+                Some(&Value::Bool(false)),
                 "a control says whether the state it toggles is on:\n{}",
                 dump(tree)
             );
             let rename = happened("Rename…");
             assert_eq!(
                 rename.props.get("in_menu"),
-                Some(&Value::Int(1)),
+                Some(&Value::Bool(true)),
                 "a command with nothing to show stands in the bar's menu:\n{}",
                 dump(tree)
             );

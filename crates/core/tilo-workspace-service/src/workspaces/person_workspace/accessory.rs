@@ -227,6 +227,7 @@ pub fn finished(
 
 #[cfg(test)]
 mod tests {
+    use tilo_resource::AppNamed;
     use tilo_resource::Replica;
 
     use super::*;
@@ -243,8 +244,8 @@ mod tests {
     }
 
     /// A record that keeps the desktop and the laptop.
-    fn record() -> Replica<Devices> {
-        let mut record = Replica::<Devices>::new();
+    fn record() -> Replica<Devices, AppNamed> {
+        let mut record = Replica::<Devices>::new().in_app("so.tilo.model", "Model");
         for key in [desk(), laptop()] {
             record
                 .apply(Devices::KEEP_FACT.with((
@@ -258,7 +259,7 @@ mod tests {
         record
     }
 
-    fn state(record: &Replica<Devices>) -> Devices {
+    fn state(record: &Replica<Devices, AppNamed>) -> Devices {
         record.state().expect("the record reads")
     }
 

@@ -8,6 +8,8 @@ use web_time::{Duration, SystemTime};
 pub const INFERRED_STATUS_TTL: Duration = Duration::from_secs(5 * 60);
 /// Manual statuses are explicit communication and therefore remain until the author clears them.
 pub const MAX_STATUS_CHARS: usize = 96;
+/// Longest activity line an agent's presence carries.
+pub const MAX_ACTIVITY_BYTES: usize = 96;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StatusSharing {
@@ -131,7 +133,7 @@ impl PresenceVisibility {
 #[cfg(test)]
 mod presence_choice_tests {
     use super::*;
-    use crate::presence::{Availability, IDLE_AFTER};
+    use crate::{Availability, IDLE_AFTER};
 
     tilo_test_env::scenario! {
         fn presence_and_availability_follow_the_workspace_and_the_person;

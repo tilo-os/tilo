@@ -141,8 +141,10 @@ pub struct Answer {
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
 pub struct SecretApp {
-    /// The application, as the secret store names it (`binary:/usr/bin/chromium`).
-    pub id: String,
+    /// The application, as the secret store names it (`binary:/usr/bin/chromium`). Not `id`: a
+    /// record's `.id` is the address it stands at, so the identity of an application that is no
+    /// resource of its own reads by its own name.
+    pub app: String,
     /// What people call it, from the device's own lists.
     pub name: String,
     /// Whether it may use the saved passwords and keys now.
@@ -323,7 +325,7 @@ mod tests {
             }],
             secrets: Some(SavedSecrets {
                 apps: vec![SecretApp {
-                    id: "binary:/usr/bin/chromium".into(),
+                    app: "binary:/usr/bin/chromium".into(),
                     name: "Chromium".into(),
                     allowed: true,
                     uses: 42,

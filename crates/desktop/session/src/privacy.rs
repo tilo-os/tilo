@@ -293,7 +293,7 @@ impl Service for Privacy {
 fn reading_of(sources: &dyn Sources) -> Reading {
     let status = sources.status();
     let captures = sources.captures();
-    let mut uses = |cap: Capability| -> Vec<InUse> {
+    let uses = |cap: Capability| -> Vec<InUse> {
         let mut found: Vec<InUse> = Vec::new();
         let mut add = |app: &str| {
             if app.is_empty() || found.iter().any(|use_| use_.app == app) {
@@ -457,7 +457,7 @@ fn read_secret_apps() -> SavedSecrets {
                     } else {
                         app.name
                     },
-                    id: app.id,
+                    app: app.id,
                     uses: app.uses,
                     items: app.items,
                 })
@@ -764,7 +764,7 @@ mod tests {
             ],
             secrets: SavedSecrets {
                 apps: vec![SecretApp {
-                    id: "sandbox:so.tilo.mail".into(),
+                    app: "sandbox:so.tilo.mail".into(),
                     name: "mail".into(),
                     allowed: true,
                     uses: 7,
@@ -879,7 +879,7 @@ mod tests {
         let reading = reading_of(&machine());
         let secrets = reading.secrets.expect("the store was read");
         assert_eq!(secrets.apps.len(), 1);
-        assert_eq!(secrets.apps[0].id, "sandbox:so.tilo.mail");
+        assert_eq!(secrets.apps[0].app, "sandbox:so.tilo.mail");
         assert!(secrets.apps[0].allowed);
         assert_eq!((secrets.apps[0].uses, secrets.apps[0].items), (7, 2));
         let security = reading.security.expect("the device was read");

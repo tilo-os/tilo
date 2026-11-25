@@ -3,7 +3,6 @@
 //! One job. People, then agents, each a row with their face (in their
 //! colour, dimmed while idle, ringed while in a call), their name, where
 //! they are (the app or document) and what they are doing, and Follow.
-//! A row opens in place to what they changed recently, with the way into
 //! History. "Invite people" is at the bottom, because adding people belongs
 //! to who is here. Your own name, status and what people see of you are on
 //! your avatar's menu, not here.
@@ -54,12 +53,6 @@ pub enum PeopleHit {
     Unfollow(usize),
     /// Wave at the person at this row index.
     Wave(usize),
-    /// Open or close what the person at this row index changed recently.
-    ToggleDetails(usize),
-    /// Open History at one change (row index, change index) of theirs.
-    OpenChange(usize, usize),
-    /// Open History at everything the person at this row index changed.
-    OpenChanges(usize),
     /// Bring forward the window the software at this row index works in.
     OpenTab(usize),
     /// Inside the panel, but not on an action.
@@ -89,8 +82,6 @@ pub struct PeopleModel<'a> {
     /// Each person's screen, by roster id (`None`: they keep where they are to themselves), mirrored under their card.
     pub screens: &'a [(String, Option<Screen>)],
     pub followed_id: Option<&'a str>,
-    /// The roster id whose recent changes are open. Ignored when that row has nothing recent.
-    pub expanded_id: Option<&'a str>,
     /// Whom this person waved at a moment ago, by roster id: their row shows the wave sent.
     pub waved: &'a [String],
     /// When the wave stops showing: the row it went to is drawn again without one then.
@@ -162,12 +153,6 @@ struct RowPlace {
     working_in: Rect,
     /// The one line under a person's name saying why their screen is not shown there.
     said: Rect,
-    /// The open part under the row, its changes and "Their changes".
-    details: Rect,
-    change_rows: Vec<Rect>,
-    changes: Rect,
-    /// The open part is fully open: its controls take presses and focus.
-    settled: bool,
 }
 
 /// A section heading ("People", "Agents") where it was painted.
@@ -200,11 +185,6 @@ pub struct PeopleOverlay {
     mirrors: Vec<(usize, Rect)>,
     /// The trailing slot every row reserves for Wave and Follow.
     trailing_w: f64,
-    /// The row whose recent changes are open, and how open (the disclose motion).
-    opened: Option<String>,
-    reveal: ui::motion::Presence,
-    /// The open row's laid-out height when fully open.
-    details_height: f64,
     keyboard_focus: Option<PeopleHit>,
     targets: ui::widget::PaintedTargets,
     painted_actions: Vec<(String, PeopleHit)>,
@@ -214,7 +194,6 @@ pub struct PeopleOverlay {
     /// The last frame kept the roster on screen: its header button puts it back in the bar.
     shown_pinned: bool,
     shown_workspace: String,
-    shown_expanded: Option<String>,
     shown_followed: Option<String>,
     /// Whom the last frame showed waved at.
     shown_waved: Vec<String>,
@@ -357,40 +336,6 @@ impl PeopleOverlay {
         self.register_targets(model.panel.unwrap_or(model.host));
     }
 
-    /// Open the row the host says is open, on the disclose motion.
-    fn follow_expansion(&mut self, model: &PeopleModel<'_>) {
-        let wanted = model
-            .expanded_id
-            .filter(|id| {
-                model
-                    .rows
-                    .iter()
-                    .any(|row| row.id == *id && !row.recent.is_empty())
-            })
-            .map(str::to_owned);
-        if wanted != self.shown_expanded {
-            let now = ui::time::now();
-            if wanted.is_some() {
-                self.opened.clone_from(&wanted);
-                self.reveal = ui::motion::Presence::closed();
-            }
-            self.reveal.show(
-                wanted.is_some(),
-                ui::motion::Disclose::SPEC,
-                self.motion,
-                ui::motion::input_source(),
-                now,
-            );
-            if let Some(until) = self.reveal.settles_at() {
-                ui::motion::want_frames_until(until);
-            }
-            self.shown_expanded = wanted;
-        }
-        if self.shown_expanded.is_none() && !self.reveal.is_visible(ui::motion::frame_now()) {
-            self.opened = None;
-        }
-    }
-
     /// Where every part goes this frame.
     fn layout(&mut self, text: &mut TextRenderer, theme: &Theme, model: &PeopleModel<'_>) {
         let metrics = &theme.tokens.metrics;
@@ -419,24 +364,6 @@ impl PeopleOverlay {
             .header(header_h)
             .footer(footer_h)
             .body_empty(false);
-        // The open row's details: a line per change, then the link.
-        let open_index = self
-            .opened
-            .as_deref()
-            .and_then(|id| model.rows.iter().position(|row| row.id == id));
-        let shown_changes = open_index
-            .and_then(|index| model.rows.get(index))
-            .map_or(0, |row| row.recent.len().min(RECENT_CHANGES_SHOWN));
-        self.details_height = if shown_changes == 0 {
-            0.0
-        } else {
-            heading_h * ui::num::f64_of_usize(shown_changes) + control + f64::from(spacing.s2)
-        };
-        let revealed = ui::motion::Disclose::reveal(
-            self.reveal.progress(ui::motion::frame_now()),
-            self.details_height,
-        )
-        .height;
         let sections = groups.iter().filter(|(_, group)| !group.is_empty()).count();
         // A label earns its line only where it tells one section from another: with a single
         // section the header already says who is here.
@@ -483,8 +410,7 @@ impl PeopleOverlay {
                 .sum::<f64>()
                 + gap
         };
-        let open_extra = if open_index.is_some() { revealed } else { 0.0 };
-        self.body_height = body_h + open_extra;
+        self.body_height = body_h;
         self.place_panel(theme, model, &face, width, tallest);
         self.place_rows(
             text,
@@ -493,9 +419,6 @@ impl PeopleOverlay {
             &RowsPlan {
                 groups: &groups,
                 labelled,
-                open_index,
-                shown_changes,
-                revealed,
                 under: &under,
             },
         );
@@ -563,7 +486,7 @@ impl PeopleOverlay {
         };
     }
 
-    /// The rows, in content coordinates (before scrolling): each group's heading and its cards, the open row's details under it.
+    /// The rows, in content coordinates (before scrolling): each group's heading and its cards.
     fn place_rows(
         &mut self,
         text: &mut TextRenderer,
@@ -579,9 +502,6 @@ impl PeopleOverlay {
         let RowsPlan {
             groups,
             labelled,
-            open_index,
-            shown_changes,
-            revealed,
             under,
         } = *plan;
         self.rows.clear();
@@ -591,9 +511,6 @@ impl PeopleOverlay {
         let bleed = ui::chrome::row_bleed(theme);
         let mut y = self.body.y0;
         let widths = self.measure_trailing(text, theme);
-        // Follow stands in one column down the list: where any row has a chevron, every row keeps
-        // its place free.
-        let any_disclosure = model.rows.iter().any(|row| !row.recent.is_empty());
         for (key, group) in groups {
             if group.is_empty() {
                 continue;
@@ -614,7 +531,7 @@ impl PeopleOverlay {
                     continue;
                 };
                 let (mut place, follow_right) =
-                    self.row_place(text, theme, (index, rect), row, any_disclosure, widths);
+                    self.row_place(text, theme, (index, rect), row, widths);
                 // The open part's lines end where Follow ends.
                 let line_right = follow_right + bleed;
                 y += row_h;
@@ -647,29 +564,6 @@ impl PeopleOverlay {
                     }
                     y += gap + under_h;
                 }
-                if open_index == Some(index) {
-                    place.details = Rect::new(self.body.x0, y, self.body.x1, y + revealed);
-                    // Under the name: each change a line of its own, then the way to everything
-                    // they changed, its label on the same column. Laid out from the start so they
-                    // fade in with the opening; they take presses once it is open.
-                    let column = self.body.x0 + FACE + f64::from(spacing.s3);
-                    place.settled = revealed >= self.details_height - 0.5;
-                    place.change_rows = (0..shown_changes)
-                        .map(|k| {
-                            let top = y + heading_h * ui::num::f64_of_usize(k);
-                            Rect::new(column - bleed, top, line_right, top + heading_h)
-                        })
-                        .collect();
-                    let link_top = y + self.details_height - control - f64::from(spacing.s2);
-                    let link_x = column - f64::from(spacing.s3);
-                    place.changes = Rect::new(
-                        link_x,
-                        link_top,
-                        link_x + widths.changes,
-                        link_top + control,
-                    );
-                    y += revealed;
-                }
                 self.rows.push(place);
             }
         }
@@ -682,16 +576,9 @@ impl PeopleOverlay {
         theme: &Theme,
         (index, rect): (usize, Rect),
         row: &RosterRow,
-        any_disclosure: bool,
         widths: ButtonWidths,
     ) -> (RowPlace, f64) {
-        let (follow, wave) = self.trailing_slots(
-            text,
-            theme,
-            rect,
-            (&row.label, any_disclosure),
-            widths.follow,
-        );
+        let (follow, wave) = self.trailing_slots(text, theme, rect, &row.label, widths.follow);
         let place = RowPlace {
             index,
             rect,
@@ -763,14 +650,11 @@ impl PeopleOverlay {
         text: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        (label, disclosure): (&str, bool),
+        label: &str,
         follow_w: f64,
     ) -> (Rect, Rect) {
         let control = f64::from(theme.tokens.metrics.bar_control_height);
-        let mut probe = ListRowFace::new(label).trailing_width(self.trailing_w);
-        if disclosure {
-            probe = probe.disclosure();
-        }
+        let probe = ListRowFace::new(label).trailing_width(self.trailing_w);
         let right = probe
             .trailing_rect(rect, text, theme)
             .map_or_else(|| rect.x1 - ui::chrome::row_bleed(theme), |slot| slot.x1);
@@ -911,7 +795,6 @@ impl PeopleOverlay {
         let stop_label = t("people-panel-stop-following");
         let wave_label = t("people-panel-wave");
         let sent_label = t("people-panel-waved");
-        let changes_label = t("people-panel-changes");
         let now = ui::time::now();
         let in_call = model.rows.iter().any(|row| row.call.is_some());
         let since = *self.call_since.get_or_insert(now);
@@ -940,10 +823,9 @@ impl PeopleOverlay {
             let hovered = cursor.is_some_and(|p| {
                 place.rect.contains(p) || under.is_some_and(|under| under.contains(p))
             });
-            let opened = model.expanded_id == Some(row.id.as_str());
             let following = model.followed_id == Some(row.id.as_str());
             let card = under.map_or(place.rect, |under| place.rect.union(under));
-            let lifted = hovered || opened || following;
+            let lifted = hovered || following;
             if under.is_some() && lifted {
                 ui::widget::paint_surface(
                     scene,
@@ -957,7 +839,7 @@ impl PeopleOverlay {
                 // A card lifts as one piece: the row keeps no ground of its own.
                 hovered: hovered && mirror.is_none(),
                 pressed: false,
-                focused: self.keyboard_focus == Some(PeopleHit::ToggleDetails(place.index)),
+                focused: false,
                 disabled: false,
             };
             let paint_face = |ctx: &mut ui::paint::PaintCtx<'_>, rect: Rect| {
@@ -1013,28 +895,14 @@ impl PeopleOverlay {
                 // Software, which is never waved at, keeps no room for Wave.
                 .trailing_width(self.row_trailing(row, theme))
                 .interaction(interaction);
-            if !row.recent.is_empty() {
-                let turn = if self.opened.as_deref() == Some(row.id.as_str()) {
-                    ui::motion::Disclose::reveal(self.reveal.progress(now), 1.0).turn
-                } else {
-                    0.0
-                };
-                face = face.disclosure_turned(turn);
-            }
             face.paint(
                 &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
                 place.rect,
             );
-            // The open row (a press on their face in the bar opens it) is their card: its wave
-            // shows without a hover.
-            let opened = model.expanded_id == Some(row.id.as_str());
             // A wave just sent stays shown as sent, so the waver knows it went.
             let waved = model.waved.contains(&row.id);
             if place.wave.area() > 0.0
-                && (hovered
-                    || opened
-                    || waved
-                    || self.keyboard_focus == Some(PeopleHit::Wave(place.index)))
+                && (hovered || waved || self.keyboard_focus == Some(PeopleHit::Wave(place.index)))
             {
                 let (icon, label) = if waved {
                     (Icon::Check, &sent_label)
@@ -1078,50 +946,6 @@ impl PeopleOverlay {
                             }),
                     ),
                 );
-            }
-            if place.details.area() > 0.0 && !row.recent.is_empty() {
-                let opacity =
-                    ui::motion::Disclose::reveal(self.reveal.progress(now), self.details_height)
-                        .opacity;
-                scene.push_layer(
-                    ui::peniko::Fill::NonZero,
-                    ui::peniko::BlendMode::default(),
-                    opacity,
-                    scrolled,
-                    &place.details,
-                );
-                for (k, (rect, change)) in place.change_rows.iter().zip(&row.recent).enumerate() {
-                    let hit = PeopleHit::OpenChange(place.index, k);
-                    let mut line = ListRowFace::new(&change.text);
-                    if !change.when.is_empty() {
-                        line = line.meta(&change.when);
-                    }
-                    line.interaction(ui::widget::Interaction {
-                        hovered: cursor.is_some_and(|p| rect.contains(p)),
-                        pressed: false,
-                        focused: self.keyboard_focus == Some(hit),
-                        disabled: false,
-                    })
-                    .paint(
-                        &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
-                        *rect,
-                    );
-                }
-                if place.changes.area() > 0.0 {
-                    ui::widget::Button::paint(
-                        scene,
-                        scrolled,
-                        text,
-                        theme,
-                        &ButtonFace::new(place.changes, &changes_label)
-                            .role(ButtonRole::Plain)
-                            .hovered(cursor.is_some_and(|p| place.changes.contains(p)))
-                            .focused(
-                                self.keyboard_focus == Some(PeopleHit::OpenChanges(place.index)),
-                            ),
-                    );
-                }
-                scene.pop_layer();
             }
             if place.working_in.area() > 0.0 {
                 // What software is doing now, and the window it does it in: pressing the line brings
@@ -1247,10 +1071,7 @@ impl PeopleOverlay {
             PeopleHit::Follow(index) => id_of(index).map(|id| format!("follow:{id}")),
             PeopleHit::Unfollow(index) => id_of(index).map(|id| format!("unfollow:{id}")),
             PeopleHit::Wave(index) => id_of(index).map(|id| format!("wave:{id}")),
-            PeopleHit::ToggleDetails(index) => id_of(index).map(|id| format!("details:{id}")),
-            PeopleHit::OpenChanges(index) => id_of(index).map(|id| format!("changes:{id}")),
             PeopleHit::OpenTab(index) => id_of(index).map(|id| format!("work:{id}")),
-            PeopleHit::OpenChange(index, k) => id_of(index).map(|id| format!("change:{id}:{k}")),
             other => Some(format!("{other:?}")),
         }
     }
@@ -1500,21 +1321,6 @@ impl PeopleOverlay {
             .map(|row| row.rect)
     }
 
-    /// The stable person behind an openable row: the host toggles the expanded row by it, never by the row's place.
-    pub fn details_target(&self, index: usize) -> Option<&str> {
-        self.shown_rows
-            .get(index)
-            .filter(|row| !row.recent.is_empty())
-            .map(|row| row.id.as_str())
-    }
-
-    /// The person and History entry behind a painted change line.
-    pub fn change_target(&self, index: usize, change: usize) -> Option<(&str, Option<[u8; 16]>)> {
-        let row = self.shown_rows.get(index)?;
-        let change = row.recent.get(change)?;
-        Some((row.label.as_str(), change.entry))
-    }
-
     /// What a press at `point` (on screen) means.
     pub fn hit_test(&self, point: Point) -> PeopleHit {
         if !self.contains(point) {
@@ -1544,36 +1350,17 @@ impl PeopleOverlay {
             if place.working_in.contains(point) {
                 return PeopleHit::OpenTab(place.index);
             }
-            if place.details.contains(point) {
-                if place.settled && place.changes.contains(point) {
-                    return PeopleHit::OpenChanges(place.index);
-                }
-                if let Some(k) = place
-                    .change_rows
-                    .iter()
-                    .position(|rect| place.settled && rect.contains(point))
-                {
-                    return PeopleHit::OpenChange(place.index, k);
-                }
-                return PeopleHit::Absorb;
-            }
-            if place.rect.contains(point) && self.details_target(place.index).is_some() {
-                return PeopleHit::ToggleDetails(place.index);
-            }
         }
         PeopleHit::Absorb
     }
 
-    /// Every control in reading order: Keep on screen in the header, each row's body, Wave and Follow, its changes link when open, then Invite.
+    /// Every control in reading order: Keep on screen in the header, each row's Wave and Follow, then Invite.
     fn focus_order(&self) -> Vec<PeopleHit> {
         let mut order = Vec::new();
         if self.pin.area() > 0.0 {
             order.push(PeopleHit::Pin);
         }
         for place in &self.rows {
-            if self.details_target(place.index).is_some() {
-                order.push(PeopleHit::ToggleDetails(place.index));
-            }
             if place.wave.area() > 0.0 {
                 order.push(PeopleHit::Wave(place.index));
             }
@@ -1586,15 +1373,6 @@ impl PeopleOverlay {
                 } else {
                     PeopleHit::Follow(place.index)
                 });
-            }
-            if !place.settled {
-                continue;
-            }
-            order.extend(
-                (0..place.change_rows.len()).map(|k| PeopleHit::OpenChange(place.index, k)),
-            );
-            if place.changes.area() > 0.0 {
-                order.push(PeopleHit::OpenChanges(place.index));
             }
         }
         if self.invite.area() > 0.0 {
@@ -1620,12 +1398,7 @@ impl PeopleOverlay {
                 place(index).map(|place| place.follow)
             }
             PeopleHit::Wave(index) => place(index).map(|place| place.wave),
-            PeopleHit::ToggleDetails(index) => place(index).map(|place| place.rect),
-            PeopleHit::OpenChanges(index) => place(index).map(|place| place.changes),
             PeopleHit::OpenTab(index) => place(index).map(|place| place.working_in),
-            PeopleHit::OpenChange(index, k) => {
-                place(index).and_then(|place| place.change_rows.get(k).copied())
-            }
             PeopleHit::Absorb | PeopleHit::Dismiss => None,
         }
         .filter(|rect| rect.area() > 0.0)
@@ -1728,7 +1501,6 @@ impl PeopleOverlay {
                     .get(index)
                     .map_or_else(String::new, |row| row.label.clone())
             };
-            let mut expanded = None;
             let (name, description) = match hit {
                 PeopleHit::Follow(index) => (
                     t_args("a11y-shell-follow", &[("name", name_of(index).into())]),
@@ -1742,38 +1514,6 @@ impl PeopleOverlay {
                     t("a11y-shell-follow-description"),
                 ),
                 PeopleHit::Wave(index) => (self.wave_name(index), t("a11y-shell-wave-description")),
-                PeopleHit::ToggleDetails(index) => {
-                    expanded = Some(self.shown_rows.get(index).is_some_and(|row| {
-                        self.shown_expanded.as_deref() == Some(row.id.as_str())
-                    }));
-                    (
-                        t_args(
-                            "a11y-shell-people-recent-toggle",
-                            &[("name", name_of(index).into())],
-                        ),
-                        t("a11y-shell-people-recent-toggle-description"),
-                    )
-                }
-                PeopleHit::OpenChange(index, k) => (
-                    self.shown_rows
-                        .get(index)
-                        .and_then(|row| row.recent.get(k))
-                        .map_or_else(String::new, |change| {
-                            if change.when.is_empty() {
-                                change.text.clone()
-                            } else {
-                                format!("{}, {}", change.text, change.when)
-                            }
-                        }),
-                    t("a11y-shell-people-change-description"),
-                ),
-                PeopleHit::OpenChanges(index) => (
-                    t_args(
-                        "a11y-shell-people-changes",
-                        &[("name", name_of(index).into())],
-                    ),
-                    t("a11y-shell-people-changes-description"),
-                ),
                 // The window software works in, by what it is called here.
                 PeopleHit::OpenTab(index) => (
                     self.working_in_name(index),
@@ -1789,10 +1529,7 @@ impl PeopleOverlay {
                 }
                 PeopleHit::Absorb | PeopleHit::Dismiss => continue,
             };
-            let mut state = AccessState::new().focusable(true).focused(focused);
-            if let Some(expanded) = expanded {
-                state = state.expanded(expanded);
-            }
+            let state = AccessState::new().focusable(true).focused(focused);
             children.push(
                 AccessNode::new(Role::Button)
                     .with_name(name)
@@ -1918,7 +1655,7 @@ fn text_width(text: &mut TextRenderer, label: &str, theme: &Theme) -> f64 {
     )
 }
 
-/// What [`PeopleOverlay::place_rows`] places: the groups' row indices and the open row's details as the layout measured them.
+/// What [`PeopleOverlay::place_rows`] places: the groups' row indices and what stands under each row.
 #[derive(Clone, Copy)]
 struct RowsPlan<'p> {
     /// What stands under each row beyond its line, by row: a person's picture of their screen, a
@@ -1927,9 +1664,6 @@ struct RowsPlan<'p> {
     groups: &'p [(&'static str, Vec<usize>)],
     /// Whether the sections are labelled: only where there is more than one to tell apart.
     labelled: bool,
-    open_index: Option<usize>,
-    shown_changes: usize,
-    revealed: f64,
 }
 
 /// The widths of a row's text buttons, each its label plus its padding: Follow (wide enough for
@@ -1937,7 +1671,6 @@ struct RowsPlan<'p> {
 #[derive(Clone, Copy)]
 struct ButtonWidths {
     follow: f64,
-    changes: f64,
 }
 
 impl ButtonWidths {
@@ -1950,7 +1683,6 @@ impl ButtonWidths {
         ));
         Self {
             follow: follow + pad,
-            changes: text_width(text, &t("people-panel-changes"), theme) + pad,
         }
     }
 

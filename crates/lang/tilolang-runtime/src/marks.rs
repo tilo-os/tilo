@@ -140,12 +140,8 @@ impl Core {
         };
         // The row does not hide in a list's folded tail while a change of it is unseen: it
         // stands with the rows above, where its mark is read, and goes back under the tail once
-        // the person has seen it. A flag travels as the integer it was boxed as, or as the flag
-        // itself.
-        if matches!(
-            node.props.get("tail"),
-            Some(Value::Bool(true) | Value::Int(1))
-        ) {
+        // the person has seen it.
+        if node.props.get("tail") == Some(&Value::Bool(true)) {
             node.props.insert("tail".to_owned(), Value::Bool(false));
         }
         if places_mark(node, &r.target.id_string()) {

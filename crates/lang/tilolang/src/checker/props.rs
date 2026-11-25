@@ -149,7 +149,7 @@ fn node_kind(e: &Expr) -> Option<&str> {
 fn prop_name(imp: Imp, args: &[Expr]) -> Option<&str> {
     if !matches!(
         imp,
-        Imp::UiPropH | Imp::UiPropI | Imp::UiPropF | Imp::UiPropPic
+        Imp::UiPropH | Imp::UiPropI | Imp::UiPropB | Imp::UiPropF | Imp::UiPropPic
     ) {
         return None;
     }

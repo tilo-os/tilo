@@ -625,7 +625,7 @@ tilo_test_env::scenario! {
             view.tree().of_kind("ui.VirtualList")
                 .first()
                 .and_then(|list| list.props.get("tree")),
-            Some(&Value::Int(1)),
+            Some(&Value::Bool(true)),
             "the home list draws the tasks as a tree"
         );
         let rows = home_rows(&mut view);
@@ -1551,10 +1551,7 @@ pub(crate) fn go_to(view: &mut ViewInstance, place: &str) {
 /// The entry at the foot of the list the window shows: where a person types what to add.
 fn entry(view: &ViewInstance) -> String {
     key_of(view, "ui.TextInput", &|node| {
-        matches!(
-            node.props.get("entry"),
-            Some(Value::Bool(true) | Value::Int(1))
-        )
+        matches!(node.props.get("entry"), Some(Value::Bool(true)))
     })
 }
 

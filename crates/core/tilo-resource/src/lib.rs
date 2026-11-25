@@ -41,7 +41,9 @@
 //! // Tests are replay: apply actions the way a control, the palette, an agent
 //! // or a script would, and assert on state.
 //! fn main() {
-//!     let mut replica = tilo_resource::Replica::<Todo>::new();
+//!     // A replica names the app whose record it is before it applies anything: every device
+//!     // decides its changes against that app's surface.
+//!     let mut replica = tilo_resource::Replica::<Todo>::new().in_app("so.tilo.todo", "Todo");
 //!     replica.apply(Todo::ADD.with("Buy milk")).unwrap();
 //!     let id = replica.state().unwrap().items.ids().next().unwrap().clone();
 //!     replica.apply(Todo::SET_DONE.with((id, true))).unwrap();
@@ -218,7 +220,7 @@ pub use reactions::{
 };
 pub use reader::{Demand, Reader, heads_of};
 pub use recents::Recents;
-pub use replica::Replica;
+pub use replica::{AppNamed, NoApp, Replica};
 pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, HeadInputs, NamesItem,
     NoAction, Place, Resource, ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow,

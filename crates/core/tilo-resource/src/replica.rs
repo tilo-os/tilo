@@ -11,6 +11,12 @@
 //! with its history entry. A test written against it proves the behaviour
 //! every surface gets. Fork two replicas to test collaboration; replay one
 //! replica's log into a fresh one to prove determinism.
+//!
+//! A replica names the app whose record it is ([`Replica::in_app`]) before it
+//! applies anything: every device decides a change against that app's surface,
+//! and a change that named none would be decided against an app guessed from
+//! its type id. The name is part of the type, so a caller that forgets it does
+//! not compile.
 
 use automerge::ChangeHash;
 use tilo_action_policy::MemberId;
@@ -26,8 +32,21 @@ use crate::model::{Doc, ModelError};
 use crate::reader::{Demand, Reader};
 use crate::resource::{self, Resource};
 
+/// The app a replica names when the record is only a model a test exercises: nothing decides
+/// such a change against a surface, and no host ever receives it.
+pub const MODEL_APP_ID: &str = "so.tilo.model";
+
+/// A replica that has named no app: it reads, forks, saves and replays its log, and it cannot
+/// apply an action. [`Replica::in_app`] names the app the record belongs to, and only then does
+/// [`Replica::apply`] exist.
+pub struct NoApp;
+
+/// A replica whose actions name the app the record belongs to ([`Replica::in_app`]): the app
+/// every device decides the change against.
+pub struct AppNamed;
+
 /// One replica of an `R` resource. See the module docs.
-pub struct Replica<R: Resource> {
+pub struct Replica<R: Resource, A = NoApp> {
     doc: Doc,
     registry: ActionRegistry,
     log: Vec<ActionEnvelope>,
@@ -53,7 +72,7 @@ pub struct Replica<R: Resource> {
     now_ms: i64,
     /// The incrementally maintained state views would see, once asked for.
     reader: Option<Reader<R>>,
-    marker: std::marker::PhantomData<fn() -> R>,
+    marker: std::marker::PhantomData<fn() -> (R, A)>,
 }
 
 impl<R: Resource> Default for Replica<R> {
@@ -62,7 +81,10 @@ impl<R: Resource> Default for Replica<R> {
     }
 }
 
-impl<R: Resource> Replica<R> {
+/// A replica that names no app: what reads, forking and saving use, and what a unit test's
+/// model is exercised on. It cannot apply an action until [`Replica::in_app`] names the app
+/// whose record it is; a system write has no other way to reach the action API.
+impl<R: Resource> Replica<R, NoApp> {
     /// A new resource, initialized as a new record would be.
     ///
     /// # Panics
@@ -73,7 +95,7 @@ impl<R: Resource> Replica<R> {
         clippy::expect_used,
         reason = "a test harness surfaces initializer bugs loudly"
     )]
-    pub fn new() -> Self {
+    pub fn new() -> Replica<R, NoApp> {
         let mut doc = Doc::new();
         R::initialize(&mut doc).expect("resource initializer");
         // What a brand-new record starts with names itself as its genesis.
@@ -86,7 +108,7 @@ impl<R: Resource> Replica<R> {
 
     /// A replica of an existing document.
     #[must_use]
-    pub fn from_doc(doc: Doc) -> Self {
+    pub fn from_doc(doc: Doc) -> Replica<R, NoApp> {
         let registry = ActionRegistry::with(crate::group::register::<R>);
         Self {
             doc,
@@ -111,10 +133,45 @@ impl<R: Resource> Replica<R> {
     ///
     /// # Errors
     /// Returns [`ModelError::Automerge`] when the bytes hold no document.
-    pub fn load(bytes: &[u8]) -> Result<Self, ModelError> {
+    pub fn load(bytes: &[u8]) -> Result<Replica<R, NoApp>, ModelError> {
         Ok(Self::from_doc(Doc::load(bytes)?))
     }
 
+    /// Name `id` (labelled `label`) as the app later actions are in, as the
+    /// host running the app does: every member decides them against that
+    /// app's surface.
+    #[must_use]
+    pub fn in_app(mut self, id: &str, label: &str) -> Replica<R, AppNamed> {
+        self.app = Some((id.to_owned(), label.to_owned()));
+        Replica {
+            doc: self.doc,
+            registry: self.registry,
+            log: self.log,
+            author: self.author,
+            acting: self.acting,
+            invoker: self.invoker,
+            app: self.app,
+            appearance: self.appearance,
+            name: self.name,
+            group: self.group,
+            serving: self.serving,
+            now_ms: self.now_ms,
+            reader: self.reader,
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<R: Resource> Replica<R, AppNamed> {
+    /// Name another app later actions are in, replacing the one named before.
+    #[must_use]
+    pub fn in_app(mut self, id: &str, label: &str) -> Replica<R, AppNamed> {
+        self.app = Some((id.to_owned(), label.to_owned()));
+        self
+    }
+}
+
+impl<R: Resource, A> Replica<R, A> {
     /// The document as bytes, for a file that carries the resource whole.
     pub fn save(&mut self) -> Vec<u8> {
         self.doc.save()
@@ -209,15 +266,6 @@ impl<R: Resource> Replica<R> {
         self
     }
 
-    /// Name `id` (labelled `label`) as the app later actions are in, as the
-    /// host running the app does: every member decides them against that
-    /// app's surface.
-    #[must_use]
-    pub fn in_app(mut self, id: &str, label: &str) -> Self {
-        self.app = Some((id.to_owned(), label.to_owned()));
-        self
-    }
-
     /// Stamp later actions as part of the work unit `id` (labelled `label`,
     /// of kind `kind`), as a shell does for every action one command line
     /// asks for: History attributes and undoes them as one.
@@ -252,33 +300,6 @@ impl<R: Resource> Replica<R> {
             R::LABEL,
             &R::read(&self.doc)?,
         ))
-    }
-
-    /// Invoke a published action exactly as a control, the palette, an
-    /// agent or a script does: through the API, which refuses one that
-    /// asks for confirmation ([`Self::apply_confirmed`]).
-    pub fn apply(&mut self, invoke: impl Into<Invoke<R>>) -> Result<&ActionEnvelope, ApiError> {
-        self.invoke(invoke.into(), false)
-    }
-
-    /// [`Self::apply`] after the person confirmed it.
-    ///
-    /// # Errors
-    /// As [`Self::apply`], without asking for confirmation.
-    pub fn apply_confirmed(
-        &mut self,
-        invoke: impl Into<Invoke<R>>,
-    ) -> Result<&ActionEnvelope, ApiError> {
-        self.invoke(invoke.into(), true)
-    }
-
-    /// Apply one typed action value, the path a custom surface takes once
-    /// its person confirmed what it does: the generic
-    /// [`APPLY`](crate::APPLY) action, through the API.
-    pub fn apply_action(&mut self, action: &R::Action) -> Result<&ActionEnvelope, ApiError> {
-        let invoke =
-            Invoke::apply(action).map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
-        self.invoke(invoke, true)
     }
 
     /// Who later actions are invoked by, as a verb reads it: the author, or
@@ -419,8 +440,23 @@ impl<R: Resource> Replica<R> {
     /// just joined would hold.
     #[must_use]
     pub fn fork(&mut self) -> Self {
-        let mut replica = Self::from_doc(self.doc.fork());
-        replica.now_ms = self.now_ms;
+        let replica = Self {
+            doc: self.doc.fork(),
+            registry: ActionRegistry::with(crate::group::register::<R>),
+            log: Vec::new(),
+            author: None,
+            acting: None,
+            invoker: None,
+            // The fork acts in the same app's record as the copy it is taken from.
+            app: self.app.clone(),
+            appearance: None,
+            name: None,
+            group: None,
+            serving: None,
+            now_ms: self.now_ms,
+            reader: None,
+            marker: std::marker::PhantomData,
+        };
         replica
     }
 
@@ -457,5 +493,35 @@ impl<R: Resource> Replica<R> {
 
     pub fn state_at(&mut self, heads: &[ChangeHash]) -> Result<R::State, ModelError> {
         history::read_at::<R>(&mut self.doc, heads)
+    }
+}
+
+/// A replica whose actions name the app its record belongs to.
+impl<R: Resource> Replica<R, AppNamed> {
+    /// Invoke a published action exactly as a control, the palette, an
+    /// agent or a script does: through the API, which refuses one that
+    /// asks for confirmation ([`Self::apply_confirmed`]).
+    pub fn apply(&mut self, invoke: impl Into<Invoke<R>>) -> Result<&ActionEnvelope, ApiError> {
+        self.invoke(invoke.into(), false)
+    }
+
+    /// [`Self::apply`] after the person confirmed it.
+    ///
+    /// # Errors
+    /// As [`Self::apply`], without asking for confirmation.
+    pub fn apply_confirmed(
+        &mut self,
+        invoke: impl Into<Invoke<R>>,
+    ) -> Result<&ActionEnvelope, ApiError> {
+        self.invoke(invoke.into(), true)
+    }
+
+    /// Apply one typed action value, the path a custom surface takes once
+    /// its person confirmed what it does: the generic
+    /// [`APPLY`](crate::APPLY) action, through the API.
+    pub fn apply_action(&mut self, action: &R::Action) -> Result<&ActionEnvelope, ApiError> {
+        let invoke =
+            Invoke::apply(action).map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
+        self.invoke(invoke, true)
     }
 }

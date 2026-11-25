@@ -116,7 +116,7 @@ impl SettingsDocument {
             Self::Session => settings_store::source(),
             // A browser has no profile directory.
             Self::Profile(_) if tilo_platform_caps::WEB => None,
-            Self::Profile(root) => Some(settings_store::profile(root)),
+            Self::Profile(root) => Some(settings_store::profile_source(root)),
         }
     }
 
@@ -170,9 +170,13 @@ impl SettingsDocument {
         }
     }
 
-    /// The document's current version.
+    /// The document's current version. A pass that reads it follows it, as one that reads the
+    /// document does: a reader that reads the settings again only when the version moved (a
+    /// window's settings section) is passed again when it does.
     #[must_use]
     pub fn revision(&self) -> SettingsRevision {
+        let versioned = self.clone();
+        crate::component_inputs::read_versioned(self, Box::new(move || versioned.version()));
         SettingsRevision(self.version())
     }
 
@@ -189,12 +193,19 @@ impl SettingsDocument {
             .update_sections(sections, origin)
     }
 
-    /// Take back (`undo`) or bring back the last step any of `invokers` took on section `name`.
-    /// Whether there was one. Only where the settings' history is kept: the session's.
-    pub fn step(&self, name: &str, undo: bool, invokers: &[String]) -> std::io::Result<bool> {
+    /// Take back (`undo`) or bring back the last step any of `invokers` took on section `name`,
+    /// of the app `app` where the section keeps each app's preferences apart. Whether there was
+    /// one. Only where the settings' history is kept: the session's.
+    pub fn step(
+        &self,
+        name: &str,
+        app: Option<&str>,
+        undo: bool,
+        invokers: &[String],
+    ) -> std::io::Result<bool> {
         self.source()
             .ok_or_else(|| std::io::Error::other("no config directory available"))?
-            .step(name, undo, invokers)
+            .step(name, app, undo, invokers)
     }
 }
 
@@ -690,7 +701,7 @@ pub fn parse_settings(text: &str) -> Map<String, Value> {
 /// The settings of the profile at `root`, for code that compares two profiles.
 #[must_use]
 pub fn settings_at(root: &Path) -> Map<String, Value> {
-    settings_store::SettingsSource::load(&*settings_store::profile(root))
+    settings_store::SettingsSource::load(&*settings_store::profile_source(root))
 }
 
 /// This app's secrets in the store the current host provides.

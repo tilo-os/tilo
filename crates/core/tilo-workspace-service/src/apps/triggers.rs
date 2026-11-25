@@ -24,7 +24,7 @@
 mod connections;
 pub mod folders;
 #[cfg(feature = "agents")]
-mod mail;
+pub(crate) mod mail;
 #[cfg(feature = "agents")]
 mod outside;
 #[cfg(all(test, feature = "agents"))]

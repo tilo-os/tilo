@@ -372,6 +372,115 @@ class WordListTests(unittest.TestCase):
         self.assertEqual(committed["SCHEMA_ANNOTATIONS::description"], "word")
 
 
+class ImportTableTests(unittest.TestCase):
+    """The wasm imports the host offers are part of the interface's schema: a
+    module links only where every import it names is held, with its parameters."""
+
+    HOST = '''imports! {
+    (StrLit, "str_lit", "ii", "i"),
+    (UiPropB, "ui_prop_b", "iii", ""),
+}
+'''
+    SPEC = (
+        'name = "demo"\nversion = 0\nversion_const = "crates/demo/wire/src/lib.rs:V"\n'
+        'encoding = "postcard"\nsources = ["crates/demo/wire/src/lib.rs"]\nroots = ["S"]\n'
+        'imports = "crates/demo/wire/src/host.rs"\n'
+    )
+    git = AgainstMainTests.git
+
+    def code(self, version):
+        return f"pub const V: u32 = {version};\npub struct S {{ a: u32 }}\n"
+
+    def tree(self, root, spec_text, code_text, host_text):
+        self.git(root, "init", "-q", "-b", "main")
+        self.git(root, "config", "user.email", "t@example.com")
+        self.git(root, "config", "user.name", "t")
+        spec = root / "crates/demo/wire/interface.toml"
+        code = root / "crates/demo/wire/src/lib.rs"
+        host = root / "crates/demo/wire/src/host.rs"
+        code.parent.mkdir(parents=True)
+        spec.write_text(spec_text)
+        code.write_text(code_text)
+        host.write_text(host_text)
+        self.git(root, "add", ".")
+        self.git(root, "commit", "-qm", "base")
+        return spec, code, host
+
+    def test_the_table_is_read_from_the_hosts_definitions(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            (root / "host.rs").write_text(self.HOST)
+            spec = interfaces.Spec(
+                name="test", version=1, version_const="host.rs:V", encoding="postcard",
+                sources=[], roots=[], opaque={}, serves=False,
+                path=root / "interface.toml", imports="host.rs",
+            )
+            self.assertEqual(interfaces.imports_of(spec, root), {
+                "str_lit": "ii -> i",
+                "ui_prop_b": "iii -> ",
+            })
+            schema = interfaces.schema_of(spec, root)
+            self.assertEqual(schema["IMPORTS"], "imports")
+            self.assertEqual(schema["IMPORTS::str_lit"], "ii -> i")
+            self.assertEqual(schema["IMPORTS::ui_prop_b"], "iii -> ")
+
+            (root / "host.rs").write_text(
+                'imports! {\n    (A, "twice", "i", ""),\n    (B, "twice", "i", ""),\n}\n'
+            )
+            with self.assertRaisesRegex(interfaces.InterfaceError, "`twice` more than once"):
+                interfaces.imports_of(spec, root)
+            (root / "host.rs").write_text("// no table here\n")
+            with self.assertRaisesRegex(interfaces.InterfaceError, "imports!"):
+                interfaces.imports_of(spec, root)
+
+    def test_a_changed_import_needs_a_new_version(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            _, code, host = self.tree(root, self.SPEC, self.code(0), self.HOST)
+            self.assertEqual(interfaces.against("main", root), [])
+
+            # An import the other side does not hold, or holds with other
+            # parameters, refuses the module that names it.
+            changes = {
+                "retyped": (self.HOST.replace('"iii", ""', '"ii", ""'), "is now"),
+                "added": (
+                    self.HOST.replace("imports! {", 'imports! {\n    (Extra, "extra", "i", ""),'),
+                    "is new",
+                ),
+                "gone": (
+                    'imports! {\n    (UiPropB, "ui_prop_b", "iii", ""),\n}\n',
+                    "is gone",
+                ),
+            }
+            for name, (text, reason) in changes.items():
+                with self.subTest(name):
+                    host.write_text(text)
+                    problems = interfaces.against("main", root)
+                    self.assertEqual(len(problems), 1, problems)
+                    self.assertIn("IMPORTS::", problems[0])
+                    self.assertIn(reason, problems[0])
+
+            # With the version moved, the table may change.
+            host.write_text(self.HOST)
+            code.write_text(self.code(1))
+            self.assertEqual(interfaces.against("main", root), [])
+
+    def test_a_table_recorded_for_the_first_time_is_no_change(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            bare = self.SPEC.replace('imports = "crates/demo/wire/src/host.rs"\n', "")
+            spec, _, _ = self.tree(root, bare, self.code(0), self.HOST)
+            spec.write_text(self.SPEC)
+            self.assertEqual(interfaces.against("main", root), [])
+
+    def test_the_runtime_interface_lists_the_hosts_wasm_imports(self):
+        spec, committed = interfaces.load_spec(
+            interfaces.ROOT / "crates/core/runtime-portal/interface.toml")
+        self.assertEqual(spec.imports, "crates/lang/tilolang-runtime/src/abi.rs")
+        self.assertEqual(committed["IMPORTS"], "imports")
+        self.assertEqual(committed["IMPORTS::ui_prop_b"], "iii -> ")
+
+
 class RepositoryTests(unittest.TestCase):
     def test_the_seven_interfaces_each_have_one_number(self):
         names = sorted(

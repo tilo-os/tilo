@@ -286,7 +286,7 @@ view detail(n: Note) {
             let tree = view.tree();
             let chips = of_kind(tree, "ui.DateField");
             assert_eq!(chips.len(), 1, "one day fact: {}", dump(tree));
-            assert_eq!(chips[0].props.get("optional"), Some(&Value::Int(1)));
+            assert_eq!(chips[0].props.get("optional"), Some(&Value::Bool(true)));
             view.bound_value(&chips[0].key).expect("the chip is bound")
         };
         assert_eq!(chip(&view), Value::none(), "a note holds no day yet");

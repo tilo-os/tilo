@@ -250,7 +250,7 @@ mod tests {
             use tilo_resource::Replica;
 
             for near_start in [false, true] {
-                let mut art = Replica::<Artwork>::new();
+                let mut art = Replica::<Artwork>::new().in_app("so.tilo.model", "Model");
                 art.apply(Artwork::PAINT.with(Paint {
                     strokes: vec![NewStroke {
                         id: Some("line".into()),

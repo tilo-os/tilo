@@ -829,10 +829,7 @@ mod cases {
             .next()
             .unwrap_or_else(|| panic!("the page is presented:\n{}", dump(window.tree())));
         assert!(
-            matches!(
-                presented.props.get("showing"),
-                Some(Value::Bool(true) | Value::Int(1))
-            ),
+            matches!(presented.props.get("showing"), Some(Value::Bool(true))),
             "it presents the page: {:?}",
             presented.props
         );
@@ -2043,7 +2040,7 @@ mod cases {
         let webview = of_kind(view.tree(), "ui.WebView").remove(0);
         assert_eq!(
             webview.props.get("pip"),
-            Some(&Value::Int(0)),
+            Some(&Value::Bool(false)),
             "the view floats nothing before the person asks"
         );
 
@@ -2054,7 +2051,7 @@ mod cases {
         let webview = of_kind(view.tree(), "ui.WebView").remove(0);
         assert_eq!(
             webview.props.get("pip"),
-            Some(&Value::Int(1)),
+            Some(&Value::Bool(true)),
             "the page's view asks the window to float its video:\n{}",
             dump(view.tree())
         );
@@ -2077,7 +2074,7 @@ mod cases {
         let webview = of_kind(view.tree(), "ui.WebView").remove(0);
         assert_eq!(
             webview.props.get("pip"),
-            Some(&Value::Int(0)),
+            Some(&Value::Bool(false)),
             "the view stops floating the video"
         );
         assert_eq!(
@@ -2099,7 +2096,7 @@ mod cases {
         let webview = of_kind(view.tree(), "ui.WebView").remove(0);
         assert_eq!(
             webview.props.get("pip"),
-            Some(&Value::Int(0)),
+            Some(&Value::Bool(false)),
             "the view stops floating a picture the shell returned"
         );
         assert!(

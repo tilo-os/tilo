@@ -96,13 +96,6 @@ mod tests {
         (env, home)
     }
 
-    #[cfg(target_os = "linux")]
-    fn identity_dir(home: &std::path::Path) -> std::path::PathBuf {
-        let dir = home.join(".config/tilo/identity");
-        std::fs::create_dir_all(&dir).expect("identity directory");
-        dir
-    }
-
     /// This device, with a key of its own under `home`, and the person's settings for this test's
     /// thread holding `steps`: each device's step of setup, by the device's key.
     #[cfg(target_os = "linux")]
@@ -132,29 +125,25 @@ mod tests {
 
         phase a_device_that_finished_its_setup_starts_at_its_shell;
         {
-            let (_env, home) = home();
-            let dir = identity_dir(home.path());
+            let (_env, _) = home();
             assert!(!setup_due(false, false), "nothing is left to set up");
         }
 
         phase a_device_with_no_identity_sets_up_before_its_shell;
         {
-            let (_env, home) = home();
-            let dir = identity_dir(home.path());
+            let (_env, _) = home();
             assert!(setup_due(true, false));
         }
 
         phase an_identity_the_last_startup_found_unusable_sets_up_again;
         {
-            let (_env, home) = home();
-            let dir = identity_dir(home.path());
+            let (_env, _) = home();
             assert!(setup_due(false, true));
         }
 
         phase a_restart_mid_setup_opens_it_again;
         {
             let (mut env, home) = home();
-            let dir = identity_dir(home.path());
             // The step setup recorded for this device once its identity was made, as the person's
             // settings hold it: setup the person had not finished.
             let _settings = device(&mut env, home.path(), |this_device| {
@@ -173,7 +162,6 @@ mod tests {
         phase setup_another_device_of_theirs_is_in_stays_there;
         {
             let (mut env, home) = home();
-            let dir = identity_dir(home.path());
             // The person's settings reach all their devices: another one's step is kept under that
             // device's key, and this device's own setup is finished.
             let _settings = device(&mut env, home.path(), |this_device| {

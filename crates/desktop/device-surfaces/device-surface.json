@@ -10582,7 +10582,7 @@
           "doc": "One application that stored or read the person's saved passwords and keys.",
           "fields": [
             {
-              "name": "id",
+              "name": "app",
               "type": "text"
             },
             {

@@ -244,6 +244,11 @@ pub struct VirtualListProps {
     pub view_title: Option<String>,
     /// How many things the view's title counts beside it (`view_title`).
     pub view_count: Option<i64>,
+    /// As tall as its rows, but no taller than this, in logical pixels, and it scrolls what it
+    /// does not show: a list in a place that hugs what it holds (a roster in a panel, a picker)
+    /// whose rows would otherwise make the place as tall as all of them. A list that takes its
+    /// parent's height already (`in_column`) needs none.
+    pub most: Option<f64>,
     /// The list holds more than one selected row: a click with ctrl (or cmd) adds or takes
     /// away the row it lands on, one with shift takes the range from the last row chosen, and
     /// Escape puts the selection away. Without it a click chooses the one row the window shows.
@@ -1698,6 +1703,7 @@ impl Described for DescribedList {
             ungrouped_title,
             view_title,
             view_count,
+            most,
             multi_select,
             unseen_from,
             mut rows,
@@ -1793,6 +1799,9 @@ impl Described for DescribedList {
         } else {
             list.fitting_rows()
         };
+        if let Some(most) = most {
+            list.set_most_height(Some(most));
+        }
         if follow_end {
             list = list.following_end();
         }
@@ -1920,6 +1929,7 @@ impl Described for DescribedList {
             ungrouped_title,
             view_title,
             view_count,
+            most,
             multi_select,
             unseen_from,
             mut rows,
@@ -1973,6 +1983,7 @@ impl Described for DescribedList {
         list.set_tail_title(tail_title);
         let count = view_count.map(|count| usize::try_from(count.max(0)).unwrap_or(usize::MAX));
         list.set_view_title(view_title, count);
+        list.set_most_height(most);
         list.set_feel(feel);
         if replaced {
             list.update_model(move |model| *model = rows);

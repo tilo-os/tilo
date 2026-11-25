@@ -2150,6 +2150,11 @@ impl Task {
 
     /// The workspace a governance frame names, where it names one.
     fn workspace_of(&self, message: &neighbour_wire::NeighbourMsg) -> Option<WorkspaceId> {
+        // The workspace document's own changes name their workspace: a member admitting itself,
+        // a call's rule, any governance change the host passes on.
+        if let neighbour_wire::NeighbourMsg::SyncResp { workspace, .. } = message {
+            return WorkspaceId::parse(workspace);
+        }
         message
             .governance_workspace()
             .and_then(WorkspaceId::parse)

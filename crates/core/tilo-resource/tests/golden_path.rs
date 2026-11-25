@@ -1,3 +1,4 @@
+use tilo_resource::AppNamed;
 use tilo_resource::{ActionCx, Collection, Id, Invoke, Model, Replica, Resource, resource};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -96,7 +97,7 @@ impl Channel {
 
 #[test]
 fn a_housekeeping_action_says_so_in_its_change() {
-    let housekeeping = |replica: &mut Replica<Channel>| {
+    let housekeeping = |replica: &mut Replica<Channel, AppNamed>| {
         replica.versions().last().is_some_and(|version| {
             version
                 .context
@@ -104,7 +105,7 @@ fn a_housekeeping_action_says_so_in_its_change() {
                 .is_some_and(tilo_actions::ActionContext::is_housekeeping)
         })
     };
-    let mut channel = Replica::<Channel>::new();
+    let mut channel = Replica::<Channel>::new().in_app("so.tilo.model", "Model");
     channel.apply(Channel::MARK_READ.with(3)).unwrap();
     assert!(housekeeping(&mut channel));
     channel.apply(Channel::SET_TOPIC.with("Launch")).unwrap();
@@ -129,7 +130,7 @@ fn a_housekeeping_action_says_so_in_its_change() {
     assert_eq!(channel.state().unwrap().read, 5);
 }
 
-fn card_ids(replica: &Replica<Board>) -> Vec<Id> {
+fn card_ids(replica: &Replica<Board, AppNamed>) -> Vec<Id> {
     replica.state().unwrap().cards.ids().cloned().collect()
 }
 
@@ -170,7 +171,7 @@ tilo_test_env::scenario! {
 
     phase actions_apply_through_the_same_api_as_every_surface;
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board.apply(Board::RENAME.with("Launch")).unwrap();
         board.set_now_ms(42_000);
         board.apply(Board::ADD_CARD.with("Write docs")).unwrap();
@@ -203,7 +204,7 @@ tilo_test_env::scenario! {
 
     phase a_group_is_one_change_that_replays_exactly;
     {
-        let mut first = Replica::<Board>::new();
+        let mut first = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         let mut second = first.fork();
         let before = first.versions().len();
         first
@@ -237,7 +238,7 @@ tilo_test_env::scenario! {
 
     phase actions_on_a_collection_item_are_offered_on_the_item;
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board.apply(Board::ADD_CARD.with("Write docs")).unwrap();
         board.apply(Board::ADD_CARD.with("Ship")).unwrap();
         let state = board.state().unwrap();
@@ -326,7 +327,7 @@ tilo_test_env::scenario! {
     // refuses another item naming the one it acts on; what it publishes
     // stays the remaining parameters.
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board.apply(Board::ADD_CARD.with("Write docs")).unwrap();
         board.apply(Board::ADD_CARD.with("Ship")).unwrap();
         let state = board.state().unwrap();
@@ -546,7 +547,7 @@ tilo_test_env::scenario! {
         let bound =
             tilo_actions::ActionArgs::bind_json(&rename.params, supplied.as_object().unwrap()).unwrap();
         let action = rename.build_action(&bound, 0).unwrap();
-        let mut replica = Replica::<Board>::new();
+        let mut replica = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         replica.apply_action(&action).unwrap();
         assert_eq!(replica.state().unwrap().title, "Another valid title");
     }
@@ -594,7 +595,7 @@ tilo_test_env::scenario! {
 
     phase replaying_the_log_reproduces_the_document_exactly;
     {
-        let mut origin = Replica::<Board>::new();
+        let mut origin = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         let mut peer = origin.fork();
         origin.apply(Board::ADD_CARD.with("a")).unwrap();
         origin.apply(Board::ADD_CARD.with("b")).unwrap();
@@ -609,7 +610,7 @@ tilo_test_env::scenario! {
 
     phase members_edit_concurrently_and_converge;
     {
-        let mut alice = Replica::<Board>::new().as_author("alice");
+        let mut alice = Replica::<Board>::new().in_app("so.tilo.model", "Model").as_author("alice");
         alice.apply(Board::ADD_CARD.with("shared")).unwrap();
         let mut bob = alice.fork().as_author("bob");
         let shared = card_ids(&alice).remove(0);
@@ -631,7 +632,7 @@ tilo_test_env::scenario! {
 
     phase history_is_attributed_and_any_version_reads_back;
     {
-        let mut board = Replica::<Board>::new().as_author("alice");
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model").as_author("alice");
         board.apply(Board::RENAME.with("v1")).unwrap();
         let v1 = board.heads();
         board.apply(Board::RENAME.with("v2")).unwrap();
@@ -654,7 +655,7 @@ tilo_test_env::scenario! {
 
     phase search_indexes_text_fields_by_default;
     {
-        let mut board = Replica::<Board>::new();
+        let mut board = Replica::<Board>::new().in_app("so.tilo.model", "Model");
         board.apply(Board::RENAME.with("Roadmap")).unwrap();
         board
             .apply(Board::ADD_CARD.with("Quarterly review"))
@@ -707,7 +708,7 @@ fn schema_reuse_keeps_resource_types_and_live_children_distinct() {
             Board::children(state)
         }
     }
-    let mut replica = Replica::<Board>::new();
+    let mut replica = Replica::<Board>::new().in_app("so.tilo.model", "Model");
     let empty = tilo_resource::publish::<SchemaProbe>("probe", "Empty", &replica.state().unwrap());
     assert!(empty.children.is_empty());
     replica.apply(Board::ADD_CARD.with("Fresh card")).unwrap();

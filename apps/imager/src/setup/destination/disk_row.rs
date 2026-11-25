@@ -14,25 +14,41 @@ pub fn capacity(disk: &Disk) -> String {
     }
 }
 
-fn unavailable(disk: &Disk) -> bool {
-    disk.blocks_install() || disk.read_only || !disk.identity_ready()
+/// Why Tilo cannot go on a disk at all: it is smaller than the room Tilo's partitions take.
+pub fn too_small() -> String {
+    crate::setup::strings::t_args(
+        "installer-blocked-disk-too-small",
+        &[(
+            "minimum",
+            ui::i18n::ArgValue::Text(ui::format::memory(imager_backend::MIN_TARGET_BYTES)),
+        )],
+    )
 }
 
-fn notes(disk: &Disk) -> Vec<&'static str> {
+fn unavailable(disk: &Disk) -> bool {
+    disk.blocks_install() || disk.read_only || disk.too_small() || !disk.identity_ready()
+}
+
+fn notes(disk: &Disk) -> Vec<String> {
     let mut notes = Vec::new();
     if disk.hosts_staged_installer() {
         notes.push(
-            "This disk also holds the running installer and your existing system. Tilo is added only in the space prepared for it.",
+            "This disk also holds the running installer and your existing system. Tilo is added only in the space prepared for it.".to_owned(),
         );
     } else if disk.is_system {
-        notes.push("Unavailable because this is the disk the live system is running from.");
+        notes.push(
+            "Unavailable because this is the disk the live system is running from.".to_owned(),
+        );
     }
     if disk.read_only {
-        notes.push("Unavailable because this disk is read-only.");
+        notes.push("Unavailable because this disk is read-only.".to_owned());
+    }
+    if disk.too_small() {
+        notes.push(too_small());
     }
     if !disk.identity_ready() {
         notes.push(
-            "Unavailable because the installer could not verify which physical disk this is. Refresh the disk list or reconnect it.",
+            "Unavailable because the installer could not verify which physical disk this is. Refresh the disk list or reconnect it.".to_owned(),
         );
     }
     notes
@@ -232,6 +248,19 @@ mod tests {
                 &ROOT
             ));
             assert!(presses.take().is_none());
+        }
+        {
+            let mut target = disk();
+            target.size_bytes = 20 << 30;
+            let row = row(&target, false);
+            let node = row.accessibility().expect("too small disk semantics");
+            assert!(node.state.disabled);
+            assert!(!row.is_focusable());
+            let name = node.name.as_deref().expect("too small reason");
+            assert!(
+                name.contains("too small: Tilo needs at least 35 GiB"),
+                "{name}"
+            );
         }
         {
             let mut target = disk();

@@ -550,7 +550,7 @@ tilo_test_env::scenario! {
     phase an_identity_backup_open_raises_setup_over_the_desktop;
     {
         let _settled = ui::motion::testing::settled();
-        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let home = tilo_test_env::TestHome::new().unwrap();
         let records = home.home().join("starts");
         let launcher = launcher(&home, &records);
         let (mut session, opened) = session(&home, &launcher, None);

@@ -1473,7 +1473,9 @@ impl Daemon {
             }
         };
         tilo_files::native::private::directory(root)?;
-        let sockets = crate::daemon::sockets(root)?;
+        // The native endpoint every account reaches, and the services' own sockets apart from it:
+        // a broker's socket refuses a directory another account can read.
+        let sockets = crate::daemon::sockets_served(root)?;
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
         let joined = identity.joined();
@@ -4515,6 +4517,72 @@ impl RuntimeActionProvider {
         })
     }
 
+    /// What the person's Servers workspace says of their machines, when `request` reads it
+    /// ([`machines`](tilo_actions::remote::machines)): this device's own workspace service answers
+    /// the read, as it answers their desktop's, so a computer with no desktop reads it the same
+    /// way. The person reads it, and so do their own programs on this computer; their machines'
+    /// disk recovery keys only on a connection the kernel says is theirs. `None` when `request`
+    /// reads none of it.
+    fn machines(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
+        use tilo_actions::remote::machines;
+        let target = &request.target;
+        let step = target.address.action.clone();
+        if target.provider != machines::PROVIDER
+            || target.address.resource != machines::RESOURCE
+            || ![
+                machines::LIST,
+                machines::SHOW,
+                machines::SERVERS,
+                machines::RECOVERY_KEYS,
+            ]
+            .contains(&step.as_str())
+        {
+            return None;
+        }
+        let admitted = self.is_the_person(caller)
+            || (self.is_own_client(caller)
+                && (step != machines::RECOVERY_KEYS || caller.is_own_connection()));
+        if !admitted {
+            return Some(Pending::ready(Err(ActionCallError::Refused {
+                reason: "only you read your machines, on a device of yours".into(),
+            })));
+        }
+        let InvokeArgument::Json(arguments) = &request.argument else {
+            return Some(Pending::ready(Err(ActionCallError::Refused {
+                reason: "a machine step takes typed arguments".into(),
+            })));
+        };
+        let arguments = arguments.clone();
+        let (done, receipt) = tilo_actions::remote::pending();
+        let workspaces = Arc::clone(&self.workspaces);
+        let invocation = request.invocation;
+        tilo_rt::app().spawn(async move {
+            let cert = workspaces.device_cert().clone();
+            let status = match workspaces.service().ask_own(&cert, &step, arguments).await {
+                Ok(value) => ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput {
+                        value: Some(value),
+                        ..tilo_actions::ActionOutput::default()
+                    },
+                },
+                Err(message) => ReceiptStatus::Failed {
+                    error: tilo_actions::ActionFailure {
+                        code: "machine_refused".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            };
+            done.complete(Ok(InvocationReceipt { invocation, status }));
+        });
+        Some(receipt)
+    }
+
     /// Stop the agent session `request` names on this device, or let a stopped one go on, as
     /// the person asks of the MCP server: their own ask, never an agent's. `None` when the
     /// request is not such a stop, or names no session this device serves.
@@ -5295,6 +5363,9 @@ impl ActionProvider for RuntimeActionProvider {
             return Pending::ready(Ok(
                 records.receipt_for(as_device.as_ref().unwrap_or(caller), &request)
             ));
+        }
+        if let Some(answered) = self.machines(caller, &request) {
+            return answered;
         }
         if let Some(tickets) = &self.tickets
             && Tickets::seals_or_proves(&request)

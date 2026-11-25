@@ -21,7 +21,7 @@ use collab_types::caps::CapOverride;
 use tilo_device_identity::login::TERMINAL_RECORDS;
 use tilo_device_identity::login::daemon::DeviceActions;
 use tilo_environment::{DEFAULT_NAME, DEFAULT_RECORD, Environment, is_record_key};
-use tilo_resource::{Doc, Invoke, Replica, Resource};
+use tilo_resource::{AppNamed, Doc, Invoke, Replica, Resource};
 use tilo_resource_store::wire::{Bytes, Command, Reply};
 
 use crate::images::Images;
@@ -521,7 +521,7 @@ impl Records {
         &self,
         key: &str,
         invoker: &Invoker,
-        act: impl FnOnce(&mut Replica<Environment>) -> Result<T, RecordError>,
+        act: impl FnOnce(&mut Replica<Environment, AppNamed>) -> Result<T, RecordError>,
     ) -> Result<T, RecordError> {
         self.act_within(key, invoker, None, act)
     }
@@ -531,7 +531,7 @@ impl Records {
         key: &str,
         invoker: &Invoker,
         run: Option<&crate::broker::RunGroup>,
-        act: impl FnOnce(&mut Replica<Environment>) -> Result<T, RecordError>,
+        act: impl FnOnce(&mut Replica<Environment, AppNamed>) -> Result<T, RecordError>,
     ) -> Result<T, RecordError> {
         let held = self
             .load_current(key)?

@@ -59,7 +59,7 @@ impl Contact {
 }
 
 fn old_document() -> tilo_resource::Doc {
-    let mut old = Replica::<ContactV1>::new();
+    let mut old = Replica::<ContactV1>::new().in_app("so.tilo.model", "Model");
     old.apply(ContactV1::RENAME.with("Ada Lovelace")).unwrap();
     old.doc_mut().fork()
 }
@@ -91,7 +91,7 @@ tilo_test_env::scenario! {
                 .is_some_and(tilo_actions::ActionContext::is_housekeeping),
             "a migration is housekeeping"
         );
-        let mut replica = Replica::<Contact>::from_doc(doc);
+        let mut replica = Replica::<Contact>::from_doc(doc).in_app("so.tilo.model", "Model");
         replica
             .apply(Contact::RENAME.with(("Grace".to_owned(), "Hopper".to_owned())))
             .unwrap();
@@ -128,7 +128,7 @@ tilo_test_env::scenario! {
 
     phase a_document_from_a_newer_app_is_unreadable;
     {
-        let mut replica = Replica::<Contact>::new();
+        let mut replica = Replica::<Contact>::new().in_app("so.tilo.model", "Model");
         assert_eq!(evolution::stored_version(replica.doc()), 2);
         let mut reader = Reader::<Contact>::open(replica.doc_mut()).unwrap();
         replica
@@ -214,7 +214,7 @@ tilo_test_env::scenario! {
     // away makes a deleting group ask, through any API, as that member alone
     // does.
     {
-        let mut contact = Replica::<Contact>::new();
+        let mut contact = Replica::<Contact>::new().in_app("so.tilo.model", "Model");
         let group = || {
             tilo_resource::Invoke::group([
                 Contact::RENAME.with(("Ada".to_owned(), "King".to_owned())),
@@ -232,7 +232,7 @@ tilo_test_env::scenario! {
 
     phase a_replica_acts_through_the_api;
     {
-        let mut contact = Replica::<Contact>::new();
+        let mut contact = Replica::<Contact>::new().in_app("so.tilo.model", "Model");
         // A destructive verb asks the person first.
         assert!(matches!(
             contact.apply(Contact::INVITE.invoke()),
@@ -270,11 +270,11 @@ tilo_test_env::scenario! {
     // kind made there: it then reads as the one it came from, its lists and
     // texts whole, and stays the record it was made as.
     {
-        let mut from = Replica::<Contact>::new();
+        let mut from = Replica::<Contact>::new().in_app("so.tilo.model", "Model");
         from.apply(Contact::RENAME.with(("Ada".to_owned(), "Lovelace".to_owned())))
             .unwrap();
         from.apply_confirmed(Contact::INVITE.invoke()).unwrap();
-        let mut to = Replica::<Contact>::new();
+        let mut to = Replica::<Contact>::new().in_app("so.tilo.model", "Model");
         to.doc_mut()
             .put(automerge::ROOT, "tilo:home", "the other store")
             .unwrap();
@@ -287,7 +287,7 @@ tilo_test_env::scenario! {
         let home: String = tilo_resource::read_key(to.doc(), &automerge::ROOT, "tilo:home").unwrap();
         assert_eq!(home, "the other store", "the record keeps its own identity");
         // It goes on as a record of its own: actions apply to the copy.
-        let mut to = Replica::<Contact>::from_doc(to.doc_mut().fork());
+        let mut to = Replica::<Contact>::from_doc(to.doc_mut().fork()).in_app("so.tilo.model", "Model");
         to.apply(Contact::RENAME.with(("Grace".to_owned(), "Hopper".to_owned())))
             .unwrap();
         assert_eq!(to.state().unwrap().given, "Grace");

@@ -157,7 +157,7 @@ impl Source for References {
                 .iter()
                 .take(LISTED)
                 .zip(0..)
-                .map(|(reference, at)| self.hit(reference, MAX_PROVIDER_SCORE - at))
+                .map(|(reference, at)| self.hit(reference, MAX_PROVIDER_SCORE.saturating_sub(at)))
                 .collect();
         }
         let mut hits: Vec<Hit> = self

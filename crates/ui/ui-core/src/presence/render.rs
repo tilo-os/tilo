@@ -1123,7 +1123,7 @@ pub fn paint_reaction(
     let style = reaction_style(theme);
     // A workspace emoji floats its picture, a square as tall as an emoji
     // of the reaction's type would stand.
-    let picture = tilo_resource::custom_emoji_name(&reaction.emoji)
+    let picture = tilo_resource_plain::custom_emoji_name(&reaction.emoji)
         .and_then(|name| crate::workspace_emoji::emoji().image(name));
     let (w, h) = if picture.is_some() {
         let side = style.size * crate::richtext::inline_emoji::SIDE_EM;
@@ -1902,7 +1902,7 @@ pub fn draw_remote_presence(
     painted
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod tests {
     use super::*;
     use crate::offscreen::OffscreenRenderer;
