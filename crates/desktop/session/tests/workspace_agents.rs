@@ -133,6 +133,9 @@ fn send(device: &Device, to: &Value, text: &str) -> Value {
 fn laptop_with_chat(ada: &Person, site: &Site) -> Device {
     site.publish(Role::Editor);
     let mut laptop = ada.device("Ada's laptop");
+    // Chat is a tilolang package: the laptop carries it, as a device with it installed does,
+    // before its session starts and reads the apps it has.
+    laptop.install_dev_apps();
     let member = site.admit(ada.public);
     laptop.join(&member);
     laptop.wait_holding(&site.workspace);
