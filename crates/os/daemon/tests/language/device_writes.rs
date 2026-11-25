@@ -78,10 +78,11 @@ fn a_members_device_takes_what_its_role_lets_it() {
             .await;
         let (words, is_error) = said(&filed);
         assert!(!is_error, "{words}");
-        // The issue the create answered, by the address it names.
+        // The issue the create answered, by the address its answer names: the resources it
+        // made, each on a line of its own as `-> <address>`.
         let issue = words
-            .split_whitespace()
-            .find(|word| word.contains("/issues/"))
+            .lines()
+            .find_map(|line| line.strip_prefix("-> "))
             .unwrap_or_else(|| panic!("the create answers the issue it made: {words}"))
             .to_owned();
 
