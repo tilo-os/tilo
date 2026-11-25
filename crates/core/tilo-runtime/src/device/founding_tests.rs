@@ -394,9 +394,6 @@ fn a_founding_call_follows_a_person_part_that_starts_past_one_answer() {
     drop(environment);
 }
 
-const STOPPED_REPORTING_TEST: &str =
-    "device::founding_tests::a_founding_call_that_stops_reporting_names_its_last_stage";
-
 /// A daemon that reports a stage and then stops answering is told as one, naming the stage it
 /// reached: a caller waits for each report, never for ever, and never fails without saying
 /// where the call was.
