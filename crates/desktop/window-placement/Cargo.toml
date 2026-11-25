@@ -13,7 +13,7 @@ description = "The desktop's window policy: native windows as tabs of the deskto
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
-ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
 tilo-desktop-search = { version = "0.1.0", path = "../desktop-search" }
 tilo-session-core = { path = "../session-core" }

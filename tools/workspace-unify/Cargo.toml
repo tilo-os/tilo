@@ -1288,7 +1288,7 @@ doc = false
 "tilo-tts" = { path = "../../crates/engines/tts", default-features = false, features = [] }
 "tilo-typst" = { path = "../../crates/engines/typst-engine", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../crates/engines/tilo-typst-fonts", default-features = false, features = [] }
-"tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "host-portals", "local-daemons", "mpris", "native", "portal", "syntax-definitions", "test-support", "webview-adblock"] }
+"tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "host-portals", "local-daemons", "model", "mpris", "native", "portal", "syntax-definitions", "test-support", "webview-adblock"] }
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
 "tilo-ui-kms" = { path = "../../crates/ui/ui-kms", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../crates/ui/ui-paint", default-features = false, features = [] }
@@ -3742,7 +3742,7 @@ doc = false
 "tilo-tts" = { path = "../../crates/engines/tts", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../crates/engines/tilo-typst-fonts", default-features = false, features = [] }
 "tilo-typst" = { path = "../../crates/engines/typst-engine", default-features = false, features = [] }
-"tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "realtime-video", "syntax-definitions", "test-support", "webview-adblock"] }
+"tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "model", "mpris", "native", "portal", "realtime-video", "syntax-definitions", "test-support", "webview-adblock"] }
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
 "tilo-ui-kms" = { path = "../../crates/ui/ui-kms", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../crates/ui/ui-paint", default-features = false, features = [] }

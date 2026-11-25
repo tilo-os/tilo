@@ -47,7 +47,7 @@ thin = [
 [dependencies]
 runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 # The toolkit the runtime carries, only to turn on its `lazy-painter`.
-tilo-ui = { path = "../../../ui/ui-core", optional = true, default-features = false }
+tilo-ui = { path = "../../../ui/ui-core", optional = true, default-features = false, features = ["model"] }
 # The painter interface the entry answers in, and the bytes the check's module
 # exchanges.
 tilo-theme-sdk = { version = "0.1.0", path = "../../../ui/theme-sdk", optional = true }

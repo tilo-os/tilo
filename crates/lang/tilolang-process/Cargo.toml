@@ -139,7 +139,7 @@ tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # copies and pastes, since its process holds no display of its own.
 tilo-clipboard = { version = "0.1.0", path = "../../platform/tilo-clipboard" }
 # Presence as every window decodes it: who is where in a document, and who is writing there.
-ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 # An app's windows (`app-launch`): the toolkit's framework, the app window's half of each window,
 # what a window keeps of the person's own data, and later builds `tilolang dev` publishes. The
 # app process is not the native runner: the session runs the window's host, and this process

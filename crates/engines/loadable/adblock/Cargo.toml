@@ -52,7 +52,7 @@ thin = [
 runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 # The toolkit the runtime carries, for `webview::adblock`'s types and to turn
 # on its `lazy-adblock`.
-tilo-ui = { path = "../../../ui/ui-core", optional = true, default-features = false }
+tilo-ui = { path = "../../../ui/ui-core", optional = true, default-features = false, features = ["model"] }
 tilo-content-blocker = { path = "../../content-blocker", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole
 # dependency set into a shared object.

@@ -52,7 +52,7 @@ tilo-workspace-join = { path = "../../core/workspace-join" }
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 # Workspace sync states, as apps are told them.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["tokio"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

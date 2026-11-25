@@ -20,14 +20,22 @@ description = "The Tilo UI toolkit: retained-mode, CRDT-native widgets."
 ignored = ["wgpu-hal", "getrandom02", "serde_bytes"]
 
 [features]
-default = ["native", "broker-transport"]
+default = ["native", "broker-transport", "model"]
+# Tilo's model: its records and actions over them (tilo-resource), the synced
+# documents and their collaboration client (tilo-collaboration,
+# tilo-runtime-collab, tilo-collab-types, tilo-automerge), the workspace's
+# settings store, and the app layer built on them: the app runner's sync,
+# history and undo, presence, search and the resource-backed views. Without
+# it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
+# it on.
+model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "dep:tilo-doc", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "dep:settings-model"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::process::ProcessServices`.
-native = ["local-daemons", "collaboration/audio", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
+native = ["local-daemons", "collaboration?/audio", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch"]
 # X11 windows (winit's X11 backend), for development builds on an X11 host:
 # `cargo run -p <app> --features ui/x11` (through `tilo-app`'s `x11`). Every
 # Tilo app runs as a Wayland client in its sandbox, so the shared runtime
@@ -56,16 +64,16 @@ lazy-painter = ["dep:tilo-engine-loader"]
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
 # (default: none). Settings are not guarded here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
-local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboration/local-daemons", "tilo-webview/local-daemons"]
+local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboration?/local-daemons", "tilo-webview/local-daemons"]
 # The collaboration manager's built-in transport: the collaboration wire's
 # client on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
-broker-transport = ["local-daemons", "collaboration/broker-transport", "runtime-collab/client", "tokio/full"]
+broker-transport = ["local-daemons", "collaboration?/broker-transport", "runtime-collab?/client", "tokio/full"]
 # An integration test links the library once, without its `cfg(test)`: the
 # fixtures a test draws with ([`headless::Driver::mount`], the pinned font
 # catalogue) come with it.
-test-support = ["tilo-process-services/test-support", "collaboration/test-support", "dep:tilo-test-env", "runtime-collab/settings-host"]
+test-support = ["tilo-process-services/test-support", "collaboration?/test-support", "dep:tilo-test-env", "runtime-collab?/settings-host"]
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests
@@ -197,8 +205,8 @@ tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
 tilolang-lex = { version = "0.1.0", path = "../../lang/tilolang-lex" }
 tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../../platform/font-catalog" }
-settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings" }
-settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model" }
+settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings", optional = true }
+settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model", optional = true }
 # Dates, clocks and numbers as the person set them, without the toolkit, so a host
 # that has no toolkit answers the same as a window (tilo-formats).
 tilo-formats = { version = "0.1.0", path = "../tilo-formats" }
@@ -221,17 +229,17 @@ tilo-engine-loader = { version = "0.1.0", path = "../../core/engine-loader", opt
 # runtime-collab is the collaboration wire and its client. Its vocabulary
 # types are part of `CollabRequest` / `CollabEvent`; the client behind
 # them is only needed by the `broker-transport` feature.
-runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = "../../core/runtime-collab", default-features = false }
+runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = "../../core/runtime-collab", default-features = false, optional = true }
 # The collab client without the toolkit: record identities, the app surface,
 # the local identity boundary, local action reports and the history a document
 # keeps, under their toolkit paths.
-collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration" }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", optional = true }
 runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../../core/runtime-portal", optional = true }
 tilo-identity-client = { version = "0.1.0", path = "../../core/tilo-identity-client", optional = true }
 # The typed id of the app a record set belongs to.
 tilo-app-id.workspace = true
 automerge.workspace = true
-tilo-automerge.workspace = true
+tilo-automerge = { workspace = true, optional = true }
 tilo-spellcheck = { version = "0.1.0", path = "../spellcheck" }
 # Grammar-backed highlighting (`widget::code_editor::syntax`): the token
 # vocabulary, and the grammar set (syntect over two-face's extended syntax
@@ -309,19 +317,19 @@ media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
-collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types", optional = true }
 # The collaborative filesystem's records and history protocol, read by the
 # file history and conflict widgets.
-fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../../core/fs-protocol" }
+fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../../core/fs-protocol", optional = true }
 # The canonical document model. `history_source` reads a live document's
 # change graph through `tilo_resource::history`, materialises past versions
 # with `tilo_doc::snapshot::at` and
 # turns it into the `HistoryEntry` rows the timeline + scrubber render, and
 # uses `tilo-doc`'s structural snapshot diff to write each row's summary. Pure
 # model code — no renderer, no I/O — so this stays a cheap dep.
-tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc" }
+tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc", optional = true }
 # Version history, stamped commits and replay of any document.
-tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["local"] }
 # Every catalogue and text index is a tantivy index through the shared
 # search layer.
@@ -333,11 +341,11 @@ tilo-search = { version = "0.1.0", path = "../../platform/search" }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 # What a reference in rich text refers to: a person, or the catalogue's resource reference.
-tilo-reference = { version = "0.1.0", path = "../../core/reference" }
+tilo-reference = { version = "0.1.0", path = "../../core/reference", optional = true }
 # Who may invoke which action: grants over the published tree.
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # Window-group widths and drop targets are the layout model's own types.
-tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model" }
+tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model", optional = true }
 # Direct dep on the Ed25519 implementation `tilo-collab-types` uses so
 # the toolkit can name its `SigningKey` without reaching into the
 # tilo-collab-types private module path. Pinned

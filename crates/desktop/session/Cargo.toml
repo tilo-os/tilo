@@ -164,7 +164,7 @@ tilo-live = { path = "../../core/tilo-live", features = ["live_session", "relay"
 
 zeroize.workspace = true
 jiff.workspace = true
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 serde.workspace = true
 serde_json.workspace = true
 # The sheets the desktop shows over everything: the offers an action

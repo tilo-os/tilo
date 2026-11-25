@@ -45,7 +45,7 @@ thin = [
 [dependencies]
 runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
 # The toolkit the runtime carries, only to turn on its `lazy-highlight`.
-tilo-ui = { path = "../../../ui/ui-core", optional = true, default-features = false }
+tilo-ui = { path = "../../../ui/ui-core", optional = true, default-features = false, features = ["model"] }
 tilo-highlight = { path = "../../../ui/highlight", optional = true }
 tilo-highlight-grammars = { path = "../../../ui/highlight-grammars", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole

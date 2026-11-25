@@ -48,7 +48,7 @@ zeroize.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["watch"] }
 # The theme the legacy toolkits' appearance keys are projected from.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 futures-util.workspace = true
 # EIS, the transport of the input portals: a server per session.
 reis = { version = "0.7.1", features = ["calloop"] }
