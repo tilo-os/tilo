@@ -646,13 +646,10 @@ impl Workspaces {
         // greater than its own, so each two holders are linked once and any one
         // can go away without leaving the rest apart; and the device that handed
         // it over, when that keeps none.
-        let greater: Vec<[u8; 32]> = keeping
+        for dialled in keeping
             .iter()
             .copied()
             .filter(|device| *device > own)
-            .collect();
-        for dialled in greater
-            .into_iter()
             .chain(handed.map(|handed| handed.device_certificate.device_public_key))
         {
             if dialled == own || hosted.holders.sessions.contains_key(&dialled) {

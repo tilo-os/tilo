@@ -28,12 +28,15 @@ pub struct ShellCaller {
     pub person: [u8; 32],
 }
 
+/// Who a shell link was made for, and the seat it is for, if any.
+pub type ShellLink = (ShellCaller, Option<u64>);
+
 /// The shell links the daemon made and no shell took yet: each a one-use secret the daemon
 /// sends on a connection it opens itself, then hands to the shell it starts. And the
 /// connections it asked to hand the device's tilolang processes an instance on.
 #[derive(Default)]
 pub struct ShellLinks {
-    shells: std::sync::Mutex<std::collections::HashMap<[u8; 32], (ShellCaller, Option<u64>)>>,
+    shells: std::sync::Mutex<std::collections::HashMap<[u8; 32], ShellLink>>,
     processes: std::sync::Mutex<std::collections::HashSet<[u8; 32]>>,
     /// The seats a shell link is admitted for now: a seat has one shell, and a second link for it
     /// is refused while the first stands.
@@ -86,7 +89,7 @@ impl ShellLinks {
     /// Who the link with `secret` was made for and the seat it is, once: a secret is taken by its
     /// first connection.
     #[must_use]
-    pub fn take(&self, secret: &[u8; 32]) -> Option<(ShellCaller, Option<u64>)> {
+    pub fn take(&self, secret: &[u8; 32]) -> Option<ShellLink> {
         lock(&self.shells).remove(secret)
     }
 
