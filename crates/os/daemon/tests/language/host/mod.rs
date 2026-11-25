@@ -504,7 +504,14 @@ impl Host {
     /// its client, in the founded workspace.
     #[must_use]
     pub fn agent(&self) -> Agent {
-        let session = self.daemon().mcp_session_factory(self.workspace()).unwrap()().unwrap();
+        self.agent_in(self.workspace())
+    }
+
+    /// [`Self::agent`] in `workspace`, a workspace the person's identity reaches: what their
+    /// `tilo mcp` asks for it with, so the agent's calls act there.
+    #[must_use]
+    pub fn agent_in(&self, workspace: &str) -> Agent {
+        let session = self.daemon().mcp_session_factory(workspace).unwrap()().unwrap();
         Agent {
             session,
             calls: std::sync::atomic::AtomicU64::new(1),

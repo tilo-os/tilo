@@ -18,6 +18,9 @@ const CHAT: &str = ui::apps::CHAT;
 const CHAT_PACKAGE: &str = "chat";
 /// The channel a test makes in the workspace's chat, and posts into.
 pub(crate) const CHANNEL: &str = "chat";
+/// The app's own resource: where it publishes its history verbs, which is how a page reads who
+/// wrote a row and takes steps back.
+const CHAT_RESOURCE: &str = "tl:so.tilo.chat";
 /// What the agent says in the chat.
 const TEXT: &str = "Hello from the agent";
 
@@ -68,6 +71,41 @@ pub(crate) async fn chat_holds(host: &host::Host, needle: &str) -> Result<bool, 
         }
     }
     Ok(false)
+}
+
+/// [`chat_holds`] asked again until the record holds `needle`: a write the API answered for
+/// reaches the daemon's record as the app's changes do, which may still be on their way as the
+/// answer comes.
+pub(crate) async fn chat_holds_soon(host: &host::Host, needle: &str) -> bool {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        match chat_holds(host, needle).await {
+            Ok(true) => return true,
+            Ok(false) => {}
+            Err(error) => panic!("{error}"),
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+/// [`chat_holds`] asked again until the record stops holding `needle`: an undo the API
+/// answered for reaches the daemon's record as the app's changes do.
+pub(crate) async fn chat_stops_holding(host: &host::Host, needle: &str) -> bool {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        match chat_holds(host, needle).await {
+            Ok(false) => return true,
+            Ok(true) => {}
+            Err(error) => panic!("{error}"),
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
 }
 
 /// The person's app started in their workspace with no window, as the daemon runs its
@@ -139,11 +177,15 @@ async fn listed_by_agent(agent: &host::Agent) -> (String, bool) {
     }
 }
 
-/// [`listed_by_agent`], through the key's MCP session.
-async fn listed_by_key(key: &host::Key) -> (String, bool) {
+/// [`listed_by_agent`], through the key's MCP session in `workspace`: a key reaching every
+/// workspace names the one it acts in, as the API's account session asks.
+async fn listed_by_key(key: &host::Key, workspace: &str) -> (String, bool) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let (text, failed) = said(&key.tool("tilo_ls", &json!({"path": "chat"})).await);
+        let (text, failed) = said(
+            &key.tool("tilo_ls", &json!({"workspace": workspace, "path": "chat"}))
+                .await,
+        );
         if !failed {
             let shows = text.contains(CHANNEL);
             return (text, shows);
@@ -179,21 +221,34 @@ fn an_agent_posts_to_chat_a_page_made_after_it_joined() {
         let (posted, failed) = post(&agent, &channel, TEXT).await;
         assert!(!failed, "the post runs: {posted}");
 
-        // The page follows the chain and reads what the agent said, signed by the session the
-        // daemon handed it, as the agent's windows name it.
+        // The page follows the chain and reads what the agent said. Its history names the
+        // writer by its session, not by the key the session acts under.
         assert!(
-            chat_holds(host.as_ref(), TEXT)
-                .await
-                .unwrap_or_else(|error| panic!("{error}")),
+            chat_holds_soon(host.as_ref(), TEXT).await,
             "the chat holds the agent's message"
         );
+        let history = history_of(host.as_ref()).await;
         assert!(
-            chat_holds(host.as_ref(), "mcp")
-                .await
-                .unwrap_or_else(|error| panic!("{error}")),
-            "the message's byline names the agent's session, not its key"
+            history.contains("mcp"),
+            "the message's byline names the agent's session, not its key: {history}"
         );
     });
+}
+
+/// Chat's own history of its conversations root, as its `history` verb answers it: each version
+/// with who made it, which is what a message's byline reads.
+async fn history_of(host: &host::Host) -> String {
+    let (history, failed) = said(
+        &host
+            .agent()
+            .tool(
+                "tilo_do",
+                &json!({"path": format!("so.tilo.chat/{CHAT_RESOURCE}#history"), "args": {}}),
+            )
+            .await,
+    );
+    assert!(!failed, "Chat lists its history: {history}");
+    history
 }
 
 /// The person's workspace began with Chat, written before any key's session entered it: the
@@ -208,22 +263,21 @@ fn an_agent_posts_to_chat_a_persons_own_workspace_began_with() {
         let channel = made_channel(&agent, CHANNEL).await;
 
         let key = host.key("Visa backend");
-        let (listed, shows) = listed_by_key(&key).await;
+        let (listed, shows) = listed_by_key(&key, host.workspace()).await;
         assert!(shows, "the listing shows the workspace's channel: {listed}");
 
         let (posted, failed) = said(
             &key.tool(
                 "tilo_do",
-                &json!({"path": format!("so.tilo.chat/{channel}#send"),
+                &json!({"workspace": host.workspace(),
+                        "path": format!("so.tilo.chat/{channel}#send"),
                         "args": {"body": TEXT}}),
             )
             .await,
         );
         assert!(!failed, "the post lands in the workspace's chat: {posted}");
         assert!(
-            chat_holds(host.as_ref(), TEXT)
-                .await
-                .unwrap_or_else(|error| panic!("{error}")),
+            chat_holds_soon(host.as_ref(), TEXT).await,
             "the post is in the workspace's chat"
         );
     });
@@ -232,8 +286,10 @@ fn an_agent_posts_to_chat_a_persons_own_workspace_began_with() {
 /// How many posts one call carries: the most a call takes.
 const BATCH: usize = 32;
 
-/// A batch of posts through one call is one step: every post is kept, and one undo takes the
-/// whole batch back.
+/// A batch of posts through one call is applied in one call, and one undo takes the whole
+/// batch back. Each step of a `calls` batch is an invocation of its own
+/// (`batch_invocation`, `crates/core/tilo-mcp/src/mcp_step.rs`), so the undo names how many
+/// of its steps to take back: the batch's.
 #[test]
 fn a_batch_of_posts_is_one_step_and_one_undo_takes_it_back() {
     host::run_with(&[CHAT_PACKAGE], |host| async move {
@@ -249,33 +305,30 @@ fn a_batch_of_posts_is_one_step_and_one_undo_takes_it_back() {
                        "args": {"body": format!("bulk {at}")}})
             })
             .collect();
-        let (batched, failed) = said(&agent.tool("tilo_do", &json!({"calls": posts})).await);
+        let batch_answer = agent.tool("tilo_do", &json!({"calls": posts})).await;
+        let (batched, failed) = said(&batch_answer);
         assert!(!failed, "the batch is applied in one call: {batched}");
         let mut kept = 0;
         for at in 0..BATCH {
-            if chat_holds(host.as_ref(), &format!("bulk {at}"))
-                .await
-                .unwrap_or_else(|error| panic!("{error}"))
-            {
+            if chat_holds_soon(host.as_ref(), &format!("bulk {at}")).await {
                 kept += 1;
             }
         }
         assert_eq!(kept, BATCH, "every post of the batch is kept");
 
         // One step: the record's own history takes the whole batch back.
-        let (undone, failed) = said(
-            &agent
-                .tool(
-                    "tilo_do",
-                    &json!({"path": "so.tilo.chat/tl:so.tilo.chat#undo", "args": {}}),
-                )
-                .await,
-        );
+        let undo_answer = agent
+            .tool(
+                "tilo_do",
+                &json!({"path": format!("so.tilo.chat/{CHAT_RESOURCE}#undo"),
+                        "args": {"steps": BATCH},
+                        "wait_ms": 5_000}),
+            )
+            .await;
+        let (undone, failed) = said(&undo_answer);
         assert!(!failed, "the undo is applied: {undone}");
         assert!(
-            !chat_holds(host.as_ref(), "bulk 0")
-                .await
-                .unwrap_or_else(|error| panic!("{error}")),
+            chat_stops_holding(host.as_ref(), "bulk 0").await,
             "one undo takes the batch back"
         );
     });
@@ -298,19 +351,19 @@ fn the_chats_api_posts_are_held_in_the_workspaces_records() {
             let (answer, failed) = said(
                 &key.tool(
                     "tilo_do",
-                    &json!({"path": format!("so.tilo.chat/{channel}#send"),
+                    &json!({"workspace": host.workspace(),
+                            "path": format!("so.tilo.chat/{channel}#send"),
                             "args": {"body": text}}),
                 )
                 .await,
             );
             assert!(!failed, "post {index} lands: {answer}");
+            eprintln!("KEY POST {index} = {answer}");
             posted.push(text);
         }
         for text in &posted {
             assert!(
-                chat_holds(host.as_ref(), text)
-                    .await
-                    .unwrap_or_else(|error| panic!("{error}")),
+                chat_holds_soon(host.as_ref(), text).await,
                 "the workspace holds {text:?}, which the API answered for"
             );
         }

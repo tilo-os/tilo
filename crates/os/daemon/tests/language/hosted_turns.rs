@@ -15,7 +15,6 @@ use serde_json::{Value, json};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{ActionCallError, ActionProvider as _, Caller, ReceiptStatus};
 use tilo_peer_state::join::Role;
-use tilo_workspace_service::tl_records;
 use tilo_workspace_service::workspaces::model_answers::scripted::{Reply, ScriptedProvider};
 use tilo_workspace_service::workspaces::model_answers::{
     ModelDescriptor, ProviderProfile, ProviderProtocol,
@@ -214,7 +213,8 @@ fn workspace_skills_are_shared_and_a_viewers_write_is_refused() {
             "the refused write left nothing: {after}"
         );
 
-        // Another workspace has its own skills.
+        // Another workspace has its own skills: a session in it starts Chat's record there, and
+        // what it writes stays there.
         let other = host
             .daemon()
             .workspaces()
@@ -222,35 +222,21 @@ fn workspace_skills_are_shared_and_a_viewers_write_is_refused() {
             .await
             .expect("a second workspace")
             .workspace;
-        start_chat(host, &other).await;
-        let viewer =
-            tl::runtime::Actor::Member(tilo_actions::MemberId::person(host.person().to_owned()));
-        let acting = tilo_action_policy::Acting::person(host.person().to_owned());
-        let invoker = tilo_actions::ActionInvoker::admitted(&acting);
-        let context = tilo_actions::ActionContext::default();
-        let caller = Caller::local_person(host.person()).in_workspace(&other);
-        let address = action(host, &other, host.person(), "new_skill");
-        let arguments = json!({"name": "Elsewhere's report"})
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
-        host.daemon()
-            .workspaces()
-            .apply_record_action(
-                &other,
-                tl_records::RecordCall {
-                    app: CHAT,
-                    viewer,
-                    invoker: &invoker,
-                    caller: &caller,
-                    context: &context,
-                    address: &address,
-                    arguments: &arguments,
-                    read: false,
-                },
-            )
-            .await
-            .expect("the person starts a skill elsewhere");
+        let elsewhere = host.agent_in(&other);
+        // The workspace's first look at Chat makes its record there, as opening the app does.
+        let _ = elsewhere
+            .tool("tilo_ls", &json!({"path": "so.tilo.chat"}))
+            .await;
+        let (made, failed) = crate::language::chat::said(
+            &elsewhere
+                .tool(
+                    "tilo_do",
+                    &json!({"path": format!("so.tilo.chat/{CONVERSATIONS}#new_skill"),
+                            "args": {"name": "Elsewhere's report"}}),
+                )
+                .await,
+        );
+        assert!(!failed, "the person starts a skill elsewhere: {made}");
         let other_root = read_root(host, &other, host.person()).await;
         assert!(
             other_root.to_string().contains("Elsewhere's report")
@@ -287,8 +273,11 @@ async fn make_scout(host: &Host) {
 }
 
 /// A value that mentions the workspace's assistant in Chat's rich text: what fires its trigger.
-fn mentioning(text: &str) -> Value {
+/// A mention's mark names its member as [`tilo_action_policy::MemberId::mark_value`] writes it,
+/// which is what the workspace's triggers look for in a message.
+fn mentioning(person: &str, text: &str) -> Value {
     let label = format!("@{SCOUT}");
+    let member = tilo_action_policy::MemberId::agent(SCOUT_ID, person).mark_value();
     json!({"rich": [{
         "id": "",
         "kind": "paragraph",
@@ -297,25 +286,67 @@ fn mentioning(text: &str) -> Value {
             "start": 0,
             "end": label.chars().count(),
             "name": "mention",
-            "value": {"Str": format!("{{\"agent\":\"{SCOUT_ID}\"}}")},
+            "value": {"Str": member},
         }],
         "attrs": {},
         "children": [],
     }]})
 }
 
-/// The person writes `words` in Chat's channel `channel`, mentioning their assistant.
+/// The provider of the workspace's running Chat, as the person's dispatch reaches it: the
+/// instance that opens Chat's record there and answers its actions.
+async fn chat_provider(host: &Host) -> String {
+    host::listed(host, CHAT)
+        .await
+        .expect("Chat's catalogue reads")
+        .providers
+        .into_iter()
+        .find(|provider| {
+            provider.app_id == CHAT
+                && provider.workspace == host.workspace()
+                && provider.provider.parse::<u64>().is_ok()
+        })
+        .map(|provider| provider.provider)
+        .unwrap_or_else(|| panic!("Chat runs in the worker's workspace"))
+}
+
+/// The person writes `words` in Chat's channel `channel`, mentioning their assistant, through
+/// the app instance their page writes through and the daemon's dispatch as themselves: the
+/// person's own write, not their agent's, which the agent's triggers leave out. The instance
+/// takes the channel as its record delivers it, so a write that comes before it holds the
+/// channel is asked again.
 async fn write_to_scout(host: &Host, channel: &str, words: &str) -> (String, bool) {
-    crate::language::chat::said(
-        &host
-            .agent()
-            .tool(
-                "tilo_do",
-                &json!({"path": format!("so.tilo.chat/{channel}#send"),
-                        "args": {"body": mentioning(words)}}),
-            )
-            .await,
-    )
+    let address = chat_rows(host, host.workspace(), host.person())
+        .into_iter()
+        .filter_map(|row| row.action)
+        .map(|action| action.address)
+        .find(|address| address.resource == channel && address.action == "send")
+        .unwrap_or_else(|| panic!("Chat publishes a send on {channel}"));
+    let arguments = json!({"body": mentioning(host.person(), words)});
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let target = tilo_actions::remote::RemoteActionTarget {
+            provider: chat_provider(host).await,
+            address: address.clone(),
+        };
+        match host::output(host, target, arguments.clone()).await {
+            Ok(output) => {
+                return (
+                    output
+                        .value
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    false,
+                );
+            }
+            Err(ActionCallError::UnknownAction | ActionCallError::Unavailable { .. })
+                if Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(refused) => return (format!("{refused:?}"), true),
+        }
+    }
 }
 
 /// Link a model on this computer and answer the workspace's calls through `replies`, one per
@@ -379,39 +410,21 @@ fn tool_answers(
         .collect()
 }
 
-/// `tilo_ls` of `arguments` as the workspace's agent reads it.
-async fn listed(agent: &crate::language::host::Agent, arguments: Value) -> String {
-    let (listed, failed) = crate::language::chat::said(&agent.tool("tilo_ls", &arguments).await);
-    assert!(!failed, "Chat lists {arguments}: {listed}");
-    listed
-}
-
-/// The path a listing gives the item named `name`, or the action `action` of it.
-fn path_in(listed: &str, name: &str, action: Option<&str>) -> Option<String> {
-    listed
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .find(|path| {
-            path.contains(name) && action.is_none_or(|action| path.ends_with(&format!("#{action}")))
-        })
-        .map(str::to_owned)
-}
-
-/// The path at which Chat publishes its action `action` on its skill `name`, as an agent lists
-/// it: what a turn's `tilo_do` call names.
-async fn skill_path(host: &Host, name: &str, action: &str) -> String {
-    let agent = host.agent();
-    let root = listed(&agent, json!({"path": "so.tilo.chat"})).await;
-    if let Some(path) = path_in(&root, name, Some(action)) {
-        return path;
-    }
-    // The workspace's listing of an app reaches the app's own page; its collections are read
-    // where they are published, each item by the name people know it by.
-    let item = path_in(&root, name, None).unwrap_or_else(|| format!("so.tilo.chat/skills/{name}"));
-    let at_item = listed(&agent, json!({"path": item, "kind": "actions"})).await;
-    path_in(&at_item, name, Some(action))
-        .or_else(|| path_in(&at_item, "", Some(action)))
-        .unwrap_or_else(|| panic!("Chat lists {name}'s {action}: {at_item}"))
+/// The person starts the skill `name` through Chat's record, named by the published id its
+/// action answered with: what a resource of the record is called in the app's paths.
+async fn told_skill(host: &Host, name: &str) -> String {
+    let target = tilo_actions::remote::RemoteActionTarget {
+        provider: CHAT_PROVIDER.to_owned(),
+        address: action(host, host.workspace(), host.person(), "new_skill"),
+    };
+    let output = host::output(host, target, json!({"name": name}))
+        .await
+        .expect("the person starts a skill");
+    output
+        .resources
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("new_skill names the skill it made: {output:?}"))
 }
 
 /// A turn on the workspace's host changes the workspace's skill through the same actions its
@@ -423,9 +436,7 @@ fn a_hosted_agent_uses_the_same_workspace_skills_actions() {
         let host = host.as_ref();
         start_chat(host, host.workspace()).await;
         make_scout(host).await;
-        invoke(host, "new_skill", json!({"name": "Weekly report"}))
-            .await
-            .expect("the person starts a skill");
+        let skill = told_skill(host, "Weekly report").await;
         invoke(
             host,
             "correct_skill",
@@ -433,7 +444,9 @@ fn a_hosted_agent_uses_the_same_workspace_skills_actions() {
         )
         .await
         .expect("the person says what the skill is for and how it is done");
-        let path = skill_path(host, "Weekly report", "correct_skill").await;
+        // The path a skill is called by: the resource the person's own action named it as, as
+        // the app's paths name a resource of its record.
+        let path = format!("so.tilo.chat/{skill}#correct_skill");
 
         let scripted = scripted(
             host,
@@ -468,9 +481,7 @@ fn a_hosted_agent_uses_the_same_workspace_skills_actions() {
             tool_answers(&requests[1].request)
         );
         assert!(
-            crate::language::chat::chat_holds(host, "I updated the workspace skill.")
-                .await
-                .unwrap_or_else(|error| panic!("{error}")),
+            crate::language::chat::chat_holds_soon(host, "I updated the workspace skill.").await,
             "the turn says what it changed once its tool answered"
         );
         let read = read_root(host, host.workspace(), host.person()).await;
@@ -558,9 +569,7 @@ fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed
             "the assistant's own call sets the reminder up: {answers:?}"
         );
         assert!(
-            crate::language::chat::chat_holds(host, "I will remind you to call home.")
-                .await
-                .unwrap_or_else(|error| panic!("{error}")),
+            crate::language::chat::chat_holds_soon(host, "I will remind you to call home.").await,
             "the assistant says it will remind her"
         );
         let kept = events_of(host).await;
