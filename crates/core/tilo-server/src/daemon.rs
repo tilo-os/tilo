@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context as _;
 use iroh::endpoint::{Endpoint, presets};
 use iroh::protocol::{DynProtocolHandler, Router};
 use iroh_base::EndpointAddr;
@@ -75,6 +74,10 @@ pub use crate::service::ServiceIdentity as ServerIdentity;
 /// applied, each verified: what a host reads when it starts, so a device its
 /// root revoked is refused as it connects instead of only after it is in.
 ///
+/// A server started through [`Server::start`] and [`Server::on_device`]'s own
+/// embedders applies its log itself; this is for a daemon that builds the
+/// identity it hands over, so what it validates and what it keeps agree.
+///
 /// # Errors
 ///
 /// Returns an error if the log cannot be read, or holds an entry that does
@@ -83,6 +86,14 @@ pub fn with_persisted_revocations(
     identity: ServerIdentity,
     state_root: &std::path::Path,
 ) -> anyhow::Result<ServerIdentity> {
+    kept_revocations(identity, state_root).map_err(anyhow::Error::from)
+}
+
+/// [`with_persisted_revocations`], with a starting server's own errors.
+fn kept_revocations(
+    identity: ServerIdentity,
+    state_root: &std::path::Path,
+) -> Result<ServerIdentity, ServerError> {
     let ServerIdentity {
         user_public_key,
         device_signing_key,
@@ -92,7 +103,7 @@ pub fn with_persisted_revocations(
     for entry in crate::workspace_files::load_revocations(state_root)? {
         revocations
             .insert(entry)
-            .context("verify persisted server revocation")?;
+            .map_err(|error| ServerError::Identity(format!("a kept revocation: {error}")))?;
     }
     Ok(ServerIdentity {
         user_public_key,
@@ -474,6 +485,10 @@ impl Server {
         validate_additional_protocols(&additional_protocols)?;
         validate_server_identity(&identity)?;
         std::fs::create_dir_all(&cfg.state_root)?;
+        // What this host refused before is refused again: its revocation log is read before the
+        // service opens, so a device its person's root revoked is turned away at the handshake
+        // once the server restarts, whichever embedder starts it.
+        let identity = kept_revocations(identity, &cfg.state_root)?;
         let relay = PacketRelay::start(&cfg, endpoint.is_some() || relay_mode.is_some()).await?;
         let relay_mode = relay_mode.or_else(|| relay.mode());
         let endpoint = match endpoint {

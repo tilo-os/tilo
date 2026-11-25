@@ -37,6 +37,11 @@ use tilo_server_protocol::{WorkSetting, WorkspaceId};
 pub struct ServiceConfig {
     /// Where the service keeps its workspaces and their retained state.
     pub state_root: PathBuf,
+    /// Where the host keeps its revocation log: the root-signed entries its next start reads
+    /// before any device is in ([`crate::workspace_files::load_revocations`]). A device's own
+    /// layout keeps it in the device's directory, of which `state_root` is the service's
+    /// directory below; a service opened on its own keeps it beside its state.
+    pub revocation_log_root: PathBuf,
     /// The work this device takes from others. A device of its person hands it a workspace to
     /// serve only when the setting takes that person's work.
     pub work: WorkSetting,
@@ -93,6 +98,7 @@ impl ServiceConfig {
     #[must_use]
     pub fn new(state_root: PathBuf, work: WorkSetting) -> Self {
         Self {
+            revocation_log_root: state_root.clone(),
             state_root,
             work,
             label: String::new(),
@@ -155,6 +161,8 @@ pub struct ServiceSessions {
     pub identity: LiveIdentity,
     pub(crate) handshake_trust: HandshakeTrust,
     pub state_root: PathBuf,
+    /// Where the host keeps its revocation log, which its next start reads.
+    pub revocation_log_root: PathBuf,
     /// The service's own protocol handler: what proves a member's device and
     /// answers the app-serving questions its links ask.
     pub handler: ServerProtocol,
@@ -261,6 +269,7 @@ impl ServiceSessions {
             identity: live,
             handshake_trust,
             state_root: cfg.state_root.clone(),
+            revocation_log_root: cfg.revocation_log_root.clone(),
             handler,
         };
         // A service that founds nothing still holds the member copies of a
@@ -301,7 +310,12 @@ impl ServiceSessions {
         crate::resource_actions::register(&workspaces);
         // The workspaces held here admit through their governance on this device's dispatch,
         // founded here or not.
-        sessions.serve_governance(governance, &workspaces, own_server.clone(), host_revocations);
+        sessions.serve_governance(
+            governance,
+            &workspaces,
+            own_server.clone(),
+            host_revocations,
+        );
         // One store of the calls that wait for a person's yes serves this device: every
         // dispatch here keeps its asked call in it, each workspace's invocations read them, and
         // `tilo.invocations#resolve` answers them, whichever embedder opened the service.
@@ -430,6 +444,7 @@ impl ServiceSessions {
             workspaces: self.workspaces.clone(),
             handshake_trust: self.handshake_trust.clone(),
             state_root: self.state_root.clone(),
+            revocation_log_root: self.revocation_log_root.clone(),
             environments: self.handler.environments.clone(),
         }
     }
@@ -1044,6 +1059,7 @@ pub(crate) struct GovernedAccessWriter {
     workspaces: WorkspaceRegistry,
     handshake_trust: HandshakeTrust,
     state_root: PathBuf,
+    revocation_log_root: PathBuf,
     /// The browser environments this server placed: their devices are listed
     /// beside the members the list names, so a change to it keeps them.
     environments: crate::environment::EnvironmentRegistry,
@@ -1052,6 +1068,12 @@ pub(crate) struct GovernedAccessWriter {
 impl GovernedAccessWriter {
     pub(crate) fn state_root(&self) -> &std::path::Path {
         &self.state_root
+    }
+
+    /// Where the host keeps its revocation log, beside the identity its next start reads it
+    /// with.
+    pub(crate) fn revocation_log_root(&self) -> &std::path::Path {
+        &self.revocation_log_root
     }
 
     /// Which workspaces here each person is a member of: what the handshake trusts.

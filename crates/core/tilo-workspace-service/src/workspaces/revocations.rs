@@ -151,7 +151,7 @@ impl Workspaces {
     /// revocations of the people it serves and nothing else.
     fn record(&self, entries: &[RevocationEntry]) -> Result<(), String> {
         let host = &self.inner.host;
-        let state_root = host.access.state_root();
+        let log_root = host.access.revocation_log_root();
         let live = self.revocations();
         let fresh = entries
             .iter()
@@ -185,7 +185,7 @@ impl Workspaces {
             self.forget_push_address_of(&entry.user_public_key, &entry.revoked_device_public_key);
         }
         let fresh = fresh.into_iter().cloned().collect::<Vec<_>>();
-        crate::workspace_files::append_revocations(state_root, &fresh)
+        crate::workspace_files::append_revocations(log_root, &fresh)
             .map_err(|error| error.to_string())?;
         if changed {
             crate::authority_epoch::bump();

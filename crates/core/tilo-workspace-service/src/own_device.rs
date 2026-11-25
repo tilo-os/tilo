@@ -133,7 +133,15 @@ pub async fn open_in(
         device,
         endpoint,
         keys.groups(),
-        configure,
+        |config| {
+            // The revocation log sits beside the identity in the device's own directory, where
+            // the daemon reads it back on its next start; the service's state is the
+            // directory below.
+            configure(ServiceConfig {
+                revocation_log_root: dir.to_path_buf(),
+                ..config
+            })
+        },
     )
     .await?;
     Ok(Opened { service, keys })

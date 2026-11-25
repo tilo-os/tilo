@@ -3,10 +3,11 @@
 //! device store's ([`tilo_peer_state::store`]).
 //!
 //! ```text
-//! <state_root>/
+//! <device>/
 //! ├── iroh-secret.bin              # the host's endpoint secret (0600)
 //! ├── revocations.log              # root-signed revocations it refuses
-//! └── workspaces/<workspace_id>/   # what the host keeps for the workspace
+//! └── service/                    # the device's workspace service
+//!     └── workspaces/<workspace_id>/  # what the host keeps for the workspace
 //! ```
 //!
 //! Who a workspace admits is no file here: it is the workspace's signed member
