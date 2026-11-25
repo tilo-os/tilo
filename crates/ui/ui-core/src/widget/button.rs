@@ -84,6 +84,10 @@ pub struct Button {
     /// several equal answers, the one a press there gives.
     primary_on_hover: bool,
     toggled: Option<bool>,
+    /// How far a toggle's on face shows: it fills in as a box's check does when a press turns it.
+    turn: Turn,
+    /// The face held was painted partway through a turn, so it is no face to keep at rest.
+    painted_turning: bool,
     shortcut: Option<crate::platform::Shortcut>,
     /// The width `measure` settled on, pinned onto the node so a stretching
     /// parent cannot widen an intrinsic button.
@@ -195,6 +199,8 @@ impl Button {
             role: ButtonRole::Secondary,
             primary_on_hover: false,
             toggled: None,
+            turn: Turn::default(),
+            painted_turning: false,
             opens_menu: false,
             menu_open: false,
             shows_choice: false,
@@ -1568,6 +1574,41 @@ struct FacePaint<'a> {
     moment: crate::part_paint::Moment,
 }
 
+/// How large a toggle's on face starts as it turns on, of its full size.
+const TURN_FROM: f64 = 0.8;
+/// How far past its face a turning toggle may draw: its focus ring and its edge.
+const TURN_BLEED: f64 = 4.0;
+
+/// A toggle's on face, `0` off to `1` on, as the shared [`crate::motion::Mark`] moves a box's
+/// check: a click or a finger turns it at the control's pace; a key, an assistive action or a value
+/// nobody just caused lands at once. The first value shown rests.
+#[derive(Clone, Copy, Debug, Default)]
+struct Turn {
+    mark: crate::motion::Mark,
+    shown: Option<bool>,
+}
+
+impl Turn {
+    #[track_caller]
+    fn follow(
+        &mut self,
+        on: bool,
+        motion: crate::tokens::EffectiveMotion,
+        now: crate::time::Instant,
+    ) {
+        match self.shown {
+            Some(was) if was == on => return,
+            Some(_) => {
+                let source = crate::motion::recent_input(now)
+                    .unwrap_or(crate::tokens::MotionSource::Action);
+                self.mark.set(on, motion, source, now);
+            }
+            None => self.mark.snap(on),
+        }
+        self.shown = Some(on);
+    }
+}
+
 fn container_states(interact: Interaction, on: bool) -> crate::part_paint::States {
     use crate::part_paint::States;
     States::REST
@@ -2373,6 +2414,14 @@ impl Widget for Button {
         });
         let on = self.is_toggled();
         let now = crate::time::now();
+        if self.toggled.is_some() {
+            self.turn.follow(on, theme.motion(), now);
+        }
+        let turning = self
+            .turn
+            .mark
+            .is_moving(now)
+            .then(|| self.turn.mark.level(now));
         let set = theme.painter(crate::tokens::SurfaceRole::Control);
         self.motion.go(
             container_states(interact, on),
@@ -2384,7 +2433,12 @@ impl Widget for Button {
         let moment = self.motion.at(now);
         // The disabled group alpha is painted into the face, so appending
         // it applies none: a second layer would dim a disabled face twice.
-        if !self.dirty && moment.settled && !self.face.is_empty() {
+        if !self.dirty
+            && moment.settled
+            && turning.is_none()
+            && !self.painted_turning
+            && !self.face.is_empty()
+        {
             self.face.append(out_scene, out_transform, self.rect);
             crate::widget::draw_over(
                 self,
@@ -2432,14 +2486,55 @@ impl Widget for Button {
         }
         let (label, hint) = self.content();
         let mut cached = std::mem::take(&mut self.face);
-        let hit = self
-            .face_paint(&metrics, &label, hint, moment)
-            .paint(&mut PaintCtx::new(
-                cached.repaint(self.rect),
-                Affine::IDENTITY,
-                text_renderer,
-                theme,
-            ));
+        let scene = cached.repaint(self.rect);
+        let hit = match turning {
+            // Partway through a turn the off face stays under the on face, which fades in over it
+            // and, unless motion is reduced, grows into place: the fill and the mark come in
+            // together, as a box's check does, and leave the same way.
+            Some(level) => {
+                let at_rest = |on| crate::part_paint::Moment::settled(container_states(interact, on));
+                let mut off = self.face_paint(&metrics, &label, hint.clone(), at_rest(false));
+                off.on = false;
+                off.paint(&mut PaintCtx::new(
+                    scene,
+                    Affine::IDENTITY,
+                    text_renderer,
+                    theme,
+                ));
+                let grow = if theme.reduce_motion {
+                    1.0
+                } else {
+                    TURN_FROM + (1.0 - TURN_FROM) * f64::from(level)
+                };
+                let bounds = self.rect.inflate(metrics.pad_x + TURN_BLEED, TURN_BLEED);
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    level,
+                    Affine::IDENTITY,
+                    &bounds,
+                );
+                let mut lit = self.face_paint(&metrics, &label, hint, if on { moment } else { at_rest(true) });
+                lit.on = true;
+                let hit = lit.paint(&mut PaintCtx::new(
+                    scene,
+                    Affine::scale_about(grow, self.rect.center()),
+                    text_renderer,
+                    theme,
+                ));
+                scene.pop_layer();
+                hit
+            }
+            None => self
+                .face_paint(&metrics, &label, hint, moment)
+                .paint(&mut PaintCtx::new(
+                    scene,
+                    Affine::IDENTITY,
+                    text_renderer,
+                    theme,
+                )),
+        };
+        self.painted_turning = turning.is_some();
         self.face = cached;
         if let (Some(count), Some(rect)) = (&self.count, self.count_rect()) {
             count.paint(
@@ -2466,6 +2561,8 @@ impl Widget for Button {
 
     fn needs_redraw(&self) -> bool {
         self.dirty
+            || self.painted_turning
+            || self.turn.mark.is_moving(crate::time::now())
             || self.motion.moving(crate::time::now())
             || self.i18n_revision != crate::i18n::I18nManager::revision()
             || (

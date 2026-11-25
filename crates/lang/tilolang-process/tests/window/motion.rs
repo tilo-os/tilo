@@ -680,34 +680,21 @@ impl Driven for TestApp<TlApp> {
     }
 }
 
-/// The box of the opened task's done mark, which a person sees fill as they tick it off: the check
-/// its row draws at the row's start, as tall as its box. The task's page stands beside the list,
-/// titled in the field at its head, and the list keeps the task's row.
+/// The opened task's done toggle at the head of its page, which a person sees fill as they tick
+/// the task off: the toggle the page offers to complete it.
 fn the_mark_box(app: &mut impl Driven) -> [f64; 4] {
-    const BOX: f64 = 22.0;
     let snapshot = app.harness().inspection();
     let nodes = snapshot.root.nodes();
-    let opened = nodes
-        .iter()
-        .filter_map(|node| node.semantics.as_ref())
-        .find(|field| {
-            field.role == ui::a11y::Role::TextInput && field.name.as_deref() == Some("Title")
-        })
-        .and_then(|field| field.value.clone())
-        .expect("the opened task's page, titled at its head");
-    let row = nodes
-        .iter()
+    nodes
+        .into_iter()
         .find(|node| {
-            node.semantics.as_ref().is_some_and(|row| {
-                row.role == ui::a11y::Role::ListItem
-                    && row
-                        .shown_name()
-                        .is_some_and(|name| name.ends_with(opened.as_str()))
+            node.semantics.as_ref().is_some_and(|toggle| {
+                toggle.role == ui::a11y::Role::ToggleButton
+                    && toggle.name.as_deref() == Some("Complete")
             })
         })
         .map(|node| node.rect)
-        .expect("the opened task's row in the list beside its page");
-    [row[0] + 4.0, row[1] + (row[3] - BOX) / 2.0, BOX, BOX]
+        .expect("the opened task's page offers to complete it")
 }
 
 /// What a still window costs a frame: what its frames do in work, not how long a machine busy

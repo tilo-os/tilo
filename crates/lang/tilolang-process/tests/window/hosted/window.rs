@@ -773,6 +773,37 @@ fn typing_in_the_window_s_search_narrows_a_projects_tasks_to_what_matches() {
     );
 }
 
+/// The task a scenario opened stands beside the list before the person chose anything, and its
+/// row stands chosen: a list a person may choose several rows of shows the row of what its window
+/// has open while they hold no choice of their own. Once they choose a row, that one is chosen.
+#[test]
+fn the_row_of_the_task_the_window_opened_stands_chosen_until_the_person_chooses_another() {
+    let mut session = staged(TASKS, "a busy week");
+    let shown = session
+        .hosted()
+        .window_title()
+        .expect("the scenario opened a task beside the list")
+        .to_owned();
+    assert!(
+        selected(&mut session, &shown),
+        "the row of the task the window shows stands chosen: {:?}",
+        listed(&mut session)
+    );
+    let other = listed(&mut session)
+        .into_iter()
+        .find(|title| *title != shown)
+        .expect("the list holds another task");
+    choose_row(&mut session, &other);
+    assert!(
+        selected(&mut session, &other),
+        "the row the person chose stands chosen"
+    );
+    assert!(
+        !selected(&mut session, &shown),
+        "and the one before no longer does"
+    );
+}
+
 // ----- chat --------------------------------------------------------------------------------
 
 /// The places of the sidebar under `node`, in order.
