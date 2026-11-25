@@ -690,3 +690,11 @@ pub fn call(
         other => panic!("{action}: {other:?}"),
     }
 }
+
+/// What Settings compiles against, as `tilolang check` and `build` find it: the platform's
+/// packages and the fleet's native ones beside it (the device's migrations, which its account
+/// rows ask).
+pub fn settings_packages() -> Result<Vec<tilolang::PackageMeta>, String> {
+    let fleet = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl");
+    tilolang_tilo::catalogue::published_packages(&[fleet])
+}
