@@ -908,8 +908,7 @@ mod tests {
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("this computer's identity");
-        let device =
-            tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
+        let device = taken_key.key().clone();
         let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
             .expect("this device's certificate");
         drop(taken_key);

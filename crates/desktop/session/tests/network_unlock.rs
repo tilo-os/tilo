@@ -473,8 +473,9 @@ fn a_boot_that_went_away_takes_its_question_with_it() {
 /// The shell's fleet key: the sibling the boot is answered by.
 fn shell_key() -> [u8; 32] {
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
-    let key = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
-    key.verifying_key().to_bytes()
+    tilo_device_identity::persist::read_device_cert(&paths.device_cert)
+        .expect("this device's certificate")
+        .device_public_key
 }
 
 async fn write_client(send: &mut SendStream, frame: &ClientFrame) {
