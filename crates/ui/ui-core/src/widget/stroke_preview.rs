@@ -521,21 +521,19 @@ impl StrokePreviewFace {
         if x0 > x1 || y0 > y1 {
             return;
         }
-        let first_column = ((x0 - reach) / cell).floor();
-        let last_column = ((x1 + reach) / cell).ceil();
-        let first_row = ((y0 - reach) / cell).floor();
-        let last_row = ((y1 + reach) / cell).ceil();
-        let mut row = first_row;
-        while row <= last_row {
-            let mut column = first_column;
-            while column <= last_column {
-                let centre = Point::new((column + 0.5) * cell, (row + 0.5) * cell);
+        let first_column = ((x0 - reach) / cell).floor() as i64;
+        let last_column = ((x1 + reach) / cell).ceil() as i64;
+        let first_row = ((y0 - reach) / cell).floor() as i64;
+        let last_row = ((y1 + reach) / cell).ceil() as i64;
+        for row in first_row..=last_row {
+            for column in first_column..=last_column {
+                let centre = Point::new((column as f64 + 0.5) * cell, (row as f64 + 0.5) * cell);
                 let near = samples
                     .iter()
                     .step_by(3)
                     .any(|sample| (sample.point - centre).hypot() <= reach);
                 if near {
-                    let checker = (column + row) % 2.0 == 0.0;
+                    let checker = (column + row) % 2 == 0;
                     scene.fill(
                         Fill::NonZero,
                         transform,
@@ -544,9 +542,7 @@ impl StrokePreviewFace {
                         &Rect::from_center_size(centre, (cell, cell)),
                     );
                 }
-                column += 1.0;
             }
-            row += 1.0;
         }
     }
 
@@ -642,7 +638,8 @@ impl StrokePreview {
     /// Show `brush` at `size` in `colour`. A change draws the sample stroke in again from its start,
     /// so the person sees what changed; a change that leaves all three alone moves nothing.
     pub fn set_sample(&mut self, brush: BrushCharacter, size: f64, colour: Color) {
-        if self.brush == brush && self.size == size && self.colour == colour {
+        let same_size = self.size.partial_cmp(&size) == Some(std::cmp::Ordering::Equal);
+        if self.brush == brush && same_size && self.colour == colour {
             return;
         }
         self.brush = brush;

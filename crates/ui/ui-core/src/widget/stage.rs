@@ -353,7 +353,7 @@ impl Stage {
             }),
             WindowEvent::Touch(touch) => Some(WindowEvent::Touch(winit::event::Touch {
                 location: on_page(touch.location),
-                ..touch.clone()
+                ..*touch
             })),
             _ => None,
         }
