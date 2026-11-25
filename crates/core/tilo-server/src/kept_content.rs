@@ -91,7 +91,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _, ScalarValueRef, Value, ValueRef};
 use fs_content::{MANIFEST_PREFIX_LEN, begins_manifest};
 use neighbour_wire::NeighbourMsg;
-use neighbour_wire::content::{Arrived, ContentWants};
+use neighbour_wire::content::{Arrived, ContentWants, Wanted};
 use tilo_fs::content::Manifest;
 use tilo_lock::MutexRecover as _;
 
@@ -895,6 +895,46 @@ impl KeptContent {
         }
     }
 
+    /// Whether `piece`, which device `from` answered in `workspace`, goes on
+    /// to be gathered: not while a limit that refused its content still
+    /// stands, nor when its content is over the cap on one file, which is
+    /// refused here (into `refused`) before any byte of it is kept, so its
+    /// poster reads why.
+    fn admits(
+        &self,
+        state: &mut State,
+        limits: &KeptLimits,
+        (workspace, from): (&str, [u8; 32]),
+        piece: &neighbour_wire::content::Piece,
+        now: u64,
+        refused: &mut Vec<ContentRefusalRecord>,
+    ) -> bool {
+        let hash = piece.hash.to_ascii_lowercase();
+        if Self::already_refused(state, limits, workspace, &hash, now) {
+            return false;
+        }
+        if let Some(file_bytes) = limits.file_bytes
+            && piece.total > file_bytes
+            && state.wants.wants(workspace, piece)
+        {
+            refused.push(self.refuse(
+                state,
+                &RefusedContent {
+                    workspace,
+                    app: &piece.app_id,
+                    record: "",
+                    hash: &hash,
+                    member: from,
+                    bytes: piece.total,
+                },
+                ContentLimit::File,
+                file_bytes,
+            ));
+            return false;
+        }
+        true
+    }
+
     /// Refuse the content `hash` of `app`'s `record`, `bytes` of it, for
     /// `member`: it went over `limit`, which allowed `allowed` bytes. The
     /// record itself is untouched and syncs as any does; the host keeps the
@@ -1044,12 +1084,14 @@ impl KeptContent {
                     wait: READ_EVERY,
                 });
             }
-            state.wants.reask_at_most(&self.device, now, limit)
-        };
-        for ((workspace, _, _), ask) in asks {
-            if let Err(error) = self.workspaces.ask_members(&workspace, ask).await {
-                tracing::debug!(%workspace, %error, "could not ask a workspace for the content it is missing");
+            let mut asks: BTreeMap<String, Vec<Wanted>> = BTreeMap::new();
+            for again in state.wants.reask_at_most(now, limit) {
+                asks.entry(again.cluster_id).or_default().push(again.wanted);
             }
+            asks
+        };
+        for (workspace, wanted) in asks {
+            self.ask_members_for(&workspace, wanted).await;
         }
         self.ask_unasked().await;
     }
@@ -1059,7 +1101,7 @@ impl KeptContent {
     async fn ask_unasked(&self) {
         let asks = {
             let mut state = self.state.lock_recover();
-            let mut asks = Vec::new();
+            let mut asks: BTreeMap<String, Vec<Wanted>> = BTreeMap::new();
             while state.wants.has_room() {
                 let Some((route, hash)) = state.unasked.pop_front() else {
                     break;
@@ -1075,20 +1117,27 @@ impl KeptContent {
                 if kept {
                     continue;
                 }
-                if let Some(ask) = state.wants.ask(
-                    &self.device,
+                if let Some(wanted) = state.wants.ask(
                     route.clone(),
                     (app.as_str(), workspace.as_str()),
                     &hash,
                     now_ms(),
                 ) {
-                    asks.push((workspace.clone(), ask));
+                    asks.entry(workspace.clone()).or_default().push(wanted);
                 }
             }
             asks
         };
-        for (workspace, ask) in asks {
-            if let Err(error) = self.workspaces.ask_members(&workspace, ask).await {
+        for (workspace, wanted) in asks {
+            self.ask_members_for(&workspace, wanted).await;
+        }
+    }
+
+    /// Ask `workspace`'s members for `wanted`, many contents to an ask: one
+    /// ask a file would cost the link a frame for each.
+    async fn ask_members_for(&self, workspace: &str, wanted: Vec<Wanted>) {
+        for ask in neighbour_wire::content::asks(&self.device, workspace, wanted) {
+            if let Err(error) = self.workspaces.ask_members(workspace, ask).await {
                 tracing::debug!(%workspace, %error, "could not ask a workspace for its content");
             }
         }
@@ -1172,8 +1221,8 @@ impl KeptContent {
                 let chunks = chunks_lacking(&store, &blob.bytes);
                 let route = blob.tag;
                 for hash in &chunks {
-                    if let Some(ask) = ask_or_hold(&mut state, &self.device, &route, hash) {
-                        asks.push(ask);
+                    if let Some(wanted) = ask_or_hold(&mut state, &route, hash) {
+                        asks.push(wanted);
                     }
                 }
                 // What the record lacks: this blob less, the chunks it lists
@@ -1196,11 +1245,7 @@ impl KeptContent {
             }
             drop(state);
         }
-        for ask in asks {
-            if let Err(error) = self.workspaces.ask_members(workspace, ask).await {
-                tracing::debug!(%workspace, %error, "could not ask a workspace for a file's chunks");
-            }
-        }
+        self.ask_members_for(workspace, asks).await;
         if !withdrawn.is_empty() {
             self.withdraw_refusals(workspace, withdrawn);
         }
@@ -1475,19 +1520,15 @@ impl KeptContent {
                         // Arrived, and being written.
                         continue;
                     }
-                    if let Some(ask) = ask_or_hold(&mut state, &self.device, route, &hash) {
-                        asks.push(ask);
+                    if let Some(wanted) = ask_or_hold(&mut state, route, &hash) {
+                        asks.push(wanted);
                     }
                 }
             }
             drop(state);
             (asks, missing)
         };
-        for ask in asks {
-            if let Err(error) = self.workspaces.ask_members(workspace, ask).await {
-                tracing::debug!(%workspace, %error, "could not ask a workspace for its content");
-            }
-        }
+        self.ask_members_for(workspace, asks).await;
         missing
     }
 }
@@ -1496,7 +1537,7 @@ impl KeptContent {
 /// it; otherwise it waits for room ([`State::unasked`]), since asking now would
 /// drop an open ask whose answer is on its way. `None` too for content asked
 /// for lately ([`ContentWants::ask`]).
-fn ask_or_hold(state: &mut State, device: &[u8; 32], route: &Route, hash: &str) -> Option<Vec<u8>> {
+fn ask_or_hold(state: &mut State, route: &Route, hash: &str) -> Option<Wanted> {
     if !state.wants.has_room() {
         if state.unasked_hashes.insert(hash.to_owned()) {
             state.unasked.push_back((route.clone(), hash.to_owned()));
@@ -1505,7 +1546,6 @@ fn ask_or_hold(state: &mut State, device: &[u8; 32], route: &Route, hash: &str) 
     }
     let (workspace, app, _) = route;
     state.wants.ask(
-        device,
         route.clone(),
         (app.as_str(), workspace.as_str()),
         hash,
@@ -1535,88 +1575,88 @@ impl ContentKeeper for KeptContent {
         {
             return Err(Box::new(message));
         }
+        if state.wants.lacks_in(&self.device, &message) {
+            return Ok(());
+        }
         let mut refused = Vec::new();
-        if let NeighbourMsg::DocumentContentPiece {
-            app_id,
-            hash,
-            total,
-            ..
-        } = &message
-        {
-            let total = *total;
-            let hash = hash.to_ascii_lowercase();
-            if Self::already_refused(&mut state, &limits, workspace, &hash, now) {
-                return Ok(());
+        let message = match message {
+            NeighbourMsg::DocumentContentPieces {
+                responder,
+                requester,
+                cluster_id,
+                pieces,
+            } => {
+                let pieces = pieces
+                    .into_iter()
+                    .filter(|piece| {
+                        self.admits(
+                            &mut state,
+                            &limits,
+                            (workspace, from),
+                            piece,
+                            now,
+                            &mut refused,
+                        )
+                    })
+                    .collect();
+                NeighbourMsg::DocumentContentPieces {
+                    responder,
+                    requester,
+                    cluster_id,
+                    pieces,
+                }
             }
-            if let Some(file_bytes) = limits.file_bytes
-                && total > file_bytes
-                && state.wants.expects_in(&self.device, &message)
+            other => other,
+        };
+        let assembled = state.wants.assemble(&self.device, message, now);
+        if state.wants.take_continued() {
+            self.ask_now.notify_one();
+        }
+        drop(state);
+        // Checked against their addresses with the lock let go: hashing a
+        // large file takes a while, and every other piece waits on the lock.
+        let arrived: Vec<_> = assembled
+            .into_iter()
+            .filter_map(neighbour_wire::content::Assembled::verified)
+            .collect();
+        let mut state = self.state.lock_recover();
+        let mut taken = false;
+        for arrived in arrived {
+            let size = u64::try_from(arrived.bytes.len()).unwrap_or(u64::MAX);
+            let member = Self::member_of(&state, workspace, &from);
+            if let Some((limit, allowed)) =
+                Self::over(&mut state, &limits, workspace, &member, size, now)
             {
                 refused.push(self.refuse(
                     &mut state,
                     &RefusedContent {
                         workspace,
-                        app: app_id,
-                        record: "",
-                        hash: &hash,
+                        app: &arrived.tag.1,
+                        record: &arrived.tag.2,
+                        hash: &arrived.hash,
                         member: from,
-                        bytes: total,
+                        bytes: size,
                     },
-                    ContentLimit::File,
-                    file_bytes,
+                    limit,
+                    allowed,
                 ));
-                drop(state);
-                self.record_refusals(workspace, refused);
-                return Ok(());
+                continue;
             }
+            // Counted as it is taken in, so what arrives while earlier content is
+            // still being written stays within the limits too; a write that
+            // fails is let go of when the host counts again what its store holds.
+            self.count_kept(&mut state, workspace, &arrived.hash, &member, size, now);
+            state.storing.insert(arrived.hash.clone());
+            state.arrivals.push((workspace.to_owned(), arrived));
+            taken = true;
         }
-        if state.wants.lacks_in(&self.device, &message) {
-            return Ok(());
-        }
-        let assembled = state.wants.assemble(&self.device, message, now);
-        if state.wants.take_continued() {
-            self.ask_now.notify_one();
-        }
-        let Some(assembled) = assembled else {
-            return Ok(());
-        };
         drop(state);
-        // Checked against its address with the lock let go: hashing a large
-        // file takes a while, and every other piece waits on the lock.
-        let Some(arrived) = assembled.verified() else {
-            return Ok(());
-        };
-        let mut state = self.state.lock_recover();
-        let size = u64::try_from(arrived.bytes.len()).unwrap_or(u64::MAX);
-        let member = Self::member_of(&state, workspace, &from);
-        if let Some((limit, allowed)) =
-            Self::over(&mut state, &limits, workspace, &member, size, now)
-        {
-            refused.push(self.refuse(
-                &mut state,
-                &RefusedContent {
-                    workspace,
-                    app: &arrived.tag.1,
-                    record: &arrived.tag.2,
-                    hash: &arrived.hash,
-                    member: from,
-                    bytes: size,
-                },
-                limit,
-                allowed,
-            ));
-            drop(state);
+        if !refused.is_empty() {
             self.record_refusals(workspace, refused);
-            return Ok(());
         }
-        // Counted as it is taken in, so what arrives while earlier content is
-        // still being written stays within the limits too; a write that
-        // fails is let go of when the host counts again what its store holds.
-        self.count_kept(&mut state, workspace, &arrived.hash, &member, size, now);
-        state.storing.insert(arrived.hash.clone());
-        state.arrivals.push((workspace.to_owned(), arrived));
-        drop(state);
-        self.arrived.notify_one();
+        if taken {
+            self.arrived.notify_one();
+        }
         Ok(())
     }
 

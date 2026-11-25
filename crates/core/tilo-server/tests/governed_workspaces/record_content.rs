@@ -29,15 +29,40 @@ async fn asked_for_each(linked: &mut Linked, addresses: &[&str]) -> Vec<Vec<u8>>
             else {
                 continue;
             };
-            if let NeighbourMsg::DocumentContentWant { hash, .. } = &heard.message
-                && let Some(at) = addresses.iter().position(|address| *address == hash)
-            {
-                asks[at].get_or_insert_with(|| postcard::to_stdvec(&heard.message).unwrap());
+            if let NeighbourMsg::DocumentContentWants { wants, .. } = &heard.message {
+                for (at, address) in addresses.iter().enumerate() {
+                    if wants.iter().any(|want| want.hash == *address) {
+                        asks[at]
+                            .get_or_insert_with(|| postcard::to_stdvec(&heard.message).unwrap());
+                    }
+                }
             }
         }
         asks.into_iter().flatten().collect()
     })
     .await
+}
+
+/// `ask`, a content request, with only the want for `address` left: a device
+/// answers that one and the rest is the answer the test loses.
+fn only(ask: &[u8], address: &str) -> Vec<u8> {
+    let NeighbourMsg::DocumentContentWants {
+        requester,
+        cluster_id,
+        wants,
+    } = postcard::from_bytes(ask).unwrap()
+    else {
+        panic!("a content request");
+    };
+    postcard::to_allocvec(&NeighbourMsg::DocumentContentWants {
+        requester,
+        cluster_id,
+        wants: wants
+            .into_iter()
+            .filter(|want| want.hash == address)
+            .collect(),
+    })
+    .unwrap()
 }
 
 /// The blobs `server` says, in `workspace`'s copy status, that it lacks, once that is `blobs`:
@@ -90,12 +115,14 @@ async fn content_held(
 /// What the host serves a device asking `workspace` for `address` of `PHOTOS`,
 /// its pieces put together.
 fn served(server: &Server, workspace: &str, asking: &TestDevice, address: &str) -> Vec<u8> {
-    let want = postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
+    let want = postcard::to_allocvec(&NeighbourMsg::DocumentContentWants {
         requester: tilo_peer_state::peer_handle(&asking.device_pubkey()),
-        app_id: PHOTOS.to_owned(),
         cluster_id: workspace.to_owned(),
-        hash: address.to_owned(),
-        have: Vec::new(),
+        wants: vec![neighbour_wire::content::Wanted {
+            app_id: PHOTOS.to_owned(),
+            hash: address.to_owned(),
+            have: Vec::new(),
+        }],
     })
     .unwrap();
     let mut whole = Vec::new();
@@ -105,13 +132,16 @@ fn served(server: &Server, workspace: &str, asking: &TestDevice, address: &str) 
             .unwrap()
             .content_answer(workspace, &asking.device_pubkey(), &want)
     {
-        let NeighbourMsg::DocumentContentPiece { offset, bytes, .. } =
+        let NeighbourMsg::DocumentContentPieces { pieces, .. } =
             postcard::from_bytes(&frame).unwrap()
         else {
             panic!("the host serves what it keeps");
         };
-        assert_eq!(offset, u64::try_from(whole.len()).unwrap());
-        whole.extend(bytes);
+        for piece in pieces {
+            assert_eq!(piece.hash, address, "only the content asked for");
+            assert_eq!(piece.offset, u64::try_from(whole.len()).unwrap());
+            whole.extend(piece.bytes);
+        }
     }
     whole
 }
@@ -189,16 +219,19 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     let ask = asked_for(&mut bob_link, &address).await;
     let server_device = server.workspaces().unwrap().device_cert().device_public_key;
     match postcard::from_bytes::<NeighbourMsg>(&ask).unwrap() {
-        NeighbourMsg::DocumentContentWant {
-            app_id,
+        NeighbourMsg::DocumentContentWants {
             cluster_id,
-            hash,
+            wants,
             requester,
             ..
         } => {
+            let asked = wants
+                .iter()
+                .find(|want| want.hash == address)
+                .expect("the ask names the ciphertext's address");
             assert_eq!(
-                (app_id.as_str(), cluster_id.as_str(), hash.as_str()),
-                (PHOTOS, workspace.workspace.as_str(), address.as_str()),
+                (asked.app_id.as_str(), cluster_id.as_str()),
+                (PHOTOS, workspace.workspace.as_str()),
                 "the host asks the record's app for the ciphertext's address"
             );
             assert_eq!(
@@ -388,17 +421,17 @@ async fn an_unanswered_ask_is_asked_again(process: tilo_clock::testing::OwnProce
     let [(answered, answered_bytes), (lost, lost_bytes)] = <[_; 2]>::try_from(pictures).unwrap();
 
     let answer = |linked: &Linked, ask: &[u8], address: &str, bytes: &[u8]| {
-        for piece in neighbour_wire::content::answer(
+        for frame in neighbour_wire::content::answer(
             &phone.device_pubkey(),
             &alice_home.device_pubkey(),
-            ask,
+            &only(ask, address),
             |app, cluster, wanted| {
                 (app == PHOTOS && cluster == workspace.workspace && wanted == address)
                     .then(|| bytes.to_vec())
             },
         ) {
             linked
-                .send(postcard::from_bytes(&piece).unwrap())
+                .send(postcard::from_bytes(&frame).unwrap())
                 .expect("Bob's link carries every piece");
         }
     };

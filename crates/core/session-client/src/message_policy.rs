@@ -60,8 +60,8 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         NeighbourMsg::SyncReq { .. }
         | NeighbourMsg::ScrollbackRequest { .. }
         | NeighbourMsg::ScrollbackResponse { .. }
-        | NeighbourMsg::DocumentContentWant { .. }
-        | NeighbourMsg::DocumentContentPiece { .. }
+        | NeighbourMsg::DocumentContentWants { .. }
+        | NeighbourMsg::DocumentContentPieces { .. }
         | NeighbourMsg::DocumentContentLacks { .. }
         | NeighbourMsg::DocumentContentRefused { .. }
         // Ephemeral liveness of a member who can see the workspace; nothing is written to its
@@ -86,7 +86,8 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::MlsGovernanceWanted { .. }
         | NeighbourMsg::WriteRefusals { .. }
         // Retired generations, refused where they enter (`NeighbourMsg::is_retired`): a shared
-        // window's messages travel the workspace's live session (`tilo_live::share`).
+        // window's messages travel the workspace's live session (`tilo_live::share`), and content
+        // is asked for and answered many at a time.
         | NeighbourMsg::IdentityAnnouncement { .. }
         | NeighbourMsg::PermissionRequest { .. }
         | NeighbourMsg::SurfaceFrame { .. }
@@ -95,7 +96,9 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::RemoteInput { .. }
         | NeighbourMsg::MediaCapabilities { .. }
         | NeighbourMsg::SurfaceKeyframeRequest { .. }
-        | NeighbourMsg::SurfaceViewRequest { .. } => None,
+        | NeighbourMsg::SurfaceViewRequest { .. }
+        | NeighbourMsg::DocumentContentWant { .. }
+        | NeighbourMsg::DocumentContentPiece { .. } => None,
     }
 }
 
@@ -337,6 +340,33 @@ mod tests {
                 Some(read()),
             ),
             (
+                NeighbourMsg::DocumentContentWants {
+                    requester: 1,
+                    cluster_id: WORKSPACE.into(),
+                    wants: vec![neighbour_wire::content::Wanted {
+                        app_id: "so.tilo.notes".into(),
+                        hash: "ab".into(),
+                        have: Vec::new(),
+                    }],
+                },
+                Some(read()),
+            ),
+            (
+                NeighbourMsg::DocumentContentPieces {
+                    responder: 1,
+                    requester: 2,
+                    cluster_id: WORKSPACE.into(),
+                    pieces: vec![neighbour_wire::content::Piece {
+                        app_id: "so.tilo.notes".into(),
+                        hash: "ab".into(),
+                        total: 1,
+                        offset: 0,
+                        bytes: vec![1],
+                    }],
+                },
+                Some(read()),
+            ),
+            (
                 NeighbourMsg::DocumentContentWant {
                     requester: 1,
                     app_id: "so.tilo.notes".into(),
@@ -344,7 +374,7 @@ mod tests {
                     hash: "ab".into(),
                     have: Vec::new(),
                 },
-                Some(read()),
+                None,
             ),
             (
                 NeighbourMsg::DocumentContentPiece {
@@ -357,7 +387,7 @@ mod tests {
                     offset: 0,
                     bytes: vec![1],
                 },
-                Some(read()),
+                None,
             ),
             (
                 NeighbourMsg::DocumentContentLacks {
@@ -435,7 +465,7 @@ mod tests {
             table.len(),
             "one message per variant, none repeated"
         );
-        assert_eq!(table.len(), 28, "every NeighbourMsg variant has an entry");
+        assert_eq!(table.len(), 30, "every NeighbourMsg variant has an entry");
         for (message, expected) in &table {
             assert_eq!(required_workspace_action(message), *expected, "{message:?}");
             // A retired generation is never admitted as a workspace's traffic.

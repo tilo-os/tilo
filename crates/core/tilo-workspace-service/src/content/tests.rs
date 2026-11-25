@@ -273,12 +273,14 @@ struct ServingPeers {
 
 impl ContentPeers for ServingPeers {
     fn want(&self, route: &CrdtRoute, hash: &str, have: &[Span]) {
-        let request = postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
+        let request = postcard::to_allocvec(&NeighbourMsg::DocumentContentWants {
             requester: peer_handle(&self.named.unwrap_or(self.asker)),
-            app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
-            hash: hash.to_owned(),
-            have: have.to_vec(),
+            wants: vec![neighbour_wire::content::Wanted {
+                app_id: route.app_id.clone(),
+                hash: hash.to_owned(),
+                have: have.to_vec(),
+            }],
         })
         .unwrap();
         let scope = ContentScope::of(route);
@@ -297,21 +299,19 @@ impl ContentPeers for ServingPeers {
         };
         for frame in frames {
             match postcard::from_bytes::<NeighbourMsg>(&frame) {
-                Ok(NeighbourMsg::DocumentContentPiece {
-                    hash,
-                    total,
-                    offset,
-                    bytes,
-                    ..
-                }) => content.peer_piece(
-                    route,
-                    &ContentPiece {
-                        hash,
-                        total,
-                        offset,
-                        bytes,
-                    },
-                ),
+                Ok(NeighbourMsg::DocumentContentPieces { pieces, .. }) => {
+                    for piece in pieces {
+                        content.peer_piece(
+                            &CrdtRoute::app(piece.app_id, route.cluster_id.clone()),
+                            &ContentPiece {
+                                hash: piece.hash,
+                                total: piece.total,
+                                offset: piece.offset,
+                                bytes: piece.bytes,
+                            },
+                        );
+                    }
+                }
                 Ok(NeighbourMsg::DocumentContentLacks { hash, .. }) => {
                     content.peer_lacks(route, peer_handle(&self.serving), &hash);
                 }
@@ -752,12 +752,14 @@ tilo_test_env::scenario! {
             .unwrap();
 
         // What the serving device answers such an ask, word for word.
-        let request = postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
+        let request = postcard::to_allocvec(&NeighbourMsg::DocumentContentWants {
             requester: peer_handle(&[7; 32]),
-            app_id: route().app_id,
             cluster_id: route().cluster_id,
-            hash: hash.clone(),
-            have: Vec::new(),
+            wants: vec![neighbour_wire::content::Wanted {
+                app_id: route().app_id,
+                hash: hash.clone(),
+                have: Vec::new(),
+            }],
         })
         .unwrap();
         let frames = neighbour_wire::content::answer(&serving.serving, &serving.asker, &request, |_, _, _| {

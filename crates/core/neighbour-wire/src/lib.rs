@@ -620,16 +620,10 @@ pub enum NeighbourMsg {
         /// ignore it.
         delivery: u64,
     },
-    /// A device asking the workspace for one piece of content a record of
-    /// `app_id` in workspace `cluster_id` refers to, by its BLAKE3 `hash`. Rides
-    /// the workspace's topic, so only peers admitted to read the workspace see it;
-    /// any of them holding the content answers with
-    /// [`Self::DocumentContentPiece`]. `have` is what the asker already holds of
-    /// it, which an answer leaves out: a device asks again while it is missing
-    /// pieces, and every answer carries the next of them rather than all of
-    /// them, so a large piece of content arrives without one device filling
-    /// its peers' outbound queues. Appended to preserve every existing
-    /// Postcard discriminant.
+    /// Retired: content is asked for many at a time
+    /// ([`Self::DocumentContentWants`]). No build produces it and receivers
+    /// refuse it ([`NeighbourMsg::is_retired`]); it stays only so every later
+    /// Postcard discriminant keeps its value.
     DocumentContentWant {
         requester: PeerId,
         app_id: String,
@@ -637,11 +631,10 @@ pub enum NeighbourMsg {
         hash: String,
         have: Vec<content::Span>,
     },
-    /// One bounded piece of a record's content, answering
-    /// `requester`'s [`Self::DocumentContentWant`]: `bytes` start at `offset` of the
-    /// `total`-byte content named by `hash`. The receiver keeps the content
-    /// only once every piece arrived and the bytes hash to `hash`. Appended
-    /// to preserve every existing Postcard discriminant.
+    /// Retired: content is answered many pieces to a frame
+    /// ([`Self::DocumentContentPieces`]). No build produces it and receivers
+    /// refuse it ([`NeighbourMsg::is_retired`]); it stays only so every later
+    /// Postcard discriminant keeps its value.
     DocumentContentPiece {
         responder: PeerId,
         requester: PeerId,
@@ -695,8 +688,8 @@ pub enum NeighbourMsg {
         views: Vec<SurfaceView>,
         decode: Vec<SurfaceDecodeLimit>,
     },
-    /// `responder`'s answer to `requester`'s [`Self::DocumentContentWant`]
-    /// when it keeps none of the content: the requester stops counting on
+    /// `responder`'s answer to `requester`'s [`Self::DocumentContentWants`]
+    /// for content `hash` when it keeps none of the content: the requester stops counting on
     /// it, and once every device it is connected to that could hold the
     /// content said so, the content is unavailable rather than on its way.
     /// Appended to preserve every existing Postcard discriminant.
@@ -723,8 +716,9 @@ pub enum NeighbourMsg {
     /// the person's devices, which proves who asks. Appended to preserve every
     /// existing Postcard discriminant.
     MlsGovernanceWanted { workspace: String, from_epoch: u64 },
-    /// `responder`'s answer to a [`Self::DocumentContentWant`] that named
-    /// another device than the one that sent it: the ask cannot be answered
+    /// `responder`'s answer, for each content it named, to a
+    /// [`Self::DocumentContentWants`] that named another device than the one
+    /// that sent it: the ask cannot be answered
     /// as addressed, so it goes to the device that actually sent it, which
     /// logs it and stops counting on this responder instead of waiting on an
     /// answer that never comes. `requester` is that sending device, never the
@@ -737,6 +731,35 @@ pub enum NeighbourMsg {
         cluster_id: String,
         hash: String,
     },
+    /// A device asking workspace `cluster_id` for content its records refer
+    /// to, each by its BLAKE3 hash ([`content::Wanted`]). Rides the
+    /// workspace's topic, so only peers admitted to read the workspace see
+    /// it; any of them holding some of the content answers with
+    /// [`Self::DocumentContentPieces`], and with
+    /// [`Self::DocumentContentLacks`] for each it keeps none of. What the
+    /// asker already holds of each is left out of an answer: a device asks
+    /// again while it is missing pieces, and every answer carries the next
+    /// of them rather than all of them, so a large piece of content arrives
+    /// without one device filling its peers' outbound queues. Appended to
+    /// preserve every existing Postcard discriminant.
+    DocumentContentWants {
+        requester: PeerId,
+        cluster_id: String,
+        wants: Vec<content::Wanted>,
+    },
+    /// Bounded pieces of content of workspace `cluster_id`, answering
+    /// `requester`'s [`Self::DocumentContentWants`], up to
+    /// [`content::ANSWER_BYTES`] of them to a frame: the many small files of
+    /// a tree travel together rather than one to a frame. The receiver keeps
+    /// a content only once every piece of it arrived and its bytes hash to
+    /// its address. Appended to preserve every existing Postcard
+    /// discriminant.
+    DocumentContentPieces {
+        responder: PeerId,
+        requester: PeerId,
+        cluster_id: String,
+        pieces: Vec<content::Piece>,
+    },
 }
 
 impl NeighbourMsg {
@@ -748,6 +771,18 @@ impl NeighbourMsg {
     /// The message carries more than a frame holds.
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
         postcard::to_stdvec(self)
+    }
+
+    /// The frame of a message this build made itself ([`Self::encode`]): postcard writes every
+    /// field these messages hold into a buffer that grows as it needs, which never fails.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "postcard writes these messages into a growing buffer, which never fails"
+    )]
+    pub fn frame(&self) -> Vec<u8> {
+        self.encode()
+            .expect("a message encodes into a growing buffer")
     }
 
     /// The message a frame `bytes` holds, whole: the one reader of a message that came from
@@ -825,7 +860,10 @@ impl NeighbourMsg {
             | Self::RemoteInput { .. }
             | Self::MediaCapabilities { .. }
             | Self::SurfaceKeyframeRequest { .. }
-            | Self::SurfaceViewRequest { .. } => true,
+            | Self::SurfaceViewRequest { .. }
+            // Content is asked for and answered many at a time.
+            | Self::DocumentContentWant { .. }
+            | Self::DocumentContentPiece { .. } => true,
             Self::SyncReq { .. }
             | Self::SyncResp { .. }
             | Self::PermissionGrant { .. }
@@ -838,13 +876,13 @@ impl NeighbourMsg {
             | Self::RemoteAction { .. }
             | Self::MlsGovernance { .. }
             | Self::MlsAccessRequest { .. }
-            | Self::DocumentContentWant { .. }
-            | Self::DocumentContentPiece { .. }
             | Self::DocumentContentLacks { .. }
             | Self::LivePresence { .. }
             | Self::WriteRefusals { .. }
             | Self::MlsGovernanceWanted { .. }
-            | Self::DocumentContentRefused { .. } => false,
+            | Self::DocumentContentRefused { .. }
+            | Self::DocumentContentWants { .. }
+            | Self::DocumentContentPieces { .. } => false,
         }
     }
 
@@ -896,6 +934,8 @@ impl NeighbourMsg {
             Self::WriteRefusals { .. } => "WriteRefusals",
             Self::MlsGovernanceWanted { .. } => "MlsGovernanceWanted",
             Self::DocumentContentRefused { .. } => "DocumentContentRefused",
+            Self::DocumentContentWants { .. } => "DocumentContentWants",
+            Self::DocumentContentPieces { .. } => "DocumentContentPieces",
         }
     }
 }
@@ -1020,6 +1060,33 @@ mod tests {
                 app_id: "so.tilo.slides".into(),
                 cluster_id: "workspace".into(),
                 hash: "ab".into(),
+            },
+        ));
+        all.push((
+            "record content wants",
+            NeighbourMsg::DocumentContentWants {
+                requester: 0x00AB_CDEF,
+                cluster_id: "workspace".into(),
+                wants: vec![content::Wanted {
+                    app_id: "so.tilo.slides".into(),
+                    hash: "ab".into(),
+                    have: vec![content::Span { offset: 0, len: 2 }],
+                }],
+            },
+        ));
+        all.push((
+            "record content pieces",
+            NeighbourMsg::DocumentContentPieces {
+                responder: 0x123_456,
+                requester: 0x00AB_CDEF,
+                cluster_id: "workspace".into(),
+                pieces: vec![content::Piece {
+                    app_id: "so.tilo.slides".into(),
+                    hash: "ab".into(),
+                    total: 3,
+                    offset: 0,
+                    bytes: vec![1, 2, 3],
+                }],
             },
         ));
         all
@@ -1409,6 +1476,8 @@ mod tests {
         assert_eq!(
             retired,
             [
+                "DocumentContentPiece",
+                "DocumentContentWant",
                 "IdentityAnnouncement",
                 "MediaCapabilities",
                 "PermissionRequest",
@@ -1428,7 +1497,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 27;
+    const VARIANT_COUNT: usize = 29;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1479,7 +1548,7 @@ mod tests {
         (
             "identity hello",
             concat!(
-                "0942010101010101010101010101010101010101010101010101010101010101010102020202",
+                "0947010101010101010101010101010101010101010101010101010101010101010102020202",
                 "02020202020202020202020202020202020202020202020202020202064c6170746f70010000",
                 "000a004003030303030303030303030303030303030303030303030303030303030303030303",
                 "03030303030303030303030303030303030303030303030303030303030300",
@@ -1589,6 +1658,14 @@ mod tests {
         (
             "content request refused",
             "1b03040e736f2e74696c6f2e736c6964657309776f726b7370616365026162",
+        ),
+        (
+            "record content wants",
+            "1cef9baf0509776f726b7370616365010e736f2e74696c6f2e736c69646573026162010002",
+        ),
+        (
+            "record content pieces",
+            "1dd6e848ef9baf0509776f726b7370616365010e736f2e74696c6f2e736c69646573026162030003010203",
         ),
     ];
 

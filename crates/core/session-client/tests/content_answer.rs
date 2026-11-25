@@ -57,25 +57,27 @@ async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
 
     let device = asker.cert.device_public_key;
     let mut wants = ContentWants::default();
-    let request = wants
-        .ask(
-            &device,
-            (),
-            ("so.tilo.notes", crate::support::WORKSPACE),
-            &hash,
-            1,
-        )
+    let wanted = wants
+        .ask((), ("so.tilo.notes", crate::support::WORKSPACE), &hash, 1)
         .unwrap();
-    asker_peer
-        .send(Cmd::WantContent(crate::support::workspace(), request))
-        .unwrap();
+    for request in neighbour_wire::content::asks(&device, crate::support::WORKSPACE, [wanted]) {
+        asker_peer
+            .send(Cmd::WantContent(crate::support::workspace(), request))
+            .unwrap();
+    }
     let arrived = wait_for("the page's pieces", || {
-        let whole = heard.drain().into_iter().find_map(|event| match event {
-            Event::DocumentContent { from, frame, .. } if from == keeper.cert.device_public_key => {
-                wants.piece(&device, &frame, tilo_clock::unix_now_ms())
-            }
-            _ => None,
-        });
+        let whole = heard
+            .drain()
+            .into_iter()
+            .flat_map(|event| match event {
+                Event::DocumentContent { from, frame, .. }
+                    if from == keeper.cert.device_public_key =>
+                {
+                    wants.piece(&device, &frame, tilo_clock::unix_now_ms())
+                }
+                _ => Vec::new(),
+            })
+            .next();
         async move { whole }
     })
     .await;

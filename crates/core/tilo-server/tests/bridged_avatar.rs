@@ -67,12 +67,14 @@ async fn a_member_fetches_a_bridged_avatar_from_the_workspace_host() {
         .unwrap();
 
     let requester = peer_handle(&laptop.device_pubkey());
-    let want = |hash: &str| NeighbourMsg::DocumentContentWant {
+    let want = |hash: &str| NeighbourMsg::DocumentContentWants {
         requester,
-        app_id: CHAT.into(),
         cluster_id: workspace.workspace.clone(),
-        hash: hash.into(),
-        have: Vec::new(),
+        wants: vec![neighbour_wire::content::Wanted {
+            app_id: CHAT.into(),
+            hash: hash.into(),
+            have: Vec::new(),
+        }],
     };
     // Content the host does not keep is answered with word that it keeps
     // none; the avatar it keeps comes back whole.
@@ -102,29 +104,32 @@ async fn a_member_fetches_a_bridged_avatar_from_the_workspace_host() {
                         break;
                     }
                 }
-                NeighbourMsg::DocumentContentPiece {
+                NeighbourMsg::DocumentContentPieces {
                     requester: to,
-                    app_id,
                     cluster_id,
-                    hash: piece_hash,
-                    total,
-                    offset,
-                    bytes,
+                    pieces,
                     ..
                 } => {
-                    assert_eq!(
-                        (
-                            to,
-                            app_id.as_str(),
-                            cluster_id.as_str(),
-                            piece_hash.as_str()
-                        ),
-                        (requester, CHAT, workspace.workspace.as_str(), hash.as_str()),
-                        "only the asked-for avatar is answered"
-                    );
-                    assert_eq!(offset, received.len() as u64, "pieces arrive in order");
-                    received.extend_from_slice(&bytes);
-                    if received.len() as u64 == total && !lacking.is_empty() {
+                    for piece in pieces {
+                        assert_eq!(
+                            (
+                                to,
+                                piece.app_id.as_str(),
+                                cluster_id.as_str(),
+                                piece.hash.as_str()
+                            ),
+                            (requester, CHAT, workspace.workspace.as_str(), hash.as_str()),
+                            "only the asked-for avatar is answered"
+                        );
+                        assert_eq!(
+                            piece.offset,
+                            received.len() as u64,
+                            "pieces arrive in order"
+                        );
+                        assert_eq!(piece.total, avatar.len() as u64, "the whole avatar");
+                        received.extend_from_slice(&piece.bytes);
+                    }
+                    if received.len() == avatar.len() && !lacking.is_empty() {
                         break;
                     }
                 }

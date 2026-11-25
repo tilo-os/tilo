@@ -334,8 +334,8 @@ pub enum Event {
     /// A remote-action frame another device of the workspace addressed to this one, or word that
     /// one this device sent could not be delivered.
     Remote(tilo_session_actions::Heard),
-    /// A piece of content `ws`'s records reference, which `from` sent this device alone: a
-    /// postcard-encoded `NeighbourMsg::DocumentContentPiece`.
+    /// Bounded pieces of content `ws`'s records reference, which `from` sent this device alone:
+    /// a postcard-encoded `NeighbourMsg::DocumentContentPieces`, many contents to a frame.
     DocumentContent {
         ws: Topic,
         from: [u8; 32],
@@ -464,7 +464,8 @@ pub enum Cmd {
     /// Send one remote-action frame to a device of the workspace on the topic.
     RemoteAction(Topic, [u8; 32], Vec<u8>),
     /// Ask the workspace on the topic for content its records reference: a postcard-encoded
-    /// `NeighbourMsg::DocumentContentWant`. The pieces come back as [`Event::DocumentContent`].
+    /// `NeighbourMsg::DocumentContentWants`, which names many contents at once. The pieces come
+    /// back as [`Event::DocumentContent`].
     WantContent(Topic, Vec<u8>),
     /// Answer the members of the workspace on the topic that ask for content from what is kept.
     KeepContent(Topic, std::sync::Arc<dyn crate::content::Kept>),

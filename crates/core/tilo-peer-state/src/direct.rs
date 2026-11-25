@@ -548,8 +548,8 @@ fn records_frame(message: &NeighbourMsg) -> bool {
             | NeighbourMsg::IdentityHello { .. }
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
-            | NeighbourMsg::DocumentContentWant { .. }
-            | NeighbourMsg::DocumentContentPiece { .. }
+            | NeighbourMsg::DocumentContentWants { .. }
+            | NeighbourMsg::DocumentContentPieces { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
             | NeighbourMsg::DocumentContentRefused { .. }
     )
@@ -568,11 +568,11 @@ fn by_remote(message: &NeighbourMsg, from: [u8; 32], remote: [u8; 32]) -> bool {
             envelope.author.as_bytes() == &remote && *peer == peer_handle(&remote)
         }
         NeighbourMsg::IdentityHello { cert, .. } => cert.device_public_key == remote,
-        NeighbourMsg::DocumentContentWant { requester, .. } => *requester == peer_handle(&remote),
+        NeighbourMsg::DocumentContentWants { requester, .. } => *requester == peer_handle(&remote),
         // An answer is the link's device's own; whoever asked is the host's to
         // carry it to, or one of its own readers: a host's server asks under a
         // key of its own, not always the one its links sign with.
-        NeighbourMsg::DocumentContentPiece { responder, .. }
+        NeighbourMsg::DocumentContentPieces { responder, .. }
         | NeighbourMsg::DocumentContentLacks { responder, .. }
         | NeighbourMsg::DocumentContentRefused { responder, .. } => {
             *responder == peer_handle(&remote)
@@ -1721,7 +1721,7 @@ impl DirectSync {
     /// link that does ([`Self::flush_content`]). An answer no link takes is
     /// dropped instead: the link of the device that asked ended with its ask.
     fn hold_content(&self, authored: Authored, asker: Option<[u8; 32]>) {
-        if !matches!(&authored.message, NeighbourMsg::DocumentContentWant { .. }) {
+        if !matches!(&authored.message, NeighbourMsg::DocumentContentWants { .. }) {
             return;
         }
         let mut waiting = self.0.content_waiting.lock_recover();
@@ -3125,7 +3125,7 @@ impl DirectSync {
                 // handle the workspace knows it by: a piece of content goes
                 // to its requester's link alone, not to every member's. The
                 // ask itself reaches every other device, which may answer it.
-                NeighbourMsg::DocumentContentPiece { requester, .. }
+                NeighbourMsg::DocumentContentPieces { requester, .. }
                 | NeighbourMsg::DocumentContentLacks { requester, .. }
                 | NeighbourMsg::DocumentContentRefused { requester, .. } => {
                     *requester == peer_handle(&device)
@@ -4562,8 +4562,8 @@ async fn sort_streams(
 fn content_frame(message: &NeighbourMsg) -> bool {
     matches!(
         message,
-        NeighbourMsg::DocumentContentWant { .. }
-            | NeighbourMsg::DocumentContentPiece { .. }
+        NeighbourMsg::DocumentContentWants { .. }
+            | NeighbourMsg::DocumentContentPieces { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
             | NeighbourMsg::DocumentContentRefused { .. }
     )
@@ -4574,7 +4574,7 @@ fn content_frame(message: &NeighbourMsg) -> bool {
 /// which may answer it.
 fn content_reaches(message: &NeighbourMsg, device: [u8; 32]) -> bool {
     match message {
-        NeighbourMsg::DocumentContentPiece { requester, .. }
+        NeighbourMsg::DocumentContentPieces { requester, .. }
         | NeighbourMsg::DocumentContentLacks { requester, .. }
         | NeighbourMsg::DocumentContentRefused { requester, .. } => {
             *requester == peer_handle(&device)
@@ -4583,12 +4583,12 @@ fn content_reaches(message: &NeighbourMsg, device: [u8; 32]) -> bool {
     }
 }
 
-/// Whether `message` answers an ask for content: a piece of it, a device's
-/// word that it lacks it, or its refusal of the ask.
+/// Whether `message` answers an ask for content: pieces of it, a device's
+/// word that it lacks some, or its refusal of the ask.
 fn content_answer(message: &NeighbourMsg) -> bool {
     matches!(
         message,
-        NeighbourMsg::DocumentContentPiece { .. }
+        NeighbourMsg::DocumentContentPieces { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
             | NeighbourMsg::DocumentContentRefused { .. }
     )
@@ -4979,12 +4979,14 @@ mod tests {
     fn want(from: [u8; 32], requester: [u8; 32], hash: &str) -> Authored {
         Authored {
             from,
-            message: NeighbourMsg::DocumentContentWant {
+            message: NeighbourMsg::DocumentContentWants {
                 requester: peer_handle(&requester),
-                app_id: "files".into(),
                 cluster_id: WORKSPACE.into(),
-                hash: hash.into(),
-                have: Vec::new(),
+                wants: vec![neighbour_wire::content::Wanted {
+                    app_id: "files".into(),
+                    hash: hash.into(),
+                    have: Vec::new(),
+                }],
             },
             published: false,
         }
@@ -5026,7 +5028,11 @@ mod tests {
             .expect("the member's own ask reaches the reader")
             .expect("the link is up");
         assert!(
-            matches!(&heard.message, NeighbourMsg::DocumentContentWant { hash, .. } if hash == "cc"),
+            matches!(
+                &heard.message,
+                NeighbourMsg::DocumentContentWants { wants, .. }
+                    if wants.iter().any(|wanted| wanted.hash == "cc")
+            ),
             "the member's own ask is what arrived"
         );
         assert_eq!(heard.author, member);

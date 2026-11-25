@@ -249,12 +249,14 @@ async fn a_device_holding_a_workspace_answers_content_as_the_device_it_joined_as
 
     // The serving device asks for the picture, naming itself as every ask does.
     let serving_device = serving.workspaces().device_cert().device_public_key;
-    let ask = postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
+    let ask = postcard::to_allocvec(&NeighbourMsg::DocumentContentWants {
         requester: tilo_peer_state::peer_handle(&serving_device),
-        app_id: "so.tilo.photos".to_owned(),
         cluster_id: workspace.clone(),
-        hash: member_keeps.address(),
-        have: Vec::new(),
+        wants: vec![neighbour_wire::content::Wanted {
+            app_id: "so.tilo.photos".to_owned(),
+            hash: member_keeps.address(),
+            have: Vec::new(),
+        }],
     })
     .unwrap();
     // What the member answers names the device its link proved: the one key it signs its
@@ -262,11 +264,13 @@ async fn a_device_holding_a_workspace_answers_content_as_the_device_it_joined_as
     let answered = copies.content_answer(&workspace, &serving_device, &ask);
     assert!(!answered.is_empty(), "the member answers what it keeps");
     for frame in answered {
-        let NeighbourMsg::DocumentContentPiece { responder, .. } =
-            postcard::from_bytes(&frame).unwrap()
+        let NeighbourMsg::DocumentContentPieces {
+            responder, pieces, ..
+        } = postcard::from_bytes(&frame).unwrap()
         else {
-            panic!("the member answers with a piece of what it keeps");
+            panic!("the member answers with pieces of what it keeps");
         };
+        assert!(!pieces.is_empty(), "an answer carries the pieces");
         assert_eq!(
             responder,
             tilo_peer_state::peer_handle(&cert.device_public_key),

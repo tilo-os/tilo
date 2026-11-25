@@ -289,8 +289,8 @@ impl SessionFabric {
             // own store's links; this session routes none of it and drops it rather than
             // half-handling it.
             PersonalFabricPayload::Document { .. }
-            | PersonalFabricPayload::DocumentContentWant { .. }
-            | PersonalFabricPayload::DocumentContentPiece { .. }
+            | PersonalFabricPayload::DocumentContentWants { .. }
+            | PersonalFabricPayload::DocumentContentPieces { .. }
             | PersonalFabricPayload::DocumentContentLacks { .. } => {}
         }
     }

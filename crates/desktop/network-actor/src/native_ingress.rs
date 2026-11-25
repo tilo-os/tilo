@@ -275,8 +275,8 @@ pub(super) fn is_governance(msg: &NeighbourMsg) -> bool {
 pub(super) fn is_record_content(msg: &NeighbourMsg) -> bool {
     matches!(
         msg,
-        NeighbourMsg::DocumentContentWant { .. }
-            | NeighbourMsg::DocumentContentPiece { .. }
+        NeighbourMsg::DocumentContentWants { .. }
+            | NeighbourMsg::DocumentContentPieces { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
             | NeighbourMsg::DocumentContentRefused { .. }
     )
@@ -763,12 +763,14 @@ mod tests {
         let device = ed25519_dalek::SigningKey::from_bytes(&[5; 32])
             .verifying_key()
             .to_bytes();
-        let want = NeighbourMsg::DocumentContentWant {
+        let want = NeighbourMsg::DocumentContentWants {
             requester: 9,
-            app_id: "so.tilo.chat".into(),
             cluster_id: "workspace".into(),
-            hash: "ab".repeat(32),
-            have: Vec::new(),
+            wants: vec![neighbour_wire::content::Wanted {
+                app_id: "so.tilo.chat".into(),
+                hash: "ab".repeat(32),
+                have: Vec::new(),
+            }],
         };
         let heard = |message: NeighbourMsg| tilo_peer_state::direct::Heard {
             author: device,
@@ -830,12 +832,14 @@ mod tests {
         };
         // A member's ask for a record's content reaches its host the same way:
         // the host answers it, or hands it to the member keeping it.
-        let want = NeighbourMsg::DocumentContentWant {
+        let want = NeighbourMsg::DocumentContentWants {
             requester: 9,
-            app_id: "so.tilo.notes".into(),
             cluster_id: "workspace".into(),
-            hash: "ab".repeat(32),
-            have: Vec::new(),
+            wants: vec![neighbour_wire::content::Wanted {
+                app_id: "so.tilo.notes".into(),
+                hash: "ab".repeat(32),
+                have: Vec::new(),
+            }],
         };
         for message in [genesis, asking, want] {
             assert_eq!(carried(&message), Some(Carried::Link), "{}", message.kind());

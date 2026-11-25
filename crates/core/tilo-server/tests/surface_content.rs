@@ -31,27 +31,31 @@ fn unserved_surface() -> Vec<u8> {
 const MEMBER: [u8; 32] = [42; 32];
 
 fn want(workspace: &str, hash: &str) -> Vec<u8> {
-    postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
+    postcard::to_allocvec(&NeighbourMsg::DocumentContentWants {
         requester: tilo_peer_state::peer_handle(&MEMBER),
-        app_id: APP.into(),
         cluster_id: workspace.into(),
-        hash: hash.into(),
-        have: Vec::new(),
+        wants: vec![neighbour_wire::content::Wanted {
+            app_id: APP.into(),
+            hash: hash.into(),
+            have: Vec::new(),
+        }],
     })
     .unwrap()
 }
 
 /// What device `member` answers the host with: the surface `bytes`, whole.
 fn answer(host: &[u8; 32], member: [u8; 32], workspace: &str, bytes: &[u8]) -> Vec<u8> {
-    postcard::to_allocvec(&NeighbourMsg::DocumentContentPiece {
+    postcard::to_allocvec(&NeighbourMsg::DocumentContentPieces {
         responder: neighbour_wire::peer_handle(&member),
         requester: neighbour_wire::peer_handle(host),
-        app_id: APP.into(),
         cluster_id: workspace.into(),
-        hash: blake3::hash(bytes).to_hex().to_string(),
-        total: u64::try_from(bytes.len()).unwrap(),
-        offset: 0,
-        bytes: bytes.to_vec(),
+        pieces: vec![neighbour_wire::content::Piece {
+            app_id: APP.into(),
+            hash: blake3::hash(bytes).to_hex().to_string(),
+            total: u64::try_from(bytes.len()).unwrap(),
+            offset: 0,
+            bytes: bytes.to_vec(),
+        }],
     })
     .unwrap()
 }
@@ -59,27 +63,33 @@ fn answer(host: &[u8; 32], member: [u8; 32], workspace: &str, bytes: &[u8]) -> V
 /// The content the host answers `frames` with, or `None` when it keeps none.
 fn gathered(frames: &[Vec<u8>]) -> Option<Vec<u8>> {
     let mut whole = Vec::new();
+    let mut total = None;
     for frame in frames {
         match postcard::from_bytes(frame).unwrap() {
-            NeighbourMsg::DocumentContentPiece {
-                requester,
-                total,
-                offset,
-                mut bytes,
-                ..
+            NeighbourMsg::DocumentContentPieces {
+                requester, pieces, ..
             } => {
                 assert_eq!(
                     requester,
                     tilo_peer_state::peer_handle(&MEMBER),
                     "addressed to whoever asked"
                 );
-                assert_eq!(offset, u64::try_from(whole.len()).unwrap());
-                whole.append(&mut bytes);
-                assert_eq!(total, u64::try_from(whole.len()).unwrap_or(u64::MAX));
+                for piece in pieces {
+                    assert_eq!(piece.offset, u64::try_from(whole.len()).unwrap());
+                    assert_eq!(*total.get_or_insert(piece.total), piece.total);
+                    whole.extend(piece.bytes);
+                }
             }
             NeighbourMsg::DocumentContentLacks { .. } => return None,
-            other => panic!("a piece of content, or word that the host keeps none: {other:?}"),
+            other => panic!("pieces of content, or word that the host keeps none: {other:?}"),
         }
+    }
+    if let Some(total) = total {
+        assert_eq!(
+            total,
+            u64::try_from(whole.len()).unwrap(),
+            "every piece of the content arrived"
+        );
     }
     Some(whole)
 }

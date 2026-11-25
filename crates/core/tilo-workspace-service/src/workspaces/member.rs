@@ -2330,11 +2330,11 @@ impl Workspaces {
                 };
                 let answering = matches!(
                     frame.message,
-                    NeighbourMsg::DocumentContentPiece { .. }
+                    NeighbourMsg::DocumentContentPieces { .. }
                         | NeighbourMsg::DocumentContentLacks { .. }
                         | NeighbourMsg::DocumentContentRefused { .. }
                 );
-                let asking = matches!(frame.message, NeighbourMsg::DocumentContentWant { .. });
+                let asking = matches!(frame.message, NeighbourMsg::DocumentContentWants { .. });
                 // Answers go to the content's own intake as they came: they are
                 // no write of the copy.
                 if answering {

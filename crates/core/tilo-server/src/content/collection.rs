@@ -651,22 +651,28 @@ mod tests {
         // The host names it now and keeps none of it: it asks the workspace,
         // and the device answers with what it kept.
         let member = [7; 32];
-        let want = postcard::to_allocvec(&neighbour_wire::NeighbourMsg::DocumentContentWant {
-            requester: neighbour_wire::peer_handle(&member),
-            app_id: APP.into(),
-            cluster_id: workspace.clone(),
-            hash: hash.clone(),
-            have: Vec::new(),
-        })
-        .unwrap();
+        let want = neighbour_wire::content::asks(
+            &member,
+            &workspace,
+            [neighbour_wire::content::Wanted {
+                app_id: APP.into(),
+                hash: hash.clone(),
+                have: Vec::new(),
+            }],
+        )
+        .remove(0);
         assert!(
             lacks(&workspaces.content_answer(&workspace, &member, &want)),
             "the host keeps none of the attachment any more"
         );
         let mut asked = neighbour_wire::content::ContentWants::default();
-        let request = asked
-            .ask(&host_device, (), (APP, &workspace), &hash, 0)
-            .expect("the host asks the workspace for it");
+        let request = neighbour_wire::content::asks(
+            &host_device,
+            &workspace,
+            asked.ask((), (APP, &workspace), &hash, 0),
+        )
+        .pop()
+        .expect("the host asks the workspace for it");
         let pieces = neighbour_wire::content::answer(
             &member,
             &host_device,
@@ -679,7 +685,11 @@ mod tests {
         );
         let arrived = pieces
             .iter()
-            .find_map(|piece| asked.piece(&host_device, piece, tilo_clock::unix_now_ms()))
+            .find_map(|piece| {
+                asked
+                    .piece(&host_device, piece, tilo_clock::unix_now_ms())
+                    .pop()
+            })
             .expect("the device's answer is whole and hashes to what was asked");
         assert_eq!(
             arrived.bytes, attachment,

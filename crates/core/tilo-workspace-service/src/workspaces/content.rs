@@ -6,7 +6,7 @@
 //! ([`crate::workspaces::ContentKeeper`]).
 //!
 //! A member asks the workspace for content its record lacks with the workspace's
-//! presence ([`NeighbourMsg::DocumentContentWant`]), as it asks any member.
+//! presence ([`NeighbourMsg::DocumentContentWants`]), as it asks any member.
 //! The host answers from everything it keeps, to that member's device alone, in
 //! the same bounded pieces a member answers with; the member keeps the
 //! content once every piece arrived and the bytes hash to what it asked.
@@ -637,27 +637,17 @@ impl Workspaces {
                 let (workspace, link) = (workspace.clone(), link.clone());
                 tokio::spawn(async move {
                     // A mounted workspace's file bytes are read from its Files daemon: the read
-                    // waits on a thread of its own, never on the runtime's.
+                    // waits on a thread of its own, never on the runtime's. Each frame goes out
+                    // once made, so the first of a large answer travels while the rest is read.
+                    let (frames, mut made) = tokio::sync::mpsc::channel::<NeighbourMsg>(2);
                     let read = tokio::task::spawn_blocking(move || {
-                        workspaces.content_answer(&workspace, &asker, &body)
-                    })
-                    .await;
-                    let answers = match read {
-                        Ok(answers) => answers,
-                        Err(error) => {
-                            tracing::warn!(%error, "reading what a member asked for ended early");
-                            return;
-                        }
-                    };
+                        workspaces.content_answer_each(&workspace, &asker, &body, |message| {
+                            // The asker's link ended: the rest of the answer has nowhere to go.
+                            let _ = frames.blocking_send(message);
+                        });
+                    });
                     let mut room = Some(room);
-                    for answer in answers {
-                        let message = match NeighbourMsg::decode(&answer) {
-                            Ok(message) => message,
-                            Err(error) => {
-                                tracing::warn!(%error, "a content answer did not encode");
-                                continue;
-                            }
-                        };
+                    while let Some(message) = made.recv().await {
                         // The first answer goes in the room the ask took; the
                         // rest wait while the asker's link is full.
                         let sent = match room.take() {
@@ -669,6 +659,9 @@ impl Workspaces {
                         }
                     }
                     drop(room);
+                    if let Err(error) = read.await {
+                        tracing::warn!(%error, "reading what a member asked for ended early");
+                    }
                 });
             }
         });
@@ -709,7 +702,10 @@ impl Workspaces {
             message,
             tilo_clock::unix_now_ms(),
         );
-        if let Some(arrived) = assembled.and_then(neighbour_wire::content::Assembled::verified) {
+        for arrived in assembled
+            .into_iter()
+            .filter_map(neighbour_wire::content::Assembled::verified)
+        {
             crate::surfaces::keep(&arrived.hash, &arrived.bytes);
         }
     }
@@ -811,15 +807,15 @@ impl Workspaces {
     pub async fn ask_surface(&self, workspace: &str, app: &str, hash: &str) -> usize {
         let device = self.device_cert().device_public_key;
         let asked = self.inner.content.surfaces.lock_recover().ask(
-            &device,
             (),
             (app, workspace),
             hash,
             tilo_clock::unix_now_ms(),
         );
-        let Some(request) = asked else {
+        let Some(wanted) = asked else {
             return 0;
         };
+        let request = neighbour_wire::content::asks(&device, workspace, [wanted]).remove(0);
         match self.ask_members(workspace, request).await {
             Ok(reached) => reached,
             Err(error) => {
@@ -829,7 +825,7 @@ impl Workspaces {
         }
     }
 
-    /// Publish `body`, a `NeighbourMsg::DocumentContentWant` naming this
+    /// Publish `body`, a `NeighbourMsg::DocumentContentWants` naming this
     /// host, to `workspace`'s members: the ones keeping the content answer the
     /// host. A member reaches the workspace's other devices only through this
     /// host, and the host asks them the same way they ask it, on the
@@ -869,34 +865,84 @@ impl Workspaces {
     }
 
     /// The answer to `body`, a presence the member device `asker` of
-    /// `workspace` published, when it asks for content: the pieces of what
-    /// this host keeps, or word that it keeps none, as frames for the asker's
-    /// device alone ([`neighbour_wire::content::answer`]). Empty for any other
+    /// `workspace` published, when it asks for content
+    /// ([`Self::content_answer_each`]), gathered.
+    pub fn content_answer(&self, workspace: &str, asker: &[u8; 32], body: &[u8]) -> Vec<Vec<u8>> {
+        let mut frames = Vec::new();
+        self.content_answer_each(workspace, asker, body, |message| {
+            frames.push(message.frame());
+        });
+        frames
+    }
+
+    /// Answer `body`, a presence the member device `asker` of `workspace`
+    /// published, when it asks for content: the pieces of what this host
+    /// keeps, many to a frame, and word of each it keeps none of, as frames
+    /// for the asker's device alone, each handed to `emit` once made
+    /// ([`neighbour_wire::content::answer_each`]). Nothing for any other
     /// presence, or a request naming another workspace. What it keeps of app
     /// surfaces is the workspace's content store, never a registry.
     ///
-    /// An ask answered with word that this device keeps none of the content
-    /// is owed: answered again, on the same link, once this device keeps it
+    /// Content asked for that this device keeps none of is owed: answered
+    /// again, on the same link, once this device keeps it
     /// ([`Self::content_kept`]), so the asker need not ask again and again.
-    pub fn content_answer(&self, workspace: &str, asker: &[u8; 32], body: &[u8]) -> Vec<Vec<u8>> {
-        if !matches!(
-            NeighbourMsg::decode(body),
-            Ok(NeighbourMsg::DocumentContentWant { cluster_id, .. }) if cluster_id == workspace
-        ) {
-            return Vec::new();
-        }
-        let answers = self.answer_from_kept(workspace, asker, body);
-        if let [only] = answers.as_slice()
-            && let Ok(NeighbourMsg::DocumentContentLacks { hash, .. }) = NeighbourMsg::decode(only)
+    pub fn content_answer_each(
+        &self,
+        workspace: &str,
+        asker: &[u8; 32],
+        body: &[u8],
+        emit: impl FnMut(NeighbourMsg),
+    ) {
+        let request = match NeighbourMsg::decode(body) {
+            Ok(request @ NeighbourMsg::DocumentContentWants { .. }) => request,
+            Ok(_) => return,
+            Err(error) => {
+                tracing::warn!(%workspace, %error, "an ask for content did not decode");
+                return;
+            }
+        };
+        if !matches!(&request, NeighbourMsg::DocumentContentWants { cluster_id, .. } if cluster_id == workspace)
         {
-            self.inner.content.owed.lock_recover().owe(
-                workspace,
-                hash.to_ascii_lowercase(),
-                *asker,
-                body,
-            );
+            return;
         }
-        answers
+        // The answer names this device, the one its link proves: one key signs and answers
+        // everywhere.
+        let device = self.device_cert().device_public_key;
+        let NeighbourMsg::DocumentContentWants { wants, .. } = &request else {
+            return;
+        };
+        let mut ahead = ReadAhead::new(wants);
+        let mut lacked = Vec::new();
+        neighbour_wire::content::answer_each(
+            &device,
+            asker,
+            &request,
+            |app_id, _, hash| {
+                let kept = ahead.read(app_id, hash, |app_id, hash| {
+                    self.read_kept(workspace, app_id, hash)
+                });
+                if kept.is_none() {
+                    lacked.push(neighbour_wire::content::Wanted {
+                        app_id: app_id.to_owned(),
+                        hash: hash.to_owned(),
+                        have: Vec::new(),
+                    });
+                }
+                kept
+            },
+            emit,
+        );
+        if lacked.is_empty() {
+            return;
+        }
+        let mut owed = self.inner.content.owed.lock_recover();
+        for wanted in lacked {
+            let hash = wanted.hash.to_ascii_lowercase();
+            // Owed as an ask of its own, so it is answered alone once kept.
+            for ask in neighbour_wire::content::asks(asker, workspace, [wanted]) {
+                owed.owe(workspace, hash.clone(), *asker, &ask);
+            }
+        }
     }
 
     /// This device keeps `hash` for `workspace` now: answer the asks it said
@@ -942,24 +988,95 @@ impl Workspaces {
         self.inner.content.owed.lock_recover().take(workspace, hash);
     }
 
-    fn answer_from_kept(&self, workspace: &str, asker: &[u8; 32], body: &[u8]) -> Vec<Vec<u8>> {
-        // The answer names this device, the one its link proves: one key signs and answers
-        // everywhere.
-        let device = self.device_cert().device_public_key;
-        neighbour_wire::content::answer(&device, asker, body, |app_id, _, hash| {
-            self.app_file(workspace, hash)
-                .or_else(|| {
-                    self.inner
-                        .content
-                        .get()
-                        .iter()
-                        .find_map(|source| source.read(workspace, app_id, hash))
-                })
-                // A record started by an older version of an app reads its writes
-                // with that version's surface, which the workspace's content store
-                // keeps ([`crate::surfaces`]).
-                .or_else(|| crate::surfaces::kept(app_id, hash))
-        })
+    /// The bytes of content `hash` of `app_id` this device keeps for `workspace`.
+    fn read_kept(&self, workspace: &str, app_id: &str, hash: &str) -> Option<Vec<u8>> {
+        self.app_file(workspace, hash)
+            .or_else(|| {
+                self.inner
+                    .content
+                    .get()
+                    .iter()
+                    .find_map(|source| source.read(workspace, app_id, hash))
+            })
+            // A record started by an older version of an app reads its writes
+            // with that version's surface, which the workspace's content store
+            // keeps ([`crate::surfaces`]).
+            .or_else(|| crate::surfaces::kept(app_id, hash))
+    }
+}
+
+/// Contents an answer reads at once, on threads of their own: a member's
+/// files are read from its Files daemon, and one read after another left the
+/// first frame of an ask for many small files waiting on every read before it.
+const READS_AHEAD: usize = 16;
+
+/// What an answer to an ask reads ahead of the frame it is filling: each
+/// content the answer comes to that it has not read yet is read with the
+/// [`READS_AHEAD`] after it, at once, in the order the ask names them.
+struct ReadAhead {
+    /// What the ask names, by app and lowercase hash, in its order.
+    named: Vec<(String, String)>,
+    /// Where in `named` the next read ahead starts.
+    next: usize,
+    /// What was read and not yet taken: `None` for content kept nowhere here.
+    read: HashMap<String, Option<Vec<u8>>>,
+}
+
+impl ReadAhead {
+    fn new(wants: &[neighbour_wire::content::Wanted]) -> Self {
+        Self {
+            named: wants
+                .iter()
+                .map(|wanted| (wanted.app_id.clone(), wanted.hash.to_ascii_lowercase()))
+                .collect(),
+            next: 0,
+            read: HashMap::new(),
+        }
+    }
+
+    /// The bytes of `app_id`'s `hash`, `None` when they are kept nowhere here,
+    /// read by `read` (given an app and hash) with the contents named after
+    /// it; read alone when the ask names it nowhere ahead, as a second naming
+    /// of content taken already.
+    fn read(
+        &mut self,
+        app_id: &str,
+        hash: &str,
+        read: impl Fn(&str, &str) -> Option<Vec<u8>> + Sync,
+    ) -> Option<Vec<u8>> {
+        if !self.read.contains_key(hash)
+            && let Some(at) = self
+                .named
+                .get(self.next..)
+                .and_then(|rest| rest.iter().position(|(_, named)| named == hash))
+        {
+            let start = self.next.saturating_add(at);
+            let end = start.saturating_add(READS_AHEAD).min(self.named.len());
+            let batch = self.named.get(start..end).unwrap_or_default();
+            let read = &read;
+            let kept: Vec<(String, Option<Vec<u8>>)> = std::thread::scope(|scope| {
+                #[expect(
+                    clippy::needless_collect,
+                    reason = "every read starts before the first is joined; joining as they \
+                              start would read them one after another"
+                )]
+                let reading: Vec<_> = batch
+                    .iter()
+                    .map(|(app_id, hash)| scope.spawn(move || (hash.clone(), read(app_id, hash))))
+                    .collect();
+                reading
+                    .into_iter()
+                    .map(|reading| {
+                        reading
+                            .join()
+                            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                    })
+                    .collect()
+            });
+            self.next = end;
+            self.read.extend(kept);
+        }
+        self.read.remove(hash).unwrap_or_else(|| read(app_id, hash))
     }
 }
 
@@ -1037,12 +1154,14 @@ mod tests {
     const MEMBER: [u8; 32] = [9; 32];
 
     fn want(workspace: &str, hash: &str) -> Vec<u8> {
-        postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
+        postcard::to_allocvec(&NeighbourMsg::DocumentContentWants {
             requester: peer_handle(&MEMBER),
-            app_id: "so.tilo.chat".into(),
             cluster_id: workspace.into(),
-            hash: hash.into(),
-            have: Vec::new(),
+            wants: vec![neighbour_wire::content::Wanted {
+                app_id: "so.tilo.chat".into(),
+                hash: hash.into(),
+                have: Vec::new(),
+            }],
         })
         .unwrap()
     }
@@ -1080,15 +1199,20 @@ mod tests {
         );
         let answers = workspaces.owed_answers(WORKSPACE, &hash(&written));
         let [answer] = answers.as_slice() else {
-            panic!("one piece: {} frames", answers.len());
+            panic!("one answer: {} frames", answers.len());
         };
-        let NeighbourMsg::DocumentContentPiece {
-            requester, bytes, ..
+        let NeighbourMsg::DocumentContentPieces {
+            requester, pieces, ..
         } = postcard::from_bytes(answer).unwrap()
         else {
-            panic!("a piece");
+            panic!("an answer of pieces");
         };
-        assert_eq!((requester, bytes), (peer_handle(&MEMBER), written.clone()));
+        assert_eq!(requester, peer_handle(&MEMBER));
+        let [piece] = pieces.as_slice() else {
+            panic!("one piece: {} pieces", pieces.len());
+        };
+        assert_eq!(piece.hash, hash(&written));
+        assert_eq!(piece.bytes, written);
         assert!(
             workspaces
                 .owed_answers(WORKSPACE, &hash(&written))
@@ -1119,17 +1243,16 @@ mod tests {
 
         let frames = workspaces.content_answer(WORKSPACE, &MEMBER, &want(WORKSPACE, &hash));
         let mut gathered = Vec::new();
+        let mut counted = 0;
         for frame in &frames {
-            let NeighbourMsg::DocumentContentPiece {
+            let NeighbourMsg::DocumentContentPieces {
                 responder,
                 requester,
-                total,
-                offset,
-                bytes,
+                pieces,
                 ..
             } = postcard::from_bytes(frame).unwrap()
             else {
-                panic!("a piece");
+                panic!("an answer of pieces");
             };
             assert_eq!(responder, peer_handle(&cert.device_public_key));
             assert_eq!(
@@ -1137,11 +1260,15 @@ mod tests {
                 peer_handle(&MEMBER),
                 "addressed to whoever asked"
             );
-            assert_eq!(total, u64::try_from(avatar.len()).unwrap());
-            assert_eq!(offset, u64::try_from(gathered.len()).unwrap());
-            gathered.extend(bytes);
+            for piece in pieces {
+                assert_eq!(piece.hash, hash);
+                assert_eq!(piece.total, u64::try_from(avatar.len()).unwrap());
+                assert_eq!(piece.offset, u64::try_from(gathered.len()).unwrap());
+                gathered.extend(piece.bytes);
+                counted += 1;
+            }
         }
-        assert_eq!(frames.len(), 2);
+        assert_eq!(counted, 2, "the avatar crossed in its two pieces");
         assert_eq!(gathered, avatar);
 
         let other = "0b7e4c2a-9d1f-4e3b-8a6c-5f2d1e0c9b8a";
@@ -1181,5 +1308,57 @@ mod tests {
             } => Some((responder, requester)),
             _ => None,
         }
+    }
+
+    /// An answer reads what an ask names a batch at a time, in the order it comes to them, each
+    /// naming once: content named twice is read for each, and content kept nowhere reads as
+    /// none, without holding up what is kept.
+    #[test]
+    fn an_answer_reads_ahead_what_the_ask_names_each_once() {
+        let names: Vec<String> = (0..40).map(|at| format!("{at:064x}")).collect();
+        let mut wanted: Vec<neighbour_wire::content::Wanted> = names
+            .iter()
+            .map(|hash| neighbour_wire::content::Wanted {
+                app_id: "so.tilo.files".into(),
+                hash: hash.clone(),
+                have: Vec::new(),
+            })
+            .collect();
+        wanted.push(wanted[3].clone());
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        let read = |_: &str, hash: &str| {
+            reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (hash != names[7]).then(|| hash.as_bytes().to_vec())
+        };
+        let mut ahead = ReadAhead::new(&wanted);
+        for (at, hash) in names.iter().enumerate() {
+            let kept = ahead.read("so.tilo.files", hash, read);
+            if at == 7 {
+                assert_eq!(kept, None, "content kept nowhere reads as none");
+            } else {
+                assert_eq!(kept, Some(hash.as_bytes().to_vec()), "content {at}");
+            }
+        }
+        assert_eq!(
+            ahead.read("so.tilo.files", &names[3], read),
+            Some(names[3].as_bytes().to_vec()),
+            "its second naming was read ahead with the last batch"
+        );
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::Relaxed),
+            wanted.len(),
+            "each naming read once, {READS_AHEAD} at a time"
+        );
+        let unnamed = format!("{:064x}", 99);
+        assert_eq!(
+            ahead.read("so.tilo.files", &unnamed, read),
+            Some(unnamed.as_bytes().to_vec()),
+            "content the ask never named is read alone"
+        );
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::Relaxed),
+            wanted.len() + 1,
+            "and only it"
+        );
     }
 }

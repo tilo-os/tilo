@@ -37,15 +37,17 @@ fn post_into(doc: &mut AutoCommit, hash: &str) {
 
 /// What device `poster` answers the host with: the file `bytes`, whole.
 fn answer(host: &[u8; 32], poster: &[u8; 32], workspace: &str, bytes: &[u8]) -> Vec<u8> {
-    postcard::to_allocvec(&NeighbourMsg::DocumentContentPiece {
+    postcard::to_allocvec(&NeighbourMsg::DocumentContentPieces {
         responder: neighbour_wire::peer_handle(poster),
         requester: neighbour_wire::peer_handle(host),
-        app_id: CHAT.into(),
         cluster_id: workspace.into(),
-        hash: blake3::hash(bytes).to_hex().to_string(),
-        total: u64::try_from(bytes.len()).unwrap(),
-        offset: 0,
-        bytes: bytes.to_vec(),
+        pieces: vec![neighbour_wire::content::Piece {
+            app_id: CHAT.into(),
+            hash: blake3::hash(bytes).to_hex().to_string(),
+            total: u64::try_from(bytes.len()).unwrap(),
+            offset: 0,
+            bytes: bytes.to_vec(),
+        }],
     })
     .unwrap()
 }
@@ -729,15 +731,17 @@ async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
                     // again: the same bytes, the same address.
                     let from = if sent >= bytes.len() { 0 } else { sent };
                     let end = (from + neighbour_wire::content::PIECE_BYTES).min(bytes.len());
-                    let frame = postcard::to_allocvec(&NeighbourMsg::DocumentContentPiece {
+                    let frame = postcard::to_allocvec(&NeighbourMsg::DocumentContentPieces {
                         responder: neighbour_wire::peer_handle(&ada),
                         requester: neighbour_wire::peer_handle(&host_device),
-                        app_id: CHAT.into(),
                         cluster_id: workspace.clone(),
-                        hash: hash.clone(),
-                        total: u64::try_from(bytes.len()).unwrap(),
-                        offset: u64::try_from(from).unwrap(),
-                        bytes: bytes[from..end].to_vec(),
+                        pieces: vec![neighbour_wire::content::Piece {
+                            app_id: CHAT.into(),
+                            hash: hash.clone(),
+                            total: u64::try_from(bytes.len()).unwrap(),
+                            offset: u64::try_from(from).unwrap(),
+                            bytes: bytes[from..end].to_vec(),
+                        }],
                     })
                     .unwrap();
                     workspaces.content_for_host(&workspace, ada, &frame);
@@ -816,15 +820,17 @@ fn folder_piece_frame(
     let end = from
         .saturating_add(neighbour_wire::content::PIECE_BYTES)
         .min(THREE_GIB_FILE_BYTES);
-    postcard::to_allocvec(&NeighbourMsg::DocumentContentPiece {
+    postcard::to_allocvec(&NeighbourMsg::DocumentContentPieces {
         responder: neighbour_wire::peer_handle(poster),
         requester: neighbour_wire::peer_handle(host),
-        app_id: CHAT.into(),
         cluster_id: workspace.into(),
-        hash: hash.into(),
-        total: u64::try_from(THREE_GIB_FILE_BYTES).unwrap(),
-        offset: u64::try_from(from).unwrap(),
-        bytes: folder_piece(file, from, end.saturating_sub(from)),
+        pieces: vec![neighbour_wire::content::Piece {
+            app_id: CHAT.into(),
+            hash: hash.into(),
+            total: u64::try_from(THREE_GIB_FILE_BYTES).unwrap(),
+            offset: u64::try_from(from).unwrap(),
+            bytes: folder_piece(file, from, end.saturating_sub(from)),
+        }],
     })
     .unwrap()
 }

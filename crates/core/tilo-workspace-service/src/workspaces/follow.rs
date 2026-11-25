@@ -607,10 +607,10 @@ impl Workspaces {
                 let Some(workspaces) = workspaces.upgrade() else {
                     return;
                 };
-                let asking = matches!(frame.message, NeighbourMsg::DocumentContentWant { .. });
+                let asking = matches!(frame.message, NeighbourMsg::DocumentContentWants { .. });
                 let answering = matches!(
                     frame.message,
-                    NeighbourMsg::DocumentContentPiece { .. }
+                    NeighbourMsg::DocumentContentPieces { .. }
                         | NeighbourMsg::DocumentContentLacks { .. }
                         | NeighbourMsg::DocumentContentRefused { .. }
                 );

@@ -152,15 +152,17 @@ async fn stall_workspace_7(
         cmd.send(NetCmd::PublishRecordContent(RecordContentDelivery {
             ws: WorkspaceId::from_u128(7),
             target: Some(stalled),
-            msg: NeighbourMsg::DocumentContentPiece {
+            msg: NeighbourMsg::DocumentContentPieces {
                 responder: 0,
                 requester: 0,
-                app_id: "so.tilo.notes".into(),
                 cluster_id: "notes".into(),
-                hash: "00".into(),
-                total: STALLING_BYTES as u64,
-                offset: 0,
-                bytes: vec![0; STALLING_BYTES],
+                pieces: vec![neighbour_wire::content::Piece {
+                    app_id: "so.tilo.notes".into(),
+                    hash: "00".into(),
+                    total: STALLING_BYTES as u64,
+                    offset: 0,
+                    bytes: vec![0; STALLING_BYTES],
+                }],
             },
         }))
         .await

@@ -1012,12 +1012,14 @@ impl ContentPeers for MemberPeers {
         let Some(workspace) = Self::workspace(route) else {
             return;
         };
-        let message = NeighbourMsg::DocumentContentWant {
+        let message = NeighbourMsg::DocumentContentWants {
             requester: peer_handle(&self.device),
-            app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
-            hash: hash.to_owned(),
-            have: have.to_vec(),
+            wants: vec![neighbour_wire::content::Wanted {
+                app_id: route.app_id.clone(),
+                hash: hash.to_owned(),
+                have: have.to_vec(),
+            }],
         };
         if self.workspaces.member_link(workspace).is_some() {
             let _ = self.workspaces.send_member(workspace, message);
@@ -1091,13 +1093,15 @@ impl ContentKeeper for MemberContent {
         message: NeighbourMsg,
     ) -> Result<(), Box<NeighbourMsg>> {
         let expected = match &message {
-            NeighbourMsg::DocumentContentPiece {
-                app_id,
-                cluster_id,
-                hash,
-                ..
-            }
-            | NeighbourMsg::DocumentContentLacks {
+            NeighbourMsg::DocumentContentPieces {
+                cluster_id, pieces, ..
+            } => pieces.iter().any(|piece| {
+                self.0.expecting(
+                    &CrdtRoute::app(piece.app_id.clone(), cluster_id.clone()),
+                    &piece.hash,
+                )
+            }),
+            NeighbourMsg::DocumentContentLacks {
                 app_id,
                 cluster_id,
                 hash,
@@ -1117,23 +1121,21 @@ impl ContentKeeper for MemberContent {
             return Err(Box::new(message));
         }
         match message {
-            NeighbourMsg::DocumentContentPiece {
-                app_id,
-                cluster_id,
-                hash,
-                total,
-                offset,
-                bytes,
-                ..
-            } => self.0.peer_piece(
-                &CrdtRoute::app(app_id, cluster_id),
-                &ContentPiece {
-                    hash,
-                    total,
-                    offset,
-                    bytes,
-                },
-            ),
+            NeighbourMsg::DocumentContentPieces {
+                cluster_id, pieces, ..
+            } => {
+                for piece in pieces {
+                    self.0.peer_piece(
+                        &CrdtRoute::app(piece.app_id, cluster_id.clone()),
+                        &ContentPiece {
+                            hash: piece.hash,
+                            total: piece.total,
+                            offset: piece.offset,
+                            bytes: piece.bytes,
+                        },
+                    );
+                }
+            }
             NeighbourMsg::DocumentContentLacks {
                 responder,
                 app_id,

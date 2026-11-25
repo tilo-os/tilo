@@ -2093,8 +2093,8 @@ impl Task {
         // keeps, an app surface this page asked for, or a piece for its readers.
         if matches!(
             message,
-            neighbour_wire::NeighbourMsg::DocumentContentWant { .. }
-                | neighbour_wire::NeighbourMsg::DocumentContentPiece { .. }
+            neighbour_wire::NeighbourMsg::DocumentContentWants { .. }
+                | neighbour_wire::NeighbourMsg::DocumentContentPieces { .. }
                 | neighbour_wire::NeighbourMsg::DocumentContentLacks { .. }
                 | neighbour_wire::NeighbourMsg::DocumentContentRefused { .. }
         ) {
@@ -2987,8 +2987,7 @@ impl Task {
             if crate::surfaces::holds(&route.app_id, &surface) {
                 continue;
             }
-            let Some(request) = self.surface_wants.ask(
-                &device,
+            let Some(wanted) = self.surface_wants.ask(
                 (),
                 (&route.app_id, &route.cluster_id),
                 &hex::encode(surface),
@@ -2996,7 +2995,9 @@ impl Task {
             ) else {
                 continue;
             };
-            self.want_content(workspace_id, &request);
+            for frame in neighbour_wire::content::asks(&device, &route.cluster_id, [wanted]) {
+                self.want_content(workspace_id, &frame);
+            }
         }
     }
 
@@ -3015,29 +3016,39 @@ impl Task {
     }
 
     /// What a workspace's content frame becomes here: an ask this device answers from what it
-    /// keeps, a piece an app surface wants, or a piece for whoever reads records.
+    /// keeps, the app surfaces among the pieces a frame carries, or a piece for whoever reads
+    /// records.
     fn content_arrived(
         &mut self,
         workspace_id: WorkspaceId,
         author: [u8; 32],
         message: &neighbour_wire::NeighbourMsg,
     ) {
-        let Some(frame) = postcard::to_allocvec(message).ok() else {
-            return;
-        };
         if matches!(
             message,
-            neighbour_wire::NeighbourMsg::DocumentContentWant { .. }
+            neighbour_wire::NeighbourMsg::DocumentContentWants { .. }
         ) {
+            let Some(frame) = postcard::to_allocvec(message).ok() else {
+                return;
+            };
             self.answer_content(workspace_id, author, &frame);
             return;
         }
         let device = self.config.cert.device_public_key;
         let now = tilo_clock::unix_now_ms();
-        if let Some(arrived) = self.surface_wants.piece(&device, &frame, now) {
-            self.latched.surface_arrived |= crate::surfaces::keep(&arrived.hash, arrived.bytes);
-            return;
+        // A frame carries the pieces of many contents, so one may hold a surface this page
+        // asked for beside pieces for whoever reads records: each goes where it belongs.
+        if self.surface_wants.expects_in(&device, message) {
+            for assembled in self.surface_wants.assemble(&device, message.clone(), now) {
+                if let Some(arrived) = assembled.verified() {
+                    self.latched.surface_arrived |=
+                        crate::surfaces::keep(&arrived.hash, arrived.bytes);
+                }
+            }
         }
+        let Some(frame) = postcard::to_allocvec(message).ok() else {
+            return;
+        };
         self.reports.emit(&crate::Event::DocumentContent {
             ws: workspace_id,
             from: author,

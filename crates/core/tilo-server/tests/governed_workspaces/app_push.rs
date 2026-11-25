@@ -179,28 +179,27 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
         .to_owned();
     assert_eq!(wanted, file);
     bob_link
-        .send(NeighbourMsg::DocumentContentWant {
+        .send(NeighbourMsg::DocumentContentWants {
             requester: tilo_peer_state::peer_handle(&phone.device_pubkey()),
-            app_id: APP.into(),
             cluster_id: workspace.workspace.clone(),
-            hash: wanted.clone(),
-            have: Vec::new(),
+            wants: vec![neighbour_wire::content::Wanted {
+                app_id: APP.into(),
+                hash: wanted.clone(),
+                have: Vec::new(),
+            }],
         })
         .expect("Bob's ask goes out on his link");
     let mut fetched = Vec::new();
     tilo_test_env::within("the workspace hands Bob the package", async {
         while fetched.len() < package.len() {
             if let Some(heard) = bob_link.next().await
-                && let NeighbourMsg::DocumentContentPiece {
-                    offset,
-                    bytes,
-                    hash,
-                    ..
-                } = heard.message
-                && hash == wanted
-                && offset == fetched.len() as u64
+                && let NeighbourMsg::DocumentContentPieces { pieces, .. } = heard.message
             {
-                fetched.extend_from_slice(&bytes);
+                for piece in pieces {
+                    if piece.hash == wanted && piece.offset == fetched.len() as u64 {
+                        fetched.extend_from_slice(&piece.bytes);
+                    }
+                }
             }
         }
     })

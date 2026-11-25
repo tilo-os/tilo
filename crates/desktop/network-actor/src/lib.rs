@@ -113,18 +113,16 @@ pub enum PersonalFabricPayload {
         document_id: String,
         envelope: Box<collab_types::SignedOp>,
     },
-    /// A device of the person asking for content one of `app_id`'s person
-    /// records references. Its scope is the person's, implied by the route.
-    DocumentContentWant { app_id: String, hash: String },
-    /// One bounded piece of that content, for the device that asked alone.
-    DocumentContentPiece {
-        app_id: String,
-        hash: String,
-        total: u64,
-        offset: u64,
-        bytes: Vec<u8>,
+    /// A device of the person asking for content its records reference, many at once. Its
+    /// scope is the person's, implied by the route.
+    DocumentContentWants {
+        wants: Vec<neighbour_wire::content::Wanted>,
     },
-    /// Word to the device that asked ([`Self::DocumentContentWant`]) that this
+    /// Bounded pieces of that content, for the device that asked alone, many to a frame.
+    DocumentContentPieces {
+        pieces: Vec<neighbour_wire::content::Piece>,
+    },
+    /// Word to the device that asked ([`Self::DocumentContentWants`]) that this
     /// one keeps none of that content.
     DocumentContentLacks { app_id: String, hash: String },
 }
@@ -529,7 +527,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                     frame.message,
                     NeighbourMsg::PermissionGrant { .. }
                         | NeighbourMsg::RemoteAction { .. }
-                        | NeighbourMsg::DocumentContentPiece { .. }
+                        | NeighbourMsg::DocumentContentPieces { .. }
                         | NeighbourMsg::DocumentContentLacks { .. }
                         | NeighbourMsg::DocumentContentRefused { .. }
                 ) {
@@ -571,7 +569,7 @@ async fn enqueue_surface_event(
         &event,
         InternalEvent::SurfaceFrame {
             msg: NeighbourMsg::RemoteAction { .. }
-                | NeighbourMsg::DocumentContentPiece { .. }
+                | NeighbourMsg::DocumentContentPieces { .. }
                 | NeighbourMsg::DocumentContentLacks { .. }
                 | NeighbourMsg::DocumentContentRefused { .. }
                 | NeighbourMsg::PermissionGrant { .. },
@@ -1035,7 +1033,7 @@ impl ActorState {
         let RecordContentDelivery { ws, target, msg } = delivery;
         if !matches!(
             msg,
-            NeighbourMsg::DocumentContentPiece { .. }
+            NeighbourMsg::DocumentContentPieces { .. }
                 | NeighbourMsg::DocumentContentLacks { .. }
                 | NeighbourMsg::DocumentContentRefused { .. }
         ) {
@@ -1097,7 +1095,7 @@ impl ActorState {
         // an action frame (up to a catalogue page) is worth waiting for.
         let budget = if matches!(
             msg,
-            NeighbourMsg::DocumentContentPiece { .. }
+            NeighbourMsg::DocumentContentPieces { .. }
                 | NeighbourMsg::DocumentContentLacks { .. }
                 | NeighbourMsg::DocumentContentRefused { .. }
         ) {
@@ -1150,7 +1148,7 @@ impl ActorState {
             return;
         }
         match msg {
-            NeighbourMsg::DocumentContentPiece { .. }
+            NeighbourMsg::DocumentContentPieces { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
             | NeighbourMsg::DocumentContentRefused { .. } => {
                 let _ = Self::relay_to_device(ws, Some(target), &msg);
