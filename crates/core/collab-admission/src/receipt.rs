@@ -65,10 +65,15 @@ pub fn check_opened_mutation(
         let claimed = op.claims.iter().find(|claim| claim.change == read.change);
         let made = collab_types::claim::kinds_made_in(change);
         // A store's change names the kinds of the records it writes, read by whoever holds them;
-        // any other change names no kind at all, and is what its own message says it is.
-        let store = change
-            .message()
-            .is_some_and(|message| collab_types::Stamp::of_message(message).is_some());
+        // any other change names no kind at all, and is what its own message says it is. Only a
+        // store's stamp is a store's change: an entry, a continuation or a framework change (a
+        // native edit, the record's own) reads as a stamp too, and names no kind.
+        let store = change.message().is_some_and(|message| {
+            matches!(
+                collab_types::Stamp::read(message),
+                Some((tilo_actions::stamp::Label::Stamp, _))
+            )
+        });
         if claimed.is_none_or(|claimed| {
             !names_what_it_read(&claimed.action, &read.action, &made, store)
                 || claimed.invoker != read.invoker
