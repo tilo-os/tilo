@@ -1,7 +1,7 @@
 //! A window's places are offered wherever its actions are: the Calendar's root publishes its
-//! week, month, day, agenda and tasks, and each list of its tasks, as actions labelled in the
-//! reader's language. The launcher, the palette and an agent invoke the same one, and the window
-//! goes to the place for the person at it.
+//! week, month, day, agenda and tasks, all its calendars and each list of its tasks, as actions
+//! labelled in the reader's language. The launcher, the palette and an agent invoke the same one,
+//! and the window goes to the place for the person at it.
 
 use super::{Session, agent_session, root_id};
 use crate::change_marks::{Driven as _, flattened, settle};
@@ -78,6 +78,7 @@ fn the_calendar_offers_its_places_in_the_readers_words() {
             "Day",
             "Agenda",
             "Tasks",
+            "All calendars",
             "Task inbox",
             "Today's tasks",
             "Upcoming tasks",
@@ -95,6 +96,7 @@ fn the_calendar_offers_its_places_in_the_readers_words() {
             "Tag",
             "Agenda",
             "Aufgaben",
+            "Alle Kalender",
             "Aufgabeneingang",
             "Heutige Aufgaben",
             "Anstehende Aufgaben",

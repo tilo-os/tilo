@@ -888,6 +888,16 @@ mod cases {
                 ("p", Value::some(Value::resource(&garden))),
             ],
         );
+        let standup = s.make("Standup", TODAY);
+        s.make("Lunch", TODAY);
+        let team = s.make_calendar("Team");
+        s.call(
+            "file_in",
+            &[
+                ("e", Value::resource(&standup)),
+                ("k", Value::resource(&team)),
+            ],
+        );
         let anchor = s.read(&s.root, "anchor_at");
 
         // Bo is a member too, and looks at the same window.
@@ -937,6 +947,19 @@ mod cases {
         assert!(!planted.iter().any(|x| x == "Buy milk"), "{planted:?}");
         shown(&mut w, "week");
         assert_eq!(chosen_place(&w), Value::text("week"));
+        // A calendar is a resource too: showing it narrows the week to its events, and all the
+        // calendars are a place to come back to.
+        assert!(w.show(&team).unwrap(), "the window answers for a calendar");
+        w.poll_patches().unwrap();
+        let narrowed = drawn(w.tree());
+        assert!(narrowed.iter().any(|x| x == "Standup"), "{narrowed:?}");
+        assert!(!narrowed.iter().any(|x| x == "Lunch"), "{narrowed:?}");
+        let every = {
+            assert!(w.show_place("calendars").unwrap());
+            w.poll_patches().unwrap();
+            drawn(w.tree())
+        };
+        assert!(every.iter().any(|x| x == "Lunch"), "{every:?}");
         assert!(
             !w.show_place("nowhere").unwrap(),
             "a place it does not declare"

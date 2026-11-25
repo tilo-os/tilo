@@ -1027,6 +1027,8 @@ d-vcuynr7i = Agenda
 
 d-pfdg5ohd = Aufgaben
 
+d-dpwhqftd = Alle Kalender
+
 d-yhmmif6d = Aufgabeneingang
 
 d-oijmpeik = Heutige Aufgaben

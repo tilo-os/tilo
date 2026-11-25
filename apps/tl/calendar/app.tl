@@ -1886,12 +1886,15 @@ view window(c: Calendars) {
     on show(e: Event): set(place, "week").then(open(e))
     // A window asked to show a project lists its tasks.
     on show(p: Project): set(place, "tasks").then(set(task_project, .some(p)))
+    // A window asked to show one calendar shows its events alone, as choosing it in the sidebar does.
+    on show(k: Calendar): set(chosen, .some(k))
     // The places the launcher, the palette, an agent or a script opens the window at.
     on show week: set(place, "week")
     on show month: set(place, "month")
     on show day: set(place, "day")
     on show agenda: set(place, "agenda")
     on show tasks: set(place, "tasks")
+    on show calendars "All calendars": set(chosen, .none)
     on show inbox "Task inbox": set(place, "tasks")
         .then(set(smart, "inbox"))
         .then(set(task_project, .none))
