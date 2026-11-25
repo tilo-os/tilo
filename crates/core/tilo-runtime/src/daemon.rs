@@ -747,7 +747,7 @@ fn serve_device(
     profile: &Path,
     dev: bool,
     device: &crate::device::unclaimed::ThisDevice,
-    native: &Native,
+    native: &Arc<Native>,
     stop: &crate::device::serve::Stop,
     person: &Person,
 ) -> io::Result<()> {
@@ -840,8 +840,14 @@ fn serve_device(
             drop(session);
             return Ok(());
         }
-        let closed = session.connections().end();
-        tracing::info!(closed, "the person's part closed the connections it served");
+        // Each connection on the action wire takes no new call, has the calls it made answered,
+        // and goes on with the part that starts next; every other is closed.
+        let (handed_on, closed) = session.connections().hand_over(stop);
+        tracing::info!(
+            handed_on,
+            closed,
+            "the person's part handed on or closed the connections it served"
+        );
         let held = held.map_err(|error| io::Error::other(format!("{error:#}")))?;
         // The endpoint outlives the part that served on it: the part that starts next takes it
         // as it is, so the port this device is reached at is never bound a second time, and no
@@ -958,7 +964,7 @@ fn closing_busy() -> Option<Duration> {
 /// search over their workspace once the device is held.
 fn serve_the_started(
     session: &Arc<Daemon>,
-    native: &Native,
+    native: &Arc<Native>,
     person: &Person,
     stop: &crate::device::serve::Stop,
 ) -> io::Result<()> {
@@ -1349,7 +1355,15 @@ pub(crate) fn serve_tenant_for_test(session: &Arc<Daemon>, tenant: &Tenant) -> i
 }
 
 /// A connection the native endpoint takes, with the slot it counts against and who it is.
-type Take = Box<dyn Fn(Stream, ConnectionSlot, Seated) -> io::Result<()> + Send + Sync>;
+type Take = Box<dyn Fn(Stream, Vec<u8>, ConnectionSlot, Seated) -> io::Result<()> + Send + Sync>;
+
+/// Where a connection on the action wire a person's part handed on as it ended goes, with what
+/// was read of it and not answered: to the part that starts next ([`Endpoint::take_handing`]).
+type Again = Arc<dyn Fn(Stream, Vec<u8>, ConnectionSlot, Option<Seated>) + Send + Sync>;
+
+/// How long a connection a person's part handed on as it ended waits for the next part: the
+/// part that ended saves what it took in first, and the next starts after.
+const HANDED_WAITS_WITHIN: Duration = Duration::from_secs(60);
 
 /// A connection from an app the daemon started: the app it runs and the workspace it runs in,
 /// with the slot it counts against and who it is.
@@ -1453,11 +1467,24 @@ impl Native {
 
     /// Serve every connection from now on with `endpoint`, the person's.
     fn serve_the_person<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static>(
-        &self,
+        self: &Arc<Self>,
         endpoint: Endpoint<H>,
     ) {
-        let take: Take =
-            Box::new(move |stream, slot, seated| endpoint.take(stream, slot, Some(seated)));
+        // A connection the part hands on as it ends is served by the person's part that starts
+        // next, from where it was.
+        let native = Arc::downgrade(self);
+        let again: Again = Arc::new(move |stream, read, slot, seated| {
+            let native = native.upgrade();
+            match (native, seated) {
+                (Some(native), Some(seated)) => native.take_handed(stream, read, slot, seated),
+                _ => {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+            }
+        });
+        let take: Take = Box::new(move |stream, read, slot, seated| {
+            endpoint.take_handing(stream, read, slot, Some(seated), Some(Arc::clone(&again)))
+        });
         *self.person.lock_recover() = Some(Arc::new(take));
         let _told = self.started.0.lock_recover();
         self.started.1.notify_all();
@@ -1581,7 +1608,7 @@ impl Native {
         let served = if asks_the_device_key(&stream) {
             self.device_only(stream, slot, seated)
         } else {
-            person(stream, slot, seated)
+            person(stream, Vec::new(), slot, seated)
         };
         if let Err(error) = served {
             tracing::debug!(%error, "a native connection was not served");
@@ -1662,8 +1689,64 @@ impl Native {
             );
             return;
         };
-        if let Err(error) = person(stream, slot, seated) {
+        if let Err(error) = person(stream, Vec::new(), slot, seated) {
             tracing::debug!(%error, "a native connection that waited while the person's services started was not served");
+        }
+    }
+}
+
+impl Native {
+    /// Serve `stream`, which the person's part that ended handed on with `read` unanswered, once
+    /// the part that starts next runs: told why not, if it does not start in time.
+    fn take_handed(
+        self: &Arc<Self>,
+        stream: Stream,
+        read: Vec<u8>,
+        slot: ConnectionSlot,
+        seated: Seated,
+    ) {
+        let native = Arc::clone(self);
+        let served = std::thread::Builder::new()
+            .name("tilo-native-handed".into())
+            .spawn(move || {
+                let deadline = Instant::now()
+                    .checked_add(HANDED_WAITS_WITHIN)
+                    .unwrap_or_else(Instant::now);
+                let mut told = native.started.0.lock_recover();
+                let person = loop {
+                    if let Some(person) = native.person() {
+                        break Some(person);
+                    }
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() || native.closing.load(Ordering::Relaxed) {
+                        break None;
+                    }
+                    told = native
+                        .started
+                        .1
+                        .wait_timeout(told, left.min(HANDED_EVERY))
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0;
+                };
+                drop(told);
+                let Some(person) = person else {
+                    tracing::error!(
+                        "a connection the person's part handed on as it ended was not taken by \
+                         the next part in time: closed"
+                    );
+                    crate::device::serve::refuse(
+                        &stream,
+                        "this computer's Tilo did not start its person's part again in time: run \
+                         `tilo status` to see how it stands, then try again",
+                    );
+                    return;
+                };
+                if let Err(error) = person(stream, read, slot, seated) {
+                    tracing::debug!(%error, "a connection handed on to the person's next part was not served");
+                }
+            });
+        if let Err(error) = served {
+            tracing::warn!(%error, "a connection handed on to the person's next part could not be served");
         }
     }
 }
@@ -1741,20 +1824,26 @@ impl TenantServing {
                 refuse_tenant(&stream, self.uid, Some(peer));
                 return Ok(());
             }
-            self.take(stream, slot);
+            self.take(stream, Vec::new(), slot, WAITED_WITHIN);
             Ok(())
         })
     }
 
     /// Serve `stream` once the person's services run: one that comes while they start waits for
     /// them, as the native endpoint's own connections do.
-    fn take(self: &Arc<Self>, stream: Stream, slot: ConnectionSlot) {
+    fn take(
+        self: &Arc<Self>,
+        stream: Stream,
+        read: Vec<u8>,
+        slot: ConnectionSlot,
+        within: Duration,
+    ) {
         let serving = Arc::clone(self);
         let served = std::thread::Builder::new()
             .name("tilo-native-tenant".into())
             .spawn(move || {
                 let deadline = Instant::now()
-                    .checked_add(WAITED_WITHIN)
+                    .checked_add(within)
                     .unwrap_or_else(Instant::now);
                 let mut told = serving.started.0.lock_recover();
                 let endpoint = loop {
@@ -1781,7 +1870,16 @@ impl TenantServing {
                     );
                     return;
                 };
-                if let Err(error) = endpoint.take(stream, slot, None) {
+                // A connection the part hands on as it ends is served by the part that starts
+                // next, from where it was.
+                let again = Arc::downgrade(&serving);
+                let again: Again = Arc::new(move |stream, read, slot, _| match again.upgrade() {
+                    Some(serving) => serving.take(stream, read, slot, HANDED_WAITS_WITHIN),
+                    None => {
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                    }
+                });
+                if let Err(error) = endpoint.take_handing(stream, read, slot, None, Some(again)) {
                     tracing::debug!(%error, "a tenant connection was not served");
                 }
             });
@@ -2069,19 +2167,44 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
     /// Serve `stream` on its own thread, counted in `slot` while it lasts, as `seated` says
     /// who it is.
     fn take(&self, stream: Stream, slot: ConnectionSlot, seated: Option<Seated>) -> io::Result<()> {
+        self.take_handing(stream, Vec::new(), slot, seated, None)
+    }
+
+    /// [`Self::take`], `read` being what was read of `stream` already: a connection on the action
+    /// wire this part hands on as it ends goes to `again`, with what it read and did not answer,
+    /// once nothing of this part holds it.
+    fn take_handing(
+        &self,
+        stream: Stream,
+        read: Vec<u8>,
+        slot: ConnectionSlot,
+        seated: Option<Seated>,
+        again: Option<Again>,
+    ) -> io::Result<()> {
         let endpoint = self.clone();
         std::thread::Builder::new()
             .name("tilo-native-mcp".into())
             .spawn(move || {
-                let _slot = slot;
-                endpoint.serve(stream, Vec::new(), seated.as_ref());
+                let handed = endpoint.serve(stream, read, seated.as_ref(), again.is_some());
+                drop(endpoint);
+                if let (Some((stream, read)), Some(again)) = (handed, again) {
+                    again(stream, read, slot, seated);
+                }
             })?;
         Ok(())
     }
 
     /// Serve `stream` on this thread until it ends, `read` being what was read of it already.
-    pub(crate) fn serve(&self, stream: Stream, read: Vec<u8>, seated: Option<&Seated>) {
-        let _held = self
+    /// With `hands_on`, a connection on the action wire is handed back as the part ends, with
+    /// what was read of it and not answered ([`Connections::hand_over`]).
+    pub(crate) fn serve(
+        &self,
+        stream: Stream,
+        read: Vec<u8>,
+        seated: Option<&Seated>,
+        hands_on: bool,
+    ) -> Option<(Stream, Vec<u8>)> {
+        let held = self
             .connections
             .as_ref()
             .and_then(|connections| connections.hold(&stream));
@@ -2092,14 +2215,14 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             Ok(read) => read,
             Err(error) => {
                 tracing::debug!(%error, "native runtime client socket");
-                return;
+                return None;
             }
         };
         let follow = match stream.try_clone() {
             Ok(clone) => clone,
             Err(error) => {
                 tracing::debug!(%error, "native runtime client socket");
-                return;
+                return None;
             }
         };
         // A first line that is an action frame says the connection speaks the action wire,
@@ -2109,19 +2232,27 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         // carried there: its action frames go to that device from this daemon's one endpoint.
         if let Some(carry) = tilo_actions::remote::carry_request(line) {
             let input = BufReader::new(io::Cursor::new(rest).chain(follow));
-            return self.frames.carry(stream, &carry, input);
+            self.frames.carry(stream, &carry, input);
+            return None;
         }
         if crate::device::local::is_frame(line) {
-            let input = BufReader::new(io::Cursor::new(rest).chain(follow));
             let answering = self
                 .connections
                 .as_ref()
                 .map(|connections| connections.call());
-            return self.frames.serve(stream, line, input, answering);
+            return self.serve_frames(
+                stream,
+                line,
+                rest,
+                follow,
+                held.filter(|_| hands_on),
+                answering,
+            );
         }
         if line == tilo_api::daemon::AGENT_LINE.as_bytes() {
             if let Some(agents) = &self.to_agents {
-                return agents.take(stream, rest);
+                agents.take(stream, rest);
+                return None;
             }
             first.clear();
         }
@@ -2144,7 +2275,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
                     "this runtime reaches none of your other devices".into(),
                 ),
             }
-            return;
+            return None;
         }
         // A connection that asks the seats (who it is, a shell started or waited for) is
         // answered by them alone: asking founds the person no workspace, so a shell started for
@@ -2157,7 +2288,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             if let Err(error) = serve_seat(&stream, input, seated) {
                 tracing::debug!(%error, "native seat client disconnected");
             }
-            return;
+            return None;
         }
         // A launcher asks this computer to start an app: the daemon makes the launch, as it
         // makes every launch, so the app is attested as the one it runs. The request is the
@@ -2165,7 +2296,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         #[cfg(unix)]
         if let Some(launch) = self.launch.clone().filter(|_| is_launch_request(&first)) {
             launch(stream, &first, descriptors);
-            return;
+            return None;
         }
         let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
         // The session is admitted by the first request that needs one, never by a connection's
@@ -2194,19 +2325,124 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         ) {
             tracing::debug!(%error, "native runtime client disconnected");
         }
+        None
+    }
+
+    /// Answer `stream`'s frames, `first` and then `rest` and what `follow` reads: until it ends,
+    /// or, `held` as a connection the part hands on, until the part ends. Then the connection,
+    /// with what was read of it and not answered.
+    fn serve_frames(
+        &self,
+        stream: Stream,
+        first: &[u8],
+        rest: Vec<u8>,
+        follow: Stream,
+        held: Option<HeldConnection>,
+        answering: Option<AnsweringCall>,
+    ) -> Option<(Stream, Vec<u8>)> {
+        #[cfg(unix)]
+        if let Some(connections) = held.as_ref().and_then(HeldConnection::hands_on) {
+            let handed =
+                self.serve_frames_handing(stream, first, (rest, follow), &connections, answering);
+            // Let go before the connection goes on: the part that ends waits for it.
+            drop(held);
+            return handed;
+        }
+        let input = BufReader::new(io::Cursor::new(rest).chain(follow));
+        self.frames.serve(stream, first, input, answering);
+        drop(held);
+        None
+    }
+
+    /// [`Self::serve_frames`], until the part ends and `connections` hands the connection on.
+    #[cfg(unix)]
+    fn serve_frames_handing(
+        &self,
+        stream: Stream,
+        first: &[u8],
+        (rest, follow): (Vec<u8>, Stream),
+        connections: &Arc<Connections>,
+        answering: Option<AnsweringCall>,
+    ) -> Option<(Stream, Vec<u8>)> {
+        let handed = match stream.try_clone() {
+            Ok(handed) => handed,
+            Err(error) => {
+                tracing::debug!(%error, "native runtime client socket");
+                return None;
+            }
+        };
+        let input = BufReader::new(io::Cursor::new(rest).chain(PartInput {
+            stream: follow,
+            connections: Arc::clone(connections),
+        }));
+        let tilo_actions::remote::Served::Handed { held, input, .. } =
+            self.frames
+                .serve_handing(stream, first, input, answering, Some(&**connections))
+        else {
+            return None;
+        };
+        let mut unanswered = held
+            .map(|mut line| {
+                line.push(b'\n');
+                line
+            })
+            .unwrap_or_default();
+        unanswered.extend_from_slice(input.buffer());
+        let (rest, _) = input.into_inner().into_inner();
+        let at = usize::try_from(rest.position()).unwrap_or(usize::MAX);
+        unanswered.extend_from_slice(rest.get_ref().get(at..).unwrap_or_default());
+        Some((handed, unanswered))
     }
 }
 
-/// The connections a part of the daemon serves for its person: each is closed when that part
-/// ends ([`Self::end`]). One left open would be answered by the services of a part that ended,
+/// The connections a part of the daemon serves for its person, each let go when that part ends
+/// ([`Self::hand_over`]). One left open would be answered by the services of a part that ended,
 /// refusing every call, and would hold those services' stores and links open under the part
-/// that starts next; closed, its client connects again and reaches the new part.
-#[derive(Default)]
+/// that starts next. A connection on the action wire is handed on: it takes no new call, the
+/// calls it made are answered, and it is served by the part that starts next, so its caller
+/// sees no gap. Any other is closed, and its client connects again and reaches the new part.
 pub(crate) struct Connections {
-    open: Mutex<std::collections::BTreeMap<u64, Stream>>,
+    /// Each connection served, and whether it is handed on rather than closed.
+    open: Mutex<std::collections::BTreeMap<u64, (Stream, bool)>>,
     next: std::sync::atomic::AtomicU64,
     /// The requests this part is answering now, each a call some program waits on.
     answering: Answering,
+    /// Told when a connection lets go.
+    let_go: Condvar,
+    /// Set as the part ends: the connections take no new call.
+    handing: AtomicBool,
+    /// Set once the calls still running had their time: they are cancelled.
+    overdue: AtomicBool,
+    /// What wakes a connection waiting on its client once the part ends: the first end is
+    /// written then, and the second never read, so it stays readable.
+    #[cfg(unix)]
+    wake: Option<(
+        std::os::unix::net::UnixStream,
+        std::os::unix::net::UnixStream,
+    )>,
+}
+
+impl Default for Connections {
+    fn default() -> Self {
+        Self {
+            open: Mutex::default(),
+            next: std::sync::atomic::AtomicU64::new(0),
+            let_go: Condvar::new(),
+            handing: AtomicBool::new(false),
+            overdue: AtomicBool::new(false),
+            answering: Answering::default(),
+            #[cfg(unix)]
+            wake: std::os::unix::net::UnixStream::pair()
+                .inspect_err(|error| {
+                    tracing::warn!(
+                        %error,
+                        "the person's part closes its connections when it ends, rather than \
+                         handing them on"
+                    );
+                })
+                .ok(),
+        }
+    }
 }
 
 /// The calls a part of the daemon is answering now, counted while each answer runs: a part that
@@ -2253,7 +2489,7 @@ impl Drop for AnsweringCall {
 }
 
 impl Connections {
-    /// Keep `stream` to be closed when the part ends, while the answer is held: the connection
+    /// Keep `stream` to be let go when the part ends, while the answer is held: the connection
     /// is served until then. `None` when it cannot be kept, which is said.
     pub(crate) fn hold(self: &Arc<Self>, stream: &Stream) -> Option<HeldConnection> {
         let kept = match stream.try_clone() {
@@ -2267,20 +2503,68 @@ impl Connections {
             }
         };
         let number = self.next.fetch_add(1, Ordering::Relaxed);
-        self.open.lock_recover().insert(number, kept);
+        self.open.lock_recover().insert(number, (kept, false));
         Some(HeldConnection(Arc::downgrade(self), number))
     }
 
-    /// Close every connection the part serves: what each is reading ends and what it writes
-    /// fails, so its serving ends and lets go of the part's services. The number closed.
-    pub(crate) fn end(&self) -> usize {
-        let open = std::mem::take(&mut *self.open.lock_recover());
-        for stream in open.values() {
-            // A shutdown wakes the reader and never waits: a connection already gone is
-            // closed already.
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+    /// Let go of every connection the part serves, as it ends: the ones that hand on take no new
+    /// call and are let go once every call they made was answered, cancelling what still runs
+    /// after [`CALLS_FINISH_WITHIN`]; every other is closed now, as is one that still holds on
+    /// after [`HANDED_WITHIN`] or once `stop` is told. The number handed on, and the number
+    /// closed.
+    pub(crate) fn hand_over(&self, stop: &crate::device::serve::Stop) -> (usize, usize) {
+        self.handing.store(true, Ordering::Release);
+        #[cfg(unix)]
+        if let Some((waker, _)) = &self.wake {
+            // Each connection waiting on its client polls the other end: one byte wakes all.
+            let _ = (&*waker).write_all(&[1]);
         }
-        open.len()
+        let started = Instant::now();
+        let mut open = self.open.lock_recover();
+        let before = open.len();
+        open.retain(|_, (stream, hands_on)| {
+            if !*hands_on {
+                // A shutdown wakes the reader and never waits: a connection already gone is
+                // closed already.
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+            *hands_on
+        });
+        let handing = open.len();
+        let mut cut = 0;
+        while !open.is_empty() {
+            let waited = started.elapsed();
+            if waited >= CALLS_FINISH_WITHIN && !self.overdue.swap(true, Ordering::AcqRel) {
+                tracing::error!(
+                    connections = open.len(),
+                    "calls made to the person's part that ended still run: cancelled, so their \
+                     connections are handed to the part that starts next"
+                );
+            }
+            if waited >= HANDED_WITHIN || stop.told() {
+                tracing::error!(
+                    connections = open.len(),
+                    "connections to the person's part that ended were not handed on in time: \
+                     closed"
+                );
+                for (stream, _) in open.values() {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+                cut = open.len();
+                open.clear();
+                break;
+            }
+            open = self
+                .let_go
+                .wait_timeout(open, HANDED_EVERY)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        drop(open);
+        (
+            handing.saturating_sub(cut),
+            before.saturating_sub(handing).saturating_add(cut),
+        )
     }
 
     /// Wait at most `within` for the calls the part serves to be answered: whether they all
@@ -2316,14 +2600,96 @@ impl Connections {
     }
 }
 
+impl tilo_actions::remote::Handover for Connections {
+    fn handing(&self) -> bool {
+        self.handing.load(Ordering::Acquire)
+    }
+
+    fn overdue(&self) -> bool {
+        self.overdue.load(Ordering::Acquire)
+    }
+}
+
+/// How long the calls made to a person's part that ends may run before they are cancelled: what
+/// the line wire waits for an answer, and some.
+const CALLS_FINISH_WITHIN: Duration = Duration::from_secs(20);
+
+/// How long a connection to a person's part that ends may take to be handed on before it is
+/// closed.
+const HANDED_WITHIN: Duration = Duration::from_secs(25);
+
+/// How often a part that ends looks whether its connections were handed on, or it was told to
+/// stop.
+const HANDED_EVERY: Duration = Duration::from_millis(50);
+
 /// A connection [`Connections::hold`] keeps, until its serving ends.
 pub(crate) struct HeldConnection(std::sync::Weak<Connections>, u64);
+
+impl HeldConnection {
+    /// Hand this connection on when the part ends, rather than close it: what it reads waits on
+    /// the part's end as on its client ([`PartInput`]). `None` where a connection cannot be.
+    #[cfg(unix)]
+    fn hands_on(&self) -> Option<Arc<Connections>> {
+        let connections = self.0.upgrade()?;
+        connections.wake.as_ref()?;
+        let mut open = connections.open.lock_recover();
+        open.get_mut(&self.1)?.1 = true;
+        drop(open);
+        Some(connections)
+    }
+}
 
 impl Drop for HeldConnection {
     fn drop(&mut self) {
         if let Some(connections) = self.0.upgrade() {
             connections.open.lock_recover().remove(&self.1);
+            connections.let_go.notify_all();
         }
+    }
+}
+
+/// What a connection that is handed on reads: its client's lines, until the part serving it
+/// ends. Then a read that would wait says [`io::ErrorKind::TimedOut`] instead, often, so the
+/// serving looks whether the calls it made were answered.
+#[cfg(unix)]
+struct PartInput {
+    stream: Stream,
+    connections: Arc<Connections>,
+}
+
+#[cfg(unix)]
+impl Read for PartInput {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        let Some((_, woken)) = self.connections.wake.as_ref() else {
+            return self.stream.read(buf);
+        };
+        let handing = self.connections.handing.load(Ordering::Acquire);
+        let mut polled = [
+            PollFd::new(&self.stream, PollFlags::IN),
+            PollFd::new(woken, PollFlags::IN),
+        ];
+        let every = Timespec {
+            tv_sec: 0,
+            tv_nsec: 25_000_000,
+        };
+        let (polled, within) = if handing {
+            (&mut polled[..1], Some(&every))
+        } else {
+            (&mut polled[..], None)
+        };
+        match poll(polled, within) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => return Err(io::ErrorKind::TimedOut.into()),
+            Err(error) => return Err(error.into()),
+        }
+        if polled
+            .first()
+            .is_none_or(|stream| stream.revents().is_empty())
+        {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        self.stream.read(buf)
     }
 }
 

@@ -2856,11 +2856,7 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
         tilo_api::daemon::admission::Admission::new(DAEMON, true),
     ));
     let answers = crate::device::unclaimed::DeviceOnly::at(key, place, root.clone(), DAEMON);
-    let native = std::sync::Arc::new(super::Native::new(
-        answers,
-        founding_peer,
-        admission,
-    ));
+    let native = std::sync::Arc::new(super::Native::new(answers, founding_peer, admission));
     let sockets = root.join("sockets");
     std::fs::create_dir_all(&sockets).unwrap();
     let listener =
@@ -2936,5 +2932,234 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
     assert!(
         !said.contains("\"founding\":true"),
         "the person is made already: {said}"
+    );
+}
+
+/// A call a person's program made over the action wire, still running as the person's part
+/// ends, is answered on the connection it was made on; a call made on it while the part changes
+/// waits there and is answered by the part that starts next. Nothing the caller sent is lost,
+/// and the caller never connects again.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one connection across two parts, read top to bottom"
+)]
+fn a_call_in_flight_as_the_persons_part_ends_is_answered_and_the_next_one_waits_for_the_new_part() {
+    use io::{BufRead as _, Write as _};
+    use std::sync::{Arc, Mutex, atomic::Ordering};
+    use tilo_actions::remote::{
+        Caller, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
+        RemoteActionMessage, RemoteActionTarget, TestProvider, pending,
+    };
+    use tilo_api::daemon::admission::Admission;
+    // The person's own account, which their daemon runs as.
+    const DAEMON: u32 = 990;
+
+    let dir = tempfile::tempdir().unwrap();
+    let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+    keys.ensure_directories().unwrap();
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let ada = ed25519_dalek::SigningKey::from_bytes(&[13; 32]);
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: ada.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "desk".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: now.saturating_sub(60_000_000_000),
+        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &ada).unwrap();
+    tilo_device_identity::persist::write_public_key(
+        &keys.user_pubkey,
+        &ada.verifying_key().to_bytes(),
+    )
+    .unwrap();
+    tilo_device_identity::persist::write_device_cert(&keys.device_cert, &cert).unwrap();
+    let answers = crate::device::unclaimed::DeviceOnly::new(
+        key,
+        tilo_device_identity::login::Place::at(dir.path().join("login"), keys),
+    );
+    let admission: &'static Admission = Box::leak(Box::new(Admission::new(DAEMON, true)));
+    let native = Arc::new(super::Native::new(answers.clone(), test_peer, admission));
+
+    // A part of the person's, answering their calls with `provider` and holding its connections
+    // in `connections`.
+    let part = |provider: &Arc<TestProvider>, connections: &Arc<super::Connections>| {
+        let provider = Arc::clone(provider);
+        let answers = answers.clone();
+        super::Endpoint {
+            session_factory: Arc::new(move || {
+                Ok(tilo_mcp::McpServer::for_agent(
+                    answers.clone(),
+                    String::new(),
+                    "agent",
+                    "",
+                ))
+            }),
+            status: Arc::new(|| super::Status {
+                version: 1,
+                pid: std::process::id(),
+                workspace: "home".into(),
+            }),
+            search: Arc::new(std::sync::OnceLock::new()),
+            media: None,
+            other_devices: None,
+            agents: None,
+            frames: crate::device::local::Frames::new(move |_| {
+                Ok((
+                    Arc::clone(&provider)
+                        as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+                    Caller::local_person("ada"),
+                ))
+            }),
+            to_agents: None,
+            launch: None,
+            connections: Some(Arc::clone(connections)),
+        }
+    };
+
+    // The first part's call runs until the test lets it finish.
+    let (finishing, finished) = std::sync::mpsc::channel();
+    let asked = Arc::new((Mutex::new(0_usize), std::sync::Condvar::new()));
+    let first = Arc::new({
+        let (finishing, asked) = (Mutex::new(finishing), Arc::clone(&asked));
+        TestProvider::new().answering(move |_, request| {
+            let (completer, answer) = pending();
+            finishing
+                .lock()
+                .unwrap()
+                .send((completer, request.invocation))
+                .unwrap();
+            *asked.0.lock().unwrap() += 1;
+            asked.1.notify_all();
+            answer
+        })
+    });
+    let first_connections = Arc::new(super::Connections::default());
+    native.serve_the_person(part(&first, &first_connections));
+    native.seats.serve(Arc::new(Linked::default()));
+    let socket = dir.path().join("native.sock");
+    let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
+    {
+        let native = Arc::clone(&native);
+        std::thread::spawn(move || native.accept(&listener));
+    }
+
+    let call = |path: &str| {
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: "test".to_owned(),
+                address: tilo_actions::ActionAddress::new("workspaces", path),
+            },
+            argument: InvokeArgument::default(),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: Some(30_000),
+            appearance: None,
+            signed: None,
+        };
+        let line = RemoteActionFrame::new(RemoteActionMessage::Invoke(request.clone()))
+            .encode()
+            .unwrap();
+        (request.invocation, line)
+    };
+    PEER.store(DAEMON, Ordering::SeqCst);
+    let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut answers_read = io::BufReader::new(stream.try_clone().unwrap());
+    let answer = |answers_read: &mut io::BufReader<std::os::unix::net::UnixStream>| {
+        let mut line = String::new();
+        answers_read
+            .read_line(&mut line)
+            .expect("the call is answered on the connection it was made on");
+        match RemoteActionFrame::decode(line.as_bytes()).unwrap().message {
+            RemoteActionMessage::Receipt(receipt) => (receipt.invocation, receipt.status),
+            other => panic!("a receipt answers the call: {other:?}"),
+        }
+    };
+
+    let (founding, line) = call("create");
+    (&stream).write_all(&line).unwrap();
+    (&stream).write_all(b"\n").unwrap();
+    let Ok((completer, invocation)) = finished.recv_timeout(Duration::from_secs(10)) else {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut said = String::new();
+        let _ = answers_read.read_line(&mut said);
+        panic!("the first part runs the call, but the connection was answered: {said:?}");
+    };
+    assert_eq!(invocation, founding);
+
+    // The part ends while the call runs: no part serves the person while the next one starts.
+    native.forget_the_person();
+    let stop = crate::device::serve::Stop::default();
+    let handing = {
+        let connections = Arc::clone(&first_connections);
+        std::thread::spawn(move || connections.hand_over(&stop))
+    };
+    while !tilo_actions::remote::Handover::handing(&*first_connections) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // A call made now is not the part's that ends: it waits for the next.
+    let (next_call, line) = call("list");
+    (&stream).write_all(&line).unwrap();
+    (&stream).write_all(b"\n").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        *asked.0.lock().unwrap(),
+        1,
+        "the part that ends takes no new call"
+    );
+    assert!(
+        !handing.is_finished(),
+        "the part waits for the call it took to be answered"
+    );
+
+    completer.complete(Ok(InvocationReceipt {
+        invocation: founding,
+        status: ReceiptStatus::Completed {
+            output: tilo_actions::ActionOutput::default(),
+        },
+    }));
+    let (answered, status) = answer(&mut answers_read);
+    assert_eq!(answered, founding, "the call in flight is answered first");
+    assert!(
+        matches!(status, ReceiptStatus::Completed { .. }),
+        "{status:?}"
+    );
+    let (handed, closed) = handing.join().unwrap();
+    assert_eq!(
+        (handed, closed),
+        (1, 0),
+        "the connection is handed on, never closed"
+    );
+    assert_eq!(first.asked().len(), 1);
+
+    // The next part starts, and the call that waited is its.
+    let second = Arc::new(TestProvider::new());
+    native.serve_the_person(part(&second, &Arc::new(super::Connections::default())));
+    let (answered, status) = answer(&mut answers_read);
+    assert_eq!(answered, next_call, "the call that waited is answered");
+    assert!(
+        matches!(status, ReceiptStatus::Completed { .. }),
+        "{status:?}"
+    );
+    assert_eq!(
+        second
+            .asked()
+            .iter()
+            .map(|asked| asked.invocation)
+            .collect::<Vec<_>>(),
+        vec![next_call],
+        "the next part answers it"
     );
 }

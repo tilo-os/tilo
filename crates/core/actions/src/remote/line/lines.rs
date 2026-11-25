@@ -69,26 +69,89 @@ pub trait CallLanes: Send + Sync {
 
 /// [`serve_lines`], with `lanes` answering the frames it owns before the provider sees them.
 pub fn serve_lines_with<H: ActionProvider + Clone + Send + Sync + 'static>(
-    mut tree: impl FnMut(&RemoteActionFrame) -> Result<(H, Caller), ActionCallError>,
+    tree: impl FnMut(&RemoteActionFrame) -> Result<(H, Caller), ActionCallError>,
     uploads: &HostedContentPuts,
     first: Option<Vec<u8>>,
-    mut input: impl BufRead,
+    input: impl BufRead,
     output: impl Write + Send + 'static,
     slack: Duration,
     lanes: Option<&dyn CallLanes>,
 ) {
+    let _ended = serve_lines_handing(tree, uploads, first, input, output, slack, lanes, None);
+}
+
+/// What tells a connection's serving that what answers it is ending ([`serve_lines_handing`]).
+pub trait Handover: Sync {
+    /// Whether what answers the connection is ending: no call is taken any more.
+    fn handing(&self) -> bool;
+    /// Whether the time to finish the calls in flight ran out: those still running are
+    /// cancelled.
+    fn overdue(&self) -> bool;
+}
+
+/// How a connection's serving ended ([`serve_lines_handing`]).
+pub enum Served<R> {
+    /// The connection ended, or its output closed.
+    Ended,
+    /// What answered it is ending: every call taken here was answered, and the connection is
+    /// handed on, to be served by what answers next.
+    Handed {
+        /// The line read and not answered, which asks a call of what answers next.
+        held: Option<Vec<u8>>,
+        /// The input, at the line after it.
+        input: R,
+        /// Where answers went.
+        output: Box<dyn Write + Send>,
+    },
+}
+
+/// [`serve_lines_with`], handing the connection on once `handover` says what answers it ends.
+///
+/// From then on no new call is taken: a frame that follows a call this connection made (its
+/// observing, its cancelling, a step of a transfer) is still answered here, and the first frame
+/// that asks something new is held. Once every call the connection made was answered (or
+/// [`Handover::overdue`] says their time ran out, and they are cancelled), the connection is
+/// handed back with that held line, so its caller sees no gap. An input that reads nothing for
+/// now says so with [`std::io::ErrorKind::TimedOut`], and is read again after `handover` is
+/// asked.
+pub fn serve_lines_handing<
+    H: ActionProvider + Clone + Send + Sync + 'static,
+    R: BufRead,
+    W: Write + Send + 'static,
+>(
+    mut tree: impl FnMut(&RemoteActionFrame) -> Result<(H, Caller), ActionCallError>,
+    uploads: &HostedContentPuts,
+    first: Option<Vec<u8>>,
+    mut input: R,
+    output: W,
+    slack: Duration,
+    lanes: Option<&dyn CallLanes>,
+    handover: Option<&dyn Handover>,
+) -> Served<R> {
     let connection = Arc::new(Connection {
-        output: Mutex::new(output),
+        output: Mutex::new(Some(output)),
         waiting: AtomicUsize::new(0),
         in_flight: Mutex::default(),
     });
     let mut next = first;
-    loop {
+    let mut partial = Vec::new();
+    let stopped = loop {
         let line = match next.take() {
             Some(line) => line,
-            None => match read_line(&mut input) {
+            None => match read_line(&mut input, &mut partial) {
                 Ok(Some(line)) => line,
-                Ok(None) | Err(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => match handover {
+                    Some(handover)
+                        if handover.handing()
+                            && partial.is_empty()
+                            && connection.answered(handover) =>
+                    {
+                        break Stopped::Handed(None);
+                    }
+                    Some(_) => continue,
+                    None => break Stopped::Ended,
+                },
+                Ok(None) | Err(_) => break Stopped::Ended,
             },
         };
         let frame = match RemoteActionFrame::decode(&line) {
@@ -98,18 +161,28 @@ pub fn serve_lines_with<H: ActionProvider + Clone + Send + Sync + 'static>(
                     &connection.output,
                     &line_refusal("parse_error", &error.to_string()),
                 ) {
-                    break;
+                    break Stopped::Ended;
                 }
                 continue;
             }
         };
+        if let Some(handover) = handover
+            && handover.handing()
+            && !connection.follows(&frame.message)
+        {
+            // A new call is for what answers next: it waits until every call taken here is.
+            while !connection.answered(handover) {
+                std::thread::sleep(ANSWERED_EVERY);
+            }
+            break Stopped::Handed(Some(line));
+        }
         if let Some(lanes) = lanes {
             match lanes.take(&frame.message) {
                 Take::NotCall => {}
                 Take::Silent => continue,
                 Take::Answer(answer) => {
                     if !write_line(&connection.output, &answer) {
-                        break;
+                        break Stopped::Ended;
                     }
                     continue;
                 }
@@ -123,7 +196,7 @@ pub fn serve_lines_with<H: ActionProvider + Clone + Send + Sync + 'static>(
                     frame_line,
                 );
                 if !write_line(&connection.output, &answer) {
-                    break;
+                    break Stopped::Ended;
                 }
                 continue;
             }
@@ -136,6 +209,7 @@ pub fn serve_lines_with<H: ActionProvider + Clone + Send + Sync + 'static>(
                 .lock_recover()
                 .insert(invocation, (provider.clone(), caller.clone()));
         }
+        let ended = invocation.or_else(|| observed_by(&frame.message));
         match answer_frame(
             provider,
             caller,
@@ -143,18 +217,27 @@ pub fn serve_lines_with<H: ActionProvider + Clone + Send + Sync + 'static>(
             frame.message,
             slack,
             &connection,
-            invocation,
+            ended,
         ) {
             Answered::Spawned => {}
-            Answered::Ended => break,
+            Answered::Ended => break Stopped::Ended,
             Answered::Line(answer) => {
                 if !write_line(&connection.output, &answer) {
-                    break;
+                    break Stopped::Ended;
                 }
             }
         }
-    }
-    // The connection ended: what it was still waiting on is cancelled, as its caller's call.
+    };
+    finish(&connection, stopped, input)
+}
+
+/// End serving `connection`: what it still waits on is cancelled, as its caller's call, and
+/// one `stopped` to be handed on goes on with what answers next, from `input`.
+fn finish<H: ActionProvider, R, W: Write + Send + 'static>(
+    connection: &Connection<H, W>,
+    stopped: Stopped,
+    input: R,
+) -> Served<R> {
     let running: Vec<(InvocationId, H, Caller)> = connection
         .in_flight
         .lock_recover()
@@ -164,14 +247,62 @@ pub fn serve_lines_with<H: ActionProvider + Clone + Send + Sync + 'static>(
     for (invocation, provider, caller) in running {
         let _cancelling = provider.cancel(&caller, &invocation);
     }
+    let Stopped::Handed(held) = stopped else {
+        return Served::Ended;
+    };
+    // A waiting answer still being made writes nowhere once the connection is handed on: what
+    // answers next writes to it alone.
+    let Some(output) = connection.output.lock_recover().take() else {
+        return Served::Ended;
+    };
+    Served::Handed {
+        held,
+        input,
+        output: Box::new(output),
+    }
 }
+
+/// Why a connection's serving stopped reading it.
+enum Stopped {
+    /// It ended, or its output closed.
+    Ended,
+    /// What answers it ends: the connection goes on with what answers next, from the line held,
+    /// if one was.
+    Handed(Option<Vec<u8>>),
+}
+
+/// How often a connection handing over looks whether its calls were answered.
+const ANSWERED_EVERY: Duration = Duration::from_millis(10);
 
 /// What one connection keeps while it serves: where answers go, how many frames wait at once, and
 /// the calls it still waits on, each cancelled when the connection ends.
 struct Connection<H, W> {
-    output: Mutex<W>,
+    /// `None` once the connection is handed on.
+    output: Mutex<Option<W>>,
     waiting: AtomicUsize,
     in_flight: Mutex<HashMap<InvocationId, (H, Caller)>>,
+}
+
+impl<H, W> Connection<H, W> {
+    /// Whether every call taken here was answered: none waits for its answer, and none runs on,
+    /// unless `handover` says their time ran out.
+    fn answered(&self, handover: &dyn Handover) -> bool {
+        self.waiting.load(Ordering::Acquire) == 0
+            && (self.in_flight.lock_recover().is_empty() || handover.overdue())
+    }
+
+    /// Whether `message` follows a call this connection made, rather than asking a new one.
+    fn follows(&self, message: &RemoteActionMessage) -> bool {
+        match message {
+            RemoteActionMessage::Observe { invocation, .. }
+            | RemoteActionMessage::Cancel { invocation } => {
+                self.in_flight.lock_recover().contains_key(invocation)
+            }
+            RemoteActionMessage::ContentPutRequest { .. }
+            | RemoteActionMessage::ContentGetRequest { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 /// What became of the answer to one frame.
@@ -222,7 +353,7 @@ fn answer_frame<H: ActionProvider + Clone + Send + Sync + 'static, W: Write + Se
         message
             if message.waits() && connection.waiting.load(Ordering::Relaxed) < WAITING_AT_ONCE =>
         {
-            connection.waiting.fetch_add(1, Ordering::Relaxed);
+            connection.waiting.fetch_add(1, Ordering::AcqRel);
             let (provider, caller) = (provider.clone(), caller.clone());
             let connection = Arc::clone(connection);
             let spawned = std::thread::Builder::new()
@@ -235,7 +366,7 @@ fn answer_frame<H: ActionProvider + Clone + Send + Sync + 'static, W: Write + Se
                         connection.in_flight.lock_recover().remove(&invocation);
                     }
                     write_line(&connection.output, &answer);
-                    connection.waiting.fetch_sub(1, Ordering::Relaxed);
+                    connection.waiting.fetch_sub(1, Ordering::AcqRel);
                 });
             return if spawned.is_err() {
                 Answered::Ended
@@ -261,6 +392,15 @@ fn invocation_of(message: &RemoteActionMessage) -> Option<InvocationId> {
     }
 }
 
+/// The invocation a message observes: an answer that says it ended ends the connection's wait
+/// on it, when the connection made it.
+fn observed_by(message: &RemoteActionMessage) -> Option<InvocationId> {
+    match message {
+        RemoteActionMessage::Observe { invocation, .. } => Some(*invocation),
+        _ => None,
+    }
+}
+
 /// Whether the answer to an invocation ends it: one that runs on is kept as the connection's call
 /// until it ends or the connection does, and an answer this cannot read is its end.
 fn answers_the_end(answer: &str) -> bool {
@@ -282,36 +422,42 @@ fn no_content_store() -> ActionCallError {
 }
 
 /// Write `line` and its end; whether the other side still reads.
-fn write_line(output: &Mutex<impl Write>, line: &str) -> bool {
-    let mut output = output.lock_recover();
-    writeln!(output, "{line}")
-        .and_then(|()| output.flush())
-        .is_ok()
+fn write_line(output: &Mutex<Option<impl Write>>, line: &str) -> bool {
+    output.lock_recover().as_mut().is_some_and(|output| {
+        writeln!(output, "{line}")
+            .and_then(|()| output.flush())
+            .is_ok()
+    })
 }
 
 /// The next line of `input`, without its end; `None` once it ended. A line longer than any
-/// frame is read past and answered as the empty line, which is no frame.
-fn read_line(input: &mut impl BufRead) -> std::io::Result<Option<Vec<u8>>> {
-    let mut line = Vec::new();
+/// frame is read past and answered as the empty line, which is no frame. What was read of a line
+/// when reading failed stays in `partial`, read on from there next time.
+fn read_line(input: &mut impl BufRead, partial: &mut Vec<u8>) -> std::io::Result<Option<Vec<u8>>> {
     let limit = u64::try_from(MAX_REMOTE_ACTION_FRAME_BYTES.saturating_add(1)).unwrap_or(u64::MAX);
-    let read = std::io::Read::take(&mut *input, limit).read_until(b'\n', &mut line)?;
-    if read == 0 {
-        return Ok(None);
+    if partial.len() <= MAX_REMOTE_ACTION_FRAME_BYTES {
+        let left = limit.saturating_sub(u64::try_from(partial.len()).unwrap_or(u64::MAX));
+        let read = std::io::Read::take(&mut *input, left).read_until(b'\n', partial)?;
+        if read == 0 && partial.is_empty() {
+            return Ok(None);
+        }
+        let mut line = std::mem::take(partial);
+        if line.last() == Some(&b'\n') {
+            line.pop();
+            return Ok(Some(line));
+        }
+        if line.len() <= MAX_REMOTE_ACTION_FRAME_BYTES {
+            // The input ended within its last line.
+            return Ok(Some(line));
+        }
+        // Too long: what is left of it is read past, and the line is kept as too long.
+        *partial = line;
     }
-    if line.last() == Some(&b'\n') {
-        line.pop();
-        return Ok(Some(line));
-    }
-    if line.len() <= MAX_REMOTE_ACTION_FRAME_BYTES {
-        // The input ended within its last line.
-        return Ok(Some(line));
-    }
-    // Too long: what is left of it is read and dropped.
-    let mut rest = Vec::new();
     loop {
-        rest.clear();
+        let mut rest = Vec::new();
         let read = std::io::Read::take(&mut *input, limit).read_until(b'\n', &mut rest)?;
         if read == 0 || rest.last() == Some(&b'\n') {
+            partial.clear();
             return Ok(Some(Vec::new()));
         }
     }

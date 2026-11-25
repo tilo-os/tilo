@@ -184,11 +184,24 @@ impl Frames {
     /// keeps open after it.
     pub(crate) fn serve(
         &self,
-        mut stream: Stream,
+        stream: Stream,
         first: &[u8],
         input: impl BufRead,
         answering: Option<crate::daemon::AnsweringCall>,
     ) {
+        let _served = self.serve_handing(stream, first, input, answering, None);
+    }
+
+    /// [`Self::serve`], handing the connection on once `handover` says the part that serves it
+    /// ends ([`remote::serve_lines_handing`]).
+    pub(crate) fn serve_handing<R: BufRead>(
+        &self,
+        mut stream: Stream,
+        first: &[u8],
+        input: R,
+        answering: Option<crate::daemon::AnsweringCall>,
+        handover: Option<&dyn remote::Handover>,
+    ) -> remote::Served<R> {
         // The tree's actions run their steps on the process's runtime, as they do for MCP.
         let _runtime = tilo_rt::app().handle().enter();
         let own = match (self.tree)(None) {
@@ -200,7 +213,7 @@ impl Frames {
                     "{}",
                     remote::line_refusal("unavailable", &why.to_string())
                 );
-                return;
+                return remote::Served::Ended;
             }
         };
         let trees = Arc::clone(&self.tree);
@@ -258,7 +271,7 @@ impl Frames {
             }
             _ => None,
         };
-        remote::serve_lines_with(
+        remote::serve_lines_handing(
             in_workspace,
             &self.uploads,
             Some(first.to_vec()),
@@ -270,7 +283,8 @@ impl Frames {
             SLACK,
             lane.as_ref()
                 .map(|lane| lane.as_ref() as &dyn remote::CallLanes),
-        );
+            handover,
+        )
     }
 }
 

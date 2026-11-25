@@ -606,7 +606,7 @@ fn first_request(stream: Stream, read: Vec<u8>, socket: &Socket, runtime: &tokio
     let mut read = first.into_bytes();
     read.extend_from_slice(reader.buffer());
     drop(reader);
-    socket.agents.serve(stream, read, None);
+    let _handed = socket.agents.serve(stream, read, None, false);
 }
 
 /// How long `tilo status` waits for the runtime to say how the peer stands before it is answered

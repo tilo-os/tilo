@@ -1741,9 +1741,9 @@ impl Daemon {
         &self.agents
     }
 
-    /// The connections this part of the daemon serves: each is closed when it ends
-    /// ([`crate::daemon::Connections::end`]), so its clients connect again to the part that
-    /// starts next rather than being answered by this one's services after they ended.
+    /// The connections this part of the daemon serves: each is handed on or closed when it ends
+    /// ([`crate::daemon::Connections::hand_over`]), so its clients reach the part that starts
+    /// next rather than being answered by this one's services after they ended.
     pub(crate) fn connections(&self) -> &Arc<crate::daemon::Connections> {
         &self.connections
     }
