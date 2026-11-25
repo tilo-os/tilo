@@ -74,12 +74,11 @@ path = "src/main.rs"
 [dependencies]
 tilo-paths.workspace = true
 agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
-# The workspace's Hugging Face sign-in, asked of the session on the model
-# manager's socket.
-accounts = { package = "tilo-accounts", path = "../../integrations/accounts" }
-# Signing in with Hugging Face by device code from the command line, which
-# the session keeps.
+# Signing in with Hugging Face by device code from a terminal: the token is kept as the
+# model provider's key through the published `models` actions.
 account-credentials = { path = "../../integrations/account-credentials", default-features = false, features = ["hugging-face"] }
+# The one dispatch: the published `models` actions a terminal sign-in calls as the person.
+tilo-actions = { path = "../../core/actions" }
 # The signed desired-state half of the extension helper.
 tilo-extension = { path = "../../os/extension-helper" }
 tilo-files = { path = "../../platform/tilo-files" }
@@ -115,8 +114,6 @@ settings-store = { package = "tilo-settings-store", path = "../../desktop/settin
 wasmi = { version = "=1.1.0", default-features = false, features = ["std", "simd"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
-# A stand-in session on the model manager's socket.
-accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["sign-ins-fixture"] }
 
 [lints]
 workspace = true

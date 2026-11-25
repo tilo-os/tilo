@@ -122,12 +122,8 @@ fn renewal(root: &Path) -> CredentialStore {
     CredentialStore::for_root(Some(root.to_path_buf()))
 }
 
-/// What `account`'s grant is renewed for: Hugging Face's model downloads for the workspace's
-/// Hugging Face account, else the mail or calendar its provider's sign-in opened.
+/// What `account`'s grant is renewed for: the mail or calendar its provider's sign-in opened.
 fn use_of(account: &accounts::Account) -> Result<OAuthUse, String> {
-    if accounts::sign_ins::is_model_hub_account(account) {
-        return Ok(account_credentials::hugging_face::HUGGING_FACE_DOWNLOADS);
-    }
     let issuer = issuer_of(account)?;
     Ok(if account.type_id.as_str() == accounts::email::TYPE_ID {
         OAuthUse::mail(issuer)
