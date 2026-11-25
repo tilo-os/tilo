@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use tilo_workspace_service::workspaces::MemberDevice;
 use tilo_workspace_service::workspaces::fixtures::{TestGroupKeys, governor, test_host_holding};
 use tilolang_calendar::test_support::Rig;
@@ -146,4 +146,140 @@ fn a_calendar_server_that_refuses_the_password_keeps_no_entry() {
         rig.events().is_empty(),
         "nothing of the server's calendar is kept"
     );
+}
+
+/// An iCloud account its person asks for calendars keeps them beside its mail, with the app
+/// password it was added with, where the bridge reads the workspace's calendar accounts: the
+/// bridge signs in there as the account's address, and the calendar lists what iCloud holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
+    use tilo_actions::remote::{
+        ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, person_accounts,
+    };
+    use tilolang_calendar::engine::CalendarAccount;
+
+    const ADDRESS: &str = "ada@icloud.example";
+    const APP_PASSWORD: &str = "made-up-app-password-for-icloud";
+    // A calendar server on this machine stands in for iCloud's.
+    let icloud = Server::start(ADDRESS, APP_PASSWORD);
+    icloud.add_calendar("personal", "Personal");
+    icloud.add_calendar("family", "Family");
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
+    let workspaces = host.workspaces().clone();
+    workspaces.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    workspaces.sign_in_accounts_through(|_, password| {
+        if password == APP_PASSWORD {
+            Ok("signed in".into())
+        } else {
+            Err("IMAP server rejected the credential".into())
+        }
+    });
+    workspaces.keep_icloud_calendars_at(&icloud.url());
+    let workspace = workspaces.create("Calendar").await.unwrap().workspace;
+
+    // She adds her iCloud mail, asking for its calendars too.
+    let Value::Object(adding) = json!({
+        "address": ADDRESS,
+        "displayName": "Ada",
+        "incomingHost": "imap.mail.me.com",
+        "outgoingHost": "smtp.mail.me.com",
+        "outgoingPort": 587,
+        "password": APP_PASSWORD,
+        "services": {"mail": true, "calendar": true},
+    }) else {
+        unreachable!("arguments are an object")
+    };
+    let herself = Caller::authenticated(cert.user_public_key, cert.device_public_key)
+        .in_workspace(&workspace);
+    let receipt = workspaces
+        .device_actions()
+        .invoke(
+            &herself,
+            InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: person_accounts::target(person_accounts::ADD_MAIL),
+                argument: InvokeArgument::Json(adding),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            },
+        )
+        .await
+        .expect("the device's dispatch answers")
+        .expect("her iCloud account is added");
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("her own add is answered at once: {:?}", receipt.status);
+    };
+    let added = output.value.unwrap_or_default();
+    assert_eq!(added["provider"], "icloud", "{added}");
+    assert_eq!(
+        added["services"]["calendar"], true,
+        "one connect feeds both: {added}"
+    );
+
+    // The calendar account kept beside it, as the bridge's account source reads it.
+    let held = workspaces
+        .workspace_accounts(&workspace)
+        .await
+        .expect("the workspace's accounts are read");
+    let calendars = held.of_type(accounts::calendar::TYPE_ID);
+    assert_eq!(calendars.len(), 1, "one calendar account beside the mail");
+    let kept = &calendars[0];
+    let said = |name: &str| {
+        kept.config
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert_eq!(
+        said("server_url"),
+        icloud.url(),
+        "kept where iCloud keeps calendars"
+    );
+    assert_eq!(
+        said("username"),
+        ADDRESS,
+        "signed in as the account's address"
+    );
+    assert!(
+        !serde_json::to_string(kept).unwrap().contains(APP_PASSWORD),
+        "a kept account carries no password"
+    );
+    let account = CalendarAccount {
+        id: kept.id.to_string(),
+        name: kept.display_name.clone(),
+        server: said("server_url"),
+        username: said("username"),
+        password: APP_PASSWORD.to_owned(),
+        refused: None,
+        read_only: false,
+    };
+    host.shutdown().await;
+
+    // The calendar, with the bridge signed in as that account, lists iCloud's calendars.
+    let names = tokio::task::spawn_blocking(move || {
+        let mut rig = Rig::with_accounts(vec![account]);
+        rig.settle();
+        let mut names: Vec<String> = rig
+            .calendars()
+            .iter()
+            .map(|calendar| rig.text("Calendar", calendar, "name"))
+            .collect();
+        names.sort();
+        names
+    })
+    .await
+    .unwrap();
+    assert_eq!(names, ["Family", "Personal"]);
 }
