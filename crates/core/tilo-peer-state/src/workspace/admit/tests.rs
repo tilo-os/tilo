@@ -1722,10 +1722,18 @@ fn a_newer_base_an_administrator_made_carries_the_administrators_it_made() {
         "an administrator's base does not hand the workspace to anyone"
     );
 
-    // A base whose operation names a change its author has no grant for is refused whole, as
-    // is one changing the workspace's governance with no operation naming the change.
+    refuses_a_base_whose_changes_its_author_may_not_make(&held, rebased_after, adopted);
+}
+
+/// A base whose operation names a change its author has no grant for is refused whole, as is one
+/// changing the workspace's governance with no operation naming the change.
+fn refuses_a_base_whose_changes_its_author_may_not_make(
+    held: &AutoCommit,
+    rebased_after: impl Fn(&dyn Fn(&mut AutoCommit)) -> Vec<Vec<u8>>,
+    adopted: impl Fn(&[Vec<u8>]) -> Result<AdmittedWorkspace, AdmissionFailure>,
+) {
     let (stranger_key, stranger) = rooted(0x71);
-    let reached = crate::members::heads(&crate::members::ops(&held));
+    let reached = crate::members::heads(&crate::members::ops(held));
     let renamed_by_stranger = rebased_after(&|made: &mut AutoCommit| {
         made.put(ROOT, "name", "Renamed").unwrap();
         let op = governing(

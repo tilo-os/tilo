@@ -286,34 +286,7 @@ fn a_holder_that_is_no_member_writes_nothing_of_its_own() {
     let heads = peer.workspace_heads().unwrap();
 
     // Its own copy's row.
-    let held = crate::HeldCopy {
-        catching_up_from: [[7; 32]].into_iter().collect(),
-        ..Default::default()
-    };
-    assert!(
-        peer.clone()
-            .workspace_mut()
-            .report_copy(&holder, &held, now)
-            .is_err(),
-        "a holder that is no member says nothing of its copy in the workspace"
-    );
-    let mut doc = peer.admitted_workspace().unwrap().clone();
-    doc.set_actor(automerge::ActorId::from(holder.device_public_key.to_vec()));
-    let rows = match doc.get(ROOT, crate::HELD_COPIES_KEY).unwrap() {
-        Some((_, rows)) => rows,
-        None => doc
-            .put_object(ROOT, crate::HELD_COPIES_KEY, automerge::ObjType::Map)
-            .unwrap(),
-    };
-    doc.put(&rows, hex::encode(holder.device_public_key).as_str(), "{}")
-        .unwrap();
-    doc.commit();
-    let copy_row = doc
-        .get_changes(&heads)
-        .into_iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect();
-    assert!(from_author(&mut peer.clone(), holder.device_public_key, copy_row, now).is_err());
+    says_nothing_of_its_copy(&peer, &holder, now);
 
     // A redemption it signs.
     let redemption = invited(&peer, &authority_key, &guest, now);
@@ -382,4 +355,38 @@ fn a_holder_that_is_no_member_writes_nothing_of_its_own() {
         Some("Taken")
     );
     assert_eq!(receiver.workspace_heads().unwrap(), heads);
+}
+
+/// A holder that is no member reports no copy of its own: neither through the
+/// action that says where its copy stands nor as a change it authors.
+fn says_nothing_of_its_copy(peer: &StatePeer, holder: &DeviceCert, now: SystemTime) {
+    let held = crate::HeldCopy {
+        catching_up_from: [[7; 32]].into_iter().collect(),
+        ..Default::default()
+    };
+    assert!(
+        peer.clone()
+            .workspace_mut()
+            .report_copy(holder, &held, now)
+            .is_err(),
+        "a holder that is no member says nothing of its copy in the workspace"
+    );
+    let heads = peer.workspace_heads().unwrap();
+    let mut doc = peer.admitted_workspace().unwrap().clone();
+    doc.set_actor(automerge::ActorId::from(holder.device_public_key.to_vec()));
+    let rows = match doc.get(ROOT, crate::HELD_COPIES_KEY).unwrap() {
+        Some((_, rows)) => rows,
+        None => doc
+            .put_object(ROOT, crate::HELD_COPIES_KEY, automerge::ObjType::Map)
+            .unwrap(),
+    };
+    doc.put(&rows, hex::encode(holder.device_public_key).as_str(), "{}")
+        .unwrap();
+    doc.commit();
+    let copy_row = doc
+        .get_changes(&heads)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    assert!(from_author(&mut peer.clone(), holder.device_public_key, copy_row, now).is_err());
 }
