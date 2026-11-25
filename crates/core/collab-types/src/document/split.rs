@@ -87,14 +87,15 @@ pub fn merge_split_containers(
                 ObjType::List => {
                     let mut held: BTreeMap<String, usize> = BTreeMap::new();
                     for at in 0..merging.length(shown) {
-                        *held
+                        let count = held
                             .entry(fingerprint(&merging, shown, at.into()))
-                            .or_default() += 1;
+                            .or_default();
+                        *count = count.saturating_add(1);
                     }
                     for at in 0..merging.length(stray) {
                         let print = fingerprint(&merging, stray, at.into());
                         match held.get_mut(&print) {
-                            Some(count) if *count > 0 => *count -= 1,
+                            Some(count) if *count > 0 => *count = count.saturating_sub(1),
                             _ => {
                                 let end = merging.length(shown);
                                 copy_value(
@@ -161,9 +162,9 @@ fn once_by_id(
             Some(id) if seen.contains(&id) => doc.delete(list, at)?,
             Some(id) => {
                 seen.insert(id);
-                at += 1;
+                at = at.saturating_add(1);
             }
-            _ => at += 1,
+            _ => at = at.saturating_add(1),
         }
     }
     Ok(())
@@ -293,10 +294,10 @@ pub fn copy_across(
         }
         ObjType::Map | ObjType::Table => {
             for key in source.keys(from).collect::<Vec<_>>() {
-                if let Some((value, held)) = source.get(from, key.as_str())? {
-                    if let Some(child) = made(doc, value, Place::Key(&key))? {
-                        copy_across(source, &held, doc, &child)?;
-                    }
+                if let Some((value, held)) = source.get(from, key.as_str())?
+                    && let Some(child) = made(doc, value, Place::Key(&key))?
+                {
+                    copy_across(source, &held, doc, &child)?;
                 }
             }
         }

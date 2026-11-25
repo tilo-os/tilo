@@ -10,6 +10,7 @@
 
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ObjType, ROOT};
+use tilo_automerge::ApplyIncoming as _;
 use tilo_actions::surface::{FieldType, Surface};
 
 /// The containers at the root of `surface`'s record that its top-level fields keep their items
@@ -96,11 +97,11 @@ pub fn chain(
 ) -> Result<Vec<automerge::Change>, automerge::AutomergeError> {
     let founding = structure(kind, id, containers)?;
     let mut doc = AutoCommit::new();
-    doc.apply_changes([founding.clone()])?;
+    doc.apply_incoming([founding.clone()])?;
     let mut chain = vec![founding];
     for version in 1..=version {
         let step = tilo_resource::evolution::step(kind, id, version, &doc)?;
-        doc.apply_changes([step.clone()])?;
+        doc.apply_incoming([step.clone()])?;
         chain.push(step);
     }
     Ok(chain)
@@ -150,7 +151,7 @@ pub fn bring_up(
         .filter(|link| doc.get_change_by_hash(&link.hash()).is_none())
         .collect();
     changed |= !missing.is_empty();
-    doc.apply_changes(missing)?;
+    doc.apply_incoming(missing)?;
     if from < version || tilo_resource::evolution::stored_version(doc) < version {
         changed |= tilo_resource::evolution::rewrite((kind, id, version), from, rewrite, doc)?;
     }
@@ -174,7 +175,7 @@ pub fn found(
     if doc.get_change_by_hash(&founding.hash()).is_some() {
         return Ok(false);
     }
-    doc.apply_changes([founding])?;
+    doc.apply_incoming([founding])?;
     super::split::merge_split_containers(doc, kind, id, containers, app)?;
     Ok(true)
 }
@@ -205,6 +206,7 @@ mod tests {
 
     use automerge::transaction::Transactable as _;
     use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _};
+    use tilo_automerge::ApplyIncoming as _;
     use tilo_resource::evolution::{VERSION_KEY, stored_version};
 
     const KIND: &str = "test.founding.chain";
@@ -219,7 +221,7 @@ mod tests {
     /// its items as that device's change.
     fn device(version: u32, actor: u8, key: &str, wrote: &str) -> AutoCommit {
         let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from([actor; 16]));
-        doc.apply_changes(super::chain(KIND, ID, version, &containers()).unwrap())
+        doc.apply_incoming(super::chain(KIND, ID, version, &containers()).unwrap())
             .unwrap();
         let (_, items) = doc.get(ROOT, "items").unwrap().unwrap();
         doc.put(&items, key, wrote).unwrap();
@@ -227,8 +229,9 @@ mod tests {
         doc
     }
 
-    fn unchanged(_: &mut AutoCommit, _: u32) -> Result<(), tilo_resource::ModelError> {
-        Ok(())
+    /// A type whose versions change nothing but the version itself.
+    fn unchanged() -> impl Fn(&mut AutoCommit, u32) -> Result<(), tilo_resource::ModelError> {
+        |_, _| Ok(())
     }
 
     fn items(doc: &AutoCommit) -> Vec<String> {
@@ -240,10 +243,10 @@ mod tests {
     fn two_devices_with_their_own_writes_step_a_record_up_byte_for_byte_alike() {
         let mut here = device(1, 1, "milk", "2 l");
         let mut there = device(1, 2, "eggs", "6");
-        let (before_here, before_there) = (here.get_heads(), there.get_heads());
-        assert!(super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged, &mut here).unwrap());
+        let (own_heads, peer_heads) = (here.get_heads(), there.get_heads());
+        assert!(super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged(), &mut here).unwrap());
         assert!(
-            super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged, &mut there).unwrap()
+            super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged(), &mut there).unwrap()
         );
         let bytes = |changes: Vec<automerge::Change>| -> Vec<Vec<u8>> {
             changes
@@ -251,13 +254,13 @@ mod tests {
                 .map(|change| change.raw_bytes().to_vec())
                 .collect()
         };
-        let stepped_here = bytes(here.get_changes(&before_here));
-        let stepped_there = bytes(there.get_changes(&before_there));
+        let ours = bytes(here.get_changes(&own_heads));
+        let theirs = bytes(there.get_changes(&peer_heads));
         // Each device wrote the steps to versions 2 and 3 and nothing else, and both wrote the
         // same bytes: the derived ones, whatever each device's own writes were.
-        assert_eq!(stepped_here, stepped_there);
+        assert_eq!(ours, theirs);
         assert_eq!(
-            stepped_here,
+            ours,
             bytes(
                 super::chain(KIND, ID, 3, &containers())
                     .unwrap()
@@ -279,7 +282,7 @@ mod tests {
         assert_eq!(items(&here), ["eggs", "milk"]);
         // Brought up already: nothing more.
         assert!(
-            !super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged, &mut here).unwrap()
+            !super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged(), &mut here).unwrap()
         );
     }
 
@@ -325,9 +328,9 @@ mod tests {
         let mut there = made(2, "eggs");
         tilo_automerge::ApplyIncoming::merge_incoming(&mut here, &mut there).unwrap();
         let mut again = here.fork();
-        assert!(super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged, &mut here).unwrap());
+        assert!(super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged(), &mut here).unwrap());
         assert!(
-            super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged, &mut again).unwrap()
+            super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged(), &mut again).unwrap()
         );
         // Every holder converts it alike.
         assert_eq!(here.get_heads(), again.get_heads());
@@ -339,7 +342,7 @@ mod tests {
         assert_eq!(stored_version(&here), 2);
         assert!(here.get(ROOT, VERSION_KEY).unwrap().is_some());
         assert!(
-            !super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged, &mut here).unwrap()
+            !super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged(), &mut here).unwrap()
         );
     }
 }
