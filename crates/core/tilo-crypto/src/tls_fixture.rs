@@ -17,7 +17,12 @@ impl Drop for TlsFixture {
 /// Generate a constrained ephemeral CA and an IP-SAN server certificate. A
 /// loopback server is named `localhost` as well: a page served there is a
 /// secure context with a name, which passkeys need (they refuse an address).
-pub fn generate_tls_fixture(server_ip: std::net::IpAddr) -> Result<TlsFixture, String> {
+/// `names_besides` are the DNS names it answers for besides: a stand-in for a service
+/// its clients reach by the service's own names.
+pub fn generate_tls_fixture(
+    server_ip: std::net::IpAddr,
+    names_besides: &[String],
+) -> Result<TlsFixture, String> {
     use rcgen::{
         BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
         IsCa, Issuer, KeyPair, KeyUsagePurpose,
@@ -50,6 +55,7 @@ pub fn generate_tls_fixture(server_ip: std::net::IpAddr) -> Result<TlsFixture, S
     if server_ip.is_loopback() {
         names.push("localhost".to_owned());
     }
+    names.extend(names_besides.iter().cloned());
     let mut server_params = CertificateParams::new(names)
         .map_err(|error| format!("cannot encode TLS server IP: {error}"))?;
     server_params.not_before = not_before;
@@ -104,7 +110,7 @@ mod tests {
                 .map(|extension| T::from_der(extension.extn_value.as_bytes()).unwrap())
         }
 
-        let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
+        let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap(), &[]).expect("TLS fixture");
         assert!(fixture.server_private_key_pem.contains("PRIVATE KEY"));
 
         let ca = Certificate::from_pem(fixture.ca_certificate_pem.as_bytes()).unwrap();
@@ -144,5 +150,24 @@ mod tests {
             ),
             "a loopback server is named localhost too"
         );
+
+        // A stand-in for a service answers for the service's own names, and for its address.
+        let names = ["discord.com".to_owned(), "*.discord.media".to_owned()];
+        let fixture = generate_tls_fixture("11.0.0.2".parse().unwrap(), &names).unwrap();
+        let server = Certificate::from_pem(fixture.server_certificate_pem.as_bytes()).unwrap();
+        let san: SubjectAltName =
+            extension(&server, const_oid::db::rfc5280::ID_CE_SUBJECT_ALT_NAME).unwrap();
+        let dns: Vec<&str> = san
+            .0
+            .iter()
+            .filter_map(|name| match name {
+                GeneralName::DnsName(dns) => Some(dns.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dns, ["discord.com", "*.discord.media"]);
+        assert!(san.0.iter().any(
+            |name| matches!(name, GeneralName::IpAddress(bytes) if bytes.as_bytes() == [11, 0, 0, 2])
+        ));
     }
 }

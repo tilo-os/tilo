@@ -201,7 +201,7 @@ fn read_private_key(path: &Path) -> Result<Zeroizing<String>, String> {
 }
 
 fn usage() -> String {
-    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-ed25519-key PRIVATE_KEY PUBLIC_HEX\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto generate-tpm-authority-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto generate-tls-fixture IP CA_CERT SERVER_KEY SERVER_CERT\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto p256-public-key-sha256 PUBLIC_KEY\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto rsa-public-key-info PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256-efi PUBLIC_KEY EFI_IMAGE SIGNATURE\n  tilo-crypto verify-pcr-prediction PUBLIC_KEY PREDICTION GENERATION\n  tilo-crypto verify-p256-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto verify-release-bundle ROOT_CERT REKOR_PUBLIC_KEY TRUST_ENV PURPOSE INPUT BUNDLE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
+    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-ed25519-key PRIVATE_KEY PUBLIC_HEX\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto generate-tpm-authority-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto generate-tls-fixture IP CA_CERT SERVER_KEY SERVER_CERT [DNS_NAME...]\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto p256-public-key-sha256 PUBLIC_KEY\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto rsa-public-key-info PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256-efi PUBLIC_KEY EFI_IMAGE SIGNATURE\n  tilo-crypto verify-pcr-prediction PUBLIC_KEY PREDICTION GENERATION\n  tilo-crypto verify-p256-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto verify-release-bundle ROOT_CERT REKOR_PUBLIC_KEY TRUST_ENV PURPOSE INPUT BUNDLE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
 }
 
 fn generate_ed25519_key(private_path: &Path, public_path: &Path) -> Result<(), String> {
@@ -710,15 +710,18 @@ fn generate_tls_fixture_command(
     let ca_certificate = args.next().map(PathBuf::from).ok_or_else(usage)?;
     let server_key = args.next().map(PathBuf::from).ok_or_else(usage)?;
     let server_certificate = args.next().map(PathBuf::from).ok_or_else(usage)?;
-    if args.next().is_some() {
-        return Err(usage());
-    }
+    let names = args
+        .map(|name| {
+            name.into_string()
+                .map_err(|_| "a DNS name must be valid UTF-8".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let ip = ip
         .to_str()
         .ok_or("server IP must be valid UTF-8")?
         .parse()
         .map_err(|_| "server IP is invalid")?;
-    let fixture = tilo_crypto::generate_tls_fixture(ip)?;
+    let fixture = tilo_crypto::generate_tls_fixture(ip, &names)?;
     write_new(
         &ca_certificate,
         fixture.ca_certificate_pem.as_bytes(),

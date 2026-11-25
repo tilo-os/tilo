@@ -1588,7 +1588,7 @@ mod tests {
     fn certificate_inspection_reports_subject_expiry_and_bounds_pem_input() {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-        let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
+        let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap(), &[]).expect("TLS fixture");
         let pem = fixture.ca_certificate_pem.as_str();
         let info = inspect_certificate(pem.as_bytes()).expect("inspect CA certificate");
         assert_eq!(info.subject, "CN=Tilo Disposable Registry CA");
