@@ -183,12 +183,54 @@ where
 /// to this process's error output, which the test's own log keeps: an app that ends at its start
 /// says why there, as it does in a device's log. `RUST_LOG` adds to it.
 pub fn say_what_went_wrong() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::{Layer as _, util::SubscriberInitExt as _};
     let directives =
         tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref());
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(directives))
+    let (traced, also) = tracing_subscriber::reload::Layer::new(None::<AlsoTraced>);
+    let said = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
-        .try_init();
+        .with_filter(tracing_subscriber::EnvFilter::new(directives));
+    if tracing_subscriber::registry()
+        .with(traced)
+        .with(said)
+        .try_init()
+        .is_ok()
+    {
+        let _ = ALSO.set(also);
+    }
+}
+
+/// A layer a test hands this process's events to, beside the log [`say_what_went_wrong`] writes.
+pub type AlsoTraced =
+    Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync + 'static>;
+
+/// Where [`also_trace`] puts its layer.
+static ALSO: std::sync::OnceLock<
+    tracing_subscriber::reload::Handle<Option<AlsoTraced>, tracing_subscriber::Registry>,
+> = std::sync::OnceLock::new();
+
+/// Hand every event of this process to `layer` from now on, beside the log the harness writes: a
+/// test that counts what was traced reads it there.
+///
+/// `layer` carries no filter of its own: a filtered layer cannot be swapped in after the
+/// subscriber started. It sees every event and picks out the ones it counts.
+///
+/// # Panics
+///
+/// When the harness keeps no log in this process, or a test already handed it a layer.
+pub fn also_trace(layer: AlsoTraced) {
+    let also = ALSO
+        .get()
+        .expect("the harness traces this process: it runs on a daemon of its own");
+    also.modify(|traced| {
+        assert!(
+            traced.is_none(),
+            "one layer at a time is traced beside the log"
+        );
+        *traced = Some(layer);
+    })
+    .expect("the harness's trace takes the layer");
 }
 
 /// Run `test` again, alone, in a process whose home, identity and profile are a new
