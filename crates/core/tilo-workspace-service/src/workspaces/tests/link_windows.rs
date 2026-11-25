@@ -420,8 +420,11 @@ async fn a_revoked_devices_link_ends_and_another_members_stays_up() {
     )
     .await;
     match dialled {
-        Err(tilo_server_protocol::refusal::Refusal::DeviceRevoked) => {}
-        Err(refusal) => panic!("a revoked device is refused as revoked: {refusal}"),
+        Err(tilo_server_protocol::refusal::Refusal::NotAMember(reason)) => assert!(
+            reason.contains("revoked"),
+            "the refusal says the device was revoked: {reason}"
+        ),
+        Err(refusal) => panic!("a revoked device is refused as no member: {refusal}"),
         Ok(_) => panic!("a revoked device's link is refused before it listens"),
     }
     kept_link.abort();
