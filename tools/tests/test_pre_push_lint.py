@@ -106,9 +106,6 @@ DROP_IN_STUB = (CARGO_STUB.replace("printf 'start ", "printf 'dropin ")
                          '''  fmt) printf 'dropin-fmt %s\\n' "$*" >> "$HOOK_LOG"; exit 2 ;;'''))
 assert "dropin-fmt" in DROP_IN_STUB, "the drop-in stub must refuse to format"
 # t: `t cargo metadata` reads the workspace's metadata for a machine with no cargo of its own, and
-# `t test` answers each check it is asked for as a streamed result line, then the whole run's
-# document spread over lines, as `--json` prints them. STUB_T_OUTCOME and STUB_T_CACHED (the run a
-# cached answer came from) say what it answers; with STUB_T_ERROR it cannot run them at all.
 # t: `t cargo metadata` reads the workspace's metadata for a machine with no cargo of its own, and
 # `t test` answers each check it is asked for as a streamed result line, then the whole run's
 # document spread over lines, as `--json` prints them. STUB_T_OUTCOME and STUB_T_CACHED (the run a
@@ -123,6 +120,14 @@ case "$1" in
   scope)
     [ "${STUB_T_SCOPE_STATUS:-0}" = 0 ] || exit "$STUB_T_SCOPE_STATUS"
     printf '%s\\n' "${STUB_T_SCOPE:-}"; exit 0 ;;
+  main)
+    [ "${STUB_BOARD_STATUS:-0}" = 0 ] || exit "$STUB_BOARD_STATUS"
+    if [ -n "${STUB_BOARD:-}" ]; then printf '%s\\n' "$STUB_BOARD"; else printf '{"items":[]}\\n'; fi
+    exit 0 ;;
+  log)
+    [ "${STUB_LOG_STATUS:-0}" = 0 ] || exit "$STUB_LOG_STATUS"
+    printf '%s\\n' "${STUB_LOG:-}"
+    exit 0 ;;
   cargo)
     shift
     printf 'start %s t cargo %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
@@ -147,8 +152,8 @@ case "$1" in
       for named in ${STUB_T_NEW:-}; do
         [ "$named" = "$check" ] && blame='"blame":"new",'
       done
-      printf '{"seq":2,"body":{"finished":{%s"check":"%s","outcome":"%s","cached":%s,"log":"5eed","excerpt":"%s","duration_ms":61000}}}\\n' \\
-        "$blame" "$check" "${STUB_T_OUTCOME:-pass}" "${STUB_T_CACHED:-null}" "${STUB_T_EXCERPT:-}"
+      printf '{"seq":2,"body":{"finished":{%s"check":"%s","outcome":"%s","cached":%s,"log":"5eed","excerpt":"%s","findings":%s,"duration_ms":61000}}}\\n' \\
+        "$blame" "$check" "${STUB_T_OUTCOME:-pass}" "${STUB_T_CACHED:-null}" "${STUB_T_EXCERPT:-}" "${STUB_T_FINDINGS:-[]}"
     done
     printf '{\\n  "results": [],\\n  "run": "r1"\\n}\\n'
     [ "${STUB_T_OUTCOME:-pass}" = pass ] && exit 0
@@ -342,14 +347,16 @@ class PrePushLintTests(unittest.TestCase):
     def environment(self, page=True, status=0, sleep=0, drop_in=False, unformatted=False,
                     agent=False, t_outcome="pass", t_cached=None, t_excerpt="", t_error="",
                     t_scope=None, t_scope_status=2, t_inherited="", t_unknown="", t_new="",
-                    t_exit3=False) -> dict:
+                    t_exit3=False, t_findings=None, t_board=None, t_board_status=0,
+                    t_log="", t_log_status=0) -> dict:
         """The hook's environment: only the stubs, never this machine's toolchain.
 
         `agent` pushes as a coding agent does, whose shell says so in its environment.
         `t_scope` is what `t scope --names` answers, and `t_scope_status` whether it can say
         (2: it cannot, which a machine without its scope cache is). `t_inherited`, `t_unknown`
-        and `t_new` are checks whose t result carries that blame, and `t_exit3` makes a failing
-        t run exit 3, as t does when every failure is main's.
+        and `t_new` are checks whose t result carries that blame, `t_findings` its `findings`,
+        and `t_exit3` makes a failing t run exit 3, as t does when every failure is main's.
+        `t_board` is what `t main --json` answers and `t_log` what `t log --verbose` does.
         """
         env = dict(os.environ)
         env.pop("CARGO", None)
@@ -370,7 +377,10 @@ class PrePushLintTests(unittest.TestCase):
                    STUB_T_EXCERPT=t_excerpt, STUB_T_ERROR=t_error,
                    STUB_T_SCOPE=t_scope or "", STUB_T_SCOPE_STATUS=str(t_scope_status),
                    STUB_T_INHERITED=t_inherited, STUB_T_UNKNOWN=t_unknown, STUB_T_NEW=t_new,
-                   STUB_T_EXIT3="1" if t_exit3 else "")
+                   STUB_T_EXIT3="1" if t_exit3 else "",
+                   STUB_T_FINDINGS=json.dumps(t_findings or []),
+                   STUB_BOARD=t_board or "", STUB_BOARD_STATUS=str(t_board_status),
+                   STUB_LOG=t_log, STUB_LOG_STATUS=str(t_log_status))
         return env
 
     def push(self, head=None, remote_oid=None, ref="refs/heads/main", cwd=None,
@@ -895,15 +905,72 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("refusing the push", result.stderr)
 
     def test_a_board_with_no_verdict_at_the_base_is_refused_with_why(self):
-        # t could not compare the failure with the base: fail closed, and say why.
+        # t could not compare the failure with the base, and the board cannot be read either:
+        # fail closed, and say both.
         self.with_t()
         self.write("native/src/lib.rs", LIB.format(answer=44))
         self.commit("feat: answer 44")
         result = self.push(t_outcome="fail", t_unknown="clippy/fixture-native",
-                           t_excerpt="error: unused import")
+                           t_excerpt="error: unused import", t_board_status=1)
         self.assertEqual(result.returncode, 1)
         self.assertIn("may be yours: main has no result at your base", result.stderr)
+        self.assertIn("main's board cannot be read, so whose failure this is cannot be told",
+                      result.stderr)
         self.assertIn("refusing the push", result.stderr)
+
+    def board(self, since, check="clippy/fixture-native", test=None, log="deadbeef",
+              owner=None) -> str:
+        """Main's board naming `check` red since `since`, as `t main --json` prints it."""
+        claim = {"session": owner, "note": None} if owner else None
+        return json.dumps({"head": since, "items": [
+            {"check": check, "test": test, "first_bad": since, "log": log, "claim": claim,
+             "culprit": since, "family": None, "id": f"{check}@{since[:12]}",
+             "last_good": None, "qualified": False}]})
+
+    def test_a_board_red_at_the_base_passes_and_is_named(self):
+        # t has no stored verdict for the check at the base, but main's board says it was red
+        # there: the push passes, naming the red and who claimed it.
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=45))
+        self.commit("feat: answer 45")
+        result = self.push(t_outcome="fail", t_unknown="clippy/fixture-native",
+                           t_excerpt="error: unused import",
+                           t_board=self.board(self.base, owner="someone"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pre-push: pushing past 1 red main already has:", result.stderr)
+        self.assertIn(f"clippy/fixture-native: main has failed it since "
+                      f"{self.base[:12]}, claimed by someone", result.stderr)
+
+    def test_a_new_finding_in_a_check_main_is_red_on_is_refused(self):
+        # Main's red names another finding; the one this push adds is not in main's own log, so
+        # the check is the push's despite being red on main, and the finding is named.
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=46))
+        self.commit("feat: answer 46")
+        main_log = json.dumps({"reason": "compiler-message", "message": {
+            "code": {"code": "dead_code"},
+            "spans": [{"is_primary": True, "file_name": "native/src/other.rs"}]}})
+        result = self.push(t_outcome="fail", t_unknown="clippy/fixture-native",
+                           t_findings=["unused_imports native/src/lib.rs"],
+                           t_excerpt="error: unused import",
+                           t_board=self.board(self.base), t_log=main_log)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("new: unused_imports native/src/lib.rs", result.stderr)
+        self.assertIn("refusing the push", result.stderr)
+
+    def test_a_finding_main_also_has_passes(self):
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=47))
+        self.commit("feat: answer 47")
+        main_log = json.dumps({"reason": "compiler-message", "message": {
+            "code": {"code": "unused_imports"},
+            "spans": [{"is_primary": True, "file_name": "native/src/lib.rs"}]}})
+        result = self.push(t_outcome="fail", t_unknown="clippy/fixture-native",
+                           t_findings=["unused_imports native/src/lib.rs"],
+                           t_excerpt="error: unused import",
+                           t_board=self.board(self.base), t_log=main_log)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pushing past 1 red main already has:", result.stderr)
 
     def test_a_t_that_cannot_run_the_checks_refuses_the_push(self):
         self.with_t()
@@ -1282,6 +1349,75 @@ class InheritedRedTests(unittest.TestCase):
         self.assertEqual(module.blame_words(self.result("unknown")),
                          "may be yours: main has no result at your base")
 
+    def test_a_finding_count_is_not_a_new_finding(self):
+        module = pre_push_lint()
+        self.assertEqual(module.finding_key("dead_code a/src/lib.rs (2)"), "dead_code a/src/lib.rs")
+
+    BASE = "b" * 40
+
+    def item(self, since: str, **extra) -> dict:
+        return {"check": "clippy/x", "test": None, "first_bad": since, "log": "l",
+                "claim": {"session": "someone", "note": None}, **extra}
+
+    def board(self, module, items, logs=None, ancestor=None):
+        return module.Board(ROOT, module.Push(set(), [(self.BASE, self.BASE)], [], []),
+                            items=items, logs=logs, ancestor=ancestor)
+
+    def test_the_board_inherits_a_whole_check_red_at_the_base(self):
+        module = pre_push_lint()
+        item = self.item("a" * 40)
+        found, why = self.board(module, [item], ancestor=lambda since, of: True).judge(
+            {"check": "clippy/x", "outcome": "fail"})
+        self.assertEqual((found, why), (item, ""))
+        self.assertEqual(module.item_blame(found)["inherited"]["claimed_by"], "someone")
+
+    def test_the_board_refuses_a_finding_main_does_not_name(self):
+        module = pre_push_lint()
+        board = self.board(module, [self.item("a" * 40)], logs={"l": {"dead_code a.rs"}},
+                           ancestor=lambda since, of: True)
+        found, why = board.judge({"check": "clippy/x", "outcome": "fail",
+                                  "findings": ["unused_imports b.rs"]})
+        self.assertIsNone(found)
+        self.assertEqual(why, "new: unused_imports b.rs")
+
+    def test_the_board_passes_a_finding_main_names(self):
+        module = pre_push_lint()
+        board = self.board(module, [self.item("a" * 40)], logs={"l": {"unused_imports b.rs"}},
+                           ancestor=lambda since, of: True)
+        found, why = board.judge({"check": "clippy/x", "outcome": "fail",
+                                  "findings": ["unused_imports b.rs (2)"]})
+        self.assertIsNotNone(found)
+        self.assertEqual(why, "")
+
+    def test_the_board_refuses_a_red_whose_commit_is_not_here(self):
+        module = pre_push_lint()
+        found, why = self.board(module, [self.item("a" * 40)],
+                                ancestor=lambda since, of: None).judge(
+            {"check": "clippy/x", "outcome": "fail"})
+        self.assertIsNone(found)
+        self.assertIn("does not have", why)
+
+    def test_the_board_refuses_a_red_that_began_after_the_base(self):
+        module = pre_push_lint()
+        found, why = self.board(module, [self.item("a" * 40)],
+                                ancestor=lambda since, of: False).judge(
+            {"check": "clippy/x", "outcome": "fail"})
+        self.assertIsNone(found)
+        self.assertIn("after this push's base", why)
+
+    def test_a_result_told_twice_is_judged_once(self):
+        module = pre_push_lint()
+        first = json.dumps({"type": "event", "body": {"finished": {
+            "check": "x", "outcome": "fail", "blame": "unknown"}}})
+        second = json.dumps({"type": "event", "body": {"finished": {
+            "check": "x", "outcome": "fail",
+            "blame": {"inherited": {"since": "a", "claimed_by": None}}}}})
+        finished, errors = module.t_outcomes(first + "\n" + second + "\n")
+        self.assertEqual(errors, [])
+        self.assertEqual(len(finished), 1)
+        self.assertEqual(finished[0]["blame"],
+                         {"inherited": {"since": "a", "claimed_by": None}})
+
     def test_report_passes_a_run_t_blamed_on_main(self):
         module = pre_push_lint()
         run = module.Lint("clippy (t)", ["t", "test", "clippy/x", "--json"], True)
@@ -1289,8 +1425,9 @@ class InheritedRedTests(unittest.TestCase):
             "check": "clippy/x", "outcome": "fail",
             "blame": {"inherited": {"since": "abcdef0123456789", "claimed_by": None}},
             "excerpt": "warning: unused import"}}}) + "\n"
-        self.assertEqual(
-            module.report([(run, module.EXIT_ONLY_INHERITED, output)], 1.0, "one check", set()), 0)
+        push = module.Push(set(), [(self.BASE, self.BASE)], [], [])
+        self.assertEqual(module.report([(run, module.EXIT_ONLY_INHERITED, output)], 1.0,
+                                       "one check", set(), ROOT, push), 0)
 
 
 if __name__ == "__main__":

@@ -60,7 +60,10 @@ check's findings and tests one by one against the base's verdict of the same key
 that is red on main for one lint does not hide a second, new one here, and exits 3 when every
 failure is inherited, flaky or already fixed. Such a push passes, saying which of main's reds
 it pushes past and who claimed them; a failure t cannot place - the base has no verdict, or
-the two failures cannot be told apart - is refused as before.
+the two failures cannot be told apart - is judged against main's board at that base instead:
+the item failing since a commit the base contains, its findings read from main's own log one by
+one, a failed test by name. The push passes only when main has failed it the same way, saying
+whose the red is; a board that cannot be read refuses.
 
 A lint that passed stands for the same change after a rebase that leaves it alone: a pass is
 remembered by the push's own patch (`git patch-id`) and the trees of the linted packages' own
@@ -109,7 +112,7 @@ import sys
 import tempfile
 import time
 import tomllib
-from typing import Iterable, NamedTuple
+from typing import Callable, Iterable, NamedTuple
 
 TOOLS = Path(__file__).resolve().parents[1]
 if str(TOOLS) not in sys.path:
@@ -972,14 +975,20 @@ def t_documents(output: str) -> list[dict]:
 
 
 def t_outcomes(output: str) -> tuple[list[dict], list[dict]]:
-    """Each check's result from t's output, and the errors t gave instead of results."""
-    finished, errors = [], []
+    """Each check's result from t's output, and the errors t gave instead of results.
+
+    A check t answers again after a base probe tells its result twice, first unblamed and then
+    with whose failure it is: the later one stands, so a check is judged once.
+    """
+    finished: dict[str, dict] = {}
+    errors = []
     for document in t_documents(output):
         if document.get("type") == "error":
             errors.append(document)
         elif isinstance(document.get("body"), dict) and isinstance(document["body"].get("finished"), dict):
-            finished.append(document["body"]["finished"])
-    return finished, errors
+            result = document["body"]["finished"]
+            finished[result.get("check")] = result
+    return list(finished.values()), errors
 
 
 def say_lines(lines: list[str]) -> None:
@@ -1014,16 +1023,19 @@ def t_fixes(root: Path) -> set[str]:
     return {check["name"] for check in project.get("check", ()) if check.get("fix")}
 
 
-def say_t_failure(output: str, fixes: set[str]) -> bool:
-    """Each failed check of t's with its diagnostics and the command that prints its whole log;
-    False when t's output names none."""
-    finished, errors = t_outcomes(output)
-    failed = [result for result in finished if result.get("outcome") != "pass"]
-    for result in failed:
+def say_t_refused(refused: list[tuple[dict, str]], errors: list[dict], fixes: set[str]) -> None:
+    """Each failure the push is refused for: t's own error, or a check with its diagnostics.
+
+    A check that names a fix in t.toml is told how to write what it compares, and one the board
+    could not inherit says why.
+    """
+    for result, why in refused:
         say(f"  {result['check']}: {result.get('outcome')} - whole log: t log {result.get('log')}")
         words = blame_words(result)
         if words:
             say(f"  {words}")
+        if why and why != words:
+            say(f"  {why}")
         say_lines(str(result.get("excerpt") or "").strip().splitlines())
         if result["check"] in fixes:
             say(f"  write the generated files back with: t fix {result['check']}")
@@ -1031,7 +1043,6 @@ def say_t_failure(output: str, fixes: set[str]) -> bool:
         say(f"  t: {error.get('message')}")
         if error.get("hint"):
             say(f"  {error['hint']}")
-    return bool(failed or errors)
 
 
 def inherited(result: dict) -> bool:
@@ -1090,31 +1101,221 @@ def say_past_reds(results: list[dict]) -> None:
         say(f"pre-push: {result['check']}: {blame_words(result) or 'not yours'}")
 
 
+def remote_repo(root: Path) -> str | None:
+    """The repository's name on the server, from origin's URL (`code.tilo.so:tilo/tilo.git`)."""
+    url = git(root, "remote", "get-url", "origin").stdout.strip()
+    if not url:
+        return None
+    name = url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+    return name.removesuffix(".git") or None
+
+
+def is_ancestor(root: Path, commit: str, of: str) -> bool | None:
+    """Whether `commit` is `of` or an ancestor of it; None when either is not here."""
+    if not commit or not of or not known(root, commit) or not known(root, of):
+        return None
+    return git(root, "merge-base", "--is-ancestor", commit, of).returncode == 0
+
+
+def finding_key(finding: str) -> str:
+    """A finding without the count t adds for a repeated lint in one file (`unused_imports a.rs (2)`)."""
+    return re.sub(r" \(\d+\)$", "", finding.strip())
+
+
+def log_findings(root: Path, log: str) -> set[str] | None:
+    """The findings a check's log holds, as t's results name them (`lint file`), or None.
+
+    The log's machine messages (`t log --verbose`) are cargo's own JSON, so a primary span's file
+    and its lint code are exactly what t read the finding from: no rebase shifts a line here.
+    """
+    try:
+        answer = subprocess.run(["t", "log", str(log), "--verbose"], cwd=root,
+                                capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if answer.returncode != 0:
+        return None
+    found: set[str] = set()
+    for line in answer.stdout.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if message.get("reason") != "compiler-message":
+            continue
+        diagnostic = message.get("message") or {}
+        code = (diagnostic.get("code") or {}).get("code")
+        spans = diagnostic.get("spans") or []
+        primary = next((span for span in spans if span.get("is_primary")),
+                       spans[0] if spans else None)
+        if code and primary and primary.get("file_name"):
+            found.add(f"{code} {primary['file_name']}")
+    return found
+
+
+def main_board(root: Path) -> list[dict] | None:
+    """Main's board from the server, or None when it cannot be read."""
+    for repo in (remote_repo(root), None):
+        command = ["t", "main", "--json", *(("--repo", repo) if repo else ())]
+        try:
+            answer = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
+        except OSError:
+            continue
+        if answer.returncode != 0:
+            continue
+        try:
+            document = json.loads(answer.stdout)
+        except ValueError:
+            continue
+        if isinstance(document, dict) and isinstance(document.get("items"), list):
+            return document["items"]
+    return None
+
+
+def item_blame(item: dict) -> dict:
+    """A board item as a Blame, so a red passed on the board is said like t's own."""
+    claim = item.get("claim") or {}
+    return {"inherited": {"since": item.get("first_bad") or "",
+                          "claimed_by": claim.get("session") or claim.get("note")}}
+
+
+class Board:
+    """Main's board at the push's base: what a failure t could not compare is judged against.
+
+    t names a failure at the run's base only where the base has a stored verdict of the same
+    key, and holds otherwise: the result says `unknown` before its probe answers, and a probe
+    the push does not wait for leaves it there. Main's board knows the red anyway, so this asks
+    it, and compares the failure with main's own log finding by finding.
+    """
+
+    def __init__(self, root: Path, push: Push, items: list[dict] | None = None,
+                 logs: dict[str, set[str] | None] | None = None,
+                 ancestor: "Callable[[str, str], bool | None] | None" = None):
+        self.root = root
+        self.base = push.comparisons[0][0] if push.comparisons else None
+        self._items = items
+        self._logs = logs or {}
+        self._read = items is not None
+        self.ancestor = ancestor or (lambda commit, of: is_ancestor(root, commit, of))
+
+    def items(self) -> list[dict] | None:
+        if not self._read:
+            self._read = True
+            self._items = main_board(self.root)
+        return self._items
+
+    def findings(self, log: str) -> set[str] | None:
+        if log not in self._logs:
+            self._logs[log] = log_findings(self.root, log)
+        return self._logs[log]
+
+    def judge(self, result: dict) -> tuple[dict | None, str]:
+        """Main's item this failure is, at the push's base, or why it cannot be inherited.
+
+        A failed test is compared by name, a finding (a lint and its file) one by one against
+        main's log, so a check red on main for one lint does not hide a new one here. A failure
+        naming neither is the whole check's, and inherits another whole one of the same check.
+        """
+        items = self.items()
+        if items is None:
+            return None, "main's board cannot be read, so whose failure this is cannot be told"
+        if self.base is None:
+            return None, "this push has no base to compare main's board with"
+        check = result.get("check")
+        named = [item for item in items if item.get("check") == check]
+        if not named:
+            return None, f"main's board names no red for {check}"
+        at_base = []
+        for item in named:
+            since = item.get("first_bad") or ""
+            before = self.ancestor(since, self.base)
+            if before is None:
+                return None, (f"main's board names {check} red since {since[:12]}, which this "
+                              "checkout does not have")
+            if before:
+                at_base.append(item)
+        if not at_base:
+            return None, f"main began failing {check} after this push's base"
+        tests = [test for test in result.get("failed_tests") or [] if test]
+        findings = [finding_key(finding) for finding in result.get("findings") or [] if finding]
+        if tests:
+            on_main = {item.get("test") for item in at_base if item.get("test")}
+            missing = [test for test in tests if test not in on_main]
+            if missing:
+                return None, "new: " + ", ".join(missing)
+            return at_base[0], ""
+        if findings:
+            theirs: set[str] = set()
+            for item in at_base:
+                if item.get("test"):
+                    continue
+                on_main = self.findings(str(item.get("log") or ""))
+                if on_main is None:
+                    return None, f"main's log for {check} cannot be read"
+                theirs |= on_main
+            missing = [finding for finding in findings if finding not in theirs]
+            if missing:
+                return None, "new: " + ", ".join(missing)
+            return at_base[0], ""
+        for item in at_base:
+            if not item.get("test"):
+                return item, ""
+        return None, f"main's {check} red names a test this failure does not"
+
+
 def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str,
-           fixes: set[str]) -> int:
+           fixes: set[str], root: Path, push: Push) -> int:
     passed_through: list[dict] = []
     failed = []
+    board = Board(root, push)
     for run, status, output in results:
-        if run.t and status == EXIT_ONLY_INHERITED:
-            # Every failure t found is main's at the push's base (or flaky, or already fixed):
-            # a lane that stops for them pushes with --no-verify, and skips its own lints too.
-            say_t_results(output)
-            passed_through += [result for result in t_outcomes(output)[0]
-                               if result.get("outcome") == "fail"]
+        if not run.t:
+            if status != 0:
+                failed.append((run, output, [], []))
             continue
-        if run.t and status == 0:
-            say_t_results(output)
-        if status != 0:
-            failed.append((run, output))
+        finished, errors = t_outcomes(output)
+        say_t_results(output)
+        if status == EXIT_ONLY_INHERITED:
+            # Every failure t found is main's at the push's base (or flaky, or already fixed).
+            passed_through += [result for result in finished if result.get("outcome") == "fail"]
+            continue
+        if status == 0 and not errors:
+            continue
+        refused = []
+        for result in finished:
+            outcome = result.get("outcome")
+            if outcome == "pass":
+                continue
+            if outcome != "fail":
+                refused.append((result, ""))
+                continue
+            if not_yours(result):
+                passed_through.append(result)
+                continue
+            if result.get("blame") == "new":
+                refused.append((result, blame_words(result)))
+                continue
+            # t could not compare it: unknown before a probe answers, or two failures it cannot
+            # tell apart. Main's board can say, finding by finding.
+            item, why = board.judge(result)
+            if item is not None:
+                passed_through.append({**result, "blame": item_blame(item)})
+            else:
+                refused.append((result, why))
+        if refused or errors:
+            failed.append((run, output, refused, errors))
     if not failed:
         if passed_through:
             say_past_reds(passed_through)
         say(f"pre-push: lint passed in {elapsed:.0f}s ({checked})")
         return 0
-    for run, output in failed:
+    for run, output, refused, errors in failed:
         command = [part for part in run.command if part != "--json"] if run.t else run.command
         say(f"pre-push: {run.label} failed - rerun: {shlex.join(command)}")
-        if run.t and say_t_failure(output, fixes):
+        if run.t:
+            say_t_refused(refused, errors, fixes)
             continue
         say_lines([line for line in output.strip().splitlines()
                    if not any(remark in line for remark in CARGO_REMARKS)
@@ -1251,7 +1452,7 @@ def surface_only(root: Path, push: Push, options: argparse.Namespace) -> int:
         return 0
     results, elapsed = run_together(root, runs, options.keep_logs)
     status = report(results, elapsed, f"the app surface's generated files ({' '.join(checks)})",
-                    t_fixes(root))
+                    t_fixes(root), root, push)
     if status == 0 and key is not None:
         remember_pass(root, key, push.tips[0])
     return status
@@ -1383,7 +1584,8 @@ def main(argv: list[str]) -> int:
                + (f", a compile of {packages(len(selection.dependants))} built on them"
                   if selection.dependants else ""))
     results, elapsed = run_together(root, runs, options.keep_logs)
-    status = report(results, elapsed, checked, t_fixes(root) if lints_through_t() else set())
+    status = report(results, elapsed, checked, t_fixes(root) if lints_through_t() else set(),
+                    root, push)
     if status == 0 and key is not None:
         remember_pass(root, key, push.tips[0])
     return status
