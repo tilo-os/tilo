@@ -84,8 +84,17 @@ pub(crate) struct Instances {
     provided: OnceLock<tilo_workspace_service::workspaces::providers::Providers>,
     /// What makes each app's own tilolang process its daemon line, once the daemon serves them.
     own_lines: OnceLock<crate::device::processes::OwnLines>,
+    /// The web entry of the server this device keeps workspaces for, and the workspaces it
+    /// keeps: what its apps mint a resource's link under, `None` where it keeps no server.
+    serving: OnceLock<Option<Serving>>,
     made: Mutex<Vec<Made>>,
     next: AtomicU64,
+}
+
+/// The page a keeping server serves its workspaces at, and which workspaces it keeps.
+struct Serving {
+    web_entry: String,
+    workspaces: std::collections::BTreeSet<String>,
 }
 
 /// The file chooser a hosted instance of `app` in `workspace` reaches: a connection this daemon
@@ -303,8 +312,45 @@ impl Instances {
             person: OnceLock::new(),
             provided: OnceLock::new(),
             own_lines: OnceLock::new(),
+            serving: OnceLock::new(),
             made: Mutex::default(),
             next: AtomicU64::new(1),
+        }
+    }
+
+    /// The page this device's keeping server serves its workspace at, and the workspaces it
+    /// keeps: from now on the instances of those workspaces mint their resources' links under
+    /// it, and a device that keeps no server hands none.
+    pub(crate) fn keep_serving(&self, web_entry: String, workspaces: Vec<String>) {
+        let _ = self.serving.set(Some(Serving {
+            web_entry,
+            workspaces: workspaces.into_iter().collect(),
+        }));
+    }
+
+    /// Where `workspace`'s resources open on the web, as a tilolang instance receives it
+    /// (`runtime_portal::process_link::InstanceRequest::link_home`): the entry of the server
+    /// that keeps it, and `None` for a workspace this device keeps for no server.
+    fn link_home(&self, workspace: &str) -> Option<String> {
+        let serving = self.serving.get()?.as_ref()?;
+        if !serving.workspaces.contains(workspace) {
+            return None;
+        }
+        let entry = tilo_reference::link::WebEntry::new(&serving.web_entry).ok()?;
+        let home = tilo_reference::link::share::LinkHome {
+            origin: entry.origin().as_str().to_owned(),
+            workspace: workspace.to_owned(),
+            host_device: String::new(),
+            web_entry: entry.base().to_owned(),
+        };
+        match home.json() {
+            Ok(home) => Some(home),
+            Err(error) => {
+                // Every field is text, so this cannot fail short of a bug: the workspace's
+                // links are refused, and the log says why.
+                tracing::warn!(%error, "a workspace's page does not write as JSON");
+                None
+            }
         }
     }
 
@@ -528,7 +574,7 @@ impl Instances {
                 open: None,
                 access: None,
                 locale: runtime_portal::process_link::Locale::default(),
-                link_home: None,
+                link_home: self.link_home(workspace),
             })
             .map(|_| instance)
             .map_err(|error| format!("{app}'s instance did not start: {error}"))
@@ -605,6 +651,36 @@ impl Instances {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A workspace this device keeps for a server is handed the page that server serves it at,
+    /// and a workspace it keeps for no server, or a device that keeps none, is handed none.
+    #[test]
+    fn an_instance_is_handed_its_servers_page_for_the_workspaces_it_keeps() {
+        let profile = tempfile::tempdir().unwrap();
+        let sockets = crate::daemon::Sockets::in_dir(profile.path());
+        let instances = Instances::new(
+            &sockets,
+            Box::new(|| Err("no launcher".into())),
+            Arc::default(),
+        );
+        let served = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
+        let other = "4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11";
+        assert!(instances.link_home(served).is_none(), "no server, no page");
+        instances.keep_serving("https://entry.example/".into(), vec![served.to_owned()]);
+        let home: tilo_reference::link::share::LinkHome = serde_json::from_str(
+            &instances
+                .link_home(served)
+                .expect("the served workspace has a page"),
+        )
+        .unwrap();
+        assert_eq!(home.web_entry, "https://entry.example/");
+        assert_eq!(home.origin, "https://entry.example");
+        assert_eq!(home.workspace, served);
+        assert!(
+            instances.link_home(other).is_none(),
+            "a workspace the server does not keep has no page"
+        );
+    }
 
     /// An instance connects at the collaboration socket the daemon it belongs to listens on, not
     /// at one the profile's path would name: a profile named apart keeps its sockets outside

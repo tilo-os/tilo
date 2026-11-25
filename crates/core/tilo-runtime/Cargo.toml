@@ -109,6 +109,9 @@ tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 # The resource layer: this device's server settings are published as one of this device's typed
 # resources, with the actions that change them.
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+# Where a workspace's resources open on the web: the entry the server that keeps it announces,
+# which its apps mint a resource's link under.
+tilo-reference = { version = "0.1.0", path = "../reference" }
 tilo-automerge-isolate.workspace = true
 tilo-desktop-model = { path = "../../desktop/desktop-model" }
 # The document-media capability over the content store, and the workspace

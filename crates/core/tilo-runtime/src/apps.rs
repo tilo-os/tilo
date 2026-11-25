@@ -334,6 +334,13 @@ impl Apps {
         self.instances.keep_chosen_records(records);
     }
 
+    /// The page this device's keeping server serves the workspaces `workspaces` at, from now on:
+    /// their apps mint their resources' links under it. A device that keeps no server hands none.
+    pub(crate) fn keep_serving(&self, web_entry: &str, workspaces: &[String]) {
+        self.instances
+            .keep_serving(web_entry.to_owned(), workspaces.to_vec());
+    }
+
     /// This daemon's tilolang processes, which start every tilolang process it runs.
     ///
     /// # Errors

@@ -213,7 +213,7 @@ tilo_test_env::scenario! {
             .expect("the session's service offers a link")
             .expect_err("a host with no page makes no link");
         assert!(
-            refused.to_string().contains("serves no web page"),
+            refused.to_string().contains("has no server that serves links"),
             "the system's own words: {refused}"
         );
     }
@@ -227,7 +227,7 @@ tilo_test_env::scenario! {
             .invoke(&note, "share-link", &Map::new())
             .expect_err("a host with no page makes no link");
         assert!(
-            refused.to_string().contains("serves no web page"),
+            refused.to_string().contains("has no server that serves links"),
             "the system's own words: {refused}"
         );
     }

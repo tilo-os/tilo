@@ -1991,6 +1991,12 @@ impl Daemon {
             (founded.to_string(), Some(founded))
         };
         let apps = Arc::new(apps::Apps::from_env(root, &sockets));
+        // A server's page serves its kept workspaces' links: the apps it starts mint a
+        // resource's link under it, and the apps of a device that keeps no server mint none.
+        if let Some((web_entry, workspaces)) = keeping.as_ref().and_then(super::keep::Keeping::serving)
+        {
+            apps.keep_serving(&web_entry, &workspaces);
+        }
         let brokers = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         // What apps may found records with here: the kinds their installed

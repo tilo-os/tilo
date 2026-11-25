@@ -222,19 +222,34 @@ fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     });
 }
 
-/// The workspace's host mints the link to a resource in a record it runs headless: the link names
-/// the resource and its range under the web entry the host announces.
+/// A resource's link is minted by the server that serves the workspace: a device's daemon keeps
+/// no server, so the app's `share-link` refuses with the system's own words, which say where to
+/// add one.
 #[test]
-fn the_server_mints_a_message_link_with_its_range() {
-    host::run(|host| async move {
-        let _ = &host;
-        // A link is minted under the web entry the host announces (`site`, as a kept server's
-        // web entry sets it). A device's daemon announces none: `keep.rs` gives a kept server its
-        // site from its configuration, and a device that keeps nothing has no page at a host's
-        // web entry for a link to open.
-        panic!(
-            "a device's daemon announces no web entry: there is no site for `files#share-link` \
-             (or a message's) to mint a link under"
+fn a_device_that_keeps_no_server_refuses_a_resources_link_with_the_systems_words() {
+    host::run_with(&[crate::language::hosted_turns::CHAT_PACKAGE], |host| async move {
+        use crate::language::hosted_turns::{chat_action, chat_provider_here, start_chat};
+
+        let host = host.as_ref();
+        start_chat(host, host.workspace()).await;
+        // Chat's record is open, so its root resource publishes the link its app mints.
+        let _ = crate::language::chat::made_channel(&host.agent(), crate::language::chat::CHANNEL)
+            .await;
+        let address = chat_action(host, "share-link")
+            .unwrap_or_else(|| panic!("Chat's record offers its link"));
+        let refused = host::output(
+            host,
+            tilo_actions::remote::RemoteActionTarget {
+                provider: chat_provider_here(host).await,
+                address,
+            },
+            json!({"start": 6, "end": 7, "unit": "chars"}),
+        )
+        .await
+        .expect_err("a device that serves no page makes no link");
+        assert!(
+            format!("{refused:?}").contains("has no server that serves links"),
+            "the system's own words say where to add one: {refused:?}"
         );
     });
 }

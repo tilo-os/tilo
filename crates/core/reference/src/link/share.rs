@@ -10,8 +10,50 @@
 //! ([`tilo_resource::share::ShareRequest`]); this module reads it, so a caller never spells the
 //! grammar itself.
 
+use serde::{Deserialize, Serialize};
 use tilo_actions::remote::ResourceViewLocator;
 use tilo_resource::share::ShareRequest;
+
+/// Where a workspace's resources open on the web: the entry a link is rendered under, the host's
+/// origin and the workspace's id, as the workspace's own host announces them. What a session
+/// lends a host and a device's daemon hands its apps, for the links their resources mint under.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkHome {
+    /// The host's origin (`https://eu1.tilo.cloud`).
+    pub origin: String,
+    /// The workspace the resources are kept in.
+    pub workspace: String,
+    /// The certified host device, as its key in hexadecimal.
+    #[serde(default)]
+    pub host_device: String,
+    /// The page base (`https://tilo.so/`) links are rendered under, ending in `/`.
+    pub web_entry: String,
+}
+
+impl LinkHome {
+    /// The home as the JSON a host's process receives with a window's instance
+    /// (`runtime_portal::process_link::InstanceRequest::link_home`).
+    ///
+    /// # Errors
+    ///
+    /// When it cannot be written as JSON.
+    pub fn json(&self) -> Result<String, String> {
+        serde_json::to_string(self).map_err(|error| error.to_string())
+    }
+
+    /// The locator a link's page is checked against, for the provider `provider` names.
+    #[must_use]
+    pub fn locator(&self, provider: String) -> ResourceViewLocator {
+        ResourceViewLocator {
+            origin: self.origin.clone(),
+            workspace: self.workspace.clone(),
+            host_device: self.host_device.clone(),
+            provider,
+            web_entry: Some(self.web_entry.clone()),
+        }
+    }
+}
 
 /// The `record:<app>:<record>` provider one record of `app` is served under, the record's primary
 /// one when `record` is empty: what a catalogue lookup names the link's page by, and what a locator
@@ -31,7 +73,8 @@ pub fn provider(app: &str, record: &str) -> Result<String, String> {
 }
 
 /// Why a link is refused when the host that serves the resource announces no page.
-pub const NO_WEB_ENTRY: &str = "This workspace's host serves no web page";
+pub const NO_WEB_ENTRY: &str =
+    "This workspace has no server that serves links; add one in Settings";
 
 /// The link to the resource `request` names, minted under the entry `locator`
 /// announces: what a host that answers `share-link` itself renders, and what an

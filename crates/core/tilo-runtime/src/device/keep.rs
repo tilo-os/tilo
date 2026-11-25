@@ -168,6 +168,17 @@ impl Keeping {
         }
     }
 
+    /// The page this server serves its kept workspaces at, and which workspaces it keeps: what
+    /// the apps a person reaches on this device mint their resources' links under. `None` where
+    /// this deployment serves no page.
+    pub(crate) fn serving(&self) -> Option<(String, Vec<String>)> {
+        let web_entry = self.cfg.web_entry.clone()?;
+        Some((
+            web_entry,
+            self.cfg.kept.iter().map(|kept| kept.id.trim().to_owned()).collect(),
+        ))
+    }
+
     /// The workspaces this server founds and keeps of its own, as its configuration
     /// lists them: each with the name people see it by and the entry its founder
     /// settles when it is founded.

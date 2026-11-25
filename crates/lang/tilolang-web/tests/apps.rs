@@ -246,7 +246,7 @@ fn a_pages_copy_link_names_the_resource_again_under_the_workspaces_page() {
     assert!(
         answer["message"]
             .as_str()
-            .is_some_and(|message| message.contains("serves no web page")),
+            .is_some_and(|message| message.contains("has no server that serves links")),
         "the system's own words: {answer}"
     );
 }

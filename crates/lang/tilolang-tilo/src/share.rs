@@ -8,50 +8,10 @@
 //! [`LinkHome`], the entry and origin the workspace's own host announces, and refuses with the
 //! system's words where it has none, as an app's root does.
 
-use serde::{Deserialize, Serialize};
 use tilo_actions::ActionOutput;
-use tilo_actions::remote::ResourceViewLocator;
 use tilo_resource::share::ShareRequest;
 
-/// Where a workspace's resources open on the web: the entry a link is rendered under, the host's
-/// origin and the workspace's id, as the workspace's own host announces them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LinkHome {
-    /// The host's origin (`https://eu1.tilo.cloud`).
-    pub origin: String,
-    /// The workspace the resources are kept in.
-    pub workspace: String,
-    /// The certified host device, as its key in hexadecimal.
-    #[serde(default)]
-    pub host_device: String,
-    /// The page base (`https://tilo.so/`) links are rendered under, ending in `/`.
-    pub web_entry: String,
-}
-
-impl LinkHome {
-    /// The home as the session hands it to a host, as JSON: what an app's process receives with
-    /// the window's instance ([`runtime_portal::process_link::InstanceRequest::link_home`]).
-    ///
-    /// # Errors
-    ///
-    /// When it cannot be written as JSON.
-    pub fn json(&self) -> Result<String, String> {
-        serde_json::to_string(self).map_err(|error| error.to_string())
-    }
-
-    /// The locator a link's page is checked against, for the provider `provider` names.
-    #[must_use]
-    pub fn locator(&self, provider: String) -> ResourceViewLocator {
-        ResourceViewLocator {
-            origin: self.origin.clone(),
-            workspace: self.workspace.clone(),
-            host_device: self.host_device.clone(),
-            provider,
-            web_entry: Some(self.web_entry.clone()),
-        }
-    }
-}
+pub use tilo_reference::link::share::LinkHome;
 
 /// Answer the `share-link` request `payload` of `app`'s resources, as its host mints it under
 /// `home`: the URL, as `share-link` answers.

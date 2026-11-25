@@ -331,7 +331,7 @@ tilo_test_env::scenario! {
         assert!(
             refused
                 .to_string()
-                .contains("This workspace's host serves no web page"),
+                .contains("This workspace has no server that serves links"),
             "{refused}"
         );
     }

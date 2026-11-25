@@ -308,6 +308,22 @@ async fn chat_provider(host: &Host) -> String {
         )
 }
 
+/// The provider of the workspace's running Chat, as the person's dispatch reaches it: the
+/// instance that opens Chat's record there and answers its actions.
+pub(crate) async fn chat_provider_here(host: &Host) -> String {
+    chat_provider(host).await
+}
+
+/// The address Chat publishes `action` at in the workspace's record, as the person's own
+/// dispatch lists it: the record root offers `share-link`, and each resource its own verbs.
+pub(crate) fn chat_action(host: &Host, action: &str) -> Option<ActionAddress> {
+    chat_rows(host, host.workspace(), host.person())
+        .into_iter()
+        .filter_map(|row| row.action)
+        .map(|published| published.address)
+        .find(|address| address.action == action)
+}
+
 /// The person writes `words` in Chat's channel `channel`, mentioning their assistant, through
 /// the app instance their page writes through and the daemon's dispatch as themselves: the
 /// person's own write, not their agent's, which the agent's triggers leave out. The instance
