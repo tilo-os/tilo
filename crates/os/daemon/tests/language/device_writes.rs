@@ -110,17 +110,28 @@ fn a_members_device_takes_what_its_role_lets_it() {
         };
 
         let viewer = guest(&host, &owner_device, "viewer", "Vic").await;
-        let read = viewer
-            .call(
-                &tasks,
-                tilo_actions::ActionAddress::new("tasks.issues", "read"),
-                &json!({}),
+        // A viewer's device reads the task as a member's copy does in the product: the record's
+        // fields, from the copy of the workspace it holds, decided by what the viewer may read.
+        let read = host
+            .daemon()
+            .workspaces()
+            .read_store_as(
+                &workspace,
+                &viewer.person(),
+                &collab_types::store::wire::Command::Get {
+                    kind: "tl.so.tilo.tasks.Task".to_owned(),
+                    id: issue.clone(),
+                },
             )
             .await
-            .expect("a viewer reads the issues");
-        assert!(
-            matches!(read, InvocationUpdate::Succeeded { .. }),
-            "a viewer reads the issues: {read:?}"
+            .expect("the viewer's copy answers a read");
+        let collab_types::store::wire::Reply::Resource(Some(task)) = read else {
+            panic!("a viewer reads the task: {read:?}");
+        };
+        assert_eq!(
+            task.scalar("title"),
+            collab_types::store::Value::from("First"),
+            "the viewer reads the task's fields"
         );
         let created = viewer
             .call(

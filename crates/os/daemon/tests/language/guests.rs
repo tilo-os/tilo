@@ -26,6 +26,13 @@ pub struct Guest {
 }
 
 impl Guest {
+    /// The person this guest is, their root in hex: whose read a record of the workspace is
+    /// decided by when the guest's device reads its copy.
+    #[must_use]
+    pub fn person(&self) -> String {
+        hex::encode(self.caller.user_public_key().copied().unwrap_or_default())
+    }
+
     /// The action at `address` of `provider` with `arguments`, followed until it settles.
     pub async fn call(
         &self,
