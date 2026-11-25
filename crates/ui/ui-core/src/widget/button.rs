@@ -88,6 +88,9 @@ pub struct Button {
     turn: Turn,
     /// The face held was painted partway through a turn, so it is no face to keep at rest.
     painted_turning: bool,
+    /// A toggle its view builds anew on every change (its label says what a press does next)
+    /// goes on turning from where the one it replaces was.
+    hand_on: crate::motion::HandOn<Turn>,
     shortcut: Option<crate::platform::Shortcut>,
     /// The width `measure` settled on, pinned onto the node so a stretching
     /// parent cannot widen an intrinsic button.
@@ -201,6 +204,7 @@ impl Button {
             toggled: None,
             turn: Turn::default(),
             painted_turning: false,
+            hand_on: crate::motion::HandOn::default(),
             opens_menu: false,
             menu_open: false,
             shows_choice: false,
@@ -712,6 +716,16 @@ impl Button {
     #[must_use]
     pub fn is_toggled(&self) -> bool {
         self.toggled == Some(true)
+    }
+
+    /// Go on from the toggle a rebuild dropped: its turn, on its way or at rest. The same toggle
+    /// shown the other way since turns from there, as the input that turned it asks; another's that
+    /// it merely stands where rests on what this one shows.
+    fn take_up(&mut self, kept: Turn, found: crate::motion::Found) {
+        self.turn = kept;
+        if found == crate::motion::Found::Where && kept.shown != self.toggled {
+            self.turn.shown = None;
+        }
     }
 
     #[must_use]
@@ -1574,6 +1588,14 @@ struct FacePaint<'a> {
     moment: crate::part_paint::Moment,
 }
 
+impl Drop for Button {
+    fn drop(&mut self) {
+        if self.toggled.is_some() {
+            self.hand_on.leave(self.turn);
+        }
+    }
+}
+
 /// How large a toggle's on face starts as it turns on, of its full size.
 const TURN_FROM: f64 = 0.8;
 /// How far past its face a turning toggle may draw: its focus ring and its edge.
@@ -2266,6 +2288,11 @@ impl Widget for Button {
     ) -> NodeId {
         self.observe_i18n_revision();
         self.measured_width = None;
+        if self.toggled.is_some()
+            && let Some((kept, found)) = self.hand_on.build(Some(&self.id))
+        {
+            self.take_up(kept, found);
+        }
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
         if let Some((control, side)) = &mut self.transport {
             *side = crate::widget::TransportFace::side(*control, theme);
@@ -2370,6 +2397,11 @@ impl Widget for Button {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        if self.toggled.is_some()
+            && let Some((kept, found)) = self.hand_on.place(self.rect)
+        {
+            self.take_up(kept, found);
+        }
         // A button the solver places for the first time was measured as it stands: what it was
         // handed before (a label, a detail) is in that measure, and asks for no second solve.
         if !self.solver_placed {
