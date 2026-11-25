@@ -2140,6 +2140,7 @@ fn read_some(stream: &Stream) -> io::Result<Vec<u8>> {
 /// endpoint that serves the connection reads it, descriptors and all, as it always has.
 #[cfg(unix)]
 fn follows_a_call(stream: &Stream) -> bool {
+    use rustix::net::RecvFlags;
     // What follows an invocation id is written as the connection opens: a client that says
     // nothing by then is no follow, and waits as any other connection does.
     const SAYS_WITHIN: Duration = Duration::from_secs(1);
@@ -2148,7 +2149,10 @@ fn follows_a_call(stream: &Stream) -> bool {
     if stream.set_read_timeout(Some(SAYS_WITHIN)).is_err() {
         return false;
     }
-    let read = stream.peek(&mut line).unwrap_or(0);
+    let read = match rustix::net::recv(stream, &mut line[..], RecvFlags::PEEK) {
+        Ok((read, _)) => read,
+        Err(_) => 0,
+    };
     let _ = stream.set_read_timeout(None);
     line.get(..read)
         .is_some_and(|read| read.windows(SAYS.len()).any(|window| window == SAYS))
