@@ -359,12 +359,11 @@ mod tests {
     fn a_menu_reached_through_a_call_is_the_layout_beside_its_call() {
         // What a view's `if let` around a menu is: a fragment, drawing nothing, holding the menu
         // and no one else.
-        let mut call = UiNode::empty("layers", "page");
-        call.children = vec![
+        let mut tree = UiNode::empty("layers", "page");
+        tree.children = vec![
             component("WebView", "page"),
             fragment("menu?", vec![component("ContextMenu", "page menu")]),
         ];
-        let mut tree = call.clone();
         raise_menus(&mut tree);
         assert_eq!(
             kinds_of_kinds(&tree),

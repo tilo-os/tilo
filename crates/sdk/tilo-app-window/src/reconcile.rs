@@ -2220,9 +2220,6 @@ fn placed(node: &UiNode) -> Vec<Placed<'_>> {
     // items share the row's spans one by one. Every other container keeps a fragment as a part of
     // its own: a view call is a box where the view put it, and what the view asks for is
     // asked of that box.
-    // A layout's menu is no part of it: the area it opens from stands around the layout, so the
-    // menu takes no place of its own ([`Reconciler::with_menu`]).
-    let holds_menu = crate::attach::arranges(&node.kind);
     fn flatten<'a>(
         node: &'a UiNode,
         holds_menu: bool,
@@ -2245,6 +2242,9 @@ fn placed(node: &UiNode) -> Vec<Placed<'_>> {
             }
         }
     }
+    // A layout's menu is no part of it: the area it opens from stands around the layout, so the
+    // menu takes no place of its own ([`Reconciler::with_menu`]).
+    let holds_menu = crate::attach::arranges(&node.kind);
     let mut out = Vec::new();
     if matches!(node.kind.as_str(), "grid" | "row") {
         flatten(node, holds_menu, &mut Vec::new(), &mut out);

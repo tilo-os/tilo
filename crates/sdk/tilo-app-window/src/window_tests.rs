@@ -297,7 +297,7 @@ fn a_call_moved_in_place_is_told_the_room_of_where_it_stands_now() {
     follow_people(&mut harness, &mut app, &mut compact);
     let mut moved = people_bar(false);
     let ToUi::Open { tree: bar, .. } = &mut moved[0] else {
-        unreachable!("people_bar opens the bar first");
+        panic!("people_bar opens the bar first");
     };
     let mut wrap = UiNode::empty("stack", "wrap");
     wrap.props.insert("fill".to_owned(), Value::Int(1));
@@ -4282,7 +4282,10 @@ fn a_right_click_on_a_layout_opens_the_menu_its_view_placed() {
         bounds.x0 >= 400.0 && bounds.y0 >= 200.0 && bounds.x1 <= 1000.0 && bounds.y1 <= 800.0,
         "the menu opens where the right-click landed: {bounds:?}"
     );
-    let (x, y) = ((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
     harness.click_at(x, y);
     drawn_window(&mut harness).flush();
     assert!(
