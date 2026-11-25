@@ -156,7 +156,9 @@ fn a_key_the_person_approved_makes_no_owner_only_change() {
             status, 200,
             "the key does not remove an administrator: {by_key}"
         );
-        assert_eq!(by_key["error"]["code"], "refused", "{by_key}");
+        // The workspace offers a key none of the governance it may not change, so the answer is
+        // its own refusal of the change, not one the call made and lost.
+        assert_eq!(by_key["error"]["code"], "not_permitted", "{by_key}");
         assert!(
             by_key["error"]["message"]
                 .as_str()
