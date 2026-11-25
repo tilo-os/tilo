@@ -32,12 +32,12 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+#[cfg(any(feature = "apps", feature = "agents"))]
+use collab_types::store::wire::{Command, Reply};
 use serde_json::{Map, Value as Json};
 use tilo_action_policy::{MemberAccess, WorkspacePolicy};
 use tilo_actions::remote::{CataloguePage, CatalogueQuery, CatalogueRow};
 use tilo_actions::{ActionAddress, ActionContext, ActionInvoker, ActionOutput, ApiError};
-#[cfg(any(feature = "apps", feature = "agents"))]
-use collab_types::store::wire::{Command, Reply};
 
 use crate::workspaces::Workspaces;
 

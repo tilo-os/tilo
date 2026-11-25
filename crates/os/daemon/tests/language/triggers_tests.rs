@@ -1351,9 +1351,9 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
 /// the record the author is drawn from keeps the name and the picture a face reads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
-    use tilo_action_policy::{Actor as Who, MemberId};
     use collab_types::store::wire::{Command, Edit};
     use collab_types::store::{Cell, Resource, Value};
+    use tilo_action_policy::{Actor as Who, MemberId};
     use tilo_resource_store::Stamp;
     use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
     use tilo_workspace_service::agents::triggered::{self, Where};

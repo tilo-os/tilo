@@ -21,6 +21,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use collab_types::store::wire::Command;
 use runtime_portal::workspace_terminal::{self, Reply};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
@@ -31,7 +32,6 @@ use tilo_actions::{
     ActionAddress, ActionDescriptor, ActionParam, InvocationId, InvocationUpdate, ParamType,
 };
 use tilo_device_identity::login::{OPEN_TERMINAL, PROVIDER, RESOURCE, TERMINAL_RECORDS};
-use collab_types::store::wire::Command;
 use tilo_workspace_service::workspaces::{Workspaces, standing};
 
 use super::ticket::{failed_as, succeeded};
