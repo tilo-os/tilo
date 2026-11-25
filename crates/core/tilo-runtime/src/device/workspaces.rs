@@ -1398,7 +1398,9 @@ async fn test_endpoint(key: &ed25519_dalek::SigningKey) -> iroh::Endpoint {
 /// thread never waits here: every task of every session and daemon in the
 /// process runs on it, and the future waits on that thread's timers and
 /// sockets, so the wait would hold them all until something else gave way.
-/// A debug build stops there, and a release build says where it waits from.
+/// A debug build stops there, and a release build says where it waits from: the call site,
+/// which a build without symbols still names, and the backtrace.
+#[track_caller]
 pub(crate) fn block_on_owned<F>(future: F) -> F::Output
 where
     F: std::future::Future + Send + 'static,
@@ -1406,13 +1408,15 @@ where
 {
     let runtime = tilo_rt::app();
     if runtime.is_runtime_thread() {
+        let at = std::panic::Location::caller();
         tracing::error!(
+            %at,
             from = %std::backtrace::Backtrace::force_capture(),
             "a synchronous call into the workspaces waits on the app runtime's own thread"
         );
         assert!(
             !cfg!(debug_assertions),
-            "a synchronous call into the workspaces waits on the app runtime's own thread"
+            "a synchronous call into the workspaces waits on the app runtime's own thread, at {at}"
         );
     }
     if tokio::runtime::Handle::try_current().is_err() {
