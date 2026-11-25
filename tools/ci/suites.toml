@@ -982,6 +982,7 @@ readers = [
   "crates/lang/tilolang-tilo/tests/rich_text.rs",
   "crates/lang/tilolang-tilo/tests/scenarios.rs",
   "crates/lang/tilolang-tilo/tests/surface.rs",
+  "crates/lang/tilolang-tilo/tests/triggers.rs",
   "crates/lang/tilolang-tilo/tests/tube.rs",
   "crates/lang/tilolang-tilo/tests/windows_apps.rs",
   "crates/lang/tilolang-tilo/tests/words.rs",
@@ -1592,6 +1593,7 @@ package = "tilolang-workspace"
 # that serves workspaces reads them.
 inputs = [
   "apps/tl/chat/",
+  "apps/tl/clocks/",
   "apps/tl/discord/",
   "apps/tl/discussion/",
   "apps/tl/notes/",
@@ -1602,10 +1604,11 @@ readers = ["crates/lang/tilolang-workspace/src/records.rs"]
 
 [[cargo]]
 package = "tilo-daemon"
-# The agents' and triggers' tests run Chat, Tasks and Mail from their sources, through the
+# The agents', triggers' and wakeups' tests run Chat, Tasks, Mail and Clocks from their sources, through the
 # language runtime the daemon links and mounts.
 inputs = [
   "apps/tl/chat/",
+  "apps/tl/clocks/",
   "apps/tl/contacts/",
   "apps/tl/discussion/",
   "apps/tl/mail/",
@@ -1615,6 +1618,7 @@ inputs = [
 readers = [
   "crates/os/daemon/tests/language/task_work_tests.rs",
   "crates/os/daemon/tests/language/triggers_tests.rs",
+  "crates/os/daemon/tests/language/wakeups_tests.rs",
 ]
 
 [[cargo]]
