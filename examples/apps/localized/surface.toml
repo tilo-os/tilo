@@ -1,12 +1,14 @@
 # Written by `tilolang surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "example.shelf"
 label = "Shelf"
 version = 1
 fields = [
-  { path = "reader", type = "String" },
-  { path = "books", type = "u32" },
+  { path = "reader", type = "text" },
+  { path = "books", type = "int" },
 ]
 
 [[resources.verbs]]
@@ -15,5 +17,9 @@ kind = "undoable"
 
 [[resources.verbs]]
 id = "remove-book"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "type"
 kind = "undoable"
 

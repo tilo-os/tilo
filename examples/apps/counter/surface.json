@@ -1,0 +1,1 @@
+{"format":2,"resources":[{"fields":[{"path":"count","type":"int"}],"kind":"example.counter","label":"Counter","verbs":[{"id":"add","kind":"undoable","params":[{"name":"amount","required":true,"schema":{"type":"integer"},"type":"int"}]},{"destructive":true,"id":"reset","kind":"undoable"},{"id":"type","kind":"undoable"}],"version":1}]}

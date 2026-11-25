@@ -1,0 +1,1 @@
+{"format":2,"resources":[{"fields":[{"path":"opened","type":{"list":"int"}}],"kind":"example.review","label":"Results","verbs":[{"id":"open-row","kind":"undoable","params":[{"name":"id","required":true,"schema":{"minimum":0,"type":"integer"},"type":"int"}]},{"id":"type","kind":"undoable"}],"version":1}]}

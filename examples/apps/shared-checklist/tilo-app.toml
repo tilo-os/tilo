@@ -39,3 +39,18 @@ splash-budget = 250
 [providers]
 mime = []
 ext = []
+
+# What the app offers a person while it is closed: written by `tilolang surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "example.checklist"
+action = "add"
+label = "Add an item"
+operation = "document"
+asks = "title"
+[[offers]]
+resource = "example.checklist"
+action = "clear-done"
+label = "Remove checked items"
+operation = "document"

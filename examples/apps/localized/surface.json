@@ -1,0 +1,1 @@
+{"format":2,"resources":[{"fields":[{"path":"reader","type":"text"},{"path":"books","type":"int"}],"kind":"example.shelf","label":"Shelf","verbs":[{"id":"add-book","kind":"undoable"},{"id":"remove-book","kind":"undoable"},{"id":"type","kind":"undoable"}],"version":1}]}

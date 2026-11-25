@@ -1,0 +1,1 @@
+{"format":2,"resources":[{"fields":[{"path":"payload","type":"text"}],"kind":"example.qr-code","label":"QR code","verbs":[{"id":"clear","kind":"undoable"},{"id":"type","kind":"undoable"}],"version":1}]}

@@ -889,12 +889,11 @@ env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 # wrong answer everywhere. One build of the whole application set, then each
 # binary prints what it publishes; the example apps beside the tree are
 # compared the same way, so a surface kept beside generated code cannot drift.
-# The catalogue generator then reads each
-# tilolang package of `apps/tl` through `tilolang describe --fleet`, so the
-# fleet knows a tilolang app as fully as a native one, and fails when the
-# generated catalogue is stale or two apps claim one id. Each binary is run in a
-# network namespace of its own (`isolation`), so a report cannot wait on a
-# network: what it publishes is what its code holds.
+# The catalogue generator then reads each tilolang package of `apps/tl` through
+# `tilolang describe --fleet`, so the fleet knows a tilolang app as fully as a
+# native one, and fails when the generated catalogue is stale or two apps claim
+# one id. Each binary is run in a network namespace of its own (`isolation`), so
+# a report cannot wait on a network: what it publishes is what its code holds.
 # A gate of main beside `check` (`gate`): a surface the committed files no longer match refuses
 # every push that reaches the apps reading it, so a head that left one stale is told to its pusher
 # at once.

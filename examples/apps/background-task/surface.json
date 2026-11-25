@@ -1,0 +1,1 @@
+{"format":2,"resources":[{"fields":[{"path":"limit","type":"int"}],"kind":"example.prime-search","label":"Prime search","verbs":[{"id":"type","kind":"undoable"}],"version":1}]}

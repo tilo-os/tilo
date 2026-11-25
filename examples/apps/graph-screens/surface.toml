@@ -1,16 +1,28 @@
 # Written by `tilolang surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "example.projects"
 label = "Project"
 version = 1
 fields = [
-  { path = "draft", type = "String" },
-  { path = "projects", type = "Collection<Project>", stored = "collection" },
-  { path = "projects.*.name", type = "String" },
+  { path = "draft", type = "text" },
+  { path = "projects", type = { collection = { named = "Project" } }, stored = "collection" },
+  { path = "projects.*.name", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "create"
 kind = "undoable"
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.types]]
+name = "Project"
+fields = [
+  { name = "name", type = "text" },
+]
 

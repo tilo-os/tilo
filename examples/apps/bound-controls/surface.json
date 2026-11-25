@@ -1,0 +1,1 @@
+{"format":2,"resources":[{"fields":[{"path":"name","type":"text"},{"path":"updates","type":"bool"},{"path":"refresh_minutes","type":"float"},{"path":"volume","type":"float"},{"path":"region","type":"text"}],"kind":"example.preferences","label":"Preferences","verbs":[{"id":"reset","kind":"undoable"},{"id":"type","kind":"undoable"}],"version":1}]}

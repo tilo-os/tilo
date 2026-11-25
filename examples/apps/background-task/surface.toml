@@ -1,10 +1,16 @@
 # Written by `tilolang surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "example.prime-search"
 label = "Prime search"
 version = 1
 fields = [
-  { path = "limit", type = "u64" },
+  { path = "limit", type = "int" },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 

@@ -1,18 +1,24 @@
 # Written by `tilolang surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "example.preferences"
 label = "Preferences"
 version = 1
 fields = [
-  { path = "name", type = "String" },
+  { path = "name", type = "text" },
   { path = "updates", type = "bool" },
-  { path = "refresh_minutes", type = "f64" },
-  { path = "volume", type = "f64" },
-  { path = "region", type = "Atom" },
+  { path = "refresh_minutes", type = "float" },
+  { path = "volume", type = "float" },
+  { path = "region", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "reset"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "type"
 kind = "undoable"
 

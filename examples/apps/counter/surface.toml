@@ -1,22 +1,28 @@
 # Written by `tilolang surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "example.counter"
 label = "Counter"
 version = 1
 fields = [
-  { path = "count", type = "i64" },
+  { path = "count", type = "int" },
 ]
 
 [[resources.verbs]]
 id = "add"
 kind = "undoable"
 params = [
-  { name = "amount", required = true, schema = { type = "integer" } },
+  { name = "amount", type = "int", required = true, schema = { type = "integer" } },
 ]
 
 [[resources.verbs]]
 id = "reset"
 destructive = true
+kind = "undoable"
+
+[[resources.verbs]]
+id = "type"
 kind = "undoable"
 

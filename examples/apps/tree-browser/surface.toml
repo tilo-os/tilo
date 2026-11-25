@@ -1,13 +1,15 @@
 # Written by `tilolang surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "example.notebook"
 label = "Notebook"
 version = 1
 fields = [
-  { path = "sections", type = "Collection<Section>", stored = "collection" },
-  { path = "sections.*.title", type = "String" },
-  { path = "sections.*.notes", type = "String" },
+  { path = "sections", type = { collection = { named = "Section" } }, stored = "collection" },
+  { path = "sections.*.title", type = "text" },
+  { path = "sections.*.notes", type = "text" },
   { path = "sections.*.shared", type = "bool" },
 ]
 
@@ -15,6 +17,18 @@ fields = [
 id = "share"
 kind = "undoable"
 params = [
-  { name = "id", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "id", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.types]]
+name = "Section"
+fields = [
+  { name = "title", type = "text" },
+  { name = "notes", type = "text" },
+  { name = "shared", type = "bool" },
 ]
 

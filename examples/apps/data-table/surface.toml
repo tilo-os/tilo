@@ -1,17 +1,23 @@
 # Written by `tilolang surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "example.review"
 label = "Results"
 version = 1
 fields = [
-  { path = "opened", type = "Vec<u64>" },
+  { path = "opened", type = { list = "int" } },
 ]
 
 [[resources.verbs]]
 id = "open-row"
 kind = "undoable"
 params = [
-  { name = "id", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "id", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 
