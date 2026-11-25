@@ -54,7 +54,7 @@ impl WorkspaceReport {
 }
 
 /// What each workspace kept under the workspaces directory `workspaces` holds, read from its
-/// stored documents with no workspace opened for writes and no record moved: each with the name
+/// stored documents with no workspace opened and no record moved: each with the name
 /// its governance gives it. `surfaces` is a directory of apps' compiled surfaces — the apps
 /// payload a build lays out, or a device's kept surfaces — which name each kind's readers.
 ///
@@ -69,9 +69,10 @@ pub fn read_state(
         .map_err(|error| format!("{}: {error}", workspaces.display()))?
         .flatten()
         .map(|entry| entry.path())
-        // A workspace's record has no extension: the files beside it, which say what it filed
-        // and whether it was released, do.
-        .filter(|path| path.is_file() && path.extension().is_none())
+        // A workspace's record is `<id>.workspace`; the files beside it, which say what it
+        // filed and whether it was released, and the directories of its parts and store, have
+        // other names.
+        .filter(|path| path.is_file() && path.extension().is_some_and(|kind| kind == "workspace"))
         .collect();
     files.sort();
     let surfaces = surfaces_of(surfaces)?;

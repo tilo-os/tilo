@@ -466,9 +466,9 @@ fn member_roots(peer: &StatePeer, now: SystemTime) -> std::collections::BTreeSet
 }
 
 /// What the workspace record kept at `path` holds where its types' rules do not place it, and
-/// how many members it has: read from its stored documents without opening it for writes and
-/// without moving a record ([`crate::readers_report`]). `surfaces` are the app surfaces the
-/// kinds' readers are declared from.
+/// how many members it has: read from its stored documents without opening it and without
+/// writing anything, not even the files an open would make beside it ([`crate::readers_report`]).
+/// `surfaces` are the app surfaces the kinds' readers are declared from.
 ///
 /// # Errors
 /// The record cannot be read, is of an older layout that opening would rewrite, or one of its
@@ -489,9 +489,42 @@ pub(crate) fn kept_report(
             path.display()
         ));
     }
-    let governed = GovernedWorkspace::open(path.to_path_buf(), None)?;
-    let (members, name) = governed_summary(&governed.peer(), &governed);
-    let mut store = governed.resources.store_mut();
+    let stored: document_format::StoredResource = postcard::from_bytes(&bytes).map_err(|error| {
+        format!(
+            "{}: {} version {version}: {error}",
+            path.display(),
+            document_format::FORMAT.name
+        )
+    })?;
+    // The state's parts are read as they are, and a state of an older layout is refused like an
+    // old record: opening it writes the parts in today's layout and the file that names them.
+    let kept = peer_parts::PeerParts::reading(path)
+        .load(&stored.peer)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let (state_version, _) = postcard::take_from_bytes::<u32>(&kept)
+        .map_err(|error| format!("{}: peer state: {error}", path.display()))?;
+    if state_version != tilo_peer_state::DURABLE_VERSION {
+        return Err(format!(
+            "{}: a peer state of version {state_version}, which this build opens by writing it",
+            path.display()
+        ));
+    }
+    let owner = stored.owner.clone();
+    let peer = StatePeer::restore(
+        &kept,
+        &stored.workspace,
+        owner.clone(),
+        vec![owner],
+        RevocationList::new(),
+        tilo_clock::wall(),
+    )
+    .map_err(|error| format!("{}: peer state: {error}", path.display()))?;
+    if !peer.has_governance() {
+        return Err(format!("{}: restored workspace has no governance", path.display()));
+    }
+    let (members, name) = governed_summary(&peer, &stored.workspace);
+    let resources = resources::Resources::open(path, stored.workspace_id);
+    let mut store = resources.store_mut();
     crate::readers_report::declare_surfaces(&mut store, surfaces);
     Ok((
         name,
@@ -499,18 +532,18 @@ pub(crate) fn kept_report(
     ))
 }
 
-/// The count of `governed`'s members that stand now, and the name its governance gives the
+/// The count of `peer`'s members that stand now, and the name its governance gives the
 /// workspace, as [`kept_report`] reports them: what `peer`'s governance says, read under the
-/// peer's lock.
+/// peer's lock. `workspace` names the workspace its record does.
 #[cfg(not(target_arch = "wasm32"))]
-fn governed_summary(peer: &StatePeer, governed: &GovernedWorkspace) -> (usize, String) {
+fn governed_summary(peer: &StatePeer, workspace: &str) -> (usize, String) {
     let governance = peer.governance();
     let members = governance
         .governed_members(tilo_clock::wall())
         .map_or(0, |members| members.members.len());
     let name = governance
         .workspace_name()
-        .unwrap_or_else(|| governed.workspace().to_owned());
+        .unwrap_or_else(|| workspace.to_owned());
     (members, name)
 }
 

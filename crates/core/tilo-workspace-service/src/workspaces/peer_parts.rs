@@ -133,6 +133,23 @@ impl PeerParts {
         })
     }
 
+    /// The parts directory of the workspace file at `workspace_path`, for a reader that writes
+    /// nothing: no part is listed, and a file that is no part is left where it is, as
+    /// [`Self::open`] does not leave it. Only [`Self::load`] may be called on it.
+    pub(super) fn reading(workspace_path: &Path) -> Self {
+        Self {
+            files: PartFiles {
+                dir: workspace_path.with_extension("parts"),
+                on_disk: Arc::new(Mutex::new(OnDisk {
+                    parts: BTreeSet::new(),
+                    written: 0,
+                })),
+            },
+            staged: HashMap::new(),
+            ordered: 0,
+        }
+    }
+
     /// `peer`'s durable state as parts for the workspace file, in memory: what
     /// [`Self::stage`] writes, or a [`FileWrite`] made of them later.
     pub(super) fn name(&mut self, peer: &StatePeer) -> Result<Vec<PeerPart>, String> {

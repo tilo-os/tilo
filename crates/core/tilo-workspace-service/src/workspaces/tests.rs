@@ -2521,3 +2521,90 @@ async fn a_restarted_host_admits_exactly_what_the_member_list_committed() {
     drop(workspaces);
     server.shutdown().await;
 }
+
+/// One entry of a state directory as a reader found it: where it is, whether it is a
+/// directory, its bytes and its modification time.
+#[derive(Debug, PartialEq, Eq)]
+struct Kept {
+    path: std::path::PathBuf,
+    dir: bool,
+    bytes: Option<Vec<u8>>,
+    modified: Option<SystemTime>,
+}
+
+/// Everything under `dir`, files and directories alike, as it stands.
+fn state_tree(dir: &std::path::Path) -> Vec<Kept> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<Kept>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let metadata = std::fs::metadata(&path).unwrap();
+            let is_dir = metadata.is_dir();
+            out.push(Kept {
+                bytes: (!is_dir).then(|| std::fs::read(&path).unwrap()),
+                path: path.clone(),
+                dir: is_dir,
+                modified: metadata.modified().ok(),
+            });
+            if is_dir {
+                walk(&path, out);
+            }
+        }
+    }
+    let mut kept = Vec::new();
+    walk(dir, &mut kept);
+    kept.sort_by(|left, right| left.path.cmp(&right.path));
+    kept
+}
+
+/// The readers report reads a state directory without writing anything: a state that lacks
+/// the sidecars an open would make beside a workspace, and holds an interrupted write's file,
+/// is left byte for byte and mtime for mtime as it was found, and the counts are the
+/// workspace's.
+#[test]
+fn readers_report_reads_a_state_directory_without_writing_it() {
+    let root = tempfile::tempdir().unwrap();
+    let workspaces = root.path().join("workspaces");
+    std::fs::create_dir(&workspaces).unwrap();
+    let (key, cert) = governor();
+    let created = GovernedWorkspace::create(
+        &workspaces,
+        "Team",
+        &cert,
+        &key,
+        Some(&crate::workspaces::fixtures::founding_device()),
+        (&[], &[]),
+        SystemTime::now(),
+    )
+    .unwrap();
+    let path = created.path.clone();
+    drop(created);
+    for sidecar in ["admissions", "wait-list", "removals"] {
+        assert!(
+            !path.with_extension(sidecar).exists(),
+            "the state lacks a {sidecar} file"
+        );
+    }
+    // A killed write's temporary file sits in the parts directory; a report reads past it.
+    let parts = path.with_extension("parts");
+    std::fs::create_dir_all(&parts).unwrap();
+    std::fs::write(parts.join("interrupted"), b"half a part").unwrap();
+    let surfaces = root.path().join("surfaces");
+    std::fs::create_dir(&surfaces).unwrap();
+
+    let before = state_tree(&workspaces);
+    let reports = crate::readers_report::read_state(&workspaces, &surfaces).unwrap();
+    let after = state_tree(&workspaces);
+    assert_eq!(
+        before, after,
+        "the report writes nothing, not even a file it would remove"
+    );
+    let [(name, report)] = reports.as_slice() else {
+        panic!("one workspace is reported: {reports:?}");
+    };
+    assert_eq!(name, "Team");
+    assert_eq!(report.members, 1, "its founder is its one member");
+    assert!(
+        report.misplaced.is_empty(),
+        "a workspace that wrote no record holds none where its readers are not: {report:?}"
+    );
+}
