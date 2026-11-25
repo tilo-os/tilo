@@ -420,7 +420,7 @@ impl AccountSource for SessionAccounts {
         match self.inner.ask.invoke(Some(&workspace), ask, arguments) {
             Ok(_) => {}
             Err(error) => {
-                tracing::info!(?error, "the daemon took no sync report of a file account")
+                tracing::info!(?error, "the daemon took no sync report of a file account");
             }
         }
     }
