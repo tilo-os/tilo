@@ -185,7 +185,7 @@ struct AppHandler {
     settings_store_changed: Arc<AtomicBool>,
     /// Lives for the event loop so an idle app still hears a theme change
     /// and compositor appearance writes.
-    _settings_watch: Option<settings_store::watch::SettingsWatch>,
+    _settings_watch: Option<SettingsWatch>,
     /// What this window held the launch's place for arrived (its workspace's join): the loop ends
     /// with the window kept for the launch to open the app in.
     handing_over: bool,
@@ -5316,11 +5316,10 @@ impl App {
             .then(|| {
                 let pending = Arc::clone(&settings_store_changed);
                 let wake = crate::wake::WakeHandle::new();
-                settings_store::watch::watch_settings(move || {
+                watch_settings(move || {
                     pending.store(true, Ordering::Release);
                     wake.wake();
                 })
-                .ok()
             })
             .flatten();
         {
@@ -5452,11 +5451,10 @@ impl App {
                 .then(|| {
                     let pending = Arc::clone(&settings_store_changed);
                     let wake = crate::wake::WakeHandle::new();
-                    settings_store::watch::watch_settings(move || {
+                    watch_settings(move || {
                         pending.store(true, Ordering::Release);
                         wake.wake();
                     })
-                    .ok()
                 })
                 .flatten()
         };
@@ -5674,3 +5672,23 @@ fn present_hook(
 
 #[cfg(test)]
 mod early_window_tests;
+
+/// What keeps a window hearing its settings change, for as long as it lives.
+#[cfg(feature = "model")]
+type SettingsWatch = settings_store::watch::SettingsWatch;
+#[cfg(not(feature = "model"))]
+type SettingsWatch = std::sync::Arc<crate::settings_source::Listener>;
+
+/// Run `changed` whenever the settings this process reads change: with Tilo's model the profile's
+/// settings file, else the source its host installed. `None` where there is nothing to hear.
+fn watch_settings(changed: impl Fn() + Send + Sync + 'static) -> Option<SettingsWatch> {
+    #[cfg(feature = "model")]
+    let watch = settings_store::watch::watch_settings(changed).ok();
+    #[cfg(not(feature = "model"))]
+    let watch = crate::settings_source::source().map(|source| {
+        let listener: SettingsWatch = std::sync::Arc::new(changed);
+        source.changes().listen(&listener);
+        listener
+    });
+    watch
+}
