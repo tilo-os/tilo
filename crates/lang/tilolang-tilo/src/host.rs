@@ -39,6 +39,13 @@ use tilo_action_policy::MemberAccess;
 /// line a person typed names no item, so the action does not run.
 type PlannedArgs = Option<(Vec<Value>, serde_json::Map<String, Json>)>;
 
+/// What a plan's run leaves: the arguments its invocation records, and the members who alone
+/// read the change it made (`None` when no record it touched names its readers).
+type PlannedRecord = (
+    serde_json::Map<String, Json>,
+    Option<Vec<tilo_actions::policy::MemberId>>,
+);
+
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
     #[error("{0}")]
@@ -940,23 +947,8 @@ impl HostInner {
     fn plan_in_mirror(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         let package = self.package_of(request.app)?;
         // An edit of a field an action settles is that action, given the value.
-        if let Some(declared) = package
-            .meta
-            .types
-            .iter()
-            .find(|declared| package.meta.kind_of(&declared.name) == request.kind)
-            && let Some((settler, args)) = crate::publish::settled_edit(
-                &package.meta,
-                declared,
-                request.action_id,
-                request.args,
-            )
-        {
-            return self.plan_in_mirror(&PlanRequest {
-                action_id: &settler,
-                args: &args,
-                ..*request
-            });
+        if let Some(settled) = self.settled_plan(&package, request)? {
+            return Ok(settled);
         }
         // The runtime sees the invoker the API admitted: an agent's task delegate for itself,
         // the person at the window otherwise.
@@ -973,23 +965,7 @@ impl HostInner {
         ) {
             return edit;
         }
-        // A scenario is a fixture: only a seed runs it, straight on the runtime. Through the
-        // API, as a person, an agent or another app calls, it is no action.
-        let action = package
-            .meta
-            .actions
-            .iter()
-            .find(|action| action.id == request.action_id && !action.scenario)
-            .ok_or_else(|| format!("no action {}", request.action_id))?;
-        // A requirement is the app's, and the app is what can read it: an action published
-        // while its rule held, or one an agent addresses by name, is refused here, before it
-        // runs, with its rule's reason, decided for the invoker it then runs as.
-        if let Some(target) = request.resource
-            && let Some(tilo_actions::Availability::Unavailable { reason, .. }) =
-                self.availability(target, request.action_id, &invoker)
-        {
-            return Err(reason);
-        }
+        let action = self.admitted_action(&package, request, &invoker)?;
         if let Some(caller) = request.caller.filter(|caller| caller.agent) {
             self.admit_agent(caller);
         }
@@ -1001,54 +977,7 @@ impl HostInner {
                 .and_then(|caller| caller.on_behalf_of.clone()),
             request.caller.and_then(crate::publish::Caller::acting_for),
         );
-        let mut readers = None;
-        let recorded = match self.planned_args(&package, action, request)? {
-            Some((args, recorded)) => {
-                self.store.take_made();
-                // The API admitted the call before it asked for its plan, asking the person
-                // first where it had to: the run does not ask them again.
-                let outcome = self
-                    .run_admitted(
-                        &invoker,
-                        request.caller.and_then(|caller| caller.app.as_deref()),
-                        (request.action_id, args),
-                        request.from,
-                    )
-                    .map_err(|error| error.to_string())?;
-                self.returned_by(request.action_id, &outcome);
-                match outcome {
-                    InvokeOutcome::Done(_) => {}
-                    // It waits on a call it made through the dispatch: the run goes on with the
-                    // answer, and the plan is the change it wrote before waiting. A press's call
-                    // answers nobody, and the dispatch runs it.
-                    InvokeOutcome::Waits { run, call } => {
-                        self.stopped.replace(Some(Waiting {
-                            call,
-                            run: Some(run),
-                        }));
-                    }
-                    // It needs a person's yes first: the call went through the dispatch, which
-                    // records it as an asked invocation and answers with the result.
-                    InvokeOutcome::Asked(call) => {
-                        self.stopped.replace(Some(Waiting { call, run: None }));
-                    }
-                    InvokeOutcome::Denied => return Err("the action is not allowed".to_owned()),
-                }
-                // What it touched says who reads the change: a draft's author alone, and
-                // everyone for a record whose type names no readers.
-                let mut touched = self.store.made_since();
-                if let Some(target) = request.resource
-                    && let Some(at) = ResourceRef::parse_id(target, String::new())
-                {
-                    touched.push(at);
-                }
-                readers = self.change_readers(touched);
-                recorded
-            }
-            // The one line typed names nothing — only space and what the action's other
-            // parameters take — so the action does not run and makes no change.
-            None => request.args.clone(),
-        };
+        let (recorded, readers) = self.run_planned(&package, request, action, &invoker)?;
         Ok(DynAction {
             app: request.app.to_owned(),
             kind: request.kind.to_owned(),
@@ -1067,6 +996,118 @@ impl HostInner {
                 readers,
             },
         })
+    }
+
+    /// The plan of `request` when it edits a field an action of `package` settles: that action,
+    /// given the value. `None` for any other invocation.
+    fn settled_plan(
+        &self,
+        package: &Package,
+        request: &PlanRequest<'_>,
+    ) -> Result<Option<DynAction>, String> {
+        let Some(declared) = package
+            .meta
+            .types
+            .iter()
+            .find(|declared| package.meta.kind_of(&declared.name) == request.kind)
+        else {
+            return Ok(None);
+        };
+        let Some((settler, args)) =
+            crate::publish::settled_edit(&package.meta, declared, request.action_id, request.args)
+        else {
+            return Ok(None);
+        };
+        self.plan_in_mirror(&PlanRequest {
+            action_id: &settler,
+            args: &args,
+            ..*request
+        })
+        .map(Some)
+    }
+
+    /// The action `request` names in `package`, refused before it runs when it is a scenario (a
+    /// fixture only a seed runs) or its requirement cannot be met for `invoker`.
+    fn admitted_action<'a>(
+        &self,
+        package: &'a Package,
+        request: &PlanRequest<'_>,
+        invoker: &Actor,
+    ) -> Result<&'a tilolang::meta::ActionMeta, String> {
+        // A scenario is a fixture: only a seed runs it, straight on the runtime. Through the
+        // API, as a person, an agent or another app calls, it is no action.
+        let action = package
+            .meta
+            .actions
+            .iter()
+            .find(|action| action.id == request.action_id && !action.scenario)
+            .ok_or_else(|| format!("no action {}", request.action_id))?;
+        // A requirement is the app's, and the app is what can read it: an action published
+        // while its rule held, or one an agent addresses by name, is refused here, before it
+        // runs, with its rule's reason, decided for the invoker it then runs as.
+        if let Some(target) = request.resource
+            && let Some(tilo_actions::Availability::Unavailable { reason, .. }) =
+                self.availability(target, request.action_id, invoker)
+        {
+            return Err(reason);
+        }
+        Ok(action)
+    }
+
+    /// Run the admitted `action` of `package`, returning what its invocation records as the
+    /// plan's arguments and who reads the change it made. A line that names nothing runs
+    /// nothing and records itself.
+    fn run_planned(
+        &self,
+        package: &Package,
+        request: &PlanRequest<'_>,
+        action: &tilolang::meta::ActionMeta,
+        invoker: &Actor,
+    ) -> Result<PlannedRecord, String> {
+        let Some((args, recorded)) = self.planned_args(package, action, request)? else {
+            // The one line typed names nothing — only space and what the action's other
+            // parameters take — so the action does not run and makes no change.
+            return Ok((request.args.clone(), None));
+        };
+        self.store.take_made();
+        // The API admitted the call before it asked for its plan, asking the person first
+        // where it had to: the run does not ask them again.
+        let outcome = self
+            .run_admitted(
+                invoker,
+                request.caller.and_then(|caller| caller.app.as_deref()),
+                (request.action_id, args),
+                request.from,
+            )
+            .map_err(|error| error.to_string())?;
+        self.returned_by(request.action_id, &outcome);
+        match outcome {
+            InvokeOutcome::Done(_) => {}
+            // It waits on a call it made through the dispatch: the run goes on with the
+            // answer, and the plan is the change it wrote before waiting. A press's call
+            // answers nobody, and the dispatch runs it.
+            InvokeOutcome::Waits { run, call } => {
+                self.stopped.replace(Some(Waiting {
+                    call,
+                    run: Some(run),
+                }));
+            }
+            // It needs a person's yes first: the call went through the dispatch, which
+            // records it as an asked invocation and answers with the result.
+            InvokeOutcome::Asked(call) => {
+                self.stopped.replace(Some(Waiting { call, run: None }));
+            }
+            InvokeOutcome::Denied => return Err("the action is not allowed".to_owned()),
+        }
+        // What it touched says who reads the change: a draft's author alone, and everyone for
+        // a record whose type names no readers.
+        let mut touched = self.store.made_since();
+        if let Some(target) = request.resource
+            && let Some(at) = ResourceRef::parse_id(target, String::new())
+        {
+            touched.push(at);
+        }
+        Ok((recorded, self.change_readers(touched)))
     }
 
     /// The members who alone read the change that touched `targets`: those every record among
@@ -1456,7 +1497,11 @@ impl Host {
         value: Option<&Value>,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let package = self.inner.package_of(app)?;
-        let Some(declared) = package.meta.actions.iter().find(|declared| declared.id == action)
+        let Some(declared) = package
+            .meta
+            .actions
+            .iter()
+            .find(|declared| declared.id == action)
         else {
             // A bound control's edit is no declared action: its plan writes the field, and it
             // answers no value of its own, as a press of the control answers none.

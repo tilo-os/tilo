@@ -2419,29 +2419,46 @@ pub fn edit_action(
     commit_edit(
         store,
         meta,
-        &meta.kind_of(type_name),
-        &at,
-        &mutation,
-        action_id,
-        args,
-        invoker,
+        EditChange {
+            kind: &meta.kind_of(type_name),
+            at: &at,
+            mutation: &mutation,
+            action_id,
+            args,
+            invoker,
+        },
         readers,
     )
 }
 
-/// Write `mutation` to `at` as `invoker`'s change of the action `action_id`, recording `args`:
-/// the write every direct edit makes, whether it sets a field or one paragraph of its rich text.
+/// The write a direct edit makes: the resource `at` of type `kind`, the `mutation` that sets it,
+/// and the change the action `action_id` records it as, with the `args` that name what it
+/// changed and `invoker` who made it.
+struct EditChange<'a> {
+    kind: &'a str,
+    at: &'a ResourceRef,
+    mutation: &'a Mutation,
+    action_id: &'a str,
+    args: Json,
+    invoker: Option<&'a Actor>,
+}
+
+/// Write `change` to the store as its invoker's: the write every direct edit makes, whether it
+/// sets a field or one paragraph of its rich text.
 fn commit_edit(
     store: &ResourceStore,
     meta: &Meta,
-    kind: &str,
-    at: &ResourceRef,
-    mutation: &Mutation,
-    action_id: &str,
-    args: Json,
-    invoker: Option<&Actor>,
+    change: EditChange<'_>,
     readers: &dyn Fn(&ResourceRef) -> Option<Vec<tilo_actions::MemberId>>,
 ) -> Result<DynAction, String> {
+    let EditChange {
+        kind,
+        at,
+        mutation,
+        action_id,
+        args,
+        invoker,
+    } = change;
     let mut store = store.clone();
     let txn = store.begin().map_err(|error| error.to_string())?;
     if let Err(error) = store.apply(txn, at, mutation) {
@@ -2715,12 +2732,14 @@ pub fn edit_block_action(
     commit_edit(
         store,
         meta,
-        &meta.kind_of(type_name),
-        &at,
-        &mutation,
-        edit.id,
-        Json::Object(recorded),
-        invoker,
+        EditChange {
+            kind: &meta.kind_of(type_name),
+            at: &at,
+            mutation: &mutation,
+            action_id: edit.id,
+            args: Json::Object(recorded),
+            invoker,
+        },
         readers,
     )
 }
