@@ -188,3 +188,65 @@ impl Port for CallPort {
         }
     }
 }
+
+#[cfg(test)]
+mod cost_tests {
+    //! What one store command costs an instance: the command it sends on its connection, the
+    //! broker transport that carries it, and the answer its frame is woken for. An action names
+    //! many resources in the store, so it pays this per ask.
+
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::arithmetic_side_effects,
+        reason = "a test's unwrap and division are its assertions"
+    )]
+
+    use super::*;
+
+    /// How many commands the trip is measured over.
+    const ASKS: u32 = 100;
+
+    #[test]
+    fn a_store_command_on_the_call_port_is_a_local_trip() {
+        let app = "so.tilo.cost";
+        let workspace = uuid::Uuid::new_v4();
+        let (fd, _captures, _broker) = collaboration::test_support::stand_up_fake_broker(
+            collaboration::test_support::FakeBroker::default(),
+        );
+        // The host's wake as [`crate::TilolangProcess::new`] binds it: the port waits on it for
+        // its answer, and the connection writes it whenever it has something new.
+        let mut scope = tilo_wake::WakeScope::new();
+        let arrived = Rc::new(Wake::new().unwrap());
+        let also = arrived.waker();
+        scope.bind(move |_| also()).unwrap();
+        let manager = {
+            let _in_scope = scope.enter();
+            collaboration::test_support::manager_on(fd, app, workspace)
+        };
+        let connection = Connection::new(manager).unwrap();
+        let port = connection.port(Some(Rc::clone(&arrived)));
+        let command = collab_types::store::wire::Command::RecordChanges {
+            record: None,
+            after: Vec::new(),
+            from: 0,
+        };
+        // The first command joins the route; the trip is measured over the ones after it, which
+        // is what an action's loop makes.
+        port.command(command.clone())
+            .expect("the store answers the first command");
+        let started = Instant::now();
+        for ask in 0..ASKS {
+            port.command(command.clone())
+                .unwrap_or_else(|error| panic!("ask {ask} was not answered: {error}"));
+        }
+        let trip = started.elapsed() / ASKS;
+        eprintln!("one store command on the call port: {trip:?}");
+        assert!(
+            trip < Duration::from_millis(2),
+            "one store command on the call port is {trip:?}: the store is on this device, so its \
+             answer is a wake, not a wait for something to happen"
+        );
+    }
+}
