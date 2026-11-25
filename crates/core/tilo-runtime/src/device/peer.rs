@@ -141,6 +141,10 @@ impl Peer {
         // binds loopback alone and reaches nothing by itself.
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
+            // An endpoint that reaches nothing must not probe the router for a mapping: the
+            // discovery asks the network for a UPnP gateway, which a machine with none refuses
+            // for as long as the endpoint lives.
+            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
             .clear_ip_transports()
             .bind_addr_with_opts(
                 std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),

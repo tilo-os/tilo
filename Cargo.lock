@@ -16639,6 +16639,7 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-agent-session",
+ "tilo-api",
  "tilo-app-id",
  "tilo-app-package",
  "tilo-automation",
