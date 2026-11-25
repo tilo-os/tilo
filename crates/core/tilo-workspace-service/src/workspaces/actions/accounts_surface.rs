@@ -602,8 +602,9 @@ mod surface_tests {
                         (
                             "settings",
                             FieldType::Json,
-                            "The account's own settings as its type keeps them, which hold no \
-                             secret: the servers it signs in at and what it is.",
+                            "The account's settings an app that signs in reads: its servers, its \
+                             ports and the name it signs in as, and the vault entry that keeps \
+                             its secret.",
                         ),
                     ],
                 ),

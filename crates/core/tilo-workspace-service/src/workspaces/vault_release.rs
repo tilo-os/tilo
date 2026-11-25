@@ -658,15 +658,27 @@ impl Workspaces {
         let cert = self.device_cert();
         let person = hex::encode(cert.user_public_key);
         let id = ItemId::parse(item.id()).ok_or_else(|| refused(NOT_KEPT.to_owned()))?;
-        let facts = self
-            .open_vault(workspace)
-            .await
-            .map_err(|why| refused(device_may_not_read(app, &why)))?
-            .items()
-            .facts()
-            .into_iter()
-            .find(|facts| facts.id == id)
-            .ok_or_else(|| refused(NOT_KEPT.to_owned()))?;
+        // The item's facts, and the secret it keeps, read without writing a use: a refusal made
+        // below records nothing in the entry.
+        let (facts, kept) = {
+            let opened = self
+                .open_vault(workspace)
+                .await
+                .map_err(|why| refused(device_may_not_read(app, &why)))?;
+            let items = opened.items();
+            let facts = items
+                .facts()
+                .into_iter()
+                .find(|facts| facts.id == id)
+                .ok_or_else(|| refused(NOT_KEPT.to_owned()))?;
+            let kept = items
+                .kept()
+                .into_iter()
+                .find(|(entry, _)| entry.id.0 == id.as_str())
+                .map(|(entry, _)| entry.password)
+                .ok_or_else(|| refused(NOT_KEPT.to_owned()))?;
+            (facts, kept)
+        };
         let caller = Caller::local_app(app)
             .acting_for(person.clone())
             .in_workspace(workspace);
@@ -681,6 +693,32 @@ impl Workspaces {
                 .map_err(refused)?;
             return Err(refused(asked_first(app)));
         }
+        // A sign-in of an account this workspace keeps that its provider's page left is handed
+        // out as the access token the grant holds now, renewed here: never the grant itself,
+        // whose refresh token would sign in as the person for good. Which account names the
+        // item is decided before the use is written, so a grant no account names is refused
+        // with nothing recorded.
+        let grant = accounts::Secret {
+            password: String::new(),
+            token: Some(kept),
+        };
+        let account = if account_credentials::oauth_tokens(&grant).is_some() {
+            Some(
+                self.workspace_accounts(workspace)
+                    .await
+                    .ok()
+                    .and_then(|held| {
+                        held.all().into_iter().find(|account| {
+                            super::person_settings::kept_sign_ins::sign_in_of(&account.config)
+                                .as_ref()
+                                == Some(&item)
+                        })
+                    })
+                    .ok_or_else(|| refused(NO_ACCOUNT_FOR_GRANT.to_owned()))?,
+            )
+        } else {
+            None
+        };
         let what = format!("{app}'s connection");
         let released = self
             .changing_vault(workspace, (Some(caller.acting()), None), |items| {
@@ -697,25 +735,7 @@ impl Workspaces {
             })
             .await
             .map_err(refused)?;
-        // A sign-in of an account this workspace keeps that its provider's page left is handed
-        // out as the access token the grant holds now, renewed here: never the grant itself,
-        // whose refresh token would sign in as the person for good.
-        let grant = accounts::Secret {
-            password: String::new(),
-            token: Some(released.secret.to_string()),
-        };
-        let released = if account_credentials::oauth_tokens(&grant).is_some() {
-            let account = self
-                .workspace_accounts(workspace)
-                .await
-                .ok()
-                .and_then(|held| {
-                    held.all().into_iter().find(|account| {
-                        super::person_settings::kept_sign_ins::sign_in_of(&account.config).as_ref()
-                            == Some(&item)
-                    })
-                })
-                .ok_or_else(|| refused(NO_ACCOUNT_FOR_GRANT.to_owned()))?;
+        let released = if let Some(account) = account {
             super::person_settings::oauth_grant::signs_in_with(
                 self.vault_for(workspace, caller.acting()),
                 &self.workspace_root(workspace),

@@ -117,22 +117,9 @@ impl Frames {
     /// ([`super::vault_release`]), on this connection alone.
     pub(crate) fn of_an_app(daemon: &Arc<Daemon>, at: &crate::seats::AppAt) -> Self {
         let own = super::vault_release::OwnProcess::new(daemon, at.pid, &at.app, &at.workspace);
-        let caller = Caller::launched(&at.app).in_workspace(&at.workspace);
-        // The app's signed manifest declares it signs in to the workspace's accounts: the grant
-        // that names it for them is the one its connection holds, never a person's.
-        let caller = if daemon.app_declares(&at.app, tilo_app_package::manifest::ACCOUNT_SIGN_INS) {
-            caller.granting(vec![tilo_action_policy::Grant::new(
-                format!("manifest:{}:{}", at.app, at.workspace),
-                tilo_action_policy::Grantee::app(at.app.as_str()),
-                tilo_action_policy::TreePath::workspace(at.workspace.clone())
-                    .app(tilo_actions::remote::person_accounts::PROVIDER),
-                tilo_action_policy::KindSet::READ,
-                tilo_action_policy::Answer::Allow,
-                tilo_action_policy::Grantee::person(daemon.person_id()),
-            )])
-        } else {
-            caller
-        };
+        // The app, holding the grant its signed manifest declares where it signs in to the
+        // workspace's accounts: the one its connection holds, never a person's.
+        let caller = daemon.app_caller(&at.app, &at.workspace);
         let lane = daemon.app_call_setup(at);
         let (daemon, app, workspace) =
             (Arc::downgrade(daemon), at.app.clone(), at.workspace.clone());

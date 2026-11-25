@@ -21,7 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActionAddress, RemoteActionTarget};
+use super::{ActionAddress, Caller, RemoteActionTarget};
 
 /// The provider that answers the person's mail accounts under.
 pub const PROVIDER: &str = "tilo.accounts";
@@ -79,6 +79,26 @@ pub const CANCEL_SIGN_IN: &str = "cancel-sign-in";
 /// Say which of an account's services the person uses ([`SetServices`]),
 /// answering the accounts as [`MailAccounts`].
 pub const SET_SERVICES: &str = "set-services";
+/// The id of the grant a device hands an app's own connection for the workspace's accounts:
+/// what the app's signed manifest declares by naming [`super::person_accounts::SIGN_INS`]'s
+/// capability, and what lets it read the logins there and nothing else of the accounts.
+#[must_use]
+pub fn sign_in_grant_id(app: &str, workspace: &str) -> String {
+    format!("manifest:{app}:{workspace}:sign-ins")
+}
+
+/// Whether `caller` is the app `app`'s own connection in `workspace`, holding the grant its
+/// signed manifest declares: the one that lets it read the logins the vault keeps.
+#[must_use]
+pub fn signs_in(caller: &Caller, app: &str, workspace: &str) -> bool {
+    let id = sign_in_grant_id(app, workspace);
+    caller.granted().iter().any(|grant| {
+        grant.id.as_str() == id
+            && grant.grantee == tilo_action_policy::Grantee::app(app)
+            && grant.answer == tilo_action_policy::Answer::Allow
+    })
+}
+
 /// Read the logins the workspace's vault keeps, as a [`MailSignIns`]: their names, sign-in
 /// names, the places each belongs to and the account each signs in for, never their secrets. An
 /// app picks from them the ones its own places name, as Mail's does for its `imap` and `smtp`
@@ -622,8 +642,8 @@ pub struct SignedInAccount {
     pub read_only: bool,
     /// Whether the account is in use.
     pub enabled: bool,
-    /// The account's own settings as its type keeps them, which hold no secret: the servers it
-    /// signs in at and what it is.
+    /// The account's settings an app that signs in reads: its servers, its ports and the name
+    /// it signs in as, and the vault entry that keeps its secret.
     #[serde(default)]
     pub settings: serde_json::Value,
 }

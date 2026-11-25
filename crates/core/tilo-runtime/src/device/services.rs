@@ -1527,7 +1527,27 @@ impl Daemon {
         let named = workspace.to_owned();
         let joined = block_on_owned(async move { api.joined(&named, broker.app_calls()).await })
             .map_err(io::Error::other)?;
-        Ok((joined, Caller::launched(app).in_workspace(workspace)))
+        Ok((joined, self.app_caller(app, workspace)))
+    }
+
+    /// The caller an app's own connection is decided as in `workspace`: the app, holding the
+    /// grant its signed manifest declares where it declares that it signs in to the workspace's
+    /// accounts. The grant names the app for the accounts and nothing of a person's rights.
+    #[must_use]
+    pub(crate) fn app_caller(&self, app: &str, workspace: &str) -> Caller {
+        let caller = Caller::launched(app).in_workspace(workspace);
+        if !self.app_declares(app, tilo_app_package::manifest::ACCOUNT_SIGN_INS) {
+            return caller;
+        }
+        caller.granting(vec![tilo_action_policy::Grant::new(
+            tilo_actions::remote::person_accounts::sign_in_grant_id(app, workspace),
+            tilo_action_policy::Grantee::app(app),
+            tilo_action_policy::TreePath::workspace(workspace.to_owned())
+                .app(tilo_actions::remote::person_accounts::PROVIDER),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(self.person_id()),
+        )])
     }
 
     /// The tree `workspace` reaches for `caller`.

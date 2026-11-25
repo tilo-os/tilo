@@ -174,6 +174,22 @@ impl Workspaces {
     ) -> Result<Reach, ActionCallError> {
         let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
         let acting = caller.acting();
+        // An app whose signed manifest declares it signs in reads the logins the workspace's
+        // vault keeps, as the app its connection is: the one verb its grant names it for, and
+        // no other accounts verb and no store at all.
+        if let Some(app) = acting.app()
+            && store == Store::MAIL
+            && action == tilo_actions::remote::person_accounts::SIGN_INS
+            && tilo_actions::remote::person_accounts::signs_in(caller, app, &workspace.to_string())
+        {
+            return Ok(Reach {
+                workspace,
+                person: self.device_cert().user_public_key,
+                agent: None,
+                answer: Answer::Allow,
+                acting: acting.clone(),
+            });
+        }
         // An app reaches no store, but for Passwords at the vault whose kind it owns: as its
         // own person, on their own device, it may do there what they may of the vault's own
         // calls, and never hand an item to anything else.

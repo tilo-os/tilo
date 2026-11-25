@@ -28,6 +28,8 @@ const ADA: &str = "ada@example.test";
 const PASSWORD: &str = "the-password-her-vault-keeps";
 /// Mail's app, as its connector runs as it.
 const MAIL: &str = "so.tilo.mail";
+/// Another app of the device's, which signs in to nothing.
+const NOTES: &str = "so.tilo.notes";
 
 /// A workspace with a mail account kept in its accounts record, as Settings keeps one when its
 /// person adds it: the server and the sign-in name its sign-in is released for, and never the
@@ -159,16 +161,21 @@ fn a_mail_server_that_refuses_the_password_keeps_no_message() {
     );
 }
 
-/// Mail, installed in this test's own package store as the app its connector runs as: a manifest
-/// that declares the workspace's account sign-ins and the actions it calls.
-fn install_mail() {
+/// `app`, installed in this test's own package store with the actions it calls, declaring the
+/// workspace's account sign-ins where `signs_in`.
+fn install_app(app: &str, signs_in: bool) {
     let catalog = package_store::Catalog::from_env().expect("the test's package store");
-    let payload = catalog.user().packages().join(MAIL);
-    std::fs::create_dir_all(&payload).expect("Mail's payload");
-    std::fs::write(payload.join("probe"), b"mail").expect("Mail's entrypoint");
+    let payload = catalog.user().packages().join(app);
+    std::fs::create_dir_all(&payload).expect("the app's payload");
+    std::fs::write(payload.join("probe"), b"mail").expect("the app's entrypoint");
+    let capabilities = if signs_in {
+        "[capabilities]\noptional = [\"account-sign-ins\"]\n\n"
+    } else {
+        ""
+    };
     let manifest = format!(
         r#"[package]
-id = "{MAIL}"
+id = "{app}"
 version = "0.1.0"
 kind = "app"
 
@@ -179,10 +186,7 @@ signature = ""
 [actions]
 invoke = true
 
-[capabilities]
-optional = ["account-sign-ins"]
-
-[sandbox]
+{capabilities}[sandbox]
 namespaces = []
 seccomp = "tilo-default"
 landlock = "strict"
@@ -195,21 +199,24 @@ bin = "probe"
 type = "gui"
 "#
     );
-    // What the catalogue reads: the manifest parses, names Mail, declares the sign-ins and the
-    // actions it calls.
+    // What the catalogue reads: the manifest parses, names the app, and declares the sign-ins
+    // where it should.
     let view = tilo_app_package::view::ManifestView::from_toml_str(&manifest)
-        .expect("Mail's manifest reads");
-    assert_eq!(view.package_id, MAIL);
-    assert!(
+        .expect("the app's manifest reads");
+    assert_eq!(view.package_id, app);
+    assert_eq!(
         view.declares_capability(tilo_app_package::manifest::ACCOUNT_SIGN_INS),
-        "Mail declares the account sign-ins"
+        signs_in
     );
     let manifest_path = payload.join("manifest.toml");
-    std::fs::write(&manifest_path, manifest).expect("Mail's manifest");
+    std::fs::write(&manifest_path, manifest).expect("the app's manifest");
     let row = format!(
-        "[[entry]]\nid = {MAIL:?}\npayload_root = {payload:?}\nmanifest_path = {manifest_path:?}\n\n"
+        "[[entry]]\nid = {app:?}\npayload_root = {payload:?}\nmanifest_path = {manifest_path:?}\n\n"
     );
-    std::fs::write(catalog.user().registry(), row).expect("the registry names Mail");
+    let registry = catalog.user().registry();
+    let mut rows = std::fs::read_to_string(&registry).unwrap_or_default();
+    rows.push_str(&row);
+    std::fs::write(registry, rows).expect("the registry names the app");
 }
 
 /// Mail, installed here and holding its long-lived connection: what the device's trigger runner
@@ -322,7 +329,7 @@ fn the_mail_connector_signs_in_with_the_password_the_workspace_keeps() {
         // The launcher names the connector's workspace, which its connection's calls are made in.
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("TILO_WORKSPACE_ID", &workspace);
-        install_mail();
+        install_app(MAIL, true);
 
         // The person added the account on their device: the workspace's vault keeps its
         // password, and the account names that entry.
@@ -409,7 +416,7 @@ fn a_mail_account_added_later_signs_in_once_its_entry_is_allowed() {
         let person = hex::encode(cert.user_public_key);
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("TILO_WORKSPACE_ID", &workspace);
-        install_mail();
+        install_app(MAIL, true);
         mail_holds_its_connection(&workspaces, &workspace).await;
 
         // Mail's own connection answers the accounts action.
@@ -472,5 +479,35 @@ fn a_mail_account_added_later_signs_in_once_its_entry_is_allowed() {
         })
         .await;
         assert_eq!(source()[0].config.email, ADA);
+    });
+}
+
+/// An app whose signed manifest does not declare the account sign-ins reads no login: the
+/// connection it is handed refuses the accounts action, and says nothing of a secret it never
+/// read.
+#[test]
+fn an_app_that_does_not_sign_in_is_refused_the_logins() {
+    crate::host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("TILO_WORKSPACE_ID", &workspace);
+        install_app(NOTES, false);
+        // A login the vault keeps, whose account names it: an app that signs in would read it.
+        let workspaces = host.daemon().workspaces().clone();
+        add_mail_account(&workspaces, &workspace, ADA).await;
+        let probe = tilo_actions::remote::signing_in::SigningIn::over(
+            host.daemon()
+                .app_connection_for_test(NOTES, &workspace)
+                .expect("the daemon hands Notes' connection"),
+        )
+        .expect("Notes' connection reads");
+        let refused = probe
+            .sign_ins()
+            .expect_err("an app that does not sign in reads no login");
+        assert!(!refused.is_empty(), "the refusal is in words");
+        assert!(
+            !refused.contains(KEPT),
+            "the refusal tells no secret: {refused}"
+        );
     });
 }

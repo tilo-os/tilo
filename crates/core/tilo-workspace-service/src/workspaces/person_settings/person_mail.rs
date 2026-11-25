@@ -759,10 +759,36 @@ fn signed_in_account(account: &accounts::Account) -> SignedInAccount {
             .and_then(Value::as_bool)
             .unwrap_or(false),
         enabled: account.enabled,
-        // The account's own settings hold no secret: its type keeps that in the vault, named by
-        // the entry the credentials below come from.
-        settings: account.config.clone(),
+        settings: sign_in_settings(&account.config),
     }
+}
+
+/// The account settings an app that signs in reads: where its servers are, the name it signs
+/// in as, and the vault entry that keeps its secret. Every other setting stays in the
+/// workspace, so none a type adds later can leave by this listing.
+fn sign_in_settings(config: &Value) -> Value {
+    const KEPT: [&str; 13] = [
+        "display_name",
+        "email",
+        "username",
+        "imap_host",
+        "imap_port",
+        "imap_tls",
+        "smtp_host",
+        "smtp_port",
+        "smtp_tls",
+        "auth",
+        "import_pending",
+        "identities",
+        accounts::email::PASSWORD_ITEM_KEY,
+    ];
+    let mut kept = Map::new();
+    for key in KEPT {
+        if let Some(value) = config.get(key) {
+            kept.insert(key.to_owned(), value.clone());
+        }
+    }
+    Value::Object(kept)
 }
 
 /// The mail accounts the person keeps, without their secrets: every account
