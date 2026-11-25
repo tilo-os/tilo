@@ -8,7 +8,7 @@ use std::io::{BufReader, Read as _};
 use std::sync::Arc;
 
 use crate::workspaces::BranchFileKeys;
-use automerge::transaction::Transactable as _;
+use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use collab_types::{ContentRetention, EncryptionMetadata, WorkspaceId, file_content_artifact};
 use fs_protocol::tree::FILES_APP;
@@ -240,8 +240,19 @@ fn write_file_aliases(
     }
     let mut document = AutoCommit::load(bytes).map_err(|error| error.to_string())?;
     set_file_aliases(&mut document, translated)?;
+    commit_readdressed(&mut document);
     *bytes = document.save();
     Ok(())
+}
+
+/// Commit what the framework re-addressed in a branch's copied record as the
+/// storage migration it is: no person's action produced it, so it names the
+/// migration, and admission decides it as the device that signs it.
+fn commit_readdressed(document: &mut AutoCommit) {
+    document.commit_with(
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Migrate.change_message()),
+    );
 }
 
 pub(super) fn set_file_aliases(
@@ -438,6 +449,7 @@ fn replace_file_hashes(
                 .map_err(|error| error.to_string())?;
         }
     }
+    commit_readdressed(&mut document);
     *bytes = document.save();
     Ok(())
 }

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use automerge::AutoCommit;
+use automerge::transaction::CommitOptions;
 use collab_types::{ContentRetention, EncryptionMetadata, WorkspaceId, file_content_artifact};
 use fs_protocol::tree::{FILES_APP, chunk_document_id};
 use key_group::ContentKeys;
@@ -301,6 +302,13 @@ fn rewrite_index(
         aliases.insert(address, sealed);
     }
     set_file_aliases(&mut doc, &aliases)?;
+    // The index change is the framework's storage migration of the record: no
+    // person asked for it, so it names the migration and admission decides it as
+    // the device that signs it.
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Migrate.change_message()),
+    );
     Ok(doc.save_after(&heads))
 }
 
@@ -413,7 +421,15 @@ mod tests {
             .unwrap();
         let changes = rewrite_index(&store, workspace, &keys, versions, bytes).unwrap();
         let mut doc = AutoCommit::load(bytes).unwrap();
+        let before = doc.get_heads();
         doc.load_incoming(&changes).unwrap();
+        // The migration's change names itself: the framework's storage
+        // migration of the record, which admission decides as the device that
+        // signs it. An unnamed change is refused by every receiver.
+        let added = doc.get_changes(&before);
+        assert_eq!(added.len(), 1);
+        let names = tilo_actions::FrameworkChange::Migrate.change_message();
+        assert_eq!(added[0].message(), Some(names.as_str()));
         *bytes = doc.save();
 
         let tree = tree_of(&docs).unwrap();

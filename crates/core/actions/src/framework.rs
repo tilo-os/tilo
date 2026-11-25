@@ -17,8 +17,10 @@ pub const FRAMEWORK_MESSAGE_PREFIX: &str = "tilo.framework/1 ";
 pub enum FrameworkChange {
     /// What a brand-new record starts with: its genesis and first content.
     Genesis,
-    /// A storage migration to the model's current version. Written with a
-    /// history entry ([`crate::HistoryOp::Migrate`]), not this message.
+    /// A storage migration to the model's current version. A record whose
+    /// model has a version to name writes the step as a history entry
+    /// ([`crate::HistoryOp::Migrate`]); one whose model has none names this
+    /// message.
     Migrate,
     /// An empty container or the initial text every member derives the
     /// same way, made the first time the record needs it.
