@@ -713,3 +713,46 @@ export function callPeople(states, { guild, channel, self, avatars }) {
   people.sort((a, b) => (a.account < b.account ? -1 : a.account > b.account ? 1 : 0));
   return people;
 }
+
+/// The workspace app whose record lists the workspace's people.
+export const WORKSPACE = "tilo.workspace";
+
+/// What Discord does to a linked account when the workspace does it to their person: leaving the
+/// workspace leaves the server, and a ban here is a ban there until it is lifted.
+const MEMBER_OPS = { "remove-member": "kick", remove: "kick", ban: "ban", unban: "unban" };
+
+/// The person (their id, the last part of `workspace/members/<person>`) a change of the
+/// workspace's people names.
+function memberOf(resource) {
+  const item = String(resource?.item ?? "");
+  const named = item.split("/").pop();
+  return named || null;
+}
+
+/// Whether the record's link names `person`, kept as an actor's JSON or as a plain id.
+function linksPerson(link, person) {
+  const actor = actorOf(link?.person);
+  return actor?.member?.person === person || link?.person === person;
+}
+
+/// What a change of the workspace's people means in the bridged server: each linked account of
+/// the person it removed, banned or let back is kicked, banned or unbanned there, each as an
+/// action of the bridge (`kick`, `ban`, `unban`) with the op it takes. A bridge of one channel
+/// leaves the server's members alone.
+export function memberToDiscord(state, event) {
+  if (event?.kind !== "change" || state?.only_channel) return [];
+  const op = MEMBER_OPS[event.verb ?? ""];
+  if (!op) return [];
+  const ops = [];
+  for (const resource of event.resources ?? []) {
+    const people =
+      resource?.app === WORKSPACE || String(resource?.path ?? "").startsWith("workspace/members");
+    const person = people ? memberOf(resource) : null;
+    if (!person) continue;
+    for (const link of state.links ?? []) {
+      if (!linksPerson(link, person)) continue;
+      ops.push({ action: op, op: { op, user: link.discord_user, reason: event.sentence ?? "" } });
+    }
+  }
+  return ops;
+}

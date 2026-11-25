@@ -23,6 +23,7 @@ import {
   importOf,
   sidebarOf,
   byDiscord,
+  memberToDiscord,
   CHAT,
   SELF,
 } from "./src/plan.js";
@@ -42,6 +43,7 @@ import {
   WEBHOOK_NAME,
   react,
   startThread,
+  member,
   whyRefused,
 } from "./src/rest.js";
 
@@ -591,7 +593,8 @@ export async function keptFiles(
 /// bridge already joined: a message it does not know is new, one whose words moved is an edit,
 /// one that is gone a deletion, one whose emoji changed a reaction, and one that started a
 /// thread a thread. A change this app made itself is skipped, so a message the bridge relayed
-/// here is never sent back.
+/// here is never sent back. A person the workspace removes, bans or lets back is kicked, banned
+/// or unbanned in the server under each Discord account linked to them.
 export async function carryFromWorkspace({ calls, current, log = () => {}, stop = { stopped: false } }) {
   const known = new Map();
   for (const entry of mappings(current.account)) {
@@ -610,6 +613,16 @@ export async function carryFromWorkspace({ calls, current, log = () => {}, stop 
     // The record is read again for each change: what it pairs since the gateway opened is
     // carried from the change it names.
     const account = current.account;
+    for (const { action, op } of memberToDiscord(account, event)) {
+      try {
+        if (!(await carries(calls, action, op, log))) continue;
+        await calls.webCall(
+          member({ tokenItem: account.token_item, origin: account.api_origin }, account.guild_id, op),
+        );
+      } catch (error) {
+        log(`a member's change did not reach Discord: ${error?.message ?? error}`);
+      }
+    }
     for (const resource of chatChanges(event)) {
       const target = changeTarget(account, resource);
       if (!target) continue;

@@ -702,3 +702,65 @@ test("what a bridged channel said before, or while the bridge was away, is relay
   ]);
   expect(relayed[0].args.written).toBe(Date.parse("2026-11-24T09:01:00Z"));
 });
+
+test("a person the workspace bans, lets back or removes is banned, unbanned or kicked in the server", async () => {
+  const workspace = fakeWorkspace();
+  const running = run({ tilo: workspace.tilo, makeClient: () => fakeGateway(), log: () => {} });
+  await until(() => workspace.released.length > 0 || workspace.done.length > 0, "the bridge");
+
+  const people = (verb, person, sentence = "") => ({
+    kind: "change",
+    path: "workspace/members",
+    app: "tilo.workspace",
+    verb,
+    what: verb === "unban" ? "edited" : "removed",
+    sentence,
+    time_ms: 1000,
+    actor: { by: { member: { person: "mod" } } },
+    resources: [{ path: "workspace/members", app: "tilo.workspace", item: `workspace/members/${person}` }],
+  });
+  workspace.say(people("ban", "ada", "spam"));
+  workspace.say(people("unban", "ada"));
+  workspace.say(people("remove-member", "ada"));
+  // Someone with no Discord account linked: nothing reaches Discord for them.
+  workspace.say(people("ban", "grace"));
+  await until(() => workspace.requests.length >= 3, "three member calls");
+
+  expect(workspace.requests.map((request) => [request.method, request.url.replace(/^.*\/guilds/, "")])).toEqual([
+    ["PUT", "/123/bans/3001"],
+    ["DELETE", "/123/bans/3001"],
+    ["DELETE", "/123/members/3001"],
+  ]);
+  expect(workspace.requests[0].headers["x-audit-log-reason"]).toBe("spam");
+  // Each passed the bridge's own action first, whose guards say who may do it there.
+  expect(
+    workspace.done
+      .map((call) => call.address)
+      .filter((address) => /#(kick|ban|unban)$/.test(address)),
+  ).toEqual([
+    "so.tilo.discord.preview#ban",
+    "so.tilo.discord.preview#unban",
+    "so.tilo.discord.preview#kick",
+  ]);
+
+  workspace.finish();
+  await running;
+});
+
+test("a bridge of one channel leaves the server's members alone", async () => {
+  const workspace = fakeWorkspace({ accounts: [account({ only_channel: "456" })] });
+  const running = run({ tilo: workspace.tilo, makeClient: () => fakeGateway(), log: () => {} });
+  await until(() => workspace.released.length > 0 || workspace.done.length > 0, "the bridge");
+  workspace.say({
+    kind: "change",
+    verb: "ban",
+    resources: [{ path: "workspace/members", app: "tilo.workspace", item: "workspace/members/ada" }],
+  });
+  // A message after it is carried, so the ban was read and passed over.
+  workspace.message(`chat/${RECORD}/messages/m1`, messageFields({ body: "after" }));
+  workspace.say(change({ item: "messages/m1" }));
+  await until(() => workspace.requests.length >= 1, "the send");
+  expect(workspace.requests.map((request) => request.url).filter((url) => url.includes("/guilds/"))).toEqual([]);
+  workspace.finish();
+  await running;
+});

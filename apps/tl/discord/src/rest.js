@@ -183,6 +183,22 @@ export function nickname({ tokenItem, origin = API }, guild, nick) {
   };
 }
 
+/// Kicks, bans or unbans a linked member of `guild`, as the workspace did to their person. The
+/// reason goes to the server's audit log.
+export function member({ tokenItem, origin = API }, guild, op) {
+  const ban = op.op === "ban" || op.op === "unban";
+  const headers = op.reason ? { "x-audit-log-reason": encodeURIComponent(op.reason) } : {};
+  if (op.op === "ban") headers["content-type"] = "application/json";
+  return {
+    url: `${at(origin)}/guilds/${guild}/${ban ? "bans" : "members"}/${op.user}`,
+    key: tokenItem,
+    method: op.op === "ban" ? "PUT" : "DELETE",
+    headers,
+    ...(op.op === "ban" ? { body: "{}" } : {}),
+    reason: "a member the workspace removed, banned or let back",
+  };
+}
+
 /// A bot token's shape: three non-empty dot-separated parts of base64url characters.
 export function looksLikeToken(token) {
   const parts = String(token ?? "").split(".");
