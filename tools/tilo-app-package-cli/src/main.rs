@@ -793,7 +793,7 @@ fn cmd_sign(identity_path: &Path, file: &Path) -> Result<()> {
     let mut pre_signed = signed.clone();
     pre_signed.format = tilo_app_package::TAPP_FORMAT_VERSION;
     pre_signed.signature = Some([0u8; 64]);
-    let sig = identity.sign_signed_root(&pre_signed);
+    let sig = identity.sign_signed_root(&pre_signed)?;
     let new_meta = PackageMeta::from_root(
         SignedRoot {
             signature: Some(sig),
@@ -1224,7 +1224,7 @@ mod runtime_readiness_tests {
                 else {
                     panic!("native package")
                 };
-                artifact.target.runtime = Some(language.clone());
+                artifact.target.runtime = Some(language);
             }
             registry_types::sign_entry(&mut language_provider, &signer);
             let mut provider = app.clone();
