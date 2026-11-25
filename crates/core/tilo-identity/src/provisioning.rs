@@ -152,7 +152,8 @@ pub fn account_display_name(_uid: u32) -> String {
         let mut name = vec![0_u16; length as usize];
         // SAFETY: a buffer of the length the call just asked for, and a live length.
         if unsafe { GetUserNameExW(NameDisplay, name.as_mut_ptr(), &raw mut length) } {
-            let name = String::from_utf16_lossy(&name[..(length as usize).saturating_sub(1)]);
+            let kept = (length as usize).saturating_sub(1);
+            let name = String::from_utf16_lossy(name.get(..kept).unwrap_or_default());
             let name = name.trim();
             if !name.is_empty() {
                 return name.to_owned();
