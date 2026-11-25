@@ -34,6 +34,7 @@ mod asked;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
 pub mod capabilities;
 mod commits;
+mod compiled;
 mod content;
 mod dispatch;
 #[cfg(target_os = "linux")]

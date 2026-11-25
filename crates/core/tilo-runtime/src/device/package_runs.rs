@@ -48,6 +48,11 @@ pub struct TaskPackage {
 /// program names an app by what its package declares (its actions, its roots), which only the
 /// package itself holds: a program is compiled against its declarations, not against the surface
 /// it publishes.
+///
+/// The package's modules are the device's compiled ones: the daemon compiled them with it
+/// ([`super::packages`]) and the task's host reads them from the store it is granted read-only
+/// ([`tilo_wasm_aot`]), as an app's own window does. A module the daemon did not compile runs on
+/// the interpreter there.
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn task_packages() -> Vec<TaskPackage> {

@@ -164,8 +164,7 @@ pub fn load(bytes: &[u8]) -> Result<WasmPainter, Refusal> {
 /// # Errors
 ///
 /// As [`load`].
-pub fn load_with(bytes: &[u8], compiled: Option<&[u8]>) -> Result<WasmPainter, Refusal> {
-    #[cfg(target_arch = "wasm32")]
+pub fn load_with(bytes: &[u8], compiled: Option<&[u8]>) -> Result<WasmPainter, Refusal> {    #[cfg(target_arch = "wasm32")]
     let _ = compiled;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(entry) = compiled {
@@ -198,6 +197,16 @@ pub fn load_with(bytes: &[u8], compiled: Option<&[u8]>) -> Result<WasmPainter, R
         buffer,
         call,
     })))
+}
+
+/// The compiled entry the device's daemon made for the painter module `bytes`, read from the
+/// store it keeps them in `dir`: the read-only mount a process is granted. A theme's set is
+/// loaded on this code without anything being compiled here. `None` when the daemon has not
+/// compiled that module, which then runs on the interpreter.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn compiled_in(dir: &std::path::Path, bytes: &[u8]) -> Option<Vec<u8>> {
+    tilo_wasm_aot::kept_in(dir, bytes)
 }
 
 /// The set `guest` runs, with the parameters it declares: refused when they are not the SDK's

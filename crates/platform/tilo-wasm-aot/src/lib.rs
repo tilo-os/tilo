@@ -19,8 +19,9 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+use std::path::Path;
 #[cfg(feature = "compile")]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 #[cfg(feature = "compile")]
 use std::sync::{Mutex, PoisonError};
 
@@ -134,6 +135,36 @@ pub fn open_for<'a>(bytes: &'a [u8], module: &[u8]) -> Result<&'a [u8], String> 
         return Err("the compiled module was made for another module".to_owned());
     }
     Ok(opened.serialized)
+}
+
+/// The entry `dir` holds for `module`, without compiling: what a runtime reads from the store the
+/// daemon owns, which it is granted read-only. `None` when no entry there is the one made for
+/// these bytes.
+///
+/// This is a lookup, never a compile: a process that runs a module reads the machine code the
+/// device's daemon made for it, and a module the daemon has not compiled runs on the interpreter
+/// where it is used.
+#[must_use]
+pub fn kept_in(dir: &Path, module: &[u8]) -> Option<Vec<u8>> {
+    let prefix = format!("{}-", blake3::hash(module).to_hex());
+    for entry in std::fs::read_dir(dir).ok()? {
+        let path = entry.ok()?.path();
+        let name = path.file_name()?.to_str()?;
+        if !name.starts_with(&prefix)
+            || !path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("cwasm"))
+        {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if open_for(&bytes, module).is_ok() {
+            return Some(bytes);
+        }
+    }
+    None
 }
 
 /// A device's compiled modules: `<dir>/<module hash>-<engine>.cwasm`, where `<engine>` stands

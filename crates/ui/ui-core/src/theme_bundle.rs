@@ -73,18 +73,18 @@ pub fn load(
     document: &str,
     module: impl FnMut(&str) -> Result<Option<Vec<u8>>, BundleError>,
 ) -> Result<Theme, BundleError> {
-    load_with(document, module, |_| None)
+    load_with(document, module, |_, _| None)
 }
 
 /// The theme of the bundle whose document is `document`, taking each painter module it names
 /// from `module` (by set name) and the machine code the device's daemon compiled for that module
-/// from `compiled`: a set the daemon compiled starts on that code, and one it did not on the
-/// interpreter. A changed module is a new module, so a theme changed in conversation starts on
-/// its new compiled entry without a restart.
+/// from `compiled`, which is handed the module's bytes: a set the daemon compiled starts on that
+/// code, and one it did not on the interpreter. A changed module is a new module, so a theme
+/// changed in conversation starts on its new compiled entry without a restart.
 pub fn load_with(
     document: &str,
     mut module: impl FnMut(&str) -> Result<Option<Vec<u8>>, BundleError>,
-    mut compiled: impl FnMut(&str) -> Option<Vec<u8>>,
+    mut compiled: impl FnMut(&str, &[u8]) -> Option<Vec<u8>>,
 ) -> Result<Theme, BundleError> {
     let value: serde_json::Value =
         serde_json::from_str(document).map_err(|e| BundleError::Document(e.to_string()))?;
@@ -93,7 +93,7 @@ pub fn load_with(
             return Err(BundleError::SetName(name));
         }
         let bytes = module(&name)?.ok_or_else(|| BundleError::Missing(name.clone()))?;
-        let entry = compiled(&name);
+        let entry = compiled(&name, &bytes);
         let set = wasm::painter_set_with(&name, &bytes, entry.as_deref()).map_err(|refusal| {
             BundleError::Painter {
                 set: name.clone(),
@@ -108,6 +108,40 @@ pub fn load_with(
         .validate()
         .map_err(|why| BundleError::Document(why.to_owned()))?;
     Theme::from_document(&document).ok_or_else(|| BundleError::Document("refused".to_owned()))
+}
+
+/// The theme of the bundle in `dir`: its [`DOCUMENT`] and a `<set>.wasm` beside it for each set
+/// the document names that is not built in. The machine code the device's daemon compiled for a
+/// set is read from `compiled`, the store the launcher grants a process read-only, so applying
+/// the theme draws on the device's compiled code; a set the daemon has not compiled, and every
+/// browser, draws on the interpreter.
+///
+/// # Errors
+///
+/// A bundle file that does not read, or as [`load_with`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_from(
+    dir: &std::path::Path,
+    compiled: Option<&std::path::Path>,
+) -> Result<Theme, BundleError> {
+    let document = std::fs::read_to_string(dir.join(DOCUMENT)).map_err(|error| {
+        BundleError::Read(format!("{}: {error}", dir.join(DOCUMENT).display()))
+    })?;
+    load_with(
+        &document,
+        |set| {
+            let path = dir.join(format!("{set}.wasm"));
+            match std::fs::read(&path) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(BundleError::Read(format!("{}: {error}", path.display()))),
+            }
+        },
+        |_, bytes| {
+            let compiled = compiled?;
+            tilo_theme_painter_wasm::compiled_in(compiled, bytes)
+        },
+    )
 }
 
 #[cfg(test)]

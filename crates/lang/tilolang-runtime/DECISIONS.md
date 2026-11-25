@@ -382,7 +382,10 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   configuration or target, is passed over and the module runs on the interpreter. Fuel and the
   memory limit are the same numbers on both paths and trap with the same `CallError`. A build
   with the `compile` feature adds Cranelift and Winch for benchmarks; no shipped runtime is
-  built with it.
+  built with it. The daemon compiles a package's modules when it installs the package, before
+  the install is announced, so an app already on the device opens on the install's entries
+  rather than on the open compiling them; a theme bundle's painter modules are compiled with it
+  and read from the same store.
 - **Finding a node.** `ViewInstance::edit`/`press`/`fire` find a node in its boundary when its
   key carries one; any other node (the root view's own, an anchored one) by walking the tree
   once, after which where it was is kept and checked before use. Typing into an input of a view
