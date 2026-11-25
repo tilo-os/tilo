@@ -333,18 +333,21 @@ impl Provider for Maps {
             .get(job)
             .cloned()
             .ok_or_else(|| format!("no job `{job}` runs on this device"))?;
-        let now = held(&held_job);
-        let state = if !now.finished {
-            "running"
-        } else if now.stopped.load(Ordering::Relaxed) {
-            "cancelled"
-        } else {
-            "done"
+        let (state, saved, total) = {
+            let now = held(&held_job);
+            let state = if !now.finished {
+                "running"
+            } else if now.stopped.load(Ordering::Relaxed) {
+                "cancelled"
+            } else {
+                "done"
+            };
+            (state, now.saved, now.total)
         };
         Ok(json!({
             "state": state,
-            "saved": now.saved,
-            "total": now.total,
+            "saved": saved,
+            "total": total,
             "error": "",
         })
         .to_string())
