@@ -512,12 +512,12 @@ async fn a_watched_record_wakes_its_reader_on_its_next_write_alone() {
 async fn a_read_is_decided_in_the_workspace_its_address_names() {
     let h = host().await;
     h.admit_scribe().await;
-    // Garden lets the agent read its private record, which Kitchen keeps from it.
+    // Garden lets the person's agent read its private record, which Kitchen keeps from it.
     h.grant(
         &h.garden,
         vec![reads_all(
             "agent:scribe",
-            Grantee::agent("scribe", "bo"),
+            Grantee::agent("scribe", h.person.clone()),
             &h.garden,
             &h.person,
         )],
