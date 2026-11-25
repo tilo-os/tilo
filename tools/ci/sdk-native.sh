@@ -116,6 +116,25 @@ app_kit() {
         "$kit/publisher.json" 0.1.0 "tilo-runtime/$APP_RUNTIME"
     done
   )
+  kit_carries_its_runtimes "$kit"
+}
+
+# A package of the kit that names a tilolang runtime the kit does not carry starts nowhere: the
+# daemon finds no repository that offers it. Refused where the words say which one, both when
+# the kit is built and on the copy the daemon reads.
+kit_carries_its_runtimes() {
+  local kit=$1 tapp pinned runtime
+  for tapp in "$kit"/apps/*.tapp; do
+    pinned=$("$kit/tilo-app-package" inspect "$tapp" | grep -o 'tilolang/[^"]*' | sort -u || true)
+    [[ -n $pinned ]] || { echo "sdk-native.sh: $tapp names no tilolang runtime" >&2; exit 1; }
+    for runtime in $pinned; do
+      if [[ ! -f $kit/runtimes/${runtime#tilolang/}/bundle.toml ]]; then
+        echo "sdk-native.sh: $tapp runs on $runtime, which the kit does not carry" \
+          "(it carries: $(ls "$kit/runtimes" | tr '\n' ' '))" >&2
+        exit 1
+      fi
+    done
+  done
 }
 
 scratch=
@@ -158,6 +177,7 @@ run_tests() {
   # since the publisher's key is its owner's alone to read.
   cp -a "$binaries/app-kit" "$scratch/app-kit"
   export TILO_SDK_APP_KIT=$scratch/app-kit
+  kit_carries_its_runtimes "$TILO_SDK_APP_KIT"
   export TILO_RUNTIME_BUNDLE_DIR=$TILO_SDK_APP_KIT/runtimes
   export TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$TILO_SDK_APP_KIT/trusted-publishers
 
