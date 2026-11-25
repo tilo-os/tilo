@@ -24,7 +24,13 @@
 mod connections;
 pub mod folders;
 #[cfg(feature = "agents")]
+mod mail;
+#[cfg(feature = "agents")]
 mod outside;
+#[cfg(all(test, feature = "agents"))]
+mod records_tests;
+#[cfg(feature = "agents")]
+mod times;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -594,6 +600,33 @@ fn with_what_it_holds(
     event.after = Some(Value::Object(holds));
 }
 
+/// The fields of one record as the store's index holds them, as an app's own reader reads them:
+/// a set as the list of its members.
+#[cfg(feature = "agents")]
+pub(super) fn fields_of(held: &tilo_resource_store::Indexed) -> Map<String, Value> {
+    fn value(value: &tilo_resource_store::Value) -> Value {
+        match value {
+            tilo_resource_store::Value::Null => Value::Null,
+            tilo_resource_store::Value::Bool(flag) => Value::Bool(*flag),
+            tilo_resource_store::Value::Int(number) => Value::from(*number),
+            tilo_resource_store::Value::Float(number) => Value::from(*number),
+            tilo_resource_store::Value::Text(text) => Value::String(text.clone()),
+        }
+    }
+    held.fields
+        .iter()
+        .map(|(name, cell)| {
+            let value = match cell {
+                tilo_resource_store::Cell::One(one) => value(one),
+                tilo_resource_store::Cell::Set(members) => {
+                    Value::Array(members.iter().map(value).collect())
+                }
+            };
+            (name.clone(), value)
+        })
+        .collect()
+}
+
 /// The daemon's trigger runner over the workspaces this device keeps.
 pub struct Runner {
     workspaces: Workspaces,
@@ -616,6 +649,13 @@ pub struct Runner {
     connectors: Option<Arc<dyn ConnectorEvents>>,
     /// How far each connector app's event log was read, by app id.
     reported: BTreeMap<String, u64>,
+    /// What each trigger at a time a resource holds has answered, by workspace, shortcut and
+    /// trigger (`times`).
+    #[cfg(feature = "agents")]
+    times: BTreeMap<(String, String, usize), times::Progress>,
+    /// What each trigger on mail took in, by workspace, shortcut and trigger (`mail`).
+    #[cfg(feature = "agents")]
+    heard: BTreeMap<(String, String, usize), mail::Heard>,
     /// What the looks at each source outside took in, by workspace, shortcut and trigger
     /// (`outside`).
     #[cfg(feature = "agents")]
@@ -653,6 +693,10 @@ impl Runner {
             going: BTreeMap::new(),
             connectors: None,
             reported: BTreeMap::new(),
+            #[cfg(feature = "agents")]
+            times: BTreeMap::new(),
+            #[cfg(feature = "agents")]
+            heard: BTreeMap::new(),
             #[cfg(feature = "agents")]
             looks: BTreeMap::new(),
             #[cfg(feature = "agents")]
@@ -805,6 +849,10 @@ impl Runner {
         self.schedules(now_ms).await;
         self.invocation_events(now_ms);
         self.presence_events(now_ms);
+        #[cfg(feature = "agents")]
+        self.moments(now_ms).await;
+        #[cfg(feature = "agents")]
+        self.mail(now_ms).await;
         #[cfg(feature = "agents")]
         self.outside_changes(now_ms).await;
         self.files(now_ms);

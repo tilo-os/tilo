@@ -82,6 +82,8 @@ mod agent_record;
 #[cfg(test)]
 mod accounts_surface;
 pub(super) mod agents;
+#[cfg(feature = "agents")]
+mod calendars;
 mod server_params;
 use server_params::{add_server_params, copies_params, move_server_params, remove_server_params};
 #[cfg(not(target_arch = "wasm32"))]
@@ -1110,6 +1112,13 @@ impl Workspaces {
 struct Publisher {
     provider: &'static str,
     kind: &'static str,
+}
+
+/// The calendar rows a turn this server carries out is offered
+/// ([`super::person_settings::turn_calendars`]).
+#[cfg(feature = "agents")]
+pub(in crate::workspaces) fn calendar_rows() -> Vec<tilo_actions::remote::CatalogueRow> {
+    calendars::rows()
 }
 
 /// A workspace's own governance.

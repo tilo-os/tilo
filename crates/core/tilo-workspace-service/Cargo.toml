@@ -19,7 +19,7 @@ test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-accou
 # records' channel keys to pages, and the agents themselves run here
 # ([`agents`]). Their turns write tilolang records through the store an app's window
 # writes through, so they serve apps too.
-agents = ["apps", "device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:tilo-web-search", "dep:feed-rs", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
+agents = ["apps", "device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:tilo-web-search", "dep:feed-rs", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
@@ -102,6 +102,9 @@ tilo-agent-session = { path = "../agent-session", optional = true }
 tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"], optional = true }
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", optional = true }
+# The Calendar app's records, read as the app's own views read them: when each occurrence of an
+# entry falls, so a trigger at a time a resource holds knows.
+tilolang-calendar = { path = "../../integrations/tilolang-calendar", default-features = false, optional = true }
 tilo-automation = { path = "../automation" }
 # Resource identity, permissions and invocation leases: the model below the toolkit.
 collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../collaboration", optional = true }

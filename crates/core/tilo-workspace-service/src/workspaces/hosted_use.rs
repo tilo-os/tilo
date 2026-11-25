@@ -215,6 +215,9 @@ enum TurnCall {
     Use,
     /// An ask for a secret their vault does not hold yet, which they type into it.
     AskForSecret,
+    /// Their calendars: a sign-in begun, an account's calendars found, or the ones chosen.
+    #[cfg(feature = "agents")]
+    Calendars,
     /// A call of a service they connected.
     Connections,
 }
@@ -236,6 +239,17 @@ impl TurnCall {
         }
         if target.provider == person_connections::PROVIDER {
             return Some(Self::Connections);
+        }
+        if target.provider != person_accounts::PROVIDER
+            || target.address.resource != person_accounts::RESOURCE
+        {
+            return None;
+        }
+        #[cfg(feature = "agents")]
+        if crate::workspaces::person_settings::turn_calendars::TURN_ACTIONS
+            .contains(&target.address.action.as_str())
+        {
+            return Some(Self::Calendars);
         }
         None
     }
@@ -336,6 +350,8 @@ impl Workspaces {
         let value = match call {
             TurnCall::Use => self.use_for_turn(&turn, request).await?,
             TurnCall::AskForSecret => self.secret_for_turn(&turn, request).await?,
+            #[cfg(feature = "agents")]
+            TurnCall::Calendars => self.calendars_for_turn(&turn, request).await?,
             TurnCall::Connections => self.connections_for_turn(&turn, request).await?,
         };
         Ok(tilo_actions::remote::InvocationReceipt {
@@ -364,6 +380,7 @@ impl Workspaces {
         if self.secret_ask_for_turn(&turn).await.is_ok() {
             rows.push(person_vault::ask_row());
         }
+        rows.extend(self.calendars_offered(&turn).await);
         rows.extend(self.connection_rows_for_turn(&turn).await);
         rows.retain(|row| row.provider == provider);
         rows

@@ -32,16 +32,15 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-/// The kind a trigger names for the calendars a person keeps on a calendar
-/// server of their own, read by the holder that keeps their accounts: their
-/// provider and the resource of it, as its actions are addressed. Its fields
-/// are [`CALENDAR_START`] and [`CALENDAR_END`], one time for every
-/// occurrence of every entry.
-pub const PERSON_CALENDARS: &str = "tilo.accounts.calendars";
-/// When each occurrence of an entry of [`PERSON_CALENDARS`] starts.
-pub const CALENDAR_START: &str = "entries.*.start";
-/// When each occurrence of an entry of [`PERSON_CALENDARS`] ends.
-pub const CALENDAR_END: &str = "entries.*.end";
+/// The kind a trigger names for the entries of the Calendar app: the records the
+/// app publishes for them, each entry a resource of its own. Its fields are
+/// [`CALENDAR_START`] and [`CALENDAR_END`], one time for every occurrence of
+/// every entry.
+pub const CALENDAR_EVENTS: &str = "tl.so.tilo.calendar.Event";
+/// When each occurrence of an entry of [`CALENDAR_EVENTS`] starts.
+pub const CALENDAR_START: &str = "start";
+/// When each occurrence of an entry of [`CALENDAR_EVENTS`] ends.
+pub const CALENDAR_END: &str = "end";
 
 /// How long after its moment a moment at or after a time is still answered,
 /// and so how far back times are read: a week. Whoever keeps the time and
@@ -244,10 +243,11 @@ pub fn refusal(kind: &str, field: &str, offset_secs: i64) -> Option<String> {
             "a moment is at most 300 days before or after the time it is counted from".into(),
         );
     }
-    if kind == PERSON_CALENDARS {
+    if kind == CALENDAR_EVENTS {
         return (field != CALENDAR_START && field != CALENDAR_END).then(|| {
             format!(
-                "a person's calendars hold `{CALENDAR_START}` and `{CALENDAR_END}`, not `{field}`"
+                "the Calendar app's entries hold `{CALENDAR_START}` and `{CALENDAR_END}`, not \
+                 `{field}`"
             )
         });
     }
@@ -496,7 +496,7 @@ mod tests {
         review.label = "Review".into();
         review.facts.insert("title".into(), "Review".into());
         let told = told(
-            PERSON_CALENDARS,
+            CALENDAR_EVENTS,
             CALENDAR_START,
             -900,
             &review,
@@ -505,8 +505,8 @@ mod tests {
         assert_eq!(
             Value::Object(told),
             json!({
-                "kind": "tilo.accounts.calendars",
-                "field": "entries.*.start",
+                "kind": "tl.so.tilo.calendar.Event",
+                "field": "start",
                 "resource": "work",
                 "item": "review-1/2026-11-17",
                 "label": "Review",
@@ -522,12 +522,11 @@ mod tests {
 
     #[test]
     fn a_trigger_that_cannot_be_kept_says_what_it_has_to_name() {
-        assert_eq!(refusal(PERSON_CALENDARS, CALENDAR_START, -900), None);
-        assert_eq!(refusal(PERSON_CALENDARS, CALENDAR_END, 0), None);
+        assert_eq!(refusal(CALENDAR_EVENTS, CALENDAR_START, -900), None);
+        assert_eq!(refusal(CALENDAR_EVENTS, CALENDAR_END, 0), None);
         assert_eq!(refusal("tasks.issues", "issues.*.due_ms", 86_400), None);
         assert!(
-            refusal(PERSON_CALENDARS, "entries.*.title", 0)
-                .is_some_and(|why| why.contains("entries.*.start"))
+            refusal(CALENDAR_EVENTS, "title", 0).is_some_and(|why| why.contains(CALENDAR_START))
         );
         assert!(refusal("tasks.issues", "due", 0).is_some());
         assert!(refusal("tasks.issues", "issues..due_ms", 0).is_some());

@@ -45,6 +45,10 @@ use kept_sign_ins::{Signing, places_of, sign_in_of};
 mod person_mail;
 use person_mail::{kept_mail, mail_accounts};
 
+/// A person's calendar accounts, as a turn this server carries out connects and reads them.
+#[cfg(feature = "agents")]
+pub(in crate::workspaces) mod turn_calendars;
+
 impl Workspaces {
     /// Where this host keeps what may interrupt `person`. Theirs in every
     /// workspace, and nothing a workspace keeps.

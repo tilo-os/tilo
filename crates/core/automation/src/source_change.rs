@@ -4,10 +4,11 @@
 //! told of it.
 //!
 //! A source holds things its person wants answered as they come, and is no
-//! resource of the workspace. Whoever keeps the automation is told by the
-//! source, or looks at it, and names each thing found there by a key that
-//! stays the same however often it is found ([`Found`]). What was taken in
-//! before is kept ([`Seen`]), and from that follows all of it:
+//! resource of the workspace: the mail the Mail app keeps is the first one
+//! read. Whoever keeps the automation is told by the source, or looks at it,
+//! and names each thing found there by a key that stays the same however
+//! often it is found ([`Found`]). What was taken in before is kept
+//! ([`Seen`]), and from that follows all of it:
 //!
 //! - what the source held before the trigger was first seen is never new:
 //!   an automation answers what comes from when it was set up, not
@@ -35,6 +36,12 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+
+/// The kind a trigger names for the mail a person's accounts receive, as the
+/// Mail app keeps it: the messages the mail connector brings in. `at` names
+/// one account by its id, and is empty for every account. What is new is one
+/// message, with the fields it is compared by.
+pub const PERSON_MAIL: &str = "tilo.accounts.mail";
 
 /// The kind a trigger names for a feed on the web, RSS, Atom or JSON: `at`
 /// is its address, and what is new is one entry, named by the id the feed
