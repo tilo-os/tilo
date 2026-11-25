@@ -1225,7 +1225,9 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   call's answer is secret is decided from its action's declaration where every invocation
   record is written, never per path; a secret answer is never kept in a record. Only an app
   the device launched and attested acts as itself: the seats name it from the process, and no
-  caller's own claim does. A project
+  caller's own claim does. A deletion carries every case its deleted
+  tests proved onto what replaces it, in the same push; a case whose behaviour is missing
+  there is restored, never dropped. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds
