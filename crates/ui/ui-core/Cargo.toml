@@ -483,6 +483,11 @@ path = "examples/page_share_probe.rs"
 required-features = ["native"]
 
 [[example]]
+name = "page-menus"
+path = "examples/page_menus.rs"
+required-features = ["native"]
+
+[[example]]
 name = "startup-frame-probe"
 path = "examples/startup_frame_probe.rs"
 required-features = ["native"]

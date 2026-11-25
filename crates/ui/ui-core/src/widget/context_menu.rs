@@ -2148,6 +2148,14 @@ impl Widget for ContextMenu {
                 if let Some(identity) = item.identity() {
                     node.action = Some(identity);
                 }
+                // What the row draws, apart from what it is called and says: an ask-first row's
+                // label ends in its marker, and its shortcut stands at its trailing edge.
+                node.drawn = Some(crate::a11y::Drawn {
+                    label: item
+                        .shown_label()
+                        .map_or_else(|| label.clone(), std::borrow::Cow::into_owned),
+                    trailing: item.trailing_text(self.platform),
+                });
                 if let Some(description) = description {
                     node.description = Some(description.clone());
                 } else if let Some(trailing) = item.trailing_text(self.platform) {

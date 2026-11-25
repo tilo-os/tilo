@@ -341,7 +341,7 @@ tilo_test_env::scenario! {
             first.offset
         );
         let half = Appear::coming(0.5, Direction::Enter, surface, anchor, on());
-        let share = 0.5 / 0.7;
+        let share = 0.5 / 0.65;
         assert!(
             (f64::from(half.opacity) - share).abs() < 1e-6,
             "its surface comes ahead of its scale: {}",
@@ -357,7 +357,7 @@ tilo_test_env::scenario! {
             "{:?}",
             half.offset
         );
-        let early = Appear::coming(0.35, Direction::Enter, surface, anchor, on());
+        let early = Appear::coming(0.3, Direction::Enter, surface, anchor, on());
         assert!(early.opacity <= 0.5, "{}", early.opacity);
         assert!(early.scale < 0.941, "about 6 % smaller: {}", early.scale);
         // Its surface is opaque and at rest within 60 ms of a 210 ms arrival: from then on only

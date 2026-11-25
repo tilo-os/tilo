@@ -880,7 +880,7 @@ fn a_menu_buttons_menu_is_a_layer_of_its_own_that_grows_from_the_button() {
     let row = row.unwrap_or_else(|| panic!("the page numbers Pin to the top: {shown}"));
     // The row is the row the app paints: its pin glyph, then its words.
     let start = element_start(&shown, row).unwrap_or_default();
-    let words = start.find("Pin to the top").unwrap_or(usize::MAX);
+    let words = start.find(">Pin to the top<").unwrap_or(usize::MAX);
     let pin = crate::icons::glyph_svg(Icon::Pin);
     assert!(
         start.find(&pin).is_some_and(|glyph| glyph < words),

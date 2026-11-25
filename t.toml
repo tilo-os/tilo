@@ -1062,6 +1062,19 @@ run = "node --test crates/engines/tilo-media/web/tilo-media-edit.test.mjs crates
 requires = ["arch=x86_64"]
 timeout_secs = 900
 
+# Every menu of a page in the image's Chromium (CHROME), in both themes and set in the faces the
+# page serves: no label is cut short once its menu has arrived. The page lays a menu's rows out
+# itself, so only a browser measures them in the face it draws (crates/ui/ui-core/examples/
+# page_menus.rs writes the page, tools/web/page-menus.mjs opens its menus). The web cuts come from
+# the font-seed check's pins, so nothing reaches the network for a font.
+[[check]]
+name = "page-menus"
+run = "set -euo pipefail\nout=/tmp/page-menus\nrm -rf \"$out\"\ncargo run --locked -p tilo-ui --example page-menus -- \"$out\"\npython3 -I tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts \"$out/catalog\" --scope web --offline\nmkdir -p \"$out/fonts\"\nfind \"$out/catalog\" -name '*.woff2' -exec cp {} \"$out/fonts/\" ';'\nnode tools/web/page-menus.mjs \"$out\"\n"
+needs = ["font-seed"]
+env = { TILO_FONT_IMAGE_SEED = "/target/font-seed" }
+requires = ["arch=x86_64"]
+timeout_secs = 1800
+
 # The page's peer store over IndexedDB in the image's Chromium (CHROME), reloaded as a person
 # reloads the page, offline, hidden and left: the runtime built for the page, bound with the
 # image's wasm-bindgen, its page served on loopback only.

@@ -66,12 +66,12 @@ impl Appear {
     const EXIT_SCALE: f64 = 0.97;
     /// How far toward its anchor it starts arriving and ends leaving, in logical pixels.
     pub const REACH: f64 = 8.0;
-    /// The share of its progress by which an arriving surface is opaque: where the spring that settles
-    /// it stands a little over a quarter of the way through its time (1 − (1 + k)·e^−k = 0.7 at
-    /// k = ωt ≈ 2.4, the same at any pace: 57 ms into a 210 ms arrival). A surface that faded in with
-    /// its scale let its labels read before it hid what lies behind it, and the two sets of text read
-    /// as one; the scale and reach carry the rest of the motion.
-    const OPAQUE_AT: f64 = 0.7;
+    /// The share of its progress by which an arriving surface is opaque and at its size: where the
+    /// spring that settles it stands a quarter of the way through its time (1 − (1 + k)·e^−k = 0.65
+    /// at k = ωt ≈ 2.2, the same at any pace: 52 ms into a 210 ms arrival, so that a page, whose
+    /// curve is sampled, is wholly opaque by 60 ms). A surface that faded in with its scale let its
+    /// labels read before it hid what lies behind it, and the two sets of text read as one.
+    const OPAQUE_AT: f64 = 0.65;
     /// The share of its progress by which what it holds (a menu's rows) has arrived. What it holds
     /// starts once the surface is opaque, so its words only ever stand on the surface's own ground,
     /// and is in place where the spring stands at 0.95, about half way through its time.

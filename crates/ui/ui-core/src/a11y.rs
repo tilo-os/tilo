@@ -429,6 +429,19 @@ pub struct AccessNode {
     /// a page draws the row the app draws. A picture, not something read: its name says it.
     #[serde(skip)]
     pub icon: Option<crate::icons::Icon>,
+    /// What a node with no widget of its own draws, where that differs from what it is called and
+    /// what it says: a menu row's label as shown (an ask-first row's ends in "…") and what stands
+    /// at its trailing edge (its shortcut). A page draws this and gives the name and description to
+    /// assistive technology alone, as the app does.
+    #[serde(skip)]
+    pub drawn: Option<Drawn>,
+}
+
+/// The words a row draws ([`AccessNode::drawn`]): its label as shown and its trailing text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Drawn {
+    pub label: String,
+    pub trailing: Option<String>,
 }
 
 /// A widget's [`AccessNode`] with its synthetic children shared rather than owned, from
@@ -490,6 +503,7 @@ impl AccessNode {
             action: None,
             carries_out: None,
             icon: None,
+            drawn: None,
         }
     }
 

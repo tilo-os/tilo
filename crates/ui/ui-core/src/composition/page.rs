@@ -844,7 +844,10 @@ impl Page {
                 // Its glyph stands before its words, as the app paints the row.
                 element.own.push_str(&crate::icons::glyph_svg(icon));
             }
-            words_into(&mut element, node);
+            match &node.drawn {
+                Some(drawn) => drawn_into(&mut element, node, drawn),
+                None => words_into(&mut element, node),
+            }
         }
         if !matches!(element.tag, "button" | "a" | "input" | "textarea") {
             if !node.children.is_empty() {
@@ -1135,6 +1138,38 @@ fn words_into(element: &mut Element, access: &AccessNode) {
         None => {
             let _ = write!(element.own, "<span class=\"tilo-title\">{title}</span>");
         }
+    }
+}
+
+/// What a row draws ([`AccessNode::drawn`]): its label as shown and its trailing text, with what
+/// it is called and what it says told to assistive technology alone, never drawn.
+fn drawn_into(element: &mut Element, access: &AccessNode, drawn: &crate::a11y::Drawn) {
+    let _ = write!(
+        element.own,
+        "<span class=\"tilo-title\">{}</span>",
+        escape(&drawn.label)
+    );
+    if let Some(trailing) = drawn.trailing.as_deref().filter(|text| !text.is_empty()) {
+        let _ = write!(
+            element.own,
+            "<span class=\"tilo-detail\">{}</span>",
+            escape(trailing)
+        );
+    }
+    if let Some(name) = access
+        .name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        && !element.attrs.contains(" aria-label=")
+    {
+        element.attr("aria-label", name);
+    }
+    if let Some(description) = access
+        .description
+        .as_deref()
+        .filter(|description| !description.trim().is_empty())
+    {
+        element.attr("aria-description", description);
     }
 }
 

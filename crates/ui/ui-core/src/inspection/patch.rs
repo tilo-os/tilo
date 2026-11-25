@@ -289,6 +289,7 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         action,
         carries_out,
         icon,
+        drawn,
     } = a;
     *role == b.role
         && *semantic_key == b.semantic_key
@@ -312,6 +313,7 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         && *action == b.action
         && *carries_out == b.carries_out
         && *icon == b.icon
+        && *drawn == b.drawn
 }
 
 fn inspection_own_eq(a: &InspectionNode, b: &InspectionNode) -> bool {
