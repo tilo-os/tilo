@@ -72,6 +72,21 @@ d-rqcsnkd2 = Bildschirmstatus
 d-majgvuxm = Anordnungsbeschriftung
     .w-your-screens-left-to-right-and = Ihre Bildschirme, von links nach rechts und von oben nach unten: { $join }
 
+d-nuaczrvr = Akkuwörter
+    .w-charging = Lädt
+    .w-on-the-battery = Im Akkubetrieb
+    .w-empty = Leer
+    .w-full = Voll
+    .w-about-to-charge = Lädt gleich
+    .w-about-to-drain = Entlädt sich bald
+    .w-plugged-in = Am Strom
+
+d-jirghgf5 = Verlaufsbezeichnung
+    .w-week = Woche
+    .w-day = Tag
+    .w-the-battery-s-charge-over-the = Der Akkustand der letzten { $over }: { $capacity } % beim letzten Lesen
+    .w-the-battery-s-charge-over-the-2 = Der Akkustand der letzten { $over }
+
 d-e4sjras5 = Bildschirm verschieben
     .doc = Den gewählten Bildschirm dorthin bewegen, wo der Zeiger ihn losgelassen hat.
 
@@ -337,6 +352,8 @@ d-ifgepts4 = Accounts pane
     .w-chosen = Gewählt
     .w-use-it = Verwenden
     .w-add-from-passwords = Aus Passwörter hinzufügen
+    .w-cancel = Abbrechen
+    .w-waiting-for-you-to-approve-it-2 = Wartet auf deine Freigabe im Browser. Bis dahin wird nichts weiter aufbewahrt.
 
 d-epn7dy5e = Agent models pane
     .w-agents-answer-with = Agenten antworten mit
@@ -372,6 +389,7 @@ d-epn7dy5e = Agent models pane
     .w-add-a-model-by-hand = Ein Modell von Hand hinzufügen
     .w-the-model-s-id-as-names = Die Kennung des Modells, wie { $name } sie nennt
     .w-add-the-model = Das Modell hinzufügen
+    .w-cancel = Abbrechen
 
 d-i67tvpqg = Settings window
     .w-settings = Einstellungen
@@ -546,6 +564,8 @@ d-azovfqdu = Appearance pane
     .w-today-and-the-month-around-it = Heute und der Monat darum
     .w-system-load = Systemlast
     .w-this-machine-s-processors-memory-and = Prozessoren, Speicher und Wärme dieses Rechners
+    .w-wallpaper = Hintergrundbild
+    .w-could-not-be-read = { $what } konnte nicht gelesen werden
 
 d-fv3yim6v = Notifications pane
     .w-do-not-disturb = Nicht stören
@@ -784,6 +804,7 @@ d-cdwg4dvh = Bluetooth pane
     .w-dbm = { $signal } dBm
     .w-pair = Koppeln
     .w-no-devices-found = Keine Geräte gefunden
+    .w-connect = Verbinden
 
 d-xhj25ovi = Worte des Windows-Zustands
     .w-installed = Installiert
@@ -796,6 +817,44 @@ d-xhj25ovi = Worte des Windows-Zustands
 d-4znjctbp = Worte des Windows-Schritts
     .w-of-mb-step-of = { $label } { $done } von { $total } MB (Schritt { $number } von { $count })…
     .w-step-of = { $label } (Schritt { $number } von { $count })…
+
+d-flzdipkn = Grenztext
+    .w-no-limit = Keine Grenze
+
+d-kk3kw6kk = Versiegelungswörter
+    .w-sealed-to-this-machine-s-chip = An den Chip dieser Maschine versiegelt
+    .w-kept-in-the-clear-on-this = Offen auf dieser Festplatte aufbewahrt
+
+d-f46wajln = Geräte zum Entsperren
+    .w-none-yet = Noch keine
+
+d-i6pzdoy4 = Laufwerkswörter
+    .w-external = extern
+    .w-inside-this-computer = in diesem Computer
+    .w-open-at-read-only = { $size }, { $where_ } - geöffnet unter { $path }, schreibgeschützt
+    .w-open-at = { $size }, { $where_ } - geöffnet unter { $path }
+    .w-asked-about-before-it-opens = { $size }, { $where_ } - wird vor dem Öffnen gefragt
+    .w-not-open = { $size }, { $where_ } - nicht geöffnet
+
+d-qxvnmgwu = Laufwerksgrößen
+    .w-b = { $n } B
+    .w-kb = { $value } KB
+    .w-mb = { $value } MB
+    .w-gb = { $value } GB
+
+d-uu3j7bjy = Firmwarewörter
+    .w-to = { $from } auf { $to }
+    .w-a-new-version-is-offered = Eine neue Version wird angeboten
+    .w-version = Version { $to }
+    .w-a-firmware-update-is-offered = Ein Firmware-Update wird angeboten
+
+d-azsvbu2k = Verlaufswörter
+    .w-to = { $state }: { $from } auf { $to }
+
+d-kn2zpupd = Tastenwörter
+    .w-the-lower = Die untere
+    .w-the-upper = Die obere
+    .w-the-third = Die dritte
 
 d-2mhlqimg = Medien-Codecs-Abschnitt
     .w-media-codecs = Medien-Codecs
@@ -847,6 +906,7 @@ d-xa522ebd = Disk unlock pane
     .w-devices-that-may-unlock-it = Geräte, die es entsperren dürfen
     .w-anyone-holding-this-disk-can-read = Wer diese Platte hat, kann die darauf gehaltene Hälfte lesen.
     .w-networks-early-boot-may-join = Netzwerke für den Systemstart
+    .w-try-again = Erneut versuchen
 
 d-nqnjbsa3 = Unlock network rows
     .w-no-wi-fi-connection-is-saved = Auf diesem Rechner ist noch keine WLAN-Verbindung gespeichert.
@@ -1061,6 +1121,7 @@ d-snwtoale = Input pane
     .w-use-s-own-shortcut = Die eigene Kombination von { $app_name } verwenden
     .w-an-app = Eine App
     .w-the-app = Die App
+    .w-remove = Entfernen
 
 d-pj4i6u2u = Mobile page
     .w-mobile-data = Mobile Daten
@@ -1273,6 +1334,8 @@ d-c4tbp74f = Network pane
     .w-ask-first = Zuerst fragen
     .w-asks-first = Fragt zuerst
     .w-never-this-device-asks-before-joining = Nie: Dieses Gerät fragt, bevor es einem offenen Netz beitritt
+    .w-cancel = Abbrechen
+    .w-connect = Verbinden
 
 d-g2tvylph = Arbeitsidentität
     .w-work-or-school-identity = Identität bei der Arbeit oder Schule
@@ -1343,6 +1406,7 @@ d-qeo46jbt = Spelling pane
     .w-its-language-tag-or-empty-for = Sein Sprach-Tag, oder leer für jede Sprache
     .w-add-the-word = Wort hinzufügen
     .w-remove-every-word = Alle Wörter entfernen
+    .w-remove = Entfernen
 
 d-m5646lnk = Default apps pane
     .w-handlers = Zuständige Apps
@@ -1533,6 +1597,8 @@ d-psdd5qyk = Speakers page
     .w-revert = Zurücksetzen
     .w-speakers-saved = Lautsprecher gespeichert
     .w-saving-your-speakers = Deine Lautsprecher werden gespeichert…
+    .w-cancel = Abbrechen
+    .w-try-again = Erneut versuchen
 
 d-v6duuqqr = Storage pane
     .w-this-device = Dieses Gerät
@@ -1643,6 +1709,7 @@ d-turaaosk = Bereich Geräte
     .w-cancel = Abbrechen
     .w-let-it-go-on = Lass es weiterlaufen
     .w-stop = Stopp { $name }
+    .w-runs-a-workspace-s-computer-for = Führt einen Computer eines Arbeitsbereichs für dich aus
 
 
 d-ofmlxj3n = Continuity pane
@@ -1700,6 +1767,56 @@ d-fkn7ssf4 = Worte des Grundes
     .w-the-system-met-an-error-it = Das System stieß auf einen Fehler, von dem es sich nicht erholen konnte
     .w-a-fault-in-the-system-s = Ein Fehler im Kern des Systems
     .w-the-system-restarted-itself-at-once = Das System startete sich sofort neu
+
+d-fmfvypns = Fähigkeitswörter
+    .w-the-clipboard = Die Zwischenablage
+    .w-what-you-were-told = Was dir gesagt wurde
+    .w-wi-fi-settings = WLAN-Einstellungen
+    .w-what-plays = Was spielt
+    .w-the-screen-and-input = Bildschirm und Eingabe
+    .w-files = Dateien
+    .w-live-sessions = Live-Sitzungen
+    .w-gamepads = Gamepads
+    .w-windows-that-go-on = Fenster, die weiterlaufen
+    .w-a-capability = Eine Fähigkeit
+
+d-d2shqn4f = Statusrolle
+    .w-status-danger = status.danger
+    .w-status-warning = status.warning
+    .w-status-success = status.success
+    .w-status-info = status.info
+
+d-6kew6xt7 = Anzeige
+    .w-shown-in-dark-mode = Im dunklen Modus gezeigt
+    .w-shown-in-light-mode = Im hellen Modus gezeigt
+    .w-dark = Dunkel
+    .w-light = Hell
+
+d-sahm4dsa = Verbindungsname
+    .w-every-connection = Jede Verbindung
+
+d-jmydf576 = Lesbare Bytes
+    .w-gb = { $value } GB
+    .w-mb = { $value } MB
+    .w-kb = { $value } kB
+    .w-b = { $bytes } B
+
+d-zrm56aft = Kontowörter
+    .w-administrator = Administrator
+    .w-standard = Standard
+    .w-signs-in-by-itself = meldet sich selbst an
+    .w-asks-for-a-password = fragt nach einem Passwort
+    .w-this-session = { $username } - { $role }, diese Sitzung
+
+d-m6ittnmf = VPN-Statuswörter
+    .w-connected = Verbunden
+    .w-wireguard = WireGuard
+    .w-off = Aus
+
+d-h7s2w2w6 = VPN-Wörter
+    .w-none-set-up = Nichts eingerichtet
+    .w-through = Über { $name }
+    .w-off = Aus
 
 d-juhocpyw = About pane
     .w-your-identity = Deine Identität
@@ -1980,6 +2097,32 @@ d-oouuwdrk = Ebenen-Wörter
     .w-altgr = AltGr
     .w-shift-altgr = Umschalt+AltGr
     .w-level = Ebene { $value }
+
+d-fdzty3nc = Mobiler Zustand
+    .w-off = Aus
+    .w-connected = Verbunden
+    .w-registered = Registriert
+    .w-the-sim-is-locked = Die SIM ist gesperrt
+    .w-on = An
+
+d-hor2bl2f = PIN-Versuche
+    .w-the-sim-asks-for-its-pin = Die SIM fragt nach ihrer PIN: noch { $left } Versuche
+    .w-the-sim-asks-for-its-pin-2 = Die SIM fragt nach ihrer PIN
+
+d-yyvy46z2 = SIM-Arten
+    .w-esim = eSIM
+    .w-esim-with-no-profile = eSIM ohne Profil
+    .w-sim-card = SIM-Karte
+    .w-sim = SIM
+
+d-xsjggxny = Registrierungswörter
+    .w-this-operator-s-network = Das Netz dieses Anbieters
+    .w-another-operator-s-network = Das Netz eines anderen Anbieters
+    .w-looking-for-a-network = Netz wird gesucht
+    .w-refused-by-the-network = Vom Netz abgelehnt
+    .w-emergency-calls-only = Nur Notrufe
+    .w-not-looking = Es wird nicht gesucht
+    .w-unknown = Unbekannt
 d-6mazknnq = Reichweite des Agenten
     .w-only-in = Nur in { $name }
     .w-only-in-one-workspace = Nur in einem Arbeitsbereich
@@ -2033,6 +2176,23 @@ d-7ncwu27w = Worte zur Firewall
     .w-can-t-read-the-firewall-state = Der Firewall-Zustand ist nicht lesbar: { $why }
     .w-can-t-read-the-firewall-state-2 = Der Firewall-Zustand ist nicht lesbar
 
+d-w3fet6ux = Druckwarteschlangen-Wörter
+    .w-printing = Druckt
+    .w-paused = Pausiert: { $why }
+    .w-paused-2 = Pausiert
+    .w-offline = Offline
+    .w-ready-the-one-used-first = Bereit; das zuerst genutzte
+    .w-ready = Bereit
+
+d-wjw2wqhi = Auftragswörter
+    .w-printing = Druckt
+    .w-held = Angehalten
+    .w-stopped = Gestoppt
+    .w-cancelled = Abgebrochen
+    .w-failed = Fehlgeschlagen
+    .w-printed = Gedruckt
+    .w-waiting = Wartet
+
 d-mnunge2j = Schutzworte
     .w-encrypted = Verschlüsselt
     .w-enabled = Aktiviert
@@ -2046,6 +2206,159 @@ d-l6xrxon7 = Worte zu gespeicherten Geheimnissen
 d-oebqu32z = Tastenkürzel
     .w-no-keys = Keine Tasten
     .w-usually = { $now } (sonst { $usual })
+
+d-h5yhtc5j = Kürzelname
+    .w-search = Suchen
+    .w-every-window-at-once = Alle Fenster auf einmal
+    .w-lock-the-screen = Bildschirm sperren
+    .w-quick-settings = Schnelleinstellungen
+    .w-this-guide = Diese Anleitung
+    .w-the-window-before = Das Fenster davor
+    .w-the-window-after = Das Fenster danach
+    .w-the-tab-before = Der Tab davor
+    .w-the-tab-after = Der Tab danach
+    .w-the-tabs-menu = Das Menü der Tabs
+    .w-the-strip-above = Der Streifen darüber
+    .w-the-strip-below = Der Streifen darunter
+    .w-the-workspace-before = Der Arbeitsbereich davor
+    .w-the-workspace-after = Der Arbeitsbereich danach
+    .w-fill-the-screen-or-not = Den Bildschirm füllen oder nicht
+    .w-fill-the-screen = Den Bildschirm füllen
+    .w-take-the-screen-no-more = Den Bildschirm nicht mehr belegen
+    .w-take-the-tab-out = Den Tab herausnehmen
+    .w-attach-the-tab-to-the-left = Den Tab links anfügen
+    .w-attach-the-tab-to-the-right = Den Tab rechts anfügen
+    .w-move-the-window-to-the-left = Das Fenster nach links bewegen
+    .w-move-the-window-to-the-right = Das Fenster nach rechts bewegen
+    .w-move-the-window-above = Das Fenster nach oben bewegen
+    .w-move-the-window-below = Das Fenster nach unten bewegen
+    .w-move-the-window-to-the-screen = Das Fenster auf den Bildschirm davor bewegen
+    .w-move-the-window-to-the-screen-2 = Das Fenster auf den Bildschirm danach bewegen
+    .w-narrower = Schmaler
+    .w-wider = Breiter
+    .w-bring-back-a-closed-tab = Einen geschlossenen Tab zurückholen
+    .w-files = Dateien
+    .w-a-terminal = Ein Terminal
+    .w-what-was-copied-before = Was zuvor kopiert wurde
+    .w-notifications = Benachrichtigungen
+    .w-full-screen-or-not = Vollbild oder nicht
+    .w-the-magnifier = Die Lupe
+    .w-magnify-more = Stärker vergrößern
+    .w-magnify-less = Weniger vergrößern
+    .w-the-power-menu = Das Energiemenü
+    .w-the-next-keyboard-layout = Die nächste Tastaturbelegung
+    .w-emoji = Emoji
+    .w-ask-an-agent = Einen Agenten fragen
+    .w-say-something = Etwas sagen
+    .w-report-a-problem = Ein Problem melden
+    .w-start-or-stop-dictation = Diktat starten oder stoppen
+    .w-finish-the-dictation = Das Diktat beenden
+    .w-leave-the-dictation = Das Diktat verlassen
+    .w-float-the-window-or-not = Das Fenster schweben lassen oder nicht
+
+d-otpzs7kz = Aufstellungsproblem
+    .w-takes-at-least-speakers = { $placement_title } braucht mindestens { $least } Lautsprecher.
+    .w-takes-at-most-speakers = { $placement_title } braucht höchstens { $most } Lautsprecher.
+
+d-d6zdjqjo = Zu eng
+    .w-two-speakers-cannot-stand-in-exactly = Zwei Lautsprecher können nicht am selben Ort stehen.
+
+d-p3xfdbnn = Namensproblem
+    .w-give-the-speakers-a-name = Gib den Lautsprechern einen Namen.
+    .w-keep-the-name-to-64-characters = Halte den Namen bei höchstens 64 Zeichen.
+    .w-say-which-speaker-each-one-is = Sag zuerst, welcher Lautsprecher welcher ist.
+
+d-qzq3ehnp = Kalibrierungsproblem
+    .w-calibrate-on-where-it-was-set = Kalibriere { $name } auf { $leader_label }, wo es eingerichtet wurde.
+    .w-no-microphone-of-your-devices-can = Kein Mikrofon deiner Geräte kann für diesen Satz zuhören.
+    .w-a-measurement-is-already-going = Es läuft bereits eine Messung.
+
+d-reuswzez = Zuhör-Bezeichnung
+    .w-no-microphone-can-listen = Kein Mikrofon kann zuhören
+
+d-ostglwyu = Mikrofonrollentext
+    .w-this-device = Dieses Gerät
+    .w-declined-on-that-device = Auf jenem Gerät abgelehnt
+    .w-offline = Offline
+    .w-media-sharing-is-off-there = Dort ist das Teilen von Medien aus
+    .w-allowed-on-that-device = Auf jenem Gerät erlaubt
+    .w-waiting-for-approval-on-that-device = Wartet auf Freigabe auf jenem Gerät
+    .w-asks-for-approval-on-that-device = Fragt auf jenem Gerät um Freigabe, wenn du beginnst
+
+d-wbwnffes = Bereit-Text
+    .w-of-ready = { $ready_here } von { $len } bereit
+
+d-4sibuixj = Aufstellungstitel
+    .w-stereo-pair = Stereopaar
+    .w-surround = Surround
+    .w-around-the-room = Im ganzen Raum
+
+d-bgxjxwm2 = Aufstellungsbeschreibung
+    .w-two-speakers-left-and-right-of = Zwei Lautsprecher, links und rechts von deinem Platz.
+    .w-three-to-six-speakers-around-where = Drei bis sechs Lautsprecher um deinen Platz, jeder auf seinem eigenen Kanal.
+    .w-speakers-anywhere-in-the-room-each = Lautsprecher irgendwo im Raum, jeder dort aufgestellt, wo er steht.
+
+d-273pqyvv = Rollentext
+    .w-left = Links
+    .w-right = Rechts
+    .w-centre = Mitte
+    .w-subwoofer = Subwoofer
+    .w-left-surround = Links hinten
+    .w-right-surround = Rechts hinten
+    .w-in-the-room = Im Raum
+
+d-u5ayelbh = Rollenantwort
+    .w-on-my-left = Auf meiner Linken
+    .w-on-my-right = Auf meiner Rechten
+    .w-in-front-of-me = Vor mir
+    .w-it-is-the-subwoofer = Es ist der Subwoofer
+    .w-behind-me-to-the-left = Hinter mir, links
+    .w-behind-me-to-the-right = Hinter mir, rechts
+
+d-mpa7c52h = Korrekturtext
+    .w-ms-delay-db-gain = { $one_decimal } ms Verzögerung, { $signed } dB Verstärkung
+
+d-z252h4db = Mitgliedsstatustext
+    .w-ready = Bereit
+    .w-waiting-for-approval-on-that-device = Wartet auf Freigabe auf jenem Gerät
+    .w-offline = Offline
+    .w-output-unplugged = Ausgang abgesteckt
+    .w-media-sharing-is-off-there = Dort ist das Teilen von Medien aus
+    .w-not-one-of-your-devices = Keines deiner Geräte
+
+d-q6phyozb = Wiedergabetext
+    .w-playing = Gibt wieder
+    .w-connecting = Verbindet…
+    .w-syncing-clocks = Uhren werden abgeglichen…
+    .w-can-t-play-in-time = Kann nicht im Takt wiedergeben
+
+d-x4hdofry = Kalibrierungs-Mitgliedstext
+    .w-before-after = Vorher { $trim_text }, nachher { $trim_text2 }
+    .w-waiting = Wartet
+    .w-listening = Hört zu…
+
+d-qh4jfsbs = Kalibrierungs-Mikrofontext
+    .w-waiting-for-approval-on-that-device = Wartet auf Freigabe auf jenem Gerät
+    .w-declined-on-that-device = Auf jenem Gerät abgelehnt
+    .w-listening = Hört zu…
+    .w-heard-speakers-readings-set-aside-as = { $heard } Lautsprecher gehört, { $rejected } Messungen als unstimmig beiseitegelegt
+    .w-heard-speakers = { $heard } Lautsprecher gehört
+    .w-heard-nothing-too-far-away = Nichts gehört: zu weit weg
+    .w-could-not-listen = Konnte nicht zuhören: { $reason }
+
+d-kuflfrrc = Raumbezeichnung
+    .w-speakers-in-the-room = Lautsprecher im Raum: { $join }
+
+d-flh7p4p5 = Positionstext
+    .w-to-your-left = { $metres } zu deiner Linken
+    .w-to-your-right = { $metres } zu deiner Rechten
+    .w-centred = mittig
+    .w-in-front-of-you = { $metres } vor dir
+    .w-behind-you = { $metres } hinter dir
+    .w-level-with-you = auf gleicher Höhe mit dir
+
+d-kdxlunml = Meter
+    .w-m = { $one_decimal } m
 
 
 d-hmc6d5uw = Was ein Gerät hält
@@ -2069,14 +2382,153 @@ d-kap65mlg = Wann ein Gerät zuletzt da war
     .w-never-heard-from = noch nie gehört
     .w-last-seen = zuletzt gesehen { $day }, { $clock }
 
+d-mfs3depl = Größenwörter
+    .w-b = { $n } B
+    .w-kb = { $value } KB
+    .w-mb = { $value } MB
+    .w-gb = { $value } GB
+
 d-hlpmp5i4 = Betreiberwörter
     .w-in-use = In Gebrauch
     .w-not-for-this-sim = Nicht für diese SIM
     .w-in-reach = In Reichweite
     .w-unknown = Unbekannt
 
+d-kiz3mlr2 = Taktungswörter
+    .w-metered = Getaktet
+    .w-unmetered = Ungetaktet
+    .w-the-network-says = Das Netz sagt es
+
+d-fav4ccpf = Verbindungswörter
+    .w-sign-in-to-the-network = Im Netz anmelden
+    .w-connected-no-internet = Verbunden, kein Internet
+    .w-offline = Offline
+    .w-connected = Verbunden
+
+d-wuyttjt6 = Mobilfunkwörter
+    .w-no-modem = Kein Modem
+    .w-off = Aus
+    .w-on = An
+
+d-boaaqfsm = Technikwörter
+    .w-5g = 5G
+    .w-lte = LTE
+    .w-hspa = HSPA+
+    .w-hspa-2 = HSPA
+    .w-3g = 3G
+    .w-ev-do = EV-DO
+    .w-cdma = CDMA
+    .w-edge = EDGE
+    .w-gprs = GPRS
+    .w-2g = 2G
+    .w-on = An
+
+d-4e6jb3fg = Hotspot-Wörter
+    .w-sharing-this-connection = Diese Verbindung wird geteilt
+    .w-off = Aus
+
+d-3peadj4s = Fähigkeitstitel
+    .w-camera = Kamera
+    .w-microphone = Mikrofon
+    .w-screen = Bildschirm
+    .w-location = Standort
+    .w-keyboard-and-pointer = Tastatur und Zeiger
+    .w-sound-the-machine-plays = Ton, den die Maschine spielt
+
+d-btcjbs5z = Zustandswörter
+    .w-this-machine-can-t-tell-where = Diese Maschine kann nicht sagen, wo sie ist
+    .w-not-on-this-device = Nicht auf diesem Gerät
+    .w-blocked-by-a-switch-on-the = Durch einen Schalter am Gerät selbst blockiert
+    .w-blocked-in-software = In der Software blockiert
+    .w-muted = Stumm
+    .w-not-muted = Nicht stumm
+    .w-the-system-asks-you-each-time = Das System fragt jedes Mal, wenn eine Anwendung es will, sodass diese Liste nicht sagen kann, wer es nutzt
+    .w-this-desktop-cannot-say-which-application = Dieser Desktop kann nicht sagen, welche Anwendung es nutzt
+    .w-no-application-is-using-it-now = Momentan nutzt es keine Anwendung
+    .w-one-application-is-using-it-now = Momentan nutzt es eine Anwendung
+    .w-applications-are-using-it-now = Momentan nutzen es { $uses } Anwendungen
+
+d-6z3numlh = Antwortwörter
+    .w-may-not-use-the-microphone = Darf das Mikrofon nicht nutzen
+    .w-may-not-use-the-camera = Darf die Kamera nicht nutzen
+    .w-may-not-use-the-screen = Darf den Bildschirm nicht nutzen
+    .w-may-not-use-the-keyboard-and = Darf Tastatur und Zeiger nicht nutzen
+    .w-may-not-use-the-location = Darf den Standort nicht nutzen
+    .w-may-not-use-the-sound-the = Darf den Ton, den die Maschine spielt, nicht nutzen
+    .w-on-this-device = auf diesem Gerät
+    .w-on-another-of-your-devices = auf einem anderen deiner Geräte
+    .w-on = auf { $device }
+
+d-m7zme2k3 = Geltungswörter
+    .w-until-you-take-it-back = bis du es zurücknimmst
+    .w-until-this-session-ends = bis diese Sitzung endet
+    .w-for-one-use = für eine Nutzung
+    .w-until = bis { $moment_text }
+    .w-until-it-lapses = bis es abläuft
+
+d-c7nx7kj5 = Erteilungswörter
+    .w-given-by = { $allows } · { $expiry } · erteilt von { $granted_by }
+
 d-vjrdgx4p = Bereichstitel
     .w-apps = Apps
+    .w-network = Netzwerk
+    .w-bluetooth = Bluetooth
+    .w-data-usage = Datennutzung
+    .w-displays = Bildschirme
+    .w-sound = Ton
+    .w-speakers = Lautsprecher
+    .w-power = Energieversorgung
+    .w-printers = Drucker
+    .w-drives = Laufwerke
+    .w-this-device-s-server = Der Server dieses Geräts
+    .w-keyboard-and-pointing = Tastatur und Zeigen
+    .w-themes = Themen
+    .w-shell = Shell
+    .w-accessibility = Bedienungshilfen
+    .w-notifications = Benachrichtigungen
+    .w-keyboard-shortcuts = Tastenkürzel
+    .w-region-and-formats = Region und Formate
+    .w-spelling-and-text = Rechtschreibung und Text
+    .w-default-apps = Standard-Apps
+    .w-date-and-time = Datum und Uhrzeit
+    .w-content-limits = Inhaltsgrenzen
+    .w-accounts = Konten
+    .w-billing = Abrechnung
+    .w-agent-models = Agentenmodelle
+    .w-devices-and-access = Geräte und Zugriff
+    .w-continuity = Kontinuität
+    .w-firmware = Firmware
+    .w-compatibility = Kompatibilität
+    .w-disk-unlock = Entsperren der Festplatte
+    .w-storage = Speicher
+    .w-updates = Aktualisierungen
+    .w-users = Benutzer
+    .w-permissions = Berechtigungen
+    .w-about = Über
+    .w-appearance = Erscheinungsbild
+
+d-oxzjl6j3 = Ruhetage
+    .w-every-day = jeden Tag
+    .w-on-weekdays = an Wochentagen
+    .w-at-the-weekend = am Wochenende
+    .w-on-some-days = an manchen Tagen
+
+d-jsv6zthu = Modusrate
+    .w-hz = { $short_number } Hz
+
+d-mc6lzxr7 = HDR nicht verfügbar
+    .w-not-supported-by-this-display = Von diesem Bildschirm nicht unterstützt
+    .w-the-graphics-driver-cannot-send-an = Der Grafiktreiber kann kein HDR-Signal an diesen Bildschirm senden
+    .w-the-graphics-card-could-not-show = Die Grafikkarte konnte auf diesem Bildschirm kein 10-Bit-Bild zeigen
+    .w-the-graphics-driver-refused-to-turn = Der Grafiktreiber hat HDR nicht eingeschaltet, deshalb bleibt dieser Bildschirm bei SDR
+
+d-ylng4djz = VRR nicht verfügbar
+    .w-not-supported-by-this-display = Von diesem Bildschirm nicht unterstützt
+    .w-the-graphics-driver-refused-to-turn = Der Grafiktreiber hat es nicht eingeschaltet
+    .w-the-graphics-driver-does-not-offer = Der Grafiktreiber bietet es für diesen Bildschirm nicht an
+
+d-ohb75mq6 = Bildschirmwörter
+    .w-the-primary-screen = , der Hauptbildschirm
 
 d-3ufe44kf = App-Zugriff
     .w-access = Zugriff
@@ -2087,9 +2539,16 @@ d-3ufe44kf = App-Zugriff
 d-ktwvzpqx = Regeln einer App
     .w-muted-for-now-with-its-own = Vorerst stumm, mit eigenen Regeln
     .w-its-own-rules-reaching-through-the = Eigene Regeln, die durch die Ruhezeiten reichen
+    .w-its-own-rules = Ihre eigenen Regeln
 
 d-fxs76vw2 = Ein Bild wählen…
     .doc = Gibt dieser Person das Bild, das `file` enthält. Die Sitzung bewahrt es in ihrem Identitätseintrag auf, wo es jedes Gerät und jede App liest, die sie zeigt.
     .did = hat das Bild geändert
 
 d-fxs76vw2-file = Datei
+
+d-3s74ndu4 = Anbieterwörter
+    .w-signed-in = angemeldet
+    .w-key-kept = Schlüssel hinterlegt
+    .w-no-key = kein Schlüssel
+    .w-not-offered = nicht angeboten
