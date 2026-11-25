@@ -68,8 +68,8 @@ const NAME: &str = "Look-round";
 /// What the look-round's event says its assistant is told. Its person
 /// reads it on the event and may change it; the rules of a look are the
 /// server's and come with every look ([`RULES`]).
-const TOLD: &str = "Look round for work you could do for your person: what changed where \
-                    they work, and what became due.";
+const TOLD: &str = "Look round for work you could do for your person: what came in, what changed \
+                    where they work, and what became due.";
 /// What the look-round is for, as its note says.
 const PURPOSE: &str = "Find work the assistant could do without being asked.";
 /// The rules of a look, said with every one.
@@ -525,16 +525,9 @@ impl Initiative {
             assistant,
             event: wanted.event.clone(),
         };
-        let gathered = look::gather(
-            workspaces,
-            workspace,
-            &asked.person,
-            &own,
-            &kept.seen,
-            now_ms,
-        )
-        .await
-        .map_err(ActionCallError::unavailable)?;
+        let gathered = look::gather(workspaces, workspace, &own, &kept.seen, now_ms)
+            .await
+            .map_err(ActionCallError::unavailable)?;
         // What a member did with a proposed task counts before the assistant is told what they
         // made of each kind of work.
         self.reconcile(workspace).await;

@@ -126,12 +126,12 @@ core = [
     "tilo-workspace-service -> tilo-history",
     "tilo-workspace-service -> tilo-model-gateway",
     "tilo-workspace-service -> tilo-oauth",
+    "tilo-workspace-service -> tilo-recurrence",
     "tilo-workspace-service -> tilo-settings-store",
     "tilo-workspace-service -> tilo-test-env",
     "tilo-workspace-service -> tilo-ui",
     "tilo-workspace-service -> tilo-web-search",
     "tilo-workspace-service -> tilo-workspace-agent",
-    "tilo-workspace-service -> tilolang-calendar",
 ]
 
 services = [

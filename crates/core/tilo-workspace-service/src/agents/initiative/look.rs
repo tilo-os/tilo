@@ -1,8 +1,10 @@
-//! What one look finds, with no model asked: what changed in the
-//! workspace's documents, which tasks became due, and what is open.
+//! What one look finds, with no model asked: what came in for the person,
+//! what changed in the workspace's documents, which tasks became due, and
+//! what is open.
 //!
 //! A look compares the workspace with where the last look left it
-//! ([`Seen`]): every document's heads, the tasks it already said were due. The first look only notes where everything
+//! ([`Seen`]): every document's heads, the mail it took in, the tasks it
+//! already said were due. The first look only notes where everything
 //! stands, as a bot starts at a document's heads: the workspace's past is
 //! not news. What the assistant did itself is not news to it either: its
 //! own changes, the look-round's own asks, what is said in its own thread
@@ -36,6 +38,9 @@ pub(super) struct Seen {
     looked: bool,
     /// Each document's heads, by `app/document`.
     documents: BTreeMap<String, Vec<String>>,
+    /// Each message the Mail app held when the mail was last taken in, by its key, with when it
+    /// arrived: what arrived since is new, and a message a later sync rereads is not.
+    mail: BTreeMap<String, i64>,
     /// The tasks a look already said were due, each by its id and its due
     /// time, so a task is said once and again when its date moves.
     due: BTreeSet<String>,
@@ -119,7 +124,6 @@ fn who(event: &DocumentEvent) -> &'static str {
 pub(super) async fn gather(
     workspaces: &Workspaces,
     workspace: &str,
-    person: &[u8; 32],
     own: &Own,
     seen: &Seen,
     now_ms: i64,
@@ -131,6 +135,7 @@ pub(super) async fn gather(
     let mut next = Seen {
         looked: true,
         documents: seen.documents.clone(),
+        mail: seen.mail.clone(),
         due: BTreeSet::new(),
     };
     let mut found = Found::default();
@@ -185,7 +190,18 @@ pub(super) async fn gather(
         .await
         .map_err(|error| format!("the workspace's tasks do not read: {error}"))?;
     tasks_in(&tasks, &against, &mut found, &mut due, &mut next);
+    // The Mail app's messages, as its connector brings them in: what arrived since the last look
+    // came in for the person. Mail that cannot be read is no reason to hold the rest back.
+    match crate::apps::triggers::mail::arrived(workspaces, workspace, &mut next.mail, seen.looked)
+        .await
+    {
+        Ok(arrived) => found.came_in = u64::try_from(arrived).unwrap_or(u64::MAX),
+        Err(error) => {
+            tracing::warn!(%error, workspace, "the mail a look counts could not be read");
+        }
+    }
     let findings = json!({
+        "cameIn": { "mail": found.came_in },
         "changed": { "documents": found.changed, "named": changed },
         "due": { "tasks": found.due, "named": due },
         "open": { "tasks": found.open },
@@ -314,5 +330,112 @@ fn tasks_in(
             }
         }
         next.due.insert(said);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_resource_store::wire::Command;
+    use tilo_resource_store::{Cell, Resource, Stamp, Value as Stored};
+
+    use super::*;
+
+    /// One text of a record.
+    fn text(text: &str) -> Cell {
+        Cell::One(Stored::Text(text.to_owned()))
+    }
+
+    /// The Mail app's messages, with the fields a look counts them by.
+    const MAIL_SURFACE: &str = r#"format = 2
+
+[[resources]]
+kind = "tl.so.tilo.mail.Message"
+label = "Message"
+version = 1
+fields = [
+  { path = "key", type = "text" },
+  { path = "mailbox", type = "text" },
+  { path = "received", type = "text" },
+]
+verbs = [
+  { id = "$origin", label = "Keep in step with its service", kind = "undoable" },
+]
+"#;
+
+    /// Keep `id` as the Mail app's message that arrived at `received`, as its connector writes it.
+    async fn keep_message(workspaces: &Workspaces, workspace: &str, id: &str, received: &str) {
+        workspaces
+            .own_resource_command(
+                workspace,
+                "so.tilo.mail",
+                Command::Put {
+                    kind: "tl.so.tilo.mail.Message".into(),
+                    id: id.into(),
+                    resource: Resource {
+                        readers: "*".into(),
+                        parent: None,
+                        order: None,
+                        fields: [
+                            ("key".to_owned(), text(id)),
+                            ("mailbox".to_owned(), text("inbox")),
+                            ("received".to_owned(), text(received)),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    },
+                    stamp: Stamp {
+                        verb: "$origin".into(),
+                        ..Stamp::default()
+                    },
+                },
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+    }
+
+    /// What the mail held when a look first ran is where it stands, what arrives after it is what
+    /// came in, and no message is counted twice.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_look_counts_the_mail_that_arrived_since_the_last_one() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (key, cert) = crate::workspaces::fixtures::governor();
+        let host = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
+        let workspaces = host.workspaces().clone();
+        crate::workspaces::fixtures::declare_app(&host, "so.tilo.mail", MAIL_SURFACE.as_bytes());
+        let workspace = workspaces.create("Mail").await.unwrap().workspace;
+        let own = Own {
+            person: hex::encode(cert.user_public_key),
+            ..Own::default()
+        };
+        let now_ms = 1_764_000_000_000;
+
+        keep_message(&workspaces, &workspace, "old", "2026-11-23T07:00:00Z").await;
+        let first = gather(&workspaces, &workspace, &own, &Seen::default(), now_ms)
+            .await
+            .unwrap();
+        assert_eq!(first.found.came_in, 0, "what was there is not news");
+        assert_eq!(first.findings["cameIn"]["mail"].as_u64(), Some(0));
+
+        keep_message(&workspaces, &workspace, "new-1", "2026-11-23T08:10:00Z").await;
+        keep_message(&workspaces, &workspace, "new-2", "2026-11-23T08:11:00Z").await;
+        let second = gather(&workspaces, &workspace, &own, &first.seen, now_ms + 60_000)
+            .await
+            .unwrap();
+        assert_eq!(second.found.came_in, 2);
+        assert!(second.found.anything_new(), "mail is news");
+        assert_eq!(second.findings["cameIn"]["mail"].as_u64(), Some(2));
+
+        let third = gather(
+            &workspaces,
+            &workspace,
+            &own,
+            &second.seen,
+            now_ms + 120_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(third.found.came_in, 0, "no message is counted twice");
+        host.shutdown().await;
     }
 }

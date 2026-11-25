@@ -1,10 +1,8 @@
-//! The moments a repeat's rule falls on between two days: what a view asks when it shows a
-//! repeating entry in a window. It reads no clock and no store: the rule, the entry's start, its
-//! time zone and the days it is left out on say all of it.
+//! The moments a repeat's rule falls on between two days, as `std.occurrences` answers them: the
+//! days the language counts its calendar in, read through the shared expander
+//! ([`tilo_recurrence::occurrences`]).
 
 use jiff::civil::Date;
-use jiff::tz::TimeZone;
-use tilo_recurrence::Rule;
 
 /// The moments the series of `rule` starts at, from the day `from` to the day `to` inclusive,
 /// each an instant: the entry starts at the wall time `start` (`2026-11-24T09:00:00`), read in
@@ -20,36 +18,14 @@ pub fn occurrences(
     from: i64,
     to: i64,
 ) -> Vec<i64> {
-    let Some(seed) = wall(timezone, start) else {
+    let Some(seed) = wall(start) else {
         return Vec::new();
     };
     let (Ok(from), Ok(to)) = (day(from), day(to)) else {
         return Vec::new();
     };
-    if to < from {
-        return Vec::new();
-    }
     let excluded: Vec<Date> = exdates.iter().filter_map(|days| day(*days).ok()).collect();
-    let dates = match Rule::parse(rule) {
-        Some(rule) => {
-            rule.with_exdates(excluded.iter().copied())
-                .occurrences(seed.date(), from, to)
-        }
-        // No rule and no words: the one occurrence, where it falls in the window.
-        None if rule.trim().is_empty() => {
-            let date = seed.date();
-            if date >= from && date <= to && !excluded.contains(&date) {
-                vec![date]
-            } else {
-                Vec::new()
-            }
-        }
-        None => Vec::new(),
-    };
-    dates
-        .into_iter()
-        .filter_map(|date| instant(timezone, date.to_datetime(seed.time())))
-        .collect()
+    tilo_recurrence::occurrences(rule, seed, timezone, &excluded, from, to)
 }
 
 /// The day `days` since the epoch.
@@ -62,21 +38,11 @@ fn day(days: i64) -> Result<Date, jiff::Error> {
 }
 
 /// The wall time `start` names, `YYYY-MM-DDTHH:MM:SS` (`T` may be a space).
-fn wall(_timezone: &str, start: &str) -> Option<jiff::civil::DateTime> {
+fn wall(start: &str) -> Option<jiff::civil::DateTime> {
     let (date, time) = start.trim().split_once(['T', ' '])?;
     let date = Date::strptime("%Y-%m-%d", date).ok()?;
     let time = jiff::civil::Time::strptime("%H:%M:%S", time).ok()?;
     Some(date.to_datetime(time))
-}
-
-/// The instant the wall time `at` is, in `timezone`.
-fn instant(timezone: &str, at: jiff::civil::DateTime) -> Option<i64> {
-    match timezone.trim() {
-        "" | "floating" => Some(at.to_zoned(TimeZone::UTC).ok()?.timestamp().as_second()),
-        name => {
-            tilo_recurrence::zone::wall_to_utc(name, at).map(|(instant, _)| instant.as_second())
-        }
-    }
 }
 
 #[cfg(test)]
@@ -120,11 +86,10 @@ mod tests {
 
     #[test]
     fn the_days_left_out_are_left_out() {
-        let start = MONDAY;
         assert_eq!(
             occurrences(
                 "FREQ=DAILY",
-                start,
+                MONDAY,
                 "UTC",
                 &[day_of("2026-11-17")],
                 day_of("2026-11-16"),
@@ -149,10 +114,9 @@ mod tests {
     #[test]
     fn a_zone_keeps_the_wall_time_across_a_daylight_saving_change() {
         // Europe/Berlin leaves summer time on 2026-10-25.
-        let start = "2026-10-18T09:00:00";
         let found = occurrences(
             "FREQ=WEEKLY",
-            start,
+            "2026-10-18T09:00:00",
             "Europe/Berlin",
             &[],
             day_of("2026-10-18"),

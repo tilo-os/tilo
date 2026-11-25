@@ -39,6 +39,7 @@ use std::ops::ControlFlow;
 
 use jiff::Timestamp;
 use jiff::civil::{Date, DateTime, Weekday};
+use jiff::tz::TimeZone;
 
 pub use zone::{Resolution, canonical_zone, normalize_wall, wall_instant, wall_to_utc};
 
@@ -606,6 +607,61 @@ impl Rule {
                     .by_month_day
                     .iter()
                     .any(|month_day| *month_day == day.day() || *month_day == from_end))
+    }
+}
+
+/// The days the series of `rule` falls on from the day `from` to the day `to` inclusive, the
+/// days in `exdates` left out: the one day `seed` for an entry with no rule at all, and none
+/// for a rule this crate cannot read exactly. A view, an entry's reminder and a trigger at an
+/// entry's time all read the repeat through here.
+#[must_use]
+pub fn days(rule: &str, seed: Date, exdates: &[Date], from: Date, to: Date) -> Option<Vec<Date>> {
+    if to < from {
+        return Some(Vec::new());
+    }
+    match Rule::parse(rule) {
+        Some(rule) => Some(
+            rule.with_exdates(exdates.iter().copied())
+                .occurrences(seed, from, to),
+        ),
+        // No rule and no words: the one occurrence, where it falls in the window.
+        None if rule.trim().is_empty() => Some(
+            (from <= seed && seed <= to && !exdates.contains(&seed))
+                .then_some(seed)
+                .into_iter()
+                .collect(),
+        ),
+        None => None,
+    }
+}
+
+/// The instants the series of `rule` starts at, from the day `from` to the day `to` inclusive,
+/// in seconds since the epoch: the entry starts at the wall time `start` (`09:00`), read in
+/// `timezone` (an IANA name, `UTC`, or `floating`/empty for a time written nowhere in
+/// particular, read as UTC), and the days in `exdates` are left out. It keeps the authored
+/// wall time across a daylight-saving change, and a rule it cannot read yields nothing rather
+/// than wrong days.
+#[must_use]
+pub fn occurrences(
+    rule: &str,
+    start: DateTime,
+    timezone: &str,
+    exdates: &[Date],
+    from: Date,
+    to: Date,
+) -> Vec<i64> {
+    days(rule, start.date(), exdates, from, to)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|date| instant(timezone, date.to_datetime(start.time())))
+        .collect()
+}
+
+/// The instant the wall time `at` is, in `timezone`, in seconds since the epoch.
+fn instant(timezone: &str, at: DateTime) -> Option<i64> {
+    match timezone.trim() {
+        "" | "floating" => Some(at.to_zoned(TimeZone::UTC).ok()?.timestamp().as_second()),
+        name => zone::wall_to_utc(name, at).map(|(instant, _)| instant.as_second()),
     }
 }
 
@@ -1514,6 +1570,44 @@ mod tests {
                 date(1998, 5, 9),
                 date(1998, 6, 13),
             ]
+        );
+    }
+
+    /// One shared expansion answers an entry that does not repeat, the days it leaves out, and
+    /// a rule it cannot read, exactly as the views read them.
+    #[test]
+    fn the_shared_expansion_reads_one_entry_at_a_time() {
+        let start = DateTime::new(2026, 10, 18, 9, 0, 0, 0).unwrap();
+        // A day left out is left out; a series with no rule is the one day it starts on.
+        assert_eq!(
+            super::days(
+                "FREQ=DAILY",
+                start.date(),
+                &[date(2026, 10, 19)],
+                date(2026, 10, 18),
+                date(2026, 10, 20),
+            ),
+            Some(vec![date(2026, 10, 18), date(2026, 10, 20)])
+        );
+        assert_eq!(
+            super::days(
+                "",
+                start.date(),
+                &[],
+                date(2026, 10, 17),
+                date(2026, 10, 20)
+            ),
+            Some(vec![date(2026, 10, 18)])
+        );
+        assert_eq!(
+            super::days(
+                "FREQ=SECONDLY",
+                start.date(),
+                &[],
+                start.date(),
+                start.date()
+            ),
+            None
         );
     }
 }
