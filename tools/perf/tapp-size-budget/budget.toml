@@ -242,6 +242,12 @@ aarch64 = 3211264
 x86_64 = 1835008
 aarch64 = 1507328
 
+# The shell joined the default collection unmeasured: it starts at the KPI max target until an
+# app-sizes run measures its tapp.
+[apps."so.tilo.shell"]
+x86_64 = 6000000
+aarch64 = 6000000
+
 [apps."so.tilo.shortcuts"]
 x86_64 = 1900544
 aarch64 = 1769472

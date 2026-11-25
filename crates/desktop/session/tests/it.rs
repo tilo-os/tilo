@@ -61,6 +61,8 @@ mod automation;
 mod canvas_ask;
 #[path = "canvas_chrome.rs"]
 mod canvas_chrome;
+#[path = "canvas_persists.rs"]
+mod canvas_persists;
 #[path = "canvas_point.rs"]
 mod canvas_point;
 #[path = "canvas_turn_open.rs"]
@@ -276,8 +278,6 @@ mod shell_navigation;
 mod shell_people;
 #[path = "shell_platform.rs"]
 mod shell_platform;
-#[path = "shell_record_persists.rs"]
-mod shell_record_persists;
 #[path = "shell_screen.rs"]
 mod shell_screen;
 #[path = "shell_themes.rs"]

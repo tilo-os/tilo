@@ -208,7 +208,6 @@ impl Shell {
         lists: DeviceLists,
         wells: Option<ui::widget::Wells>,
         theme: ui::Theme,
-        state: Option<&std::path::Path>,
         daemon: bool,
     ) -> Result<Self, String> {
         // What the person waits for before the shell can draw: its package compiled, its record
@@ -226,7 +225,7 @@ impl Shell {
         // The shell's own record is the person's, kept where every app's own record of theirs is
         // kept and carried to their other devices as one: read back from what an earlier session
         // kept, or the shell's defaults on a device that never showed the shell.
-        let record = crate::shell_document::ShellRecord::open(state, kept_elsewhere);
+        let record = crate::shell_document::ShellRecord::open(kept_elsewhere);
         let mut shell = Self {
             lists,
             link,
@@ -893,19 +892,6 @@ impl Shell {
     /// Whether the shell asked something of the API the session has not run yet.
     pub(crate) fn has_asks(&self) -> bool {
         self.link.has_asks()
-    }
-
-    /// Why the shell's resources this device kept were not opened, once: the person is told, and
-    /// not again.
-    pub(crate) fn take_record_refusal(&self) -> Option<String> {
-        self.record_kept.take_refusal()
-    }
-
-    /// Where the shell's resources are kept on this device: what a test reads back to prove a
-    /// shell choice was persisted. `None` on a session that keeps no copy.
-    #[must_use]
-    pub fn resource_path(&self) -> Option<&std::path::Path> {
-        self.record_kept.path()
     }
 
     /// The shell's own field `field` (a field of one of its roots: `dock_edge` and `frames_snap`
@@ -1930,19 +1916,10 @@ impl crate::Session {
     /// The person's store is borrowed only for it, so the parts' displays after it borrow the
     /// session freely.
     fn follow_shell_record(shell: &Shell, shared: &crate::Shared) {
-        let notices = &shared.notifications;
         let store = shared
             .sync
             .as_ref()
             .and_then(|sync| sync.person_resources());
-        // A record this device kept and this build did not open is said, once: the shell drew the
-        // shell's defaults, and the person is told where their own shell's choices still are rather
-        // than finding them silently reset.
-        if let Some(reason) = shell.take_record_refusal() {
-            notices
-                .borrow()
-                .tell(&crate::notices::record_not_opened_notice(&reason));
-        }
         // The shell's resources are the person's on every device of theirs: what they arranged here
         // reaches their others through their own workspace, and what they arranged there reaches
         // this session.
@@ -2056,14 +2033,6 @@ impl crate::Session {
     #[must_use]
     pub fn shell_link(&self) -> Option<Rc<crate::platform::surfaces::SessionLink>> {
         self.shell.as_ref().map(Shell::link)
-    }
-
-    /// Where the shell's own record is kept on this device: the document a person's shell choices
-    /// are written to, which a test reads back to prove they survive the session. `None` when the
-    /// shell does not run or keeps no copy.
-    #[must_use]
-    pub fn shell_record_path(&self) -> Option<&std::path::Path> {
-        self.shell.as_ref().and_then(Shell::resource_path)
     }
 
     /// The shell's own record as a setting's value, by the field's name in its type (`dock_edge`,

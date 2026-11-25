@@ -190,22 +190,6 @@ pub fn wake_notice(
     Some(Notice::new(t("device-wake-app-name"), 1, title, body))
 }
 
-/// Tell the person the shell's own record this device kept could not be opened: the shell draws the
-/// shell's defaults this session, and their own shell choices stay on disk untouched, never written
-/// over.
-pub(crate) fn record_not_opened_notice(reason: &str) -> Notice {
-    Notice::new(
-        t("shell-record-not-opened-app-name"),
-        2,
-        t("shell-record-not-opened-title"),
-        t_args(
-            "shell-record-not-opened-detail",
-            &[("reason", reason.into())],
-        ),
-    )
-    .staying(Some(Duration::ZERO))
-}
-
 /// Tell the person the style they chose did not load or failed, as `shell.md` §6 has it: the
 /// shell draws the built-in strips while their choice stays as it was.
 pub(crate) fn style_failed_notice(style: &str, reason: &str) -> Notice {

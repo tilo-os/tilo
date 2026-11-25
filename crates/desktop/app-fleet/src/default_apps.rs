@@ -48,6 +48,7 @@ pub(super) const DEFAULT: &[&str] = &[
     "so.tilo.scratchpad",
     "so.tilo.settings",
     "so.tilo.sheets",
+    "so.tilo.shell",
     "so.tilo.shortcuts",
     "so.tilo.slides",
     "so.tilo.snippets",

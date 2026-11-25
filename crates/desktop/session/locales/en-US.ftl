@@ -78,13 +78,6 @@ workspace-not-founded-body = The workspace is only on this computer for now, and
 ## The shell this device saved could not be opened: the person's own shell is
 ## still on disk and this session starts empty, so it is never written over.
 
-## The shell's own record this device kept could not be opened: the person's
-## shell choices are still on disk and this session starts from the shell's
-## defaults, so their own record is never written over.
-shell-record-not-opened-app-name = Desktop
-shell-record-not-opened-title = Your shell settings were not opened
-shell-record-not-opened-detail = They could not be read this time ({ $reason }). They have not been changed: this session starts from the shell's defaults and keeps nothing of them, so your own settings cannot be written over.
-
 ## The shell from the version before this one, which was not brought over: it
 ## is still on disk, untouched, and this session has its own shell instead.
 
