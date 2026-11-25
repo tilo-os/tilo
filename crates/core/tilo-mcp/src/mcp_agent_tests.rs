@@ -15,6 +15,8 @@ use tilo_actions::{
 
 const APP: &str = "so.tilo.notes";
 const WORKSPACE: &str = "workspace:workspace";
+/// The workspace itself, as the provider above names it.
+const WORKSPACE_ID: &str = "workspace";
 /// The peer of [`Notes::with_unpublished_instance`]'s newer instance.
 const UNPUBLISHED: &str = "3";
 const NOTEBOOK: &str = "notes.notebook";
@@ -1178,17 +1180,30 @@ impl ActionProvider for Notes {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
-        let (address, rows) = (&request.target.address, self.rows(&request.target.provider));
+        // The workspace answers an application's own action: an app's window is opened on its
+        // `application:<workspace>:<app>` token as on the workspace itself, which is where a
+        // view that is not up asks for it.
+        let workspace = request.target.provider == WORKSPACE
+            || tilo_actions::remote::application_provider(&request.target.provider)
+                .is_some_and(|(workspace, _)| workspace == WORKSPACE_ID);
+        let (address, rows) = (
+            &request.target.address,
+            self.rows(if workspace {
+                WORKSPACE
+            } else {
+                &request.target.provider
+            }),
+        );
         // An app takes its steps back on its own package resource. As a workspace answers, an
         // action the resource does not publish is no such action.
         let offered = address.resource == format!("tl:{APP}")
             || rows.iter().any(|row| {
                 row.resource.id == address.resource
-                    && (request.target.provider == WORKSPACE
+                    && (workspace
                         || row.action.as_ref().map(|it| &it.address.action)
                             == Some(&address.action))
             });
-        if !offered || (request.target.provider != WORKSPACE && !*self.running.lock().unwrap()) {
+        if !offered || (!workspace && !*self.running.lock().unwrap()) {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         // What the workspace's grants put to the person first: nothing runs
@@ -1196,7 +1211,7 @@ impl ActionProvider for Notes {
         if *self.asks.lock().unwrap() && request.target.address.action == "delete" {
             return Pending::ready(Err(ActionCallError::confirmation_required()));
         }
-        if request.target.provider == WORKSPACE {
+        if workspace {
             *self.running.lock().unwrap() = true;
         }
         self.invoked.lock().unwrap().push(request);
