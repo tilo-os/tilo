@@ -61,6 +61,12 @@ fn session_serving(
     // the home is made, since the home names the temporary directory the store is made in.
     let store = app_store();
     home.env().set("TILO_APPS_DATA_DIR", store);
+    // A program's task runs in the device's processes, which the daemon starts through the
+    // launcher as it starts every tilolang process: the one this test's build placed beside it.
+    home.env().set(
+        "TILO_LAUNCHER_BIN",
+        tilo_test_env::sibling_binary("launcher", "tilo-launcher"),
+    );
     let profile = tempfile::tempdir().expect("a profile for the daemon");
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
         .expect("the profile is this user's");
@@ -285,5 +291,84 @@ fn a_program_is_refused_a_workspace_its_person_does_not_hold() {
             .as_ref()
             .is_err_and(|why| !why.contains("API socket")),
         "a workspace the person does not hold is refused: {refused:?}"
+    );
+}
+
+/// Where [`sandboxed_program`] connects, when this test's program is started as it.
+const SANDBOXED_AT: &str = "TILO_TEST_OWN_API_SANDBOXED_AT";
+
+/// A program of this login run confined, in a user namespace of its own as a sandbox runs it: it
+/// reaches the API socket's path, since it is the same account, and asks it what a program of
+/// the person's asks first. It says what came back. Started by
+/// [`a_sandboxed_program_of_this_login_is_refused_at_the_api_socket`]; run on its own it asks
+/// nothing.
+#[test]
+fn sandboxed_program() {
+    let Some(socket) = std::env::var_os(SANDBOXED_AT) else {
+        return;
+    };
+    let socket = std::path::PathBuf::from(socket);
+    if let Err(error) = std::os::unix::net::UnixStream::connect(&socket) {
+        println!("unreachable {error}");
+        return;
+    }
+    match api_account(&socket, "account/workspaces", "list", &json!({})) {
+        Ok(answer) => println!("answered {answer}"),
+        Err(why) => println!("refused {why}"),
+    }
+}
+
+/// A program of this login that a sandbox confined is the same account, and reaches the socket,
+/// but is no program of the person's own: the session takes its connection and hands it to
+/// nobody, so it is answered nothing, while the person's own program beside it is answered.
+#[test]
+fn a_sandboxed_program_of_this_login_is_refused_at_the_api_socket() {
+    use std::os::unix::process::CommandExt as _;
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let api = root.path().join("api.sock");
+    let desktop = session_with_api(root.path(), &api);
+    let mut session = desktop.session;
+    served(&mut session, &api);
+    // The person's own program is answered.
+    held_workspace(&mut session, &api);
+
+    let mut command = std::process::Command::new(std::env::current_exe().expect("this test"));
+    command
+        .args([
+            "--exact",
+            "own_api::sandboxed_program",
+            "--nocapture",
+            "--test-threads",
+            "1",
+            "-q",
+        ])
+        .env(SANDBOXED_AT, &api);
+    // SAFETY: between fork and exec the child calls only `unshare`, which is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::unshare(libc::CLONE_NEWUSER) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let ran = command
+        .output()
+        .expect("a program in a user namespace of its own starts");
+    let said = String::from_utf8_lossy(&ran.stdout);
+    let said = said
+        .lines()
+        .find(|line| {
+            ["refused ", "answered ", "unreachable "]
+                .iter()
+                .any(|outcome| line.starts_with(outcome))
+        })
+        .unwrap_or_default();
+    assert!(
+        said.starts_with("refused "),
+        "a sandboxed program reaches the socket and is answered nothing: {said:?}\n{}",
+        String::from_utf8_lossy(&ran.stderr)
     );
 }
