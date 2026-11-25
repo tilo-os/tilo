@@ -345,9 +345,24 @@ fn a_stopped_agent_is_cancelled_refused_and_goes_on() {
         let agent = std::sync::Arc::new(host.agent());
         let (_, failed) = ls(&agent, None).await;
         assert!(!failed, "the agent lists the workspace");
+        // A watch with no cursor answers what holds now, which a page draws; one that waits for
+        // news holds a cursor. Read once, then wait from it: what the stop moves is the news.
+        let (holds, failed) = watch(&agent, json!({"wait_ms": 0})).await;
+        assert!(!failed, "the agent reads who is here: {holds}");
+        let cursor = serde_json::from_str::<Value>(&holds)
+            .ok()
+            .and_then(|answered| {
+                answered
+                    .get("cursor")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .expect("the watch answers the cursor to wait from");
         let running = {
             let agent = std::sync::Arc::clone(&agent);
-            tokio::spawn(async move { watch(&agent, json!({"wait_ms": 60_000})).await })
+            tokio::spawn(async move {
+                watch(&agent, json!({"wait_ms": 60_000, "cursor": cursor})).await
+            })
         };
         let started = Instant::now();
         loop {
