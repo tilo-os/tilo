@@ -230,7 +230,15 @@ view strips(a: Layout) {
     style_shell(a, false) {
         layers(fill) {
             strips_view(a, lists, fill)
-            strip_rail(a)
+            // Where the person is among the strips, each card at its own edge of the band. The
+            // stack is placed here, not in the views: a view call is a boundary of its own, and
+            // a stack placed inside one never reaches this layer — it stands at the band's top.
+            stack(at: .leading, align: .center, padding: .tight) {
+                strip_before(a)
+            }
+            stack(at: .trailing, align: .center, padding: .tight) {
+                strip_count(a)
+            }
         }
     }
 }

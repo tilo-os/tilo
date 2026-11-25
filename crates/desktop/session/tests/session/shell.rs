@@ -791,6 +791,127 @@ fn green_bounds(
     })
 }
 
+/// The plain desktop, in one theme and at one width, kept as `name` and read for what stands
+/// under the bar's centre: each thing that does, said in `failures`.
+fn plain_desktop(
+    presentation: fn() -> ui::application::ComponentRunnerInputs,
+    width: i32,
+    name: &str,
+    dir: &std::path::Path,
+    failures: &mut Vec<String>,
+) {
+    let mut session = Session::headless(
+        Options {
+            presentation,
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", width, HEIGHT)],
+    )
+    .expect("session");
+    settle(&mut session, 8);
+    capture_to(&mut session, dir, name);
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot");
+    let across = usize::try_from(shot.width).expect("a display with columns");
+    let centre = across / 2;
+    // The bar's band ends above this, and the page's own content begins under it: what stands
+    // between is the wallpaper, whatever theme it is drawn in.
+    const FROM: u32 = 40;
+    const TO: u32 = 67;
+    let pixel = |x: usize, row: u32| {
+        let at = (usize::try_from(row).expect("a row") * across + x) * 4;
+        [
+            i32::from(shot.rgba[at]),
+            i32::from(shot.rgba[at + 1]),
+            i32::from(shot.rgba[at + 2]),
+        ]
+    };
+    for row in FROM..=TO {
+        let left = pixel(centre - 100, row);
+        let right = pixel(centre + 100, row);
+        let middle = pixel(centre, row);
+        if (0..3).any(|channel| (middle[channel] - (left[channel] + right[channel]) / 2).abs() > 4) {
+            failures.push(format!(
+                "{name}: something stands under the bar at row {row}: {middle:?} between \
+                 {left:?} and {right:?}, where the wallpaper runs unbroken"
+            ));
+            break;
+        }
+    }
+    // Nothing narrow a reader can reach stands there either, so the band is not merely unlit:
+    // a word, a button, a handle — none hangs under the bar's centre.
+    let held = (
+        f64::from(u32::try_from(centre).expect("a display with columns")) - 60.0,
+        f64::from(FROM),
+        120.0,
+        80.0,
+    );
+    for control in session.controls() {
+        let (x, y, w, h) = control.rect;
+        let (left, top, held_w, held_h) = held;
+        let stands = x < left + held_w && left < x + w && y < top + held_h && top < y + h;
+        if stands && w <= held_w && h <= held_h {
+            failures.push(format!(
+                "{name}: {:?} stands under the bar at {:?}",
+                control.name, control.rect
+            ));
+        }
+    }
+}
+
+/// Nothing stands under the bar's centre when it has nothing to show: the plain desktop keeps
+/// its wallpaper there, in either theme and on a phone. A part keeps the place its view asked
+/// for, so a strip rail with one strip does not hang under the clock as an empty handle.
+#[test]
+fn nothing_hangs_under_the_bar_when_it_has_nothing_to_show() {
+    let _settled = ui::motion::testing::settled();
+    let _clock = held_clock();
+    let dir = std::env::var_os("VISUAL_ACTIVITY_OUT").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../target/activity-shots")
+        },
+        std::path::PathBuf::from,
+    );
+    let mut failures = Vec::new();
+    plain_desktop(
+        ui::headless::fixture_runner_inputs,
+        WIDTH,
+        "plain-dark",
+        &dir,
+        &mut failures,
+    );
+    plain_desktop(
+        light_runner_inputs,
+        WIDTH,
+        "plain-light",
+        &dir,
+        &mut failures,
+    );
+    plain_desktop(
+        ui::headless::fixture_runner_inputs,
+        420,
+        "plain-phone-dark",
+        &dir,
+        &mut failures,
+    );
+    plain_desktop(
+        light_runner_inputs,
+        420,
+        "plain-phone-light",
+        &dir,
+        &mut failures,
+    );
+    assert!(
+        failures.is_empty(),
+        "the bar's band is empty where nothing has anything to show:\n{}",
+        failures.join("\n")
+    );
+}
+
 /// The mean luminance of `frame` 's pixels, 0 to 255.
 fn mean_luminance(frame: &[u8]) -> f64 {
     let pixels = frame.chunks_exact(4);

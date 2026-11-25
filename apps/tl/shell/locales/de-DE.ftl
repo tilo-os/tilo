@@ -1572,7 +1572,9 @@ d-6eidrgir = Verlaufszeile
 
 d-o5w6ulql = Hinweise über Fenstern
 
-d-c6mbdwcc = Streifenleiste
+d-txupy4rf = Streifenleiste
+
+d-2dvbjocr = Streifenleiste
     .w-of = { $number } von { $len }
     .w-new-strip = Neuer Streifen
 
