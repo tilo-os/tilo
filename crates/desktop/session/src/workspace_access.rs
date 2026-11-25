@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
+use tilo_actions::{ApiError, ResourceSpec};
 use tilo_desktop_model::Workspace;
 use tilo_dialogs::chosen::{AppKey, ChosenTable, Kind as ChosenKind};
 use tilo_service::{Service, Started};
@@ -42,9 +42,23 @@ pub(crate) const RESOURCE: &str = "workspace/access";
 /// The action that takes a grant or a device-record choice back, by its id.
 pub(crate) const REVOKE: &str = "revoke";
 
+/// What the workspace's access list offers: taking a grant or a chosen file back.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "workspace.access")]
+pub enum AccessEffect {
+    /// Take back a grant or a chosen file, by its id.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-access-revoke")]
+    Revoke {
+        /// The grant or chosen file to take back.
+        #[param("The grant or chosen file to take back.")]
+        id: String,
+    },
+}
+
 /// The workspace's grants, as the session publishes them: its declared type.
 #[derive(tilo_resource::Row)]
-#[row(kind = "workspace.access", label = "Access")]
+#[row(kind = "workspace.access", label = "Access", effects = AccessEffect)]
 pub struct AccessRoot;
 
 /// The mount's record index moving: a file or folder renamed, moved or made, so the host path a
@@ -331,28 +345,10 @@ impl Service for Served {
     }
 
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![
+        vec![tilo_service::offer::<AccessEffect>(
             tilo_resource::LiveRow::typed::<AccessRoot>(RESOURCE, t("session-workspace-access"))
-                .into_resource()
-                .with_action(tilo_actions::ActionSpec::typed(
-                    REVOKE,
-                    t("session-access-revoke"),
-                    "",
-                    tilo_actions::ExecutionLocus::ClientLocal,
-                    vec![tilo_actions::ActionParam::required(
-                        "id",
-                        tilo_actions::ParamType::Text,
-                        "The grant or chosen file to take back.",
-                    )],
-                    |_| {
-                        tilo_actions::EncodedAction::encode_operation("workspace.access", &())
-                            .unwrap_or_else(|error| tilo_actions::EncodedAction {
-                                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
-                                payload: error.to_string().into_bytes(),
-                            })
-                    },
-                )),
-        ]
+                .into_resource(),
+        )]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
@@ -365,17 +361,14 @@ impl Service for Served {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
-        if resource != RESOURCE || action != REVOKE {
-            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
+        let AccessEffect::Revoke { id } =
+            tilo_service::decode::<AccessEffect>(&self.resources(), resource, action, arguments)?;
+        if id.is_empty() {
+            return Err(ApiError::InvalidArguments(
+                "an id names what to take back".to_owned(),
+            ));
         }
-        let id = arguments
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| {
-                ApiError::InvalidArguments("an id names what to take back".to_owned())
-            })?;
-        self.revoke(id)
+        self.revoke(&id)
     }
 }
 
