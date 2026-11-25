@@ -78,9 +78,16 @@ function messageFields({
 /// path, the calls it makes and the web requests it sends. `watch` answers the events the test
 /// pushes, each branch of the watch on its own: the accounts record, the setup, the workspace's
 /// changes.
-function fakeWorkspace({ accounts = [account()], messages = {}, webAnswer = null } = {}) {
+function fakeWorkspace({
+  accounts = [account()],
+  messages = {},
+  webAnswer = null,
+  webhooks = [{ id: "555", name: "Tilo", token: "tok" }],
+} = {}) {
   const done = [];
   const requests = [];
+  // The channel's webhooks Discord lists and makes, apart from the messages sent through them.
+  const hooks = [];
   const released = [];
   const secret = "MTIz.GxYz.abcdefghij0123456789AB";
   const held = typeof accounts === "function" ? accounts : () => accounts;
@@ -123,6 +130,11 @@ function fakeWorkspace({ accounts = [account()], messages = {}, webAnswer = null
         return secret;
       },
       async webCall(request) {
+        if (/\/channels\/[^/]+\/webhooks$/.test(request.url)) {
+          hooks.push(request);
+          if (request.method === "GET") return { status: 200, body: JSON.stringify(webhooks) };
+          return { status: 200, body: JSON.stringify({ id: "556", name: "Tilo", token: "made" }) };
+        }
         requests.push(request);
         if (webAnswer) return webAnswer(request);
         return { status: 200, body: JSON.stringify({ id: "9001", channel_id: "456" }) };
@@ -139,6 +151,7 @@ function fakeWorkspace({ accounts = [account()], messages = {}, webAnswer = null
     tilo: { workspace: () => ws },
     done,
     requests,
+    hooks,
     released,
     reads,
     /// A change of the whole workspace's records.
@@ -221,7 +234,7 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   const carried = workspace.done.find((call) => call.address === "so.tilo.discord.preview#send_there");
   expect(carried?.args.op).toMatchObject({ op: "send", channel: "456", content: "hello" });
   const send = workspace.requests[0];
-  expect(send.url).toBe("https://discord.com/api/v10/webhooks/555?wait=true");
+  expect(send.url).toBe("https://discord.com/api/v10/webhooks/555/tok?wait=true");
   expect(send.method).toBe("POST");
   const sent = JSON.parse(send.body);
   expect(sent.username).toBe("Ada");
@@ -246,7 +259,7 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
     workspace.done.some((call) => call.address === "so.tilo.discord.preview#edit_there"),
   ).toBe(true);
   const edit = workspace.requests[1];
-  expect(edit.url).toBe("https://discord.com/api/v10/webhooks/555/messages/9001");
+  expect(edit.url).toBe("https://discord.com/api/v10/webhooks/555/tok/messages/9001");
   expect(edit.method).toBe("PATCH");
   expect(JSON.parse(edit.body).content).toBe("hello again");
 
@@ -269,7 +282,7 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   await until(() => workspace.requests.length >= 4, "the deletion");
   const deleted = workspace.requests[3];
   expect(deleted.method).toBe("DELETE");
-  expect(deleted.url).toBe("https://discord.com/api/v10/webhooks/555/messages/9001");
+  expect(deleted.url).toBe("https://discord.com/api/v10/webhooks/555/tok/messages/9001");
   expect(
     workspace.done.some(
       (call) => call.address === "so.tilo.discord.preview#unmap" &&
@@ -571,6 +584,43 @@ test("a conversation paired after the gateway opened is carried at once", async 
   await until(() => workspace.requests.length >= 1, "the send at once");
   expect(JSON.parse(workspace.requests[0].body).content).toBe("hello");
 
+  workspace.finish();
+  await running;
+});
+
+test("a bridged channel the bot has no webhook in gets one, joined in the record", async () => {
+  const workspace = fakeWorkspace({
+    accounts: [account({ map: [{ kind: "channel", tilo: CONVERSATION, discord: "456" }] })],
+    messages: { [`chat/${RECORD}/messages/m1`]: messageFields({ body: "hello" }) },
+    webhooks: [{ id: "77", name: "Someone's", token: null }],
+  });
+  const running = run({ tilo: workspace.tilo, makeClient: () => fakeGateway(), log: () => {} });
+  workspace.say(change({ item: "messages/m1" }));
+  await until(() => workspace.requests.length >= 1, "the send");
+  // Discord's own list first, then the bridge's webhook made, asked of the app's own action.
+  expect(workspace.hooks.map((request) => [request.method, request.url])).toEqual([
+    ["GET", "https://discord.com/api/v10/channels/456/webhooks"],
+    ["POST", "https://discord.com/api/v10/channels/456/webhooks"],
+  ]);
+  expect(JSON.parse(workspace.hooks[1].body)).toEqual({ name: "Tilo" });
+  expect(
+    workspace.done.some(
+      (call) => call.address === "so.tilo.discord.preview#create_webhook" &&
+        call.args.op.channel === "456",
+    ),
+  ).toBe(true);
+  // The record joins the conversation to the webhook's id; its token is kept nowhere.
+  const mapped = workspace.done.find(
+    (call) => call.address === "so.tilo.discord.preview#map" && call.args.kind === "webhook",
+  );
+  expect(mapped.args).toEqual({ kind: "webhook", tilo: CONVERSATION, discord: "556", origin: "tilo" });
+  expect(workspace.requests[0].url).toBe("https://discord.com/api/v10/webhooks/556/made?wait=true");
+
+  // The next message goes through the same webhook, with no list or making again.
+  workspace.message(`chat/${RECORD}/messages/m2`, messageFields({ body: "again" }));
+  workspace.say(change({ item: "messages/m2" }));
+  await until(() => workspace.requests.length >= 2, "the second send");
+  expect(workspace.hooks).toHaveLength(2);
   workspace.finish();
   await running;
 });

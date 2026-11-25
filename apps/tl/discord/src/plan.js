@@ -93,6 +93,17 @@ export function carried(state, conversation) {
   return null;
 }
 
+/// The Discord text channel a conversation's messages are sent to and the conversation whose
+/// webhook they go through: the conversation's own channel, or a thread's root channel.
+export function webhookChannel(state, conversation) {
+  const channel = mapping(state, "channel", conversation);
+  if (channel) return { channel: channel.discord, tilo: conversation };
+  const thread = mapping(state, "thread", conversation);
+  if (!thread?.root) return null;
+  const root = mapping(state, "channel", thread.root);
+  return root ? { channel: root.discord, tilo: thread.root } : null;
+}
+
 /// Whether this bridge made a change: an app acting by itself, this one. What the bridge wrote
 /// is never carried back to Discord, so nothing echoes.
 export function byThisBridge(event) {
@@ -127,7 +138,9 @@ export function changeTarget(state, resource) {
   if (!record || !item) return null;
   const at = /^(?:(.*?)\/)?messages\/([^/]+)$/.exec(item);
   const conversation = published(at?.[1] ? `${record}/${at[1]}` : record);
-  if (!carried(state, conversation)) return null;
+  // A conversation joined to a Discord text channel, or a thread of one, is carried: its webhook
+  // is made the first time a message goes.
+  if (!webhookChannel(state, conversation)) return null;
   const id = at ? at[2] : item.split("/").pop();
   return {
     conversation,

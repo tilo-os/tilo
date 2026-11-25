@@ -15,7 +15,35 @@ function at(origin) {
   return String(origin || API);
 }
 
-/// Sends a message through a webhook, answering the message it made there.
+/// The name of the webhooks the bridge makes: one per bridged text channel.
+export const WEBHOOK_NAME = "Tilo";
+
+/// The webhooks of a channel. Discord answers a webhook's token only for the ones this bot made,
+/// so the bridge finds its own there again after a restart and keeps no token anywhere.
+export function channelWebhooks({ tokenItem, origin = API }, channel) {
+  return {
+    url: `${at(origin)}/channels/${channel}/webhooks`,
+    key: tokenItem,
+    method: "GET",
+    reason: "the webhook messages from the workspace are sent through",
+  };
+}
+
+/// Makes the bridge's webhook in a channel: what messages from the workspace are sent through,
+/// each under its author's name and picture.
+export function createWebhook({ tokenItem, origin = API }, channel) {
+  return {
+    url: `${at(origin)}/channels/${channel}/webhooks`,
+    key: tokenItem,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: WEBHOOK_NAME }),
+    reason: "the webhook messages from the workspace are sent through",
+  };
+}
+
+/// Sends a message through a webhook, answering the message it made there. `webhook` is the
+/// webhook's `id/token`, the address Discord executes it at.
 ///
 /// Files go as a multipart body: `payload_json` and one `files[n]` per file, each naming the
 /// content the workspace keeps by its BLAKE3 address. The vault reads those bytes from the
