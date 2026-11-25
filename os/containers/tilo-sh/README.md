@@ -11,7 +11,7 @@ both, and `stack.sh help` covers the commands.
 | --- | --- |
 | `stack.sh` | the one command: `up`, `restart`, `env`, `status`, `logs`, `mail-account`, `browser`, `check`, `down` |
 | `cargo.sh` | how the native stack compiles: the cargo drop-in `TILO_SH_CARGO` names (default `$CARGO`, else `cargo`), also the cargo the web bundle's build script gets |
-| `build-on-builder.sh` | the programs and the bundle's module built at once on the build server, in one command |
+| `build-on-builder.sh` | the programs built on the build server, in one command |
 | `port-check.py` | which of a base's ports this machine would not give the stack (another process's, or the kernel's temporary ports), and where that machine's temporary-port range begins: `stack.sh up` checks it here and on the build server |
 | `Caddyfile` | production's server routing (tilo/infra `apps/tilo-sh-server/Caddyfile`) on loopback ports |
 | `check.sh` | the startup identity, the visa flow, a fresh visitor's timed entry and a passkey, as steps of one check (`stack.sh check`) or as flows beside the page's (`t test e2e`, `check.sh --flow`) |

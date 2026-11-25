@@ -23,16 +23,17 @@ That is what lets many stacks run at once without loading the machine you are
 sitting at: SSH carries the forwarded ports and one long-running command, and
 the stack holds the build server's memory admission while it runs.
 
-The programs and the web bundle are this checkout's, built in the build
-container there: every program in one incremental build of the release's code
-without its whole-program link (Cargo's `lounge-local`), and the desktop
-bundle's module (`build.sh --profile local`: the same for the bundle, bound and
-split as the shipped bundle is, without wasm-opt). A change recompiles the
-parts of the crates it touched; a module that did not change is neither bound
-nor split again, and `stack.sh restart NAME` rebuilds and restarts one service
-while the others keep running. The server lets the turns its agents are taking
-end before it stops, so a restart never cuts an answer off; `restart --detach
-NAME...` builds first, says whether that worked, and leaves the restarts to follow
+The programs and the web bundle are this checkout's. The programs are built in
+the build container there: every program in one incremental build of the
+release's code without its whole-program link (Cargo's `lounge-local`). The web
+bundle is t's `web-entry-bundle` check, the one the web entry's image ships
+(compiled, bound, split and wasm-opt'd on t), fetched with `t outputs`, so the
+stack serves the bundle the check defines. A change recompiles the parts of the
+crates it touched; what did not change is kept, and `stack.sh restart NAME`
+rebuilds and restarts one service while the others keep running. The server lets
+the turns its agents are taking end before it stops, so a restart never cuts an
+answer off; `restart --detach NAME...` builds first, says whether that worked,
+and leaves the restarts to follow
 on their own, which is how an agent restarts the stack it talks through from its
 own Terminal. Each service gets its own state and runtime directory under the
 stack's state. `stack.sh help` lists every command.
@@ -58,12 +59,12 @@ cargo drop-in cannot forward ports (a drop-in from before `exec --forward`),
 a stack handed what a check built (`TILO_SH_PROGRAMS` and the like), and
 `TILO_SH_BUILD=t` all do the same, and `up` says why.
 
-`TILO_SH_BUILD=t` takes the programs and the bundle from t's checks instead:
-`tilo-sh-programs` (`lounge-check`) and `web-entry-bundle` (compiled,
-bound, split and wasm-opt'd on t), the builds the checks run. They start from
-an empty build directory, so they take minutes where the default takes
-seconds; use them to rehearse exactly what the checks build. A clean checkout
+`TILO_SH_BUILD=t` takes the programs from t's check instead:
+`tilo-sh-programs` (`lounge-check`), the build the check runs. It starts from
+an empty build directory, so it takes minutes where the default takes
+seconds; use it to rehearse exactly what the check builds. A clean checkout
 is built as its commit, one with changes as t finds it when the run starts.
+(The web bundle is always t's `web-entry-bundle`, as above.)
 
 A fresh Lounge takes people by invitation, as production's does. The stack
 makes a person of its own and starts the server with them as the Lounge's owner,
@@ -156,9 +157,10 @@ With `--images`, the first three are the images themselves.
   name. Over plain HTTP a browser speaks HTTP/1.1, so the page's modules arrive
   over six connections and an entry-speed measurement here reads slower than
   tilo.sh.
-- **Natively, the build profile** is `lounge-local`: the release's code and
-  opt-level without the whole-program link, compiled incrementally. The
-  bundle is not wasm-opt'd, so its modules are larger than the shipped ones.
+- **Natively, the programs' build profile** is `lounge-local`: the release's
+  code and opt-level without the whole-program link, compiled incrementally.
+  The web bundle is t's `web-entry-bundle`, the shipped one, wasm-opt'd and
+  split as the image serves it.
   The image carries the release build.
 - **Natively, the trust bundle:** Tilo's programs read one fixed bundle path and
   no variable redirects it; `bwrap` mounts this machine's roots over that path
@@ -257,18 +259,17 @@ on the same machine.
 
 ## Other builds
 
-`TILO_SH_CARGO=<command>` builds with that cargo drop-in instead of the one
-`$CARGO` names, else `cargo` on this machine. It must leave what it builds in
-`./target` as cargo would. A drop-in that also
+`TILO_SH_CARGO=<command>` builds the programs with that cargo drop-in instead of
+the one `$CARGO` names, else `cargo` on this machine. It must leave what it
+builds in `./target` as cargo would. A drop-in that also
 runs a program on its builder and brings files of its target dir back
-(`<command> --fetch PATH exec PROGRAM ARGS…`) gets the builds in one command
-there; with any other (`cargo`), the bundle's build script
-binds and splits here and needs wasm-bindgen.
+(`<command> --fetch PATH exec PROGRAM ARGS…`) builds them in one command there.
 
-`TILO_SH_BUNDLE` names a bundle built elsewhere (`build.sh OUT --bundle
-desktop`) for the native stack to serve. `TILO_SH_PROGRAMS`, `TILO_SH_LOUNGE`,
-`TILO_SH_SITE`, `TILO_SH_CADDY` and `TILO_SH_CLI_DIR` name what a check built
-already, so the stack compiles and lays out nothing. With `--images`,
+`TILO_SH_BUNDLE` names a bundle built elsewhere (`build.sh OUT` or t's
+`web-entry-bundle` outputs) for the native stack to serve. `TILO_SH_PROGRAMS`,
+`TILO_SH_LOUNGE`, `TILO_SH_SITE`, `TILO_SH_CADDY` and `TILO_SH_CLI_DIR` name what
+a check built already, so the stack compiles and lays out nothing. With
+`--images`,
 `TILO_SH_IMAGE_LOUNGE`, `TILO_SH_IMAGE_API` and `TILO_SH_IMAGE_WEB` each take an
 OCI archive or a registry reference; a release candidate's `sha-<commit>`
 images reproduce what is deployed.

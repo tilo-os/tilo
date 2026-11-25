@@ -27,14 +27,14 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
 
   stack.sh up [--images] [--seed] [--discord] [--fresh]
       Start everything and print where it is. By default this checkout's
-      programs and web bundle, built on the build server in a build
-      directory that stays (a drop-in's build directory persists: a change
-      recompiles what it touches,
-      incrementally, and only the files that changed come back), run as
-      plain processes, each with its own state and runtime directory under
-      the stack's state. TILO_SH_BUILD=t builds them with t's checks
-      instead (tilo-sh-programs, web-entry-bundle): what the checks
-      run, wasm-opt and all, slower. Each takes
+      programs, built on the build server in a build directory that stays
+      (a drop-in's build directory persists: a change recompiles what it
+      touches, incrementally, and only the files that changed come back),
+      and its web bundle, t's web-entry-bundle check (the one the web
+      entry's image ships), run as plain processes, each with its own
+      state and runtime directory under the stack's state. TILO_SH_BUILD=t
+      takes the programs from t's checks too (tilo-sh-programs): what the
+      checks run, slower. Each takes
       its environment from the same place its image does: the image's
       entrypoint and ENV, and the manifest's variables below.
       --images runs the release images instead (t test image-lounge
@@ -208,22 +208,22 @@ from another checkout refuse (TILO_SH_TAKE_OVER=1 takes it over). Give each
 checkout its own TILO_SH_STATE and TILO_SH_PORT_BASE instead.
 
 Natively: the programs are Cargo's lounge-local build (the release's code and
-opt-level without its whole-program link, compiled incrementally) and the
-bundle build.sh's local one (the same for the desktop bundle, bound and split
-as the shipped one, without wasm-opt), both built on the build server by the
-cargo drop-in TILO_SH_CARGO names (default \$CARGO) in a build directory that
-stays, and only what changed brought back; a drop-in that runs no program
-there has the bundle bound and split here. TILO_SH_BUILD=t takes them from
-t's checks instead (tilo-sh-programs, lounge-check; web-entry-bundle,
-optimized), which start from an empty build directory: what the checks
-run, for a rehearsal of it. Caddy is
+opt-level without its whole-program link, compiled incrementally), built on the
+build server by the cargo drop-in TILO_SH_CARGO names (default \$CARGO) in a
+build directory that stays, and only what changed brought back; the web
+bundle is t's web-entry-bundle check (compiled, bound, split and wasm-opt'd
+on the build server), fetched with its outputs, so the stack serves the
+bundle the web entry's image ships. TILO_SH_BUILD=t takes the programs from
+t's checks too (tilo-sh-programs, lounge-check), which start from an empty
+build directory: what the checks run, for a rehearsal of it. Caddy is
 the one TILO_SH_CADDY names, else the one on PATH, else a pinned release
 fetched once. The
 server and the API server trust the local Caddy's CA through the fixed bundle path
 Tilo's programs read, which bwrap (bubblewrap) puts in front of this machine's
 own for those processes alone. No process sees this session's D-Bus or runtime
 directory. TILO_SH_BUNDLE names a built bundle
-(build.sh) instead of building one, built from this
+(build.sh's output, such as t's web-entry-bundle) instead of building one,
+built from this
 checkout's commit (TILO_SH_BUNDLE_ANY_COMMIT=1 serves one from another).
 Already-built inputs, which a check hands the stack so its bring-up compiles
 and lays out nothing (see docs/testing-tilo-sh.md):
@@ -258,11 +258,11 @@ the stack's own user, with the PATH it was brought up with; nothing confines
 them, so it is for a machine that is one person's own, like a development VM.
 The state keeps it; =0 turns it off.
 State: TILO_SH_STATE (default \${XDG_STATE_HOME:-~/.local/state}/tilo-sh-local).
-Needs a cargo drop-in that builds on a build server (TILO_SH_CARGO names it,
-else \$CARGO; with TILO_SH_BUILD=t, t) and curl, which is all a remote stack
-uses here. A stack here also needs bwrap and python3 (with a drop-in that runs
-no program on its build server, also wasm-bindgen for the bundle); with
---images, t and podman (rootless is fine) instead of bwrap.
+Needs t, which builds the web entry's bundle (unless TILO_SH_BUNDLE or
+TILO_SH_SITE names a built one), a cargo drop-in that builds on a build server
+(TILO_SH_CARGO names it, else \$CARGO; with TILO_SH_BUILD=t, t) and curl, which
+is all a remote stack uses here. A stack here also needs bwrap and python3;
+with --images, t and podman (rootless is fine) instead of bwrap.
 Docs: docs/testing-tilo-sh.md.
 EOF
 }
@@ -1651,23 +1651,15 @@ on_builder() {
   [[ $builder_capable == 1 ]]
 }
 
-# builder_build programs|bundle…: one command on the build server
-# (build-on-builder.sh) that builds what is named, at once, and stages the
-# programs and the bundle's module in one directory of this checkout's build
-# directory there, which one fetch mirrors into ./target/tilo-sh: only the
-# files that changed travel. What one bring-up built already is not built
-# again by it.
-built_on_builder=
+# builder_build: one command on the build server (build-on-builder.sh) that
+# builds the programs and stages them in one directory of this checkout's
+# build directory there, which one fetch mirrors into ./target/tilo-sh: only
+# the files that changed travel.
 builder_stage=tilo-sh
 builder_build() {
-  local what=() item began=$SECONDS run
-  for item in "$@"; do
-    [[ " $built_on_builder " == *" $item "* ]] || what+=("$item")
-  done
-  [[ ${#what[@]} -gt 0 ]] || return 0
+  local began=$SECONDS run
   run=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
-  local args=("$run" "$builder_stage" "${what[@]}")
-  say "building the ${what[*]} on the build server ($cargo exec build-on-builder.sh; only what changed compiles)"
+  say "building the programs on the build server ($cargo exec build-on-builder.sh; only what changed compiles)"
   # A drop-in that mirrors a directory back takes the stage's name alone; one that copies the files
   # a glob matches (a routing drop-in hands the call to a remote builder, whose exec copies files)
   # needs the stage's files named, since a stage is a directory of files below it.
@@ -1675,17 +1667,12 @@ builder_build() {
   if ! remote_capable || { help=$($cargo exec --help 2>/dev/null) && [[ $help == *'a glob'* ]]; }; then
     fetch=$builder_stage/'**'
   fi
-  (cd "$repo" && $cargo --fetch "$fetch" exec bash os/containers/tilo-sh/build-on-builder.sh "${args[@]}" >&2) \
+  (cd "$repo" && $cargo --fetch "$fetch" exec bash os/containers/tilo-sh/build-on-builder.sh \
+    "$run" "$builder_stage" programs >&2) \
     || die "the build on the build server failed (above)"
   [[ $(cat "$repo/target/$builder_stage/run" 2>/dev/null) == "$run" ]] \
     || die "$repo/target/$builder_stage is not what this build made on the build server: did the fetch bring it back?"
-  built_on_builder+=" ${what[*]}"
-  say "${what[*]} built on the build server and fetched ($((SECONDS - began))s)"
-}
-
-# Where the fetch leaves the bundle's module.
-bundle_stage() {
-  echo "$builder_stage/bundle"
+  say "programs built on the build server and fetched ($((SECONDS - began))s)"
 }
 
 # The programs every service runs: a copy of the build's, not its files
@@ -1772,38 +1759,16 @@ lay_out_lounge() {
   if [[ -w $lounge/bin ]]; then ln -sfn ../fonts "$lounge/bin/fonts"; fi
 }
 
-# The bundle the web entry serves (build.sh);
-# TILO_SH_BUNDLE names a built one instead. By default build.sh's quick
-# profile, the development one `cargo web` builds too, compiled and bound on
-# the build server and brought up to date in place (--update): a module that
-# did not change is not bound again, and only the files that changed come back. The site the web
-# entry serves is laid out from it afterwards (lay_out_web), so a build that
-# stops halfway is never served. With TILO_SH_BUILD=t, t's
-# web-entry-bundle.
+# The bundle the web entry serves: t's web-entry-bundle check, the bundle
+# the web entry's image ships (the compile, wasm-bindgen, the split and
+# wasm-opt, on the build server), fetched with its outputs. TILO_SH_BUNDLE
+# names a built one instead. The site the web entry serves is laid out from
+# it afterwards (lay_out_web), so a build that stops halfway is never served.
 build_bundle() {
   if [[ -n ${TILO_SH_BUNDLE:-} || -n ${TILO_SH_SITE:-} ]]; then return; fi
-  local began=$SECONDS out=$native/bundle-local
-  if from_t; then
-    t_build "the web entry's bundle" web-entry-bundle
-    t_bundle
-    say "bundle built ($((SECONDS - began))s)"
-    return
-  fi
-  local from=()
-  if on_builder; then
-    builder_build bundle
-    from=(--wasm-from "$repo/target/$(bundle_stage)")
-    say "laying out the web entry's bundle around the module the build server made (build.sh --wasm-from)"
-  else
-    say "building the web entry's bundle (build.sh --profile quick --update, compiled by $cargo)"
-  fi
-  mkdir -p "$out"
-  CARGO=$here/cargo.sh TILO_SH_CARGO=$cargo TILO_SOURCE_REVISION=$commit \
-    "$repo/crates/core/tilo-browser-runtime/scripts/build.sh" "$out" \
-    --profile quick --update "${from[@]}" >&2 \
-    || die 'the web entry bundle did not build (above)'
-  [[ -L $native/bundle ]] || rm -rf "${native:?}/bundle"
-  ln -sfn "${out##*/}" "$native/bundle"
+  local began=$SECONDS
+  t_build "the web entry's bundle" web-entry-bundle
+  t_bundle
   say "bundle built ($((SECONDS - began))s)"
 }
 
@@ -1821,14 +1786,12 @@ bundle_whole() {
 }
 
 # -- t's builds ---------------------------------------------------------------
-# With TILO_SH_BUILD=t the programs and the desktop bundle are what t's
-# checks build: tilo-sh-programs (every program, in one lounge-check
-# build), lounge-fonts (the server's font catalog) and web-entry-bundle
-# (the bundle without its whole-program link: the compile, wasm-bindgen, the
-# split and wasm-opt, all on t). Each check is cached by what it read, so a
-# change reruns the checks it reaches and nothing else, and this machine only
-# fetches: into the same directory each time, where t brings only the files
-# that changed.
+# The web entry's bundle is t's web-entry-bundle check, always. With
+# TILO_SH_BUILD=t the programs are t's checks too: tilo-sh-programs (every
+# program, in one lounge-check build) and lounge-fonts (the server's font
+# catalog). Each check is cached by what it read, so a change reruns the
+# checks it reaches and nothing else, and this machine only fetches: into the
+# same directory each time, where t brings only the files that changed.
 from_t() { [[ -z ${TILO_SH_PROGRAMS:-} && $build == t ]]; }
 t_fetched=$native/t
 
@@ -2200,6 +2163,8 @@ native_preflight() {
     if from_t; then command -v t >/dev/null || die 'needs t, which builds the programs (TILO_SH_BUILD=t)'
     else command -v "${cargo%% *}" >/dev/null || die "needs $cargo, which builds the programs (TILO_SH_CARGO names another cargo drop-in)"; fi
   fi
+  [[ -n ${TILO_SH_BUNDLE:-} || -n ${TILO_SH_SITE:-} ]] || command -v t >/dev/null \
+    || die "needs t, which builds the web entry's bundle (t test web-entry-bundle); TILO_SH_BUNDLE names a built one"
   command -v bwrap >/dev/null \
     || die 'needs bwrap (bubblewrap: dnf install bubblewrap), which gives the server and the API server the local trust bundle'
   command -v openssl >/dev/null \
@@ -2222,21 +2187,17 @@ up_native() {
   local discord=$1 began=$SECONDS phase=$SECONDS
   native_preflight
   mkdir -p "$state"/{logs,server,secrets,api,tls/caddy,tls/config} "$native" "$runs"
-  # The bundle builds beside the programs, on every bring-up: what did not
-  # change is kept, so an unchanged one takes seconds. On the build server both
-  # are one command; from t, two runs of checks at once.
+  # The bundle (a t run of web-entry-bundle) builds beside the programs, on
+  # every bring-up: t keeps what did not change, so an unchanged one takes
+  # seconds.
   local bundle_pid=
   if [[ -z ${TILO_SH_BUNDLE:-} && -z ${TILO_SH_SITE:-} ]]; then
-    if [[ -z ${TILO_SH_PROGRAMS:-} ]] && ! from_t && on_builder; then
-      builder_build programs bundle
-    else
-      # The bundle's job holds no lock of the state, and ends with this command: a start that
-      # stops (its programs did not build) leaves no build behind it following t, which held
-      # the lock the next start waits on.
-      build_bundle > "$state/logs/bundle.log" 2>&1 9>&- &
-      bundle_pid=$!
-      trap '[[ -z ${bundle_pid:-} ]] || stop_tree "$bundle_pid"' EXIT
-    fi
+    # The bundle's job holds no lock of the state, and ends with this command: a start that
+    # stops (its programs did not build) leaves no build behind it following t, which held
+    # the lock the next start waits on.
+    build_bundle > "$state/logs/bundle.log" 2>&1 9>&- &
+    bundle_pid=$!
+    trap '[[ -z ${bundle_pid:-} ]] || stop_tree "$bundle_pid"' EXIT
   fi
   build_programs
   lay_out_lounge
@@ -2247,8 +2208,6 @@ up_native() {
     wait "$bundle_pid" || built=$?
     bundle_pid=
     ((built == 0)) || { tail -30 "$state/logs/bundle.log" >&2; die 'the desktop bundle did not build'; }
-  elif [[ -z ${TILO_SH_BUNDLE:-} && -z ${TILO_SH_SITE:-} ]]; then
-    build_bundle
   fi
   lay_out_web
   say "built and laid out ($((SECONDS - began))s)"
