@@ -778,12 +778,13 @@ async fn listing<Reads: ResourceReads + ?Sized>(
         .await?
         .into_iter()
         .map(|listed| {
-            let mut entry =
-                serde_json::json!({"app": listed.address.app, "record": listed.address.record});
+            let mut entry = serde_json::Map::new();
+            entry.insert("app".into(), listed.address.app.into());
+            entry.insert("record".into(), listed.address.record.into());
             if let Some(kind) = listed.kind {
-                entry["kind"] = kind.into();
+                entry.insert("kind".into(), kind.into());
             }
-            entry
+            serde_json::Value::Object(entry)
         })
         .collect();
     Ok(serde_json::json!({ "records": listed }).to_string())
