@@ -32,8 +32,8 @@ mod cases {
             rt.set_reading(
                 &devices,
                 r#"{"devices":[
-                    {"id":"device-1","label":"This laptop","online":true,"nearby":true,"local":true,"display":true,"wakeable":true,"audio_output":true},
-                    {"id":"device-2","label":"The studio","online":true,"nearby":false,"local":false,"display":false,"wakeable":false,"audio_output":false}
+                    {"id":"device-1","label":"This laptop","online":true,"nearby":true,"local":true,"display":true,"wakeable":true,"audio_output":true,"seen_ms":0,"storage":[]},
+                    {"id":"device-2","label":"The studio","online":true,"nearby":false,"local":false,"display":false,"wakeable":false,"audio_output":false,"seen_ms":0,"storage":[]}
                 ]}"#,
             )
             .expect("the person's devices read");
