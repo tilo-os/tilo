@@ -389,12 +389,13 @@ pub trait FileClipboardServices: Send + Sync {
     fn disconnect(&self, peer: u64);
 }
 
-/// Where a host takes back what a workspace's grants say: a grant given once, now that its call
-/// was decided. The host owns the workspace records it is in.
+/// Where a host spends a grant given once in a workspace's grants, as the call it admits is
+/// decided. The host owns the workspace records it is in.
 pub trait WorkspaceGrants: Send + Sync {
-    /// Remove the grant `grant` from `workspace`: a grant given once, now that
-    /// its call was decided.
-    fn revoke(&self, workspace: &str, grant: &str);
+    /// Spend `grant`, given once in `workspace`, for the call being admitted now: true for
+    /// exactly one call, which may go on; false when another call spent it first, and this one
+    /// is refused. The grant is then taken back from the workspace.
+    fn spend(&self, workspace: &str, grant: &str) -> bool;
 }
 
 /// The identity of an exact private Settings worker, derived by the broker. It crosses to the seat

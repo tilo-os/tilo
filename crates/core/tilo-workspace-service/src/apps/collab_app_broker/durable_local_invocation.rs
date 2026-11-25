@@ -25,16 +25,21 @@ pub(super) fn authorize_action_in(
 }
 
 impl AppBrokerState {
-    /// Revoke the `Once` grants an admitted action spent in `workspace`
-    /// ([`tilo_action_policy::Verdict::spent`]), through the host that
-    /// records the workspace's grants.
-    pub(super) fn spend_once_grants(&self, workspace: &str, spent: &[tilo_action_policy::GrantId]) {
+    /// Spend the `Once` grants an admitted action relied on in `workspace`
+    /// ([`tilo_action_policy::Verdict::spent`]), through the host that records the workspace's
+    /// grants: false when another call spent one first, and this one is refused.
+    #[must_use]
+    pub(super) fn spend_once_grants(
+        &self,
+        workspace: &str,
+        spent: &[tilo_action_policy::GrantId],
+    ) -> bool {
         let Some(grants) = self.services.workspace_grants.as_ref() else {
-            return;
+            return true;
         };
-        for grant in spent {
-            grants.revoke(workspace, grant.as_str());
-        }
+        spent
+            .iter()
+            .all(|grant| grants.spend(workspace, grant.as_str()))
     }
 }
 

@@ -162,14 +162,17 @@ impl WorkspaceCommits for Native {
 }
 
 impl crate::apps::services::WorkspaceGrants for Native {
-    fn revoke(&self, requested: &str, grant: &str) {
+    fn spend(&self, requested: &str, grant: &str) -> bool {
         assert_eq!(requested, workspace_id().to_string());
         // Like the shell's grant service, update the broker's live policy
         // projection synchronously without re-entering the task mutation turn.
-        self.spent_grants
-            .lock()
-            .unwrap()
-            .push(tilo_action_policy::GrantId::new(grant));
+        let grant = tilo_action_policy::GrantId::new(grant);
+        let mut spent = self.spent_grants.lock().unwrap();
+        if spent.contains(&grant) {
+            return false;
+        }
+        spent.push(grant);
+        true
     }
 }
 

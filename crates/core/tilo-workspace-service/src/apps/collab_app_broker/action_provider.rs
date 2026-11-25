@@ -3001,7 +3001,9 @@ impl AppBrokerState {
         if !confirmed {
             return Err(ActionCallError::confirmation_required());
         }
-        self.spend_once_grants(&workspace.id().to_string(), &spent);
+        if !self.spend_once_grants(&workspace.id().to_string(), &spent) {
+            return Err(ActionCallError::NotPermitted);
+        }
         Ok(())
     }
 

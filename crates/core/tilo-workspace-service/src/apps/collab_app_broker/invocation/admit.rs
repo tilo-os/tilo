@@ -335,6 +335,13 @@ impl AppBrokerState {
             },
             asks,
         )?;
+        // Spent now, not once durable: a grant used once never admits twice, even should this
+        // admission fail; and of two calls deciding on it at once, only one is admitted.
+        if !self.spend_once_grants(&offered.0.route.cluster_id, &spent) {
+            return Err(super::asks::Refusal::Error(
+                tilo_actions::remote::ActionCallError::NotPermitted,
+            ));
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let mut admitted = invocation_journal::Durable::settled();
         let journal_key = if let Some(journal) = journal.as_mut() {
@@ -381,16 +388,12 @@ impl AppBrokerState {
         if local_report.is_some() {
             // The app reports speculative local execution (possibly a read/no-op).
             // Retain only admission, never execution, offload, or success evidence.
-            self.spend_once_grants(&offered.0.route.cluster_id, &spent);
             return Ok(StagedJob {
                 admitted,
                 start: Admitted::Reported(InvocationJob { id, completion: rx }),
             });
         }
         let sender = sender.ok_or("application invocation stream unavailable")?;
-        // Spent now, not once durable: a grant used once never admits twice,
-        // even should this admission fail.
-        self.spend_once_grants(&offered.0.route.cluster_id, &spent);
         let untrusted = offered.1.contract.carries_untrusted_content();
         // Admitted: an offloadable action may now run on a better-placed
         // device, which the turn asks the route about. The device that runs it

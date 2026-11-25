@@ -43,6 +43,7 @@ mod authority;
 pub(crate) mod blocked;
 mod branch;
 mod moderation_history;
+mod once_grants;
 pub use branch::{BranchContent, BranchFileKeys, Branched};
 mod channel_governance;
 mod collaboration;
@@ -1095,6 +1096,9 @@ struct WorkspacesInner {
     /// What each governed workspace is read through without its lock
     /// ([`Workspaces::reading`]).
     readings: readings::Readings,
+    /// The grants given once a call admitted here spent and that are not yet taken back
+    /// ([`Workspaces::spend_once`]).
+    once_claims: once_grants::OnceClaims,
     /// What this device opened of the sealed resources its own roles read
     /// ([`Workspaces::own_read`]).
     own_opened: reads::OwnOpened,
@@ -1552,6 +1556,7 @@ impl Workspaces {
                 applications: host.apps.clone(),
                 workspaces,
                 readings: readings::Readings::default(),
+                once_claims: once_grants::OnceClaims::default(),
                 own_opened: reads::OwnOpened::default(),
                 #[cfg(not(target_arch = "wasm32"))]
                 tilolang: std::sync::OnceLock::new(),

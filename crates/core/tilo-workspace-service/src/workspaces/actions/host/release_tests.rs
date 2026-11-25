@@ -1304,7 +1304,8 @@ async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_ke
 }
 
 /// A read given once ([`tilo_action_policy::Lifetime::Once`]) releases the item once: the grant
-/// is taken back as it is used, and the next release asks the person again.
+/// is taken back as it is used, of two releases at the same moment only one is admitted, and the
+/// next release asks the person again.
 #[tokio::test]
 async fn a_read_given_once_releases_the_item_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -1338,11 +1339,15 @@ async fn a_read_given_once_releases_the_item_once() {
         .await
         .expect("the person's grant is written");
 
-    let released: Released = workspaces
-        .release_to((BRIDGE, &workspace), &connection, &release_of(&token))
-        .await
-        .expect("the read given once releases the item");
-    assert_eq!(released.secret, TOKEN);
+    // Two releases decided at the same moment: the read given once releases one of them.
+    let release = release_of(&token);
+    let (first, second) = tokio::join!(
+        workspaces.release_to((BRIDGE, &workspace), &connection, &release),
+        workspaces.release_to((BRIDGE, &workspace), &connection, &release),
+    );
+    let released: Vec<Released> = [first, second].into_iter().flatten().collect();
+    assert_eq!(released.len(), 1, "one of two releases at once is admitted");
+    assert_eq!(released[0].secret, TOKEN);
     let policy = workspaces.policy_of(&workspace).await.unwrap();
     assert!(
         !policy

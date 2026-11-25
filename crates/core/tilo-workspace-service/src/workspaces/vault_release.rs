@@ -340,19 +340,11 @@ impl Workspaces {
             return false;
         };
         if grant.lifetime == tilo_action_policy::Lifetime::Once {
-            let change = tilo_action_policy::Change::Revoke(grant.id.clone());
-            if let Err(error) = self
-                .commit_own_change(
-                    workspace,
-                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
-                        change,
-                    },
-                    None,
-                )
-                .await
-            {
-                // A use given once that cannot be taken back is not taken.
-                tracing::warn!(app, %error, "a grant given once could not be taken back");
+            let grant = grant.id.clone();
+            if let Err(error) = self.spend_once(workspace, &grant).await {
+                // A use given once that another call took, or that cannot be taken back, is not
+                // taken.
+                tracing::warn!(app, %error, "a grant given once admits nothing more");
                 return false;
             }
         }

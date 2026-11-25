@@ -631,14 +631,14 @@ async fn person_asks(
 /// Where the test's workspace records the grants a person gives.
 struct TreeGrants(crate::apps::test_support::WorkspaceTreeHandle);
 impl crate::apps::services::WorkspaceGrants for TreeGrants {
-    fn revoke(&self, _workspace: &str, grant: &str) {
+    fn spend(&self, _workspace: &str, grant: &str) -> bool {
         self.0
             .write()
             .workspaces
             .first_mut()
             .unwrap()
             .policy
-            .revoke_grant(&tilo_action_policy::GrantId::new(grant));
+            .revoke_grant(&tilo_action_policy::GrantId::new(grant))
     }
 }
 

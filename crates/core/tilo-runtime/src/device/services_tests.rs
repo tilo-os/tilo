@@ -870,7 +870,7 @@ fn granted(workspaces: &ServiceWorkspaces, workspace: WorkspaceId, id: &str) -> 
 }
 
 /// A grant is a change to the workspace's member list, in force once the list holds it, and
-/// this device takes one back the same way.
+/// this device takes one back the same way when it is spent.
 #[test]
 #[allow(
     clippy::significant_drop_tightening,
@@ -903,7 +903,10 @@ fn a_grant_is_a_change_to_the_member_list() {
         "the grant is in the member list once it is committed"
     );
 
-    grants.revoke(&workspace, &id);
+    assert!(
+        grants.spend(&workspace, &id),
+        "the first call to spend the grant spends it"
+    );
     let deadline = tilo_test_env::hang_deadline();
     while granted(&workspaces, placed, &id) {
         assert!(Instant::now() < deadline, "the grant was never taken back");

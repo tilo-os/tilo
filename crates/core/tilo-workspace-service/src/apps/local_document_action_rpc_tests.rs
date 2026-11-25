@@ -13,18 +13,16 @@ fn rejected(error: &runtime_collab::LocalDocumentActionError) -> bool {
 
 struct LocalReportGrants(WorkspaceTreeHandle);
 impl crate::apps::services::WorkspaceGrants for LocalReportGrants {
-    fn revoke(&self, workspace_id: &str, grant: &str) {
+    fn spend(&self, workspace_id: &str, grant: &str) -> bool {
         let mut tree = self.0.write();
         let workspace = tree
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id().to_string() == workspace_id)
             .unwrap();
-        assert!(
-            workspace
-                .policy
-                .revoke_grant(&tilo_action_policy::GrantId::new(grant))
-        );
+        workspace
+            .policy
+            .revoke_grant(&tilo_action_policy::GrantId::new(grant))
     }
 }
 

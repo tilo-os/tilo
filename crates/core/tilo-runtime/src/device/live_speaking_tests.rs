@@ -173,8 +173,8 @@ fn an_app_granted_the_call_joins_it_with_no_window_and_carries_audio_without_a_k
 }
 
 /// A join given once ([`tilo_action_policy::Lifetime::Once`]) admits the app's join once: the
-/// device's dispatch spends the grant as it admits the call, and the app's next join is decided
-/// afresh and refused.
+/// device's dispatch spends the grant as it admits the call, so of two joins at the same moment
+/// only one is admitted, and the app's next join is decided afresh and refused.
 #[test]
 fn a_join_given_once_joins_the_call_once() {
     let Some(root) = isolated_root(ONCE_JOIN_TEST) else {
@@ -235,9 +235,31 @@ fn a_join_given_once_joins_the_call_once() {
             .collect::<Vec<_>>()
     );
 
-    let first = lane();
-    let joined = result_of(first.take(&carry(1)));
-    assert_eq!(joined, serde_json::json!({ "Ok": null }), "{joined}");
+    // Two joins decided at the same moment: the grant given once admits exactly one of them.
+    let lanes = [lane(), lane()];
+    let racing = std::sync::Barrier::new(lanes.len());
+    let answers: Vec<serde_json::Value> = std::thread::scope(|scope| {
+        let runs: Vec<_> = (1..)
+            .zip(&lanes)
+            .map(|(correlation, lane)| {
+                let racing = &racing;
+                scope.spawn(move || {
+                    let _entered = tilo_rt::app().handle().enter();
+                    racing.wait();
+                    result_of(lane.take(&carry(correlation)))
+                })
+            })
+            .collect();
+        runs.into_iter()
+            .map(|run| run.join().expect("a join answers"))
+            .collect()
+    });
+    let joined = serde_json::json!({ "Ok": null });
+    assert_eq!(
+        answers.iter().filter(|answer| **answer == joined).count(),
+        1,
+        "one of two joins at once is admitted: {answers:?}"
+    );
     assert_eq!(
         session.speaker().call().map(|call| call.call.channel),
         Some(CALL.to_owned()),
@@ -254,9 +276,9 @@ fn a_join_given_once_joins_the_call_once() {
                     .any(|grant| grant.id.as_str() == "discord-joins-once")
             })
     });
-    drop(first);
+    drop(lanes);
 
-    let refused = result_of(lane().take(&carry(2)));
+    let refused = result_of(lane().take(&carry(3)));
     assert!(
         refused.pointer("/Err/Refused/reason").is_some(),
         "the next join is decided afresh and refused: {refused}"

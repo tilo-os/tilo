@@ -24,7 +24,6 @@ use tilo_identity::broker::WorkspaceMembership;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ReadFuture, Workspaces as PeerWorkspaces};
-use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_session_client::device::Device as Entered;
 use tilo_workspace_service::apps::services::WorkspaceGrants;
 use tilo_workspace_service::content::{ContentShelf, RouteContent};
@@ -963,28 +962,12 @@ pub(crate) struct MemberListGrants {
 }
 
 impl WorkspaceGrants for MemberListGrants {
-    fn revoke(&self, workspace: &str, grant: &str) {
-        let workspaces = Arc::clone(&self.workspaces);
-        let workspace = workspace.to_owned();
-        let change = tilo_action_policy::Change::Revoke(tilo_action_policy::GrantId::new(grant));
-        // The member copy's list, sent to the device serving it, or the list of the workspace
-        // governed here.
-        let committed = async move {
-            workspaces
-                .copies()
-                .commit_own_change(
-                    &workspace,
-                    WorkspaceMembershipCommand::Member { change },
-                    None,
-                )
-                .await
-        };
-        let grant = grant.to_owned();
-        tilo_rt::app().spawn(async move {
-            if let Err(error) = committed.await {
-                tracing::warn!(grant, %error, "a grant given once could not be taken back");
-            }
-        });
+    // The member copy's list, sent to the device serving it, or the list of the workspace
+    // governed here.
+    fn spend(&self, workspace: &str, grant: &str) -> bool {
+        self.workspaces
+            .copies()
+            .spend_once_now(workspace, &tilo_action_policy::GrantId::new(grant))
     }
 }
 

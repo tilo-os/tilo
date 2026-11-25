@@ -336,8 +336,8 @@ impl AppBrokerState {
             }
             _ => {}
         }
-        if spend {
-            self.spend_once_grants(&workspace.id().to_string(), &charged);
+        if spend && !self.spend_once_grants(&workspace.id().to_string(), &charged) {
+            return Err(ActionCallError::NotPermitted);
         }
         Ok(())
     }
