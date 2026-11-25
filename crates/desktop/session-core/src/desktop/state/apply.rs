@@ -8,7 +8,8 @@
 
 use tilo_desktop_model::width::equalize_widths;
 use tilo_desktop_model::{
-    GroupId, Layout, Strip, StripId, Tab, TabId, WindowGroup, WindowWidth, Workspace,
+    GroupId, Layout, RemovedTab, Strip, StripId, Tab, TabId, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId,
 };
 use ui::search::Scope;
 use ui::widget::TabDescriptor;
@@ -140,11 +141,6 @@ fn resolve(shared: &mut Shared, tiles: &dyn TileSource, command: Admitted) -> Ad
     }
 }
 
-/// Apply one command to the tree. Whether the tree changed.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one match: every command the desktop answers, each against the tree"
-)]
 /// A reopened window, `reopened`, back on the desktop: the row takes it in as it takes a window a
 /// peer added, and the strip comes to it as it does to a launched one. Whether anything came back.
 fn put_back(
@@ -179,46 +175,12 @@ fn apply(
     // target.
     let live = |tree: &Layout, ids: RouteIds| navigation::locate(tree, ids).is_some();
     match command {
-        Admitted::Select(ids) if live(&shared.tree, ids) => {
-            let tree = &mut shared.tree;
-            tree.active = ids.workspace;
-            tree.active_strip.insert(ids.workspace, ids.strip);
-            tree.set_active_group(ids.strip, ids.group);
-            if let Some(group) = find_group(tree, ids.strip, ids.group) {
-                group.activate_tab(ids.tab);
-            }
-            // Another window of the strip maximized would hide the one focused: it stands beside
-            // it again.
-            let covering = restore_covering(tree, ids.strip, ids.group);
-            let restored = !covering.is_empty();
-            ops.extend(
-                covering
-                    .into_iter()
-                    .map(|group| RowOp::ToggleMaximized(ids.strip, group)),
-            );
-            ops.push(RowOp::Show(ids.strip, ids.group, ids.tab));
-            if restored {
-                ops.push(RowOp::Reveal(ids.strip, ids.group));
-            }
-            true
-        }
+        Admitted::Select(ids) if live(&shared.tree, ids) => select(shared, ids, ops),
         Admitted::Width(ids, permille) if live(&shared.tree, ids) => {
-            let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group) else {
-                return true;
-            };
-            group.width = WindowWidth::Fraction(permille);
-            ops.push(RowOp::Width(ids.strip, ids.group, group.width));
-            shared.followed = Some(ids.group);
-            true
+            resized(shared, ids, permille, ops)
         }
         Admitted::Maximize(ids, maximized) if live(&shared.tree, ids) => {
-            if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group)
-                && group.maximized != maximized
-            {
-                group.maximized = maximized;
-                ops.push(RowOp::ToggleMaximized(ids.strip, ids.group));
-            }
-            true
+            set_maximized(shared, ids, maximized, ops)
         }
         Admitted::Fullscreen(ids, fullscreen) if live(&shared.tree, ids) => {
             // The window taken across the display takes the whole strip with it.
@@ -231,48 +193,15 @@ fn apply(
             ops.push(RowOp::Float(ids.strip, ids.group));
             false
         }
-        Admitted::Float(ids, false) if live(&shared.tree, ids) => {
-            if floats::set(shared, ids.strip, ids.group, None) {
-                shared.tree.set_active_group(ids.strip, ids.group);
-            }
-            true
-        }
-        Admitted::Rename(ids, name) if live(&shared.tree, ids) => {
-            if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group)
-                && let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == ids.tab)
-                && tab.rename(&name)
-            {
-                // A name is what the window shows, not a window the shell gained or lost: the row
-                // renames its pill where it stands.
-                ops.push(RowOp::Rename {
-                    strip: ids.strip,
-                    group: ids.group,
-                    tab: descriptor(tab),
-                });
-            }
-            true
-        }
+        Admitted::Float(ids, false) if live(&shared.tree, ids) => unfloated(shared, ids),
+        Admitted::Rename(ids, name) if live(&shared.tree, ids) => renamed(shared, ids, &name, ops),
         Admitted::Close(ids) if live(&shared.tree, ids) => {
-            if let Some(removed) = shared.close(ids.tab) {
-                ops.push(RowOp::Close {
-                    strip: removed.strip,
-                    group: removed.group,
-                    tab: ids.tab,
-                    group_removed: removed.group_removed,
-                });
-            }
-            true
+            let removed = shared.close(ids.tab);
+            closed(ops, ids.tab, removed)
         }
         Admitted::Dismiss(ids) if live(&shared.tree, ids) => {
-            if let Some(removed) = shared.tree.close_tab(ids.tab) {
-                ops.push(RowOp::Close {
-                    strip: removed.strip,
-                    group: removed.group,
-                    tab: ids.tab,
-                    group_removed: removed.group_removed,
-                });
-            }
-            true
+            let removed = shared.tree.close_tab(ids.tab);
+            closed(ops, ids.tab, removed)
         }
         // The window comes back where it was, its app launched again if that is what it takes.
         Admitted::Reopen(workspace, app) => {
@@ -283,15 +212,8 @@ fn apply(
             let reopened = shared.tree.reopen_closed_window(tab);
             put_back(shared, tiles, ops, reopened)
         }
-        Admitted::Strip(workspace, strip) => {
-            shared.tree.active = workspace;
-            shared.tree.active_strip.insert(workspace, strip);
-            true
-        }
-        Admitted::Workspace(workspace) => {
-            shared.tree.active = workspace;
-            true
-        }
+        Admitted::Strip(workspace, strip) => switched(shared, workspace, Some(strip)),
+        Admitted::Workspace(workspace) => switched(shared, workspace, None),
         Admitted::Launch(app, float) => pushed(ops, open(tiles, shared, &app, float, None)),
         Admitted::LaunchAt(app, index) => {
             pushed(ops, open(tiles, shared, &app, false, Some(index)))
@@ -304,13 +226,7 @@ fn apply(
         // being carried out. The window lands as any launch's does.
         Admitted::TabOpenBeside(_, app, _) => pushed(ops, open(tiles, shared, &app, false, None)),
         // Opening search changes no model state.
-        Admitted::Search(query) => {
-            shared.search_request = Some(search::SearchRequest::Open {
-                scope: Scope::Workspace,
-                query,
-            });
-            false
-        }
+        Admitted::Search(query) => searched(shared, query),
         // Presentation only: the tree does not change.
         Admitted::Pan(strip, offset) => {
             ops.push(RowOp::Pan(strip, offset));
@@ -324,27 +240,8 @@ fn apply(
             ops.push(RowOp::History(ids.strip, ids.group, ids.tab, direction));
             false
         }
-        // The Activity app's windows close as any window does.
-        Admitted::CloseActivity(_) => {
-            while let Some(ids) = navigation::window_of_app(&shared.tree, ACTIVITY_APP) {
-                let Some(removed) = shared.tree.close_tab(ids.tab) else {
-                    break;
-                };
-                ops.push(RowOp::Close {
-                    strip: removed.strip,
-                    group: removed.group,
-                    tab: ids.tab,
-                    group_removed: removed.group_removed,
-                });
-            }
-            true
-        }
-        Admitted::NotificationCenter(open) => {
-            if let Some(notifications) = &shared.notifications {
-                notifications.ask_centre(open);
-            }
-            false
-        }
+        Admitted::CloseActivity(_) => close_activity(shared, ops),
+        Admitted::NotificationCenter(open) => notification_centre(shared, open),
         // A window of an app this device started runs in the workspace that started it, with its
         // grants and its records: the tab does not cross by itself. The session carries it
         // instead, asking first when the move crosses to or from a workspace other people are in,
@@ -362,6 +259,135 @@ fn apply(
     }
 }
 
+/// The window the person chose: it comes to the front of its strip with the keyboard, and a window
+/// maximized over it stands beside it again so the chosen one shows.
+fn select(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<RowOp>) -> bool {
+    let tree = &mut shared.tree;
+    tree.active = ids.workspace;
+    tree.active_strip.insert(ids.workspace, ids.strip);
+    tree.set_active_group(ids.strip, ids.group);
+    if let Some(group) = find_group(tree, ids.strip, ids.group) {
+        group.activate_tab(ids.tab);
+    }
+    // Another window of the strip maximized would hide the one focused: it stands beside it again.
+    let covering = restore_covering(tree, ids.strip, ids.group);
+    let restored = !covering.is_empty();
+    ops.extend(
+        covering
+            .into_iter()
+            .map(|group| RowOp::ToggleMaximized(ids.strip, group)),
+    );
+    ops.push(RowOp::Show(ids.strip, ids.group, ids.tab));
+    if restored {
+        ops.push(RowOp::Reveal(ids.strip, ids.group));
+    }
+    true
+}
+
+/// The window's share of the strip, as the person gave it, and the window the desktop follows.
+fn resized(shared: &mut Shared, ids: RouteIds, permille: u32, ops: &mut Vec<RowOp>) -> bool {
+    let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group) else {
+        return true;
+    };
+    group.width = WindowWidth::Fraction(permille);
+    ops.push(RowOp::Width(ids.strip, ids.group, group.width));
+    shared.followed = Some(ids.group);
+    true
+}
+
+/// The window taken across its display, or put beside its neighbours again.
+fn set_maximized(
+    shared: &mut Shared,
+    ids: RouteIds,
+    maximized: bool,
+    ops: &mut Vec<RowOp>,
+) -> bool {
+    if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group)
+        && group.maximized != maximized
+    {
+        group.maximized = maximized;
+        ops.push(RowOp::ToggleMaximized(ids.strip, ids.group));
+    }
+    true
+}
+
+/// The window named: the tab that was named changes its pill where it stands, never the row.
+fn renamed(shared: &mut Shared, ids: RouteIds, name: &str, ops: &mut Vec<RowOp>) -> bool {
+    if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group)
+        && let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == ids.tab)
+        && tab.rename(name)
+    {
+        ops.push(RowOp::Rename {
+            strip: ids.strip,
+            group: ids.group,
+            tab: descriptor(tab),
+        });
+    }
+    true
+}
+
+/// The tab that closed, its window's row told where it stood.
+fn closed(ops: &mut Vec<RowOp>, tab: TabId, removed: Option<RemovedTab>) -> bool {
+    if let Some(removed) = removed {
+        ops.push(RowOp::Close {
+            strip: removed.strip,
+            group: removed.group,
+            tab,
+            group_removed: removed.group_removed,
+        });
+    }
+    true
+}
+
+/// The window floated back into its strip, where the strip shows it again.
+fn unfloated(shared: &mut Shared, ids: RouteIds) -> bool {
+    if floats::set(shared, ids.strip, ids.group, None) {
+        shared.tree.set_active_group(ids.strip, ids.group);
+    }
+    true
+}
+
+/// The workspace on the shell, `strip` in front of it when one names the window to show.
+fn switched(shared: &mut Shared, workspace: WorkspaceId, strip: Option<StripId>) -> bool {
+    shared.tree.active = workspace;
+    if let Some(strip) = strip {
+        shared.tree.active_strip.insert(workspace, strip);
+    }
+    true
+}
+
+/// Search opened on the workspace in front, with what the person typed if they typed.
+fn searched(shared: &mut Shared, query: Option<String>) -> bool {
+    shared.search_request = Some(search::SearchRequest::Open {
+        scope: Scope::Workspace,
+        query,
+    });
+    false
+}
+
+/// The notification centre asked to show or put away, where this device serves one.
+fn notification_centre(shared: &Shared, open: bool) -> bool {
+    if let Some(notifications) = &shared.notifications {
+        notifications.ask_centre(open);
+    }
+    false
+}
+
+/// The Activity app's windows close as any window does.
+fn close_activity(shared: &mut Shared, ops: &mut Vec<RowOp>) -> bool {
+    while let Some(ids) = navigation::window_of_app(&shared.tree, ACTIVITY_APP) {
+        let Some(removed) = shared.tree.close_tab(ids.tab) else {
+            break;
+        };
+        ops.push(RowOp::Close {
+            strip: removed.strip,
+            group: removed.group,
+            tab: ids.tab,
+            group_removed: removed.group_removed,
+        });
+    }
+    true
+}
 /// Push `op` when there is one. Whether there was.
 fn pushed(ops: &mut Vec<RowOp>, op: Option<RowOp>) -> bool {
     op.map(|op| ops.push(op)).is_some()

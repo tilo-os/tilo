@@ -69,6 +69,16 @@ impl DesktopHandle {
         {
             return carried;
         }
+        self.carried(verb)
+    }
+
+    /// What the desktop does to carry out `verb` itself, once its workspace, strip, bar and
+    /// shortcut verbs have had it: the model's own commands, the workspaces it keeps, and what
+    /// the shell draws over it.
+    ///
+    /// # Errors
+    /// Why it could not, which the action that asked answers as a refusal.
+    fn carried(&self, verb: &ChromeEffect) -> Result<Carried, String> {
         let carried = match verb {
             ChromeEffect::OpenApp { .. }
             | ChromeEffect::ShowApp { .. }
