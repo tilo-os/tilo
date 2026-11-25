@@ -166,18 +166,6 @@ pub struct WindowFrame {
     glyph: Option<Icon>,
     /// The glyph the bar last built.
     shown_glyph: Option<Icon>,
-    /// The name the bar last built: the window's name elided to one line in the width the bar
-    /// has, and nothing while the bar cannot fit a name at all.
-    shown: Option<(String, bool)>,
-    /// How wide the controls were laid out, the width the content's header row keeps for
-    /// them.
-    controls_width: f64,
-    /// The controls' width, or the room the bar has for the name, changed since the bar was
-    /// built: lay out again.
-    relayout: bool,
-    /// The room the bar had for the window's name when it was last built: the width the name
-    /// was elided to.
-    name_room: f64,
     /// The header row's measures in the theme of the last layout.
     metrics: Option<HeaderRowMetrics>,
     rect: Rect,
@@ -229,14 +217,8 @@ const CONTROLS: usize = 1;
 /// In the content's column: the frame's own bar, then the content.
 const OWN_BAR: usize = 0;
 const BODY: usize = 1;
-/// The width the frame's own bar keeps for the window's name, logical pixels: below it a name
-/// would be an ellipsis and nothing more, so the bar shows the decorations alone. Six steps of
-/// the spacing scale, so it follows the theme's own.
-fn name_width(theme: &Theme) -> f64 {
-    f64::from(theme.tokens.spacing.s16 + theme.tokens.spacing.s8)
-}
 
-/// In the frame's own bar: the window's tabs, its name, then the width the controls keep.
+/// In the frame's own bar: the window's tabs, its name, then the room the controls keep.
 const TABS: usize = 0;
 const NAME: usize = 1;
 const AFTER: usize = 2;
@@ -267,10 +249,22 @@ fn tabs_fit(tabbed: bool) -> Fit {
     if tabbed { Fit::fill(1.0) } else { Fit::hug() }
 }
 
-/// How the width after the tabs stands in the bar: what the tabs leave, which a window of one
-/// gives to its name.
-fn after_fit(tabbed: bool) -> Fit {
+/// How the name stands in the bar: a window of one place gives the room the tabs leave and the
+/// controls do not keep to its name, which elides itself in it; a window of several shows its
+/// tabs and no name.
+fn name_fit(tabbed: bool) -> Fit {
     if tabbed { Fit::hug() } else { Fit::fill(1.0) }
+}
+
+/// The room the window's controls keep at the bar's trailing end, in logical pixels: up to the
+/// three a shell puts there (the window's menu, minimize and close, or the like), each a shell
+/// button the bar's own side, in the pill around them, and the bar's inset from the window's
+/// edge. The frame keeps it before it lays out, so its bar and the header row an app draws
+/// reserve it in the one solve, never from a width measured after one.
+fn controls_room(m: &HeaderRowMetrics) -> f64 {
+    use crate::widget::window_controls::{LEAD_GAP, PILL_PAD};
+    const MOST: f64 = 3.0;
+    MOST * m.chip + (MOST - 1.0) * m.gap + 2.0 * PILL_PAD + m.inset + LEAD_GAP
 }
 
 /// Whether `widget` holds the window's tabs: a view names the tabs part on every window, so
@@ -344,13 +338,14 @@ impl Described for WindowFrame {
         } = props;
         let tabbed = tabs.as_deref().is_some_and(holds_tabs);
         // The bar's parts stand edge to edge: the name's own gutter is the one inset before it,
-        // so it starts on the content's edge rather than a gap past it.
+        // so it starts on the content's edge rather than a gap past it. The room after the name
+        // is the controls', which the layers draw there and the row keeps for them.
         let own = Stack::row()
             .align(Align::Center)
             .gap(Rhythm::None)
             .push_part(part(tabs.unwrap_or_else(empty), tabs_fit(tabbed)))
-            .push_part(part(empty(), Fit::hug()))
-            .push_part(part(empty(), after_fit(tabbed)));
+            .push_part(part(empty(), name_fit(tabbed)))
+            .push_part(part(empty(), Fit::hug()));
         let column = Stack::stack()
             .fill_width()
             .fill_height()
@@ -380,10 +375,6 @@ impl Described for WindowFrame {
             title: None,
             glyph: glyph.as_deref().and_then(Icon::from_name),
             shown_glyph: None,
-            shown: None,
-            controls_width: 0.0,
-            relayout: false,
-            name_room: 0.0,
             metrics: None,
             rect: Rect::ZERO,
             bar: Rect::ZERO,
@@ -564,7 +555,7 @@ impl WindowFrame {
                 let tabbed = self.tabbed;
                 if let Some(row) = self.own_bar_row() {
                     row.set_placement(TABS, tabs_fit(tabbed), 1, None);
-                    row.set_placement(AFTER, after_fit(tabbed), 1, None);
+                    row.set_placement(NAME, name_fit(tabbed), 1, None);
                 }
             }
             _ => {
@@ -587,20 +578,12 @@ impl WindowFrame {
             return;
         }
         let bar = WindowBar {
-            controls_width: self.controls_width + m.inset,
+            controls_width: controls_room(m),
             lists_actions: self.lists_actions,
         };
         self.merged = self.body_mut().is_some_and(|body| {
             crate::widget::window_header::offer_window_bar(body.as_mut(), Some(bar))
         });
-    }
-
-    /// The room the bar has for the window's name at its width now: what the controls leave.
-    fn name_room(&self) -> f64 {
-        self.rect.width()
-            - self.controls_width
-            - crate::widget::window_controls::EDGE_INSET
-            - crate::widget::window_controls::LEAD_GAP
     }
 
     /// The bar the frame draws of its own, this layout.
@@ -618,7 +601,7 @@ impl WindowFrame {
 
     /// Build the frame's own bar for `shape`: one bar tall, nothing in it while the app's
     /// header holds the bar, else its name — and never a second bar of the app's under it.
-    fn build_bar(&mut self, shape: BarShape, m: &HeaderRowMetrics, theme: &Theme, spare: f64) {
+    fn build_bar(&mut self, shape: BarShape, m: &HeaderRowMetrics) {
         self.shape = shape;
         let bar = shape != BarShape::Merged;
         if let Some(column) = self.column() {
@@ -628,14 +611,10 @@ impl WindowFrame {
             BarShape::Title => Some((self.name.clone().unwrap_or_default(), self.focused)),
             _ => None,
         };
-        let shown = title
-            .clone()
-            .map(|(name, focused)| (self.elided(&name, m, theme, spare), focused));
-        if title == self.title && shown == self.shown && self.glyph == self.shown_glyph {
+        if title == self.title && self.glyph == self.shown_glyph {
             return;
         }
         self.title = title;
-        self.shown = shown;
         self.shown_glyph = self.glyph;
         let element = self.name_element(m);
         if let Some(own) = self.own_bar_row() {
@@ -643,33 +622,14 @@ impl WindowFrame {
         }
     }
 
-    /// The window's name, elided to one line of the width `spare` the bar has for it, as a tab's
-    /// title is: a name too long for the bar ends in an ellipsis, never in a second line taller
-    /// than the bar. Below the width a name needs at all the bar shows no name: the decorations
-    /// alone say whose window it is.
-    fn elided(&self, name: &str, m: &HeaderRowMetrics, theme: &Theme, spare: f64) -> String {
-        let budget = spare - m.gutter;
-        if spare < name_width(theme) || budget <= 0.0 {
-            return String::new();
-        }
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a window's bar area fits f32"
-        )]
-        let budget = budget as f32;
-        let style = theme.text(TextRole::Label);
-        crate::text_render::with_layout_renderer(theme, |text| {
-            text.elide_to_width_style(name, budget, &style)
-        })
-    }
-
-    /// The name the frame's own bar shows: nothing while the bar cannot fit it, so a window
-    /// too narrow for its name shows its decorations alone instead of a name folded into a column.
+    /// The name the frame's own bar shows, eliding itself to the one line the width layout gives
+    /// it: a name too long for the bar ends in an ellipsis, never in a second line taller than
+    /// the bar or under the controls, whose room the row keeps.
     fn name_element(&self, m: &HeaderRowMetrics) -> Element {
         let glyph = self
             .shown_glyph
             .map(|icon| Box::new(IconWidget::new(icon).sized(IconSize::Small)) as Element);
-        let name = self.shown.clone().filter(|(name, _)| !name.is_empty());
+        let name = self.title.clone().filter(|(name, _)| !name.is_empty());
         if glyph.is_none() && name.is_none() {
             return empty();
         }
@@ -686,13 +646,15 @@ impl WindowFrame {
             row = row.push(glyph);
         }
         if let Some((name, focused)) = name {
-            let mut title = Text::new(&name).with_role(TextRole::Label);
+            let mut title = Text::new(&name)
+                .with_role(TextRole::Label)
+                .with_truncate(true);
             if !focused {
                 title = title.dimmed();
             }
-            row = row.push(Box::new(title));
+            row = row.push_part(part(Box::new(title), Fit::fill(1.0)));
         }
-        Box::new(row.push_part(part(empty(), Fit::fill(1.0))))
+        Box::new(row)
     }
 
     /// The bar's row: the content's header row when it holds the bar, else the frame's own.
@@ -926,9 +888,7 @@ impl Decorator for WindowFrame {
     ) -> NodeId {
         let m = HeaderRowMetrics::resolve(theme);
         self.offer_bar(&m);
-        let spare = self.name_room();
-        self.name_room = spare;
-        self.build_bar(self.shape(), &m, theme, spare);
+        self.build_bar(self.shape(), &m);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a header row measure fits f32"
@@ -943,69 +903,54 @@ impl Decorator for WindowFrame {
         fit.height.max = Some(height);
         self.layers
             .set_placement(CONTROLS, fit, 1, Some(At::TopTrailing));
-        // The tabs and the name have the width the controls leave, never more: a window narrow
-        // enough that its bar cannot hold them both squeezes them, and the strip shows the titles
-        // it can, rather than the two covering each other.
-        if spare > 0.0 {
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "a window's bar area fits f32"
-            )]
-            let spare = Length::Dp(spare as f32);
-            let tabbed = self.tabbed;
-            if let Some(row) = self.own_bar_row() {
-                let mut tabs = tabs_fit(tabbed);
-                tabs.width.max = Some(spare);
-                let mut name = Fit::hug();
-                name.width.max = Some(spare);
-                row.set_placement(TABS, tabs, 1, None);
-                row.set_placement(NAME, name, 1, None);
-            }
+        // The bar's row keeps the room the controls stand in, so the name ends where they begin
+        // in the same solve that places both, never from a width measured after one.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a window's bar area fits f32"
+        )]
+        let room = Length::Dp(controls_room(&m) as f32);
+        let mut kept = Fit::hug();
+        kept.width.min = Some(room);
+        kept.width.max = Some(room);
+        let tabbed = self.tabbed;
+        if let Some(row) = self.own_bar_row() {
+            row.set_placement(TABS, tabs_fit(tabbed), 1, None);
+            row.set_placement(NAME, name_fit(tabbed), 1, None);
+            row.set_placement(AFTER, kept, 1, None);
+        }
+        // The bar the frame builds here, and the places its parts take, are this build's: a
+        // window built into a view asks its host for no second build of the tree around it.
+        if self.metrics.is_none() {
+            let _ = Widget::take_structure_change(&mut self.layers);
         }
         self.metrics = Some(m);
-        self.relayout = false;
         self.layers.build_layout(taffy, theme, node_map)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.layers.apply_layout(taffy, node, origin);
         self.rect = self.layers.get_rect();
-        if let Some(m) = self.metrics {
-            self.bar = self.bar_row(&m);
-            let by = self.controls_offset(&m, self.bar);
-            if by != Vec2::ZERO {
-                self.layers.offset_child(taffy, CONTROLS, by);
-            }
-            let controls = self
-                .layers
-                .children()
-                .get(CONTROLS)
-                .map_or(Rect::ZERO, |c| c.get_rect());
-            let pill = WindowControls::around(self.bar, controls);
-            if pill != self.pill {
-                self.relayout = true;
-            }
-            self.pill = pill;
+        let Some(m) = self.metrics else {
+            return;
+        };
+        self.bar = self.bar_row(&m);
+        let by = self.controls_offset(&m, self.bar);
+        if by != Vec2::ZERO {
+            self.layers.offset_child(taffy, CONTROLS, by);
         }
-        let width = self
+        // Where the controls stand is drawn and pressed, never laid out again: the pill hugs the
+        // controls the view gave and the row the app's header keeps for them.
+        let controls = self
             .layers
             .children()
             .get(CONTROLS)
-            .map_or(0.0, |c| c.get_rect().width());
-        if (width - self.controls_width).abs() > 0.5 {
-            self.controls_width = width;
-            self.relayout = true;
-        }
-        // The name was elided to the room the bar had when it was built: a window laid out at
-        // another width (its first layout, before it had one, or a resize) builds the bar again,
-        // so the name it shows is the one that fits now.
-        if self.shape == BarShape::Title && (self.name_room() - self.name_room).abs() > 0.5 {
-            self.relayout = true;
-        }
+            .map_or(Rect::ZERO, |c| c.get_rect());
+        self.pill = WindowControls::around(self.bar, controls);
     }
 
     fn needs_redraw(&self) -> bool {
-        self.relayout || (self.layers.needs_redraw() || self.layers.needs_animation_frame())
+        self.layers.needs_redraw() || self.layers.needs_animation_frame()
     }
 
     /// Whether the window is arriving, going or moving: what asks for frames while it does,
@@ -1067,15 +1012,14 @@ impl Decorator for WindowFrame {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let relayout = std::mem::take(&mut self.relayout);
-        self.layers.take_structure_dirty() || relayout
+        self.layers.take_structure_dirty()
     }
 
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        // The bar built again (its name, the room the controls keep) is a change of the frame's
-        // own, which a host learns here as it learns its children's.
-        let relayout = crate::widget::StructureChange::of(std::mem::take(&mut self.relayout));
-        Widget::take_structure_change(&mut self.layers).join(relayout)
+        // The bar built again (its name, its app's glyph) is a change of the frame's own, which
+        // a host learns here as it learns its children's; the room the bar keeps is layout's,
+        // never a structure change.
+        Widget::take_structure_change(&mut self.layers)
     }
 
     fn name(&self) -> &'static str {
@@ -1334,15 +1278,51 @@ mod tests {
         }
     }
 
-    /// Lay `frame` out at `rect`, twice: the host lays a window out again once its controls
-    /// have measured.
+    /// Lay `frame` out at `rect`, once: the bar's name elides itself in the room layout gives it
+    /// and the controls keep their room from that same solve, so the window needs no second one.
     fn laid_out(frame: &mut WindowFrame, rect: Rect) {
         let theme = Theme::dark();
         let mut text = crate::font_catalog::fixture_renderer();
-        for _ in 0..2 {
-            crate::widget::layout::lay_out_detached(frame, rect, &theme, &mut text)
-                .expect("the window lays out");
-        }
+        crate::widget::layout::lay_out_detached(frame, rect, &theme, &mut text)
+            .expect("the window lays out");
+    }
+
+    /// A window's first layout builds its bar, and every layout after it takes the one it stands
+    /// in: the name elides itself in the room the bar gives it and the controls keep their room
+    /// from the same solve, so no layout asks its host for another.
+    #[test]
+    fn a_windows_bar_takes_the_room_it_is_laid_out_in() {
+        let mut frame = WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                name: Some("A window of one place".to_owned()),
+                focused: true,
+                controls: Some(Box::new(
+                    Stack::row().push(Box::new(Text::new("Close")) as Element),
+                )),
+                body: Some(Box::new(Text::new("What the window shows.")) as Element),
+                ..WindowFrameProps::default()
+            },
+        );
+        let rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+        laid_out(&mut frame, rect);
+        assert!(
+            !Widget::take_structure_change(&mut frame).rebuilds(),
+            "a window built into a view asks for no structure around it"
+        );
+        laid_out(&mut frame, rect);
+        assert!(
+            !Widget::take_structure_change(&mut frame).rebuilds(),
+            "a window laid out where it stands asks for no structure around it"
+        );
+        assert!(
+            !Widget::take_structure_dirty(&mut frame),
+            "and for no layout of its own after the one it took"
+        );
+        assert!(
+            !Widget::layout_needs_measure(&frame),
+            "its bar was measured in the solve that placed it"
+        );
     }
 
     /// The frame's own bar and its content, laid out.
