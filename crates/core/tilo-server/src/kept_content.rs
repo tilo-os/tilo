@@ -65,6 +65,10 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::peer_handle;
 
 use tilo_action_policy::content::{ContentLimit, ContentPolicy, KeptLimits};
+
+/// The member devices that pushed a content while it was being kept, each with the app it
+/// pushed it for: answered once it is.
+type Pushers = Vec<([u8; 32], String)>;
 use tilo_actions::{Actor, MemberId, PersonId};
 
 use crate::workspaces::{ContentHeld, ContentKeeper, ContentRefusal, Workspaces};
@@ -153,6 +157,16 @@ struct Gathering {
     touched_ms: u64,
 }
 
+/// The pieces a member's device pushed, sorted under the lock: the refusals to record, the
+/// content kept here already to hold for its member, by app and hash, and the pushes made
+/// whole, to check against their addresses.
+#[derive(Default)]
+struct Sorted {
+    refused: Vec<ContentRefusalRecord>,
+    held: Vec<(String, String)>,
+    whole: Vec<Arrival>,
+}
+
 /// A push that arrived whole, its bytes hashing to its address, on its way
 /// to the store.
 struct Arrival {
@@ -181,7 +195,7 @@ struct State {
     arrivals: Vec<(String, Arrival)>,
     /// The addresses of the content in [`Self::arrivals`] or being written,
     /// with whoever else pushed it meanwhile: answered once it is kept.
-    storing: BTreeMap<(String, String), Vec<([u8; 32], String)>>,
+    storing: BTreeMap<(String, String), Pushers>,
     /// The content each workspace keeps, by hash: its app and who holds it.
     holds: BTreeMap<String, BTreeMap<String, Holding>>,
     /// The content refused past a limit, by workspace and hash: the record
@@ -431,14 +445,16 @@ impl KeptContent {
             let Some(holds) = state.holds.get_mut(workspace) else {
                 return;
             };
-            holds
+            let changed = holds
                 .iter_mut()
                 .filter_map(|(hash, holding)| {
                     let before = holding.holders.len();
                     holding.holders.retain(|holder| !departed(holder));
                     (holding.holders.len() != before).then(|| hash.clone())
                 })
-                .collect()
+                .collect();
+            drop(state);
+            changed
         };
         for hash in changed {
             self.held_changed(workspace, &hash);
@@ -852,61 +868,15 @@ impl KeptContent {
         let limits = self.limits_of(workspace);
         let now = now_ms();
         let store = self.store.get(workspace).ok();
-        let mut refused = Vec::new();
-        let mut held = Vec::new();
-        let mut whole = Vec::new();
-        {
-            let mut state = self.state.lock_recover();
-            // Only a device of the workspace's members pushes its content.
-            if !state
-                .people
-                .get(workspace)
-                .is_some_and(|people| people.of_device.contains_key(&from))
-            {
-                tracing::warn!(%workspace, from = %hex::encode(from), "content pushed by a device that is no member's is refused");
-                return;
-            }
-            for piece in pieces {
-                let hash = piece.hash.to_ascii_lowercase();
-                if !tilo_content::valid_hash(&hash) {
-                    continue;
-                }
-                let key = (workspace.to_owned(), hash.clone());
-                if let Some(pushers) = state.storing.get_mut(&key) {
-                    pushers.push((from, piece.app_id));
-                    continue;
-                }
-                if store.as_ref().is_some_and(|store| store.has(&hash)) {
-                    held.push((piece.app_id, hash));
-                    continue;
-                }
-                if Self::already_refused(&mut state, &limits, workspace, &hash, now) {
-                    continue;
-                }
-                if let Some(file_bytes) = limits.file_bytes
-                    && piece.total > file_bytes
-                {
-                    // Refused before any byte of it is kept, so its poster reads why.
-                    refused.push(self.refuse(
-                        &mut state,
-                        &RefusedContent {
-                            workspace,
-                            app: &piece.app_id,
-                            record: "",
-                            hash: &hash,
-                            member: from,
-                            bytes: piece.total,
-                        },
-                        ContentLimit::File,
-                        file_bytes,
-                    ));
-                    continue;
-                }
-                if let Some(bytes) = Self::gather(&mut state, &key, from, piece, now) {
-                    whole.push(bytes);
-                }
-            }
-        }
+        let kept_here = |hash: &str| store.as_ref().is_some_and(|store| store.has(hash));
+        let Some(Sorted {
+            mut refused,
+            held,
+            whole,
+        }) = self.sort_pushed(workspace, from, pieces, &limits, &kept_here, now)
+        else {
+            return;
+        };
         for (app, hash) in held {
             self.hold(workspace, &hash, &app, from);
             self.answer(workspace, from, &app, &hash);
@@ -965,6 +935,73 @@ impl KeptContent {
         }
     }
 
+    /// Sort `pieces` the member device `from` pushed in `workspace` under the lock: those
+    /// pushed while the content is being kept, those kept here already, those refused, and the
+    /// pushes they made whole. `None` when `from` is no device of the workspace's members.
+    fn sort_pushed(
+        &self,
+        workspace: &str,
+        from: [u8; 32],
+        pieces: Vec<Piece>,
+        limits: &KeptLimits,
+        kept_here: &dyn Fn(&str) -> bool,
+        now: u64,
+    ) -> Option<Sorted> {
+        let mut sorted = Sorted::default();
+        let mut state = self.state.lock_recover();
+        // Only a device of the workspace's members pushes its content.
+        if !state
+            .people
+            .get(workspace)
+            .is_some_and(|people| people.of_device.contains_key(&from))
+        {
+            tracing::warn!(%workspace, from = %hex::encode(from), "content pushed by a device that is no member's is refused");
+            return None;
+        }
+        for piece in pieces {
+            let hash = piece.hash.to_ascii_lowercase();
+            if !tilo_content::valid_hash(&hash) {
+                continue;
+            }
+            let key = (workspace.to_owned(), hash.clone());
+            if let Some(pushers) = state.storing.get_mut(&key) {
+                pushers.push((from, piece.app_id));
+                continue;
+            }
+            if kept_here(&hash) {
+                sorted.held.push((piece.app_id, hash));
+                continue;
+            }
+            if Self::already_refused(&mut state, limits, workspace, &hash, now) {
+                continue;
+            }
+            if let Some(file_bytes) = limits.file_bytes
+                && piece.total > file_bytes
+            {
+                // Refused before any byte of it is kept, so its poster reads why.
+                sorted.refused.push(self.refuse(
+                    &mut state,
+                    &RefusedContent {
+                        workspace,
+                        app: &piece.app_id,
+                        record: "",
+                        hash: &hash,
+                        member: from,
+                        bytes: piece.total,
+                    },
+                    ContentLimit::File,
+                    file_bytes,
+                ));
+                continue;
+            }
+            if let Some(bytes) = Self::gather(&mut state, &key, from, &piece, now) {
+                sorted.whole.push(bytes);
+            }
+        }
+        drop(state);
+        Some(sorted)
+    }
+
     /// Fold `piece` into the push of `key` from `from`; the push, whole, once
     /// its last piece is in. A piece that does not fit the push spoils it, and
     /// its writer pushes it again.
@@ -972,7 +1009,7 @@ impl KeptContent {
         state: &mut State,
         key: &(String, String),
         from: [u8; 32],
-        piece: Piece,
+        piece: &Piece,
         now: u64,
     ) -> Option<Arrival> {
         if piece.total > MAX_CONTENT_BYTES
@@ -1037,13 +1074,13 @@ impl KeptContent {
     /// writers push them again, whole.
     fn let_stale_go(&self, now: u64) {
         let mut state = self.state.lock_recover();
-        let stale: Vec<(String, String)> = state
+        let let_go: Vec<(String, String)> = state
             .gathering
             .iter()
             .filter(|(_, gathering)| now.saturating_sub(gathering.touched_ms) >= STALE_AFTER_MS)
             .map(|(key, _)| key.clone())
             .collect();
-        for key in stale {
+        for key in let_go {
             if let Some(gone) = state.gathering.remove(&key) {
                 state.gathering_bytes = state.gathering_bytes.saturating_sub(gone.total);
             }
@@ -1098,6 +1135,7 @@ impl KeptContent {
                         .storing
                         .remove(&(workspace.to_owned(), arrival.hash.clone()));
                 }
+                drop(state);
                 return;
             }
         };
@@ -1186,7 +1224,9 @@ impl KeptContent {
                 .holders
                 .iter()
                 .any(|holder| holder.starts_with(MANIFEST_HOLDER));
-            !by_file && holding.holders.insert(member)
+            let added = !by_file && holding.holders.insert(member);
+            drop(state);
+            added
         };
         if added {
             self.held_changed(workspace, hash);
@@ -1211,6 +1251,7 @@ impl KeptContent {
                     .retain(|held| held.starts_with(MANIFEST_HOLDER));
                 holding.holders.insert(holder.clone());
             }
+            drop(state);
         }
         for chunk in chunks {
             self.held_changed(workspace, &chunk);
@@ -1252,9 +1293,10 @@ impl KeptContent {
             .lock_recover()
             .kept
             .get(&(workspace.to_owned(), hash.to_owned()))
-            .map_or((String::new(), 0, now_ms()), |(member, bytes)| {
-                (hex::encode(member), *bytes, now_ms())
-            });
+            .map_or_else(
+                || (String::new(), 0, now_ms()),
+                |(member, bytes)| (hex::encode(member), *bytes, now_ms()),
+            );
         self.ledger.note(
             workspace,
             &ledger::Entry {

@@ -9,8 +9,6 @@
 //! reference carries. Each push is its member's hold on the content: the host
 //! lets the bytes go once no member holds them, because each let go of them or
 //! is no member any more.
-use std::time::Duration;
-
 use super::*;
 
 const PHOTOS: &str = "so.tilo.photos";

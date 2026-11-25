@@ -89,7 +89,9 @@ pub struct LinkListen {
 impl Web {
     /// Tell a person no Tilo of theirs is open for that a question waits, in
     /// the browsers they let notify them. The push services are told this
-    /// host by the site it belongs to, else its own origin.
+    /// host by the site it belongs to, else its own origin. Only an assistant tells, so a host
+    /// without one serves none.
+    #[cfg(feature = "agents")]
     fn serve_pushes(
         &self,
         state: &std::path::Path,
@@ -105,7 +107,6 @@ impl Web {
                 // What a person's assistant told them reaches the same
                 // browsers, and the closed apps of theirs that take web
                 // push, while no device of theirs is looking.
-                #[cfg(feature = "agents")]
                 if let (Some(workspaces), Ok(runtime)) =
                     (&self.workspaces, tokio::runtime::Handle::try_current())
                 {
@@ -745,6 +746,7 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
             let _ = workspaces.invitations_at(origin);
         }
     }
+    #[cfg(feature = "agents")]
     web.serve_pushes(
         &state_root,
         config.site.as_deref(),
