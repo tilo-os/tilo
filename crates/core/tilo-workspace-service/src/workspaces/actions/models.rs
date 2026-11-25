@@ -15,7 +15,7 @@ use crate::workspaces::workspace_stores::Store;
 
 /// The `tilo.models` actions a person asks of the workspace's providers, in
 /// catalogue order.
-const VERBS: [Verb; 16] = [
+const VERBS: [Verb; 19] = [
     Verb {
         id: model_providers::LIST,
         label: "List model providers",
@@ -128,10 +128,31 @@ const VERBS: [Verb; 16] = [
         kind: ActionKind::Undoable,
         params: sign_in_params,
     },
+    Verb {
+        id: model_providers::SEARCH_HUB_MODELS,
+        label: "Search Hugging Face for models this computer runs",
+        check: "",
+        kind: ActionKind::Read,
+        params: search_hub_params,
+    },
+    Verb {
+        id: model_providers::SHOW_HUB_MODEL,
+        label: "Describe a Hugging Face model this computer runs",
+        check: "",
+        kind: ActionKind::Read,
+        params: show_hub_params,
+    },
+    Verb {
+        id: model_providers::INSTALL_HUB_MODEL,
+        label: "Download a Hugging Face model to this computer",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: install_hub_params,
+    },
 ];
 
 /// Each verb and the `tilo.models` action it is.
-const MODEL_VERBS: [(&Verb, &str); 16] = [
+const MODEL_VERBS: [(&Verb, &str); 19] = [
     (&VERBS[0], model_providers::LIST),
     (&VERBS[1], model_providers::ADD_PROVIDER),
     (&VERBS[2], model_providers::SET_KEY),
@@ -148,7 +169,46 @@ const MODEL_VERBS: [(&Verb, &str); 16] = [
     (&VERBS[13], model_providers::BEGIN_SIGN_IN),
     (&VERBS[14], model_providers::WAIT_SIGN_IN),
     (&VERBS[15], model_providers::CANCEL_SIGN_IN),
+    (&VERBS[16], model_providers::SEARCH_HUB_MODELS),
+    (&VERBS[17], model_providers::SHOW_HUB_MODEL),
+    (&VERBS[18], model_providers::INSTALL_HUB_MODEL),
 ];
+
+fn search_hub_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "query",
+            ParamType::Text,
+            "What to look for, as Hugging Face searches it.",
+        ),
+        ActionParam::optional(
+            "format",
+            ParamType::Text,
+            "`gguf` or `safetensors`; `gguf` when none is named.",
+        ),
+    ]
+}
+
+fn show_hub_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "model",
+        ParamType::Text,
+        "The model's id or page on Hugging Face.",
+    )]
+}
+
+fn install_hub_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("repo", ParamType::Text, "The model's repository id."),
+        ActionParam::required("revision", ParamType::Text, "The commit to download."),
+        ActionParam::required("variant", ParamType::Text, "The file variant to download."),
+        ActionParam::optional(
+            "acceptLicense",
+            ParamType::Boolean,
+            "Whether the model's licence is accepted.",
+        ),
+    ]
+}
 
 fn provider_params() -> Vec<ActionParam> {
     vec![ActionParam::required(

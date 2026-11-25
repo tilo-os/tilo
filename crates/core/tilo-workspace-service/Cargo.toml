@@ -28,7 +28,7 @@ device-keys = ["dep:tilo-workspace-keys", "dep:tilo-identity"]
 # for its workspaces' records, with or without apps on top.
 content = ["dep:tilo-broker-core", "dep:tilo-search"]
 # A workspace's file tree held in the device's own service, its bytes on the records' route.
-files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:bytes", "dep:wire-frame", "dep:rustix"]
+files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:bytes", "dep:rustix"]
 # A session client's pages, read through the document core over the replica its engine admits
 # into: what a session's tests read their workspace through.
 session-pages = ["device-keys", "dep:tilo-session-client"]
@@ -36,7 +36,7 @@ session-pages = ["device-keys", "dep:tilo-session-client"]
 fixture-servers = ["tilo-web-search?/fixture-servers"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
+apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "postcard/alloc", "tilo-files/json", "dep:jiff"]
 
 [dependencies]
 # What a Bluetooth address is, for the record of the person's accessories.
@@ -116,7 +116,7 @@ tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 # The apps a device serves ([features] apps).
 zeroize.workspace = true
 tilo-advisory-lock = { path = "../../platform/advisory-lock", optional = true }
-wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["tokio"], optional = true }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["tokio"] }
 tilo-app-package = { path = "../tilo-app-package", optional = true }
 parking_lot = { workspace = true, optional = true }
 tilo-identity-client = { path = "../tilo-identity-client", optional = true }
@@ -180,8 +180,6 @@ accounts = { package = "tilo-accounts", path = "../../integrations/accounts", fe
 # Which vault items a workspace's machine hands its programs: a Terminal document.
 tilo-environment = { path = "../../vm/environment", optional = true }
 agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
-# Server-sent event framing for streamable HTTP MCP connections (`connections::mcp`).
-wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tilo-account-probe = { path = "../../integrations/account-probe" }
 # The client registrations, token renewal and Nextcloud login flow a

@@ -72,6 +72,16 @@ pub const SET_ASSIGNMENTS: &str = "set-assignments";
 /// default holds again, and it is told nothing.
 pub const SET_REASONING: &str = "set-reasoning";
 
+/// Search Hugging Face for models this computer can run ([`SearchHubModels`]), with the
+/// Hugging Face sign-in the workspace keeps, answering the matches as JSON.
+pub const SEARCH_HUB_MODELS: &str = "search-hub-models";
+/// Describe a Hugging Face model this computer can run ([`ShowHubModel`]), with the
+/// workspace's Hugging Face sign-in, answering its variants as JSON.
+pub const SHOW_HUB_MODEL: &str = "show-hub-model";
+/// Download one variant of a Hugging Face model ([`InstallHubModel`]) to this computer's
+/// model manager, which signs in with the workspace's Hugging Face sign-in.
+pub const INSTALL_HUB_MODEL: &str = "install-hub-model";
+
 /// Link the model this computer's Agent models pane chose as the workspace's: the providers
 /// it asks without a key (a model it runs itself, a server on its network) join the
 /// workspace's, and the workspace's work runs on that choice. Only a computer of the person's
@@ -110,7 +120,7 @@ pub fn effects(action: &str) -> Vec<crate::ActionEffect> {
         ADD_PROVIDER | ADD_PRESET | SET_KEY => &[KEEP_SEALED, REMOVE_SEALED, KEEP_USES],
         SET_KEY_FROM_ITEM => &[KEEP_USES, REMOVE_SEALED],
         REMOVE_KEY | REMOVE_PROVIDER => &[REMOVE_SEALED],
-        REFRESH_MODELS => &[KEEP_USES],
+        REFRESH_MODELS | SEARCH_HUB_MODELS | SHOW_HUB_MODEL | INSTALL_HUB_MODEL => &[KEEP_USES],
         _ => &[],
     };
     steps.iter().map(|verb| vault_step(verb)).collect()
@@ -272,6 +282,36 @@ pub struct SetKeyFromItem {
     /// are asked first; empty when nothing was said.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reason: String,
+}
+
+/// A Hugging Face search ([`SEARCH_HUB_MODELS`]) for models this computer can run.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchHubModels {
+    pub query: String,
+    /// `gguf` or `safetensors`; `gguf` when the search names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+}
+
+/// A Hugging Face model to describe ([`SHOW_HUB_MODEL`]), by id or URL.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShowHubModel {
+    pub model: String,
+}
+
+/// One variant of a Hugging Face model to download ([`INSTALL_HUB_MODEL`]), at a commit
+/// [`SHOW_HUB_MODEL`] reported.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstallHubModel {
+    pub repo: String,
+    pub revision: String,
+    pub variant: String,
+    /// The model's licence is accepted: a download refuses without it.
+    #[serde(default)]
+    pub accept_license: bool,
 }
 
 /// The model one kind of work runs on, or with neither provider nor model,
