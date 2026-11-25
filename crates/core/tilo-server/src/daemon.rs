@@ -74,9 +74,9 @@ pub use crate::service::ServiceIdentity as ServerIdentity;
 /// applied, each verified: what a host reads when it starts, so a device its
 /// root revoked is refused as it connects instead of only after it is in.
 ///
-/// A server started through [`Server::start`] and [`Server::on_device`]'s own
-/// embedders applies its log itself; this is for a daemon that builds the
-/// identity it hands over, so what it validates and what it keeps agree.
+/// [`Server::start`] applies the log itself before it opens the service; a
+/// daemon that hands [`Server::on_device`] an identity it built reads it with
+/// this first, so what it validates and what the server keeps agree.
 ///
 /// # Errors
 ///
