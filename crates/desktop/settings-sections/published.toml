@@ -1001,6 +1001,10 @@ params = [
 id = "show-control-hints-again"
 kind = "undoable"
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
 [[resources.types]]
 name = "Learned"
 fields = [
