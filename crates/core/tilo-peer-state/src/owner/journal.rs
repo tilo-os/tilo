@@ -182,7 +182,6 @@ fn split(stored: &StoredWorkspace) -> Result<Split, String> {
 /// whose snapshot is `snapshot`. Its fields are read back from the snapshot,
 /// as a replay reads them; its frames are the record's own, the bytes the
 /// snapshot holds, so the next entry finds them as the record keeps them.
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn first(stored: &StoredWorkspace, snapshot: &[u8]) -> Result<Written, String> {
     let read: StoredWorkspace =
         serde_json::from_slice(snapshot).map_err(|error| error.to_string())?;
@@ -802,8 +801,37 @@ const GEAR: [u64; 256] = {
     table
 };
 
+/// Where a snapshot's chunks are cut, and the least and most each holds: a
+/// snapshot written again after a change writes the chunks that change touched,
+/// and a workspace of many megabytes is kept in some hundreds of them.
+const SNAPSHOT_CUT_MASK: u64 = 0xffff_0000_0000_0000;
+const SNAPSHOT_MIN_CHUNK: usize = 16 * 1024;
+const SNAPSHOT_MAX_CHUNK: usize = 256 * 1024;
+
 /// `bytes` cut into chunks by their content, as ranges.
 fn chunks(bytes: &[u8]) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+    cut(bytes, MIN_CHUNK, MAX_CHUNK, CUT_MASK)
+}
+
+/// `bytes` cut into a snapshot's chunks by their content, as ranges: each is kept once by its
+/// digest, so a snapshot written again writes only the chunks a change touched.
+pub(super) fn snapshot_chunks(bytes: &[u8]) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+    cut(
+        bytes,
+        SNAPSHOT_MIN_CHUNK,
+        SNAPSHOT_MAX_CHUNK,
+        SNAPSHOT_CUT_MASK,
+    )
+}
+
+/// `bytes` cut where the rolling hash has the bits of `mask` clear, each chunk
+/// holding at least `min` bytes and at most `max`.
+fn cut(
+    bytes: &[u8],
+    min: usize,
+    max: usize,
+    mask: u64,
+) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
     let mut start = 0;
     std::iter::from_fn(move || {
         if start >= bytes.len() {
@@ -811,11 +839,11 @@ fn chunks(bytes: &[u8]) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
         }
         let rest = after(bytes, start);
         let mut hash = 0u64;
-        let mut len = rest.len().min(MAX_CHUNK);
-        for (at, byte) in rest.iter().take(MAX_CHUNK).enumerate() {
+        let mut len = rest.len().min(max);
+        for (at, byte) in rest.iter().take(max).enumerate() {
             let gear = GEAR.get(usize::from(*byte)).copied().unwrap_or_default();
             hash = (hash << 1).wrapping_add(gear);
-            if at >= MIN_CHUNK && hash & CUT_MASK == 0 {
+            if at >= min && hash & mask == 0 {
                 len = at;
                 break;
             }

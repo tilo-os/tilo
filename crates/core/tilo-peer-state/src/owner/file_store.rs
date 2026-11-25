@@ -1,36 +1,25 @@
-//! The record as an index and one file per workspace, beside the state file
-//! of the host that keeps it. The caller holds exclusive access to the
-//! directory. A host that keeps state of its own derived from the record
-//! (its workspaces of the workspaces) follows each publication through a
-//! [`FileHost`].
+//! The record as an index and one snapshot per workspace, beside the state
+//! file of the host that keeps it, kept as [`Journaled`] keeps a record: the
+//! caller holds exclusive access to the directory. A host that keeps state of
+//! its own derived from the record (its workspaces of the workspaces) follows
+//! each publication through a [`FileHost`].
 //!
-//! A publication writes the workspace it changed and the index, never the
-//! record whole, so a device holding many workspaces pays for the one it
-//! touched. The index names each workspace's file and the revision that file
-//! was written at: it is the commit point of a change, and a workspace file
-//! the index does not name at that revision is not the record's — a
-//! publication that stopped between the two leaves the record as it was.
+//! A publication writes what it changed, never the record whole, so a device
+//! holding many workspaces pays for the one it touched, and a workspace for
+//! the change: an entry appended to its snapshot's journal, or a snapshot
+//! written again with the chunks of its replica that changed. The index is
+//! the commit point of a change, and a file the index does not name is not
+//! the record's — a publication that stopped before it leaves the record as
+//! it was, and the next open lets the files it left go.
 //!
-//! A workspace's file is a snapshot. Each later publication of the
-//! workspace alone appends what it changed to the snapshot's journal
-//! ([`crate::owner::journal`]) and syncs it before it is installed, so a
-//! write costs what it changed rather than all the workspace holds; once the
-//! journal outgrows its snapshot, the next publication writes a snapshot
-//! again. A publication that changes the index (an enrollment, a workspace
-//! held or let go) writes the snapshot and the index as before.
-//!
-//! The index has names of its own ([`parts_of`], and `index.json` in it), so a
-//! record's files never share the name of the file the host keeps them beside.
-use crate::owner::journal;
-use crate::owner::{
-    Change, NativeAuthorityStorage, NativeWorkspaceOwner, Store,
-    stored::{StoredPendingEnrollment, StoredWorkspace, WORKSPACE_VERSION, format},
-};
+//! Each part is a file of its own in a directory with names of its own
+//! ([`parts_of`], `index.json` in it), so a record's files never share the
+//! name of the file the host keeps them beside.
+use crate::owner::journaled::{INDEX_NAME, JournalParts, Journaled};
+use crate::owner::{Change, NativeAuthorityStorage, NativeWorkspaceOwner, Store};
 use parking_lot::{Mutex, RwLock};
-use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    ffi::OsStr,
+    collections::BTreeSet,
     io::{ErrorKind, Read as _},
     path::{Path, PathBuf},
     sync::{
@@ -39,14 +28,6 @@ use std::{
     },
 };
 use tilo_desktop_model::WorkspaceId;
-
-/// The layout an index is: one snapshot per workspace, named with the
-/// revision it was written at, and that snapshot's journal beside it.
-const INDEX_VERSION: u32 = 2;
-/// A journal is appended to until it holds this much or as much as its
-/// snapshot, whichever is more: rewriting the snapshot then costs at most
-/// what the writes since the last one appended.
-const JOURNAL_FLOOR: usize = 256 * 1024;
 
 /// The file a host whose own state is the file `state` keeps its owner's
 /// record in, beside it (`state.json` keeps it in `state.owner.json`).
@@ -84,21 +65,6 @@ pub trait FileHost: std::any::Any + Send + Sync {
 struct NoHost;
 impl FileHost for NoHost {}
 
-/// The record's index: the revision it last published, the workspaces it
-/// holds with the revision each one's file was written at, and the
-/// enrollments in flight.
-#[derive(Serialize, Deserialize)]
-struct StoredIndex {
-    version: u32,
-    revision: u64,
-    held: BTreeMap<WorkspaceId, u64>,
-    #[serde(default)]
-    pending: BTreeMap<WorkspaceId, StoredPendingEnrollment>,
-}
-
-/// The revisions each workspace's file was written at.
-type Held = BTreeMap<WorkspaceId, u64>;
-
 /// The directory beside the record file that holds the record: its index and
 /// one file per workspace.
 pub(crate) fn parts_of(path: &Path) -> PathBuf {
@@ -110,8 +76,26 @@ pub(crate) fn index_of(parts: &Path) -> PathBuf {
     parts.join("index.json")
 }
 
+/// The file the record's part `name` is kept in: the index, and each
+/// workspace's snapshot (`<workspace>.<revision>.json`), its journal
+/// (`.log`), the list of its chunks (`.chunks`) and each chunk
+/// (`<workspace>.<digest>.chunk`).
+fn file_of(parts: &Path, name: &str) -> PathBuf {
+    if name == INDEX_NAME {
+        return index_of(parts);
+    }
+    let mut kind = name.chars();
+    let extension = match kind.next() {
+        Some('w') => "json",
+        Some('l') => "log",
+        Some('k') => "chunks",
+        _ => "chunk",
+    };
+    parts.join(format!("{}.{extension}", kind.as_str()))
+}
+
 /// Every file of the record at `path` as the disk holds it — the index and
-/// each workspace's file — sorted by path.
+/// each workspace's files — sorted by path.
 #[cfg(test)]
 pub(crate) fn document_files(path: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, std::io::Error> {
     let mut files = Vec::new();
@@ -126,30 +110,9 @@ pub(crate) fn document_files(path: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, std
     Ok(files)
 }
 
-/// The file one workspace's record is in, as written at `revision`.
-fn part_of(parts: &Path, workspace: WorkspaceId, revision: u64) -> PathBuf {
-    parts.join(format!("{workspace}.{revision}.json"))
-}
-
 /// The file the writes of `workspace`'s outgoing ownership named `hash` are kept in.
 fn ownership_run_of(parts: &Path, workspace: WorkspaceId, hash: [u8; 32]) -> PathBuf {
     parts.join(crate::owner::ownership_run_name(workspace, hash))
-}
-
-/// The journal of the workspace file written at `revision`.
-fn log_of(parts: &Path, workspace: WorkspaceId, revision: u64) -> PathBuf {
-    parts.join(format!("{workspace}.{revision}.log"))
-}
-
-/// The workspace and revision a workspace file or its journal is named with,
-/// or `None` for a file the record did not write.
-fn part_name(name: &OsStr) -> Option<(WorkspaceId, u64)> {
-    let name = name.to_str()?;
-    let stem = name
-        .strip_suffix(".json")
-        .or_else(|| name.strip_suffix(".log"))?;
-    let (workspace, revision) = stem.rsplit_once('.')?;
-    Some((WorkspaceId::parse(workspace)?, revision.parse().ok()?))
 }
 
 fn provision(parts: &Path) -> Result<(), String> {
@@ -169,9 +132,9 @@ fn provision(parts: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Read the file at `path`, or `None` when there is none. A workspace's file
-/// holds every document of the workspace, so no cap is put on it: one would
-/// be reached by using the workspace.
+/// Read the file at `path`, or `None` when there is none. A workspace's
+/// files hold every document of the workspace, so no cap is put on them: one
+/// would be reached by using the workspace.
 fn read_whole(path: &Path) -> Result<Option<Vec<u8>>, String> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -180,130 +143,81 @@ fn read_whole(path: &Path) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
-/// What the files at `path` hold, empty when there are none, the revision
-/// each workspace's file was written at, and the journal each one goes on
-/// with.
-fn read_resource(
-    path: &Path,
-) -> Result<(NativeAuthorityStorage, Held, BTreeMap<WorkspaceId, Journal>), String> {
-    let parts = parts_of(path);
-    let Some(bytes) = read_whole(&index_of(&parts))? else {
-        return Ok((
-            NativeAuthorityStorage::default(),
-            Held::new(),
-            BTreeMap::new(),
-        ));
-    };
-    let index: StoredIndex = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("the record's index does not parse: {error}"))?;
-    read_index(path, index)
-}
-
-fn read_index(
-    path: &Path,
-    index: StoredIndex,
-) -> Result<(NativeAuthorityStorage, Held, BTreeMap<WorkspaceId, Journal>), String> {
-    if index.version != INDEX_VERSION {
-        return Err(format!(
-            "the owner record's index is version {}, and this build reads version {INDEX_VERSION}",
-            index.version
-        ));
-    }
-    let parts = parts_of(path);
-    let mut workspaces = BTreeMap::new();
-    let mut journals = BTreeMap::new();
-    let mut latest = index.revision;
-    for (&workspace, &revision) in &index.held {
-        let part = part_of(&parts, workspace, revision);
-        let bytes = read_whole(&part)?
-            .ok_or_else(|| format!("the record names {workspace}'s file and it is missing"))?;
-        let snapshot = bytes.len();
-        let log = read_whole(&log_of(&parts, workspace, revision))?;
-        // The layout the file names: one this build writes reads as it is,
-        // and an earlier one is brought up, the next publication writing a
-        // snapshot of this build's version. A journal is a delta of the
-        // snapshot beside it, as that version's bytes: one beside an earlier
-        // snapshot is refused.
-        let version = format::stored_version(&bytes)?;
-        let earlier = version < WORKSPACE_VERSION;
-        let mut whole = !earlier;
-        let bytes = format::FORMAT
-            .bring_up(&part, bytes, version)
-            .map_err(|error| error.to_string())?;
-        let mut stored: StoredWorkspace =
-            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        let mut appended = 0;
-        if let Some(log) = log {
-            whole = whole && journal::read_whole(&log);
-            appended = log.len();
-            let (replayed, last) = journal::replay(stored, &log, version)?;
-            stored = replayed;
-            latest = latest.max(last.unwrap_or(0));
-        }
-        if stored.workspace != workspace {
-            return Err(format!(
-                "{workspace}'s file holds another workspace's record"
-            ));
-        }
-        // The next publication goes on with the journal as it was read, so a
-        // write after a start costs what it changed; a journal a write cut
-        // short is let go with a snapshot first, as nothing after its torn
-        // entry would read.
-        if whole {
-            journals.insert(
-                workspace,
-                Journal {
-                    revision,
-                    written: journal::first_of(&stored)?,
-                    snapshot,
-                    appended,
-                },
-            );
-        }
-        workspaces.insert(workspace, stored);
-    }
-    let mut held = NativeAuthorityStorage {
-        revision: latest,
-        workspaces,
-        pending: index.pending,
-    };
-    drop_recovery_projections(&mut held);
-    Ok((held, index.held, journals))
-}
-
-/// A recovery projection is a re-signed copy of frames this build re-sends
-/// as their signed originals. A record that holds one still loads; the copy
-/// is dropped here, and the record keeps its originals held until the
-/// workspace retires them.
-fn drop_recovery_projections(record: &mut NativeAuthorityStorage) {
-    record.workspaces.values_mut().for_each(|workspace| {
-        if let Some(publication) = workspace.publication.as_mut() {
-            publication.projection.clear();
-        }
-    });
-}
-
 /// Compact JSON of what this device holds of one workspace.
-pub(super) fn part_bytes(stored: &StoredWorkspace) -> Result<Vec<u8>, String> {
+#[cfg(test)]
+pub(super) fn part_bytes(
+    stored: &crate::owner::stored::StoredWorkspace,
+) -> Result<Vec<u8>, String> {
     serde_json::to_vec(stored).map_err(|error| error.to_string())
 }
 
-/// Compact JSON of the index of `record`, which names each held workspace's
-/// file at `held`'s revision.
-fn index_bytes(record: &NativeAuthorityStorage, held: &Held) -> Result<Vec<u8>, String> {
-    let index = StoredIndex {
-        version: INDEX_VERSION,
-        revision: record.revision,
-        held: held.clone(),
-        pending: record.pending.clone(),
+/// The record's parts as files in `parts`, written by `store` publishing
+/// `next`; read-only without one.
+struct FileParts<'a> {
+    parts: &'a Path,
+    writing: Option<(&'a FileStore, &'a NativeAuthorityStorage)>,
+}
+
+impl FileParts<'_> {
+    fn writing(&self) -> Result<(&FileStore, &NativeAuthorityStorage), String> {
+        self.writing
+            .ok_or_else(|| "the record's files are read here, not written".into())
+    }
+}
+
+impl JournalParts for FileParts<'_> {
+    fn read_part(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        read_whole(&file_of(self.parts, name))
+    }
+
+    fn write_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        let (store, next) = self.writing()?;
+        provision(self.parts)?;
+        store.replace(&file_of(self.parts, name), bytes, next)
+    }
+
+    fn append_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        let (store, next) = self.writing()?;
+        provision(self.parts)?;
+        if let Err(error) = tilo_files::native::atomic::append(&file_of(self.parts, name), bytes) {
+            if error.state() != tilo_files::native::atomic::PublicationState::NotPublished {
+                // Some of the entry may be on disk: the record is read back
+                // before anything else is published.
+                store.fence(next);
+            }
+            return Err(error.into_io_error().to_string());
+        }
+        #[cfg(test)]
+        store.written.fetch_add(bytes.len(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn remove_part(&self, name: &str) -> Result<(), String> {
+        match std::fs::remove_file(file_of(self.parts, name)) {
+            Err(error) if error.kind() != ErrorKind::NotFound => Err(error.to_string()),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The record kept at `path`, empty when there is none, and the journaled
+/// form of it the next publication writes in.
+fn read_resource(path: &Path) -> Result<(Journaled, NativeAuthorityStorage), String> {
+    let parts = parts_of(path);
+    let reading = FileParts {
+        parts: &parts,
+        writing: None,
     };
-    serde_json::to_vec(&index).map_err(|error| error.to_string())
+    Ok(Journaled::open(&reading)?.unwrap_or_else(|| {
+        let empty = NativeAuthorityStorage::default();
+        (Journaled::start(&empty), empty)
+    }))
 }
 
 /// Read the record kept at `path`: the index beside it and the workspace
 /// files the index names. Empty when there is none.
 pub fn read_file(path: &Path) -> Result<NativeAuthorityStorage, String> {
-    read_resource(path).map(|(held, ..)| held)
+    read_resource(path).map(|(_, record)| record)
 }
 
 /// Open the owner whose record is the file at `path`, starting empty.
@@ -316,47 +230,29 @@ pub fn open_file_with(
     path: &Path,
     host: Arc<dyn FileHost>,
 ) -> Result<NativeWorkspaceOwner, String> {
-    let (authority, held, journals) = read_resource(path)?;
-    let store = Arc::new(FileStore::at(path, host, held));
-    let pending = serde_json::to_vec(&authority.pending).map_err(|error| error.to_string())?;
+    let (mut journaled, authority) = read_resource(path)?;
+    let store = Arc::new(FileStore::at(path, host));
     let owner = NativeWorkspaceOwner::restore(
         Arc::clone(&store) as Arc<dyn Store>,
         authority,
         tilo_clock::wall(),
     )?;
-    // What the index read names: a write that changes neither it nor the
-    // workspaces held appends to the journal it read.
-    let mut kept = journals;
-    kept.retain(|workspace, journal| owner.resume_journal(*workspace, &mut journal.written));
-    *store.journals.lock() = kept;
-    *store.pending.lock() = Some(pending);
-    // A publication that stopped between a workspace's file and the index
-    // left a file the record does not name.
+    // A write that changes neither the index nor the workspaces held appends
+    // to the journal it read.
+    journaled.resume(&owner);
+    *store.journaled.lock() = journaled;
+    // A publication that stopped before the index left files the record does
+    // not name.
     store.prune_parts(&owner.0.authority.read());
     Ok(owner)
-}
-
-/// A snapshot's journal, as this store last appended to it.
-struct Journal {
-    /// The revision of the snapshot it continues.
-    revision: u64,
-    /// What its next entry is a delta of.
-    written: journal::Written,
-    snapshot: usize,
-    appended: usize,
 }
 
 pub(crate) struct FileStore {
     pub(crate) host: Arc<dyn FileHost>,
     parts: PathBuf,
     history: crate::owner::HistoryContent,
-    /// The revision each held workspace's file was written at.
-    held: RwLock<Held>,
-    /// The journal of each workspace's snapshot, as this store read or last
-    /// wrote it.
-    journals: Mutex<BTreeMap<WorkspaceId, Journal>>,
-    /// The enrollments in flight the index last written names.
-    pending: Mutex<Option<Vec<u8>>>,
+    /// The record as its files keep it, as this store read or last wrote it.
+    journaled: Mutex<Journaled>,
     /// Every byte this store wrote.
     #[cfg(test)]
     pub(crate) written: std::sync::atomic::AtomicUsize,
@@ -365,14 +261,12 @@ pub(crate) struct FileStore {
 }
 
 impl FileStore {
-    fn at(path: &Path, host: Arc<dyn FileHost>, held: Held) -> Self {
+    fn at(path: &Path, host: Arc<dyn FileHost>) -> Self {
         Self {
             host,
             parts: parts_of(path),
             history: crate::owner::HistoryContent::for_state_file(path),
-            held: RwLock::new(held),
-            journals: Mutex::new(BTreeMap::new()),
-            pending: Mutex::new(None),
+            journaled: Mutex::new(Journaled::start(&NativeAuthorityStorage::default())),
             #[cfg(test)]
             written: std::sync::atomic::AtomicUsize::new(0),
             healthy: AtomicBool::new(true),
@@ -380,103 +274,14 @@ impl FileStore {
         }
     }
 
-    fn write_part(
-        &self,
-        workspace: WorkspaceId,
-        revision: u64,
-        stored: &StoredWorkspace,
-        record: &NativeAuthorityStorage,
-    ) -> Result<(), String> {
-        provision(&self.parts)?;
-        let bytes = part_bytes(stored)?;
-        // The journal, empty, first: the index names the snapshot only
-        // after both are there, and a journal the index does not name is
-        // pruned.
-        let written = journal::first(stored, &bytes)?;
-        self.replace(&log_of(&self.parts, workspace, revision), &[], record)?;
-        self.replace(&part_of(&self.parts, workspace, revision), &bytes, record)?;
-        self.journals.lock().insert(
-            workspace,
-            Journal {
-                revision,
-                written,
-                snapshot: bytes.len(),
-                appended: 0,
-            },
-        );
-        Ok(())
+    /// Fence the store after a write whose publication may have happened: the
+    /// record the disk holds is read back before anything else is published.
+    fn fence(&self, next: &NativeAuthorityStorage) {
+        self.uncertain.write().extend(next.workspaces());
+        self.healthy.store(false, Ordering::Release);
     }
 
-    fn write_index(&self, record: &NativeAuthorityStorage, held: &Held) -> Result<(), String> {
-        provision(&self.parts)?;
-        let bytes = index_bytes(record, held)?;
-        self.replace(&index_of(&self.parts), &bytes, record)?;
-        *self.pending.lock() =
-            Some(serde_json::to_vec(&record.pending).map_err(|error| error.to_string())?);
-        Ok(())
-    }
-
-    /// Append `workspace`'s publication in `next` to its snapshot's journal,
-    /// synced: `false`, with nothing written, when the publication changes
-    /// what the index says, or the journal is due a new snapshot.
-    fn append(
-        &self,
-        next: &NativeAuthorityStorage,
-        workspace: WorkspaceId,
-    ) -> Result<bool, String> {
-        let snapshot = {
-            let held = self.held.read();
-            if held.len() != next.workspaces.len()
-                || next
-                    .workspaces
-                    .keys()
-                    .any(|held_here| !held.contains_key(held_here))
-            {
-                return Ok(false);
-            }
-            held.get(&workspace).copied()
-        };
-        let pending = serde_json::to_vec(&next.pending).map_err(|error| error.to_string())?;
-        if self.pending.lock().as_ref() != Some(&pending) {
-            return Ok(false);
-        }
-        let Some(stored) = next.workspaces.get(&workspace) else {
-            return Ok(false);
-        };
-        let mut journals = self.journals.lock();
-        let Some(journal) = journals
-            .get_mut(&workspace)
-            .filter(|journal| snapshot == Some(journal.revision))
-        else {
-            return Ok(false);
-        };
-        let (entry, written) = journal::next(&journal.written, stored, next.revision)?;
-        let appended = journal.appended.saturating_add(entry.len());
-        // A journal past its snapshot is due a new one.
-        if appended > journal.snapshot.max(JOURNAL_FLOOR) {
-            return Ok(false);
-        }
-        let path = log_of(&self.parts, workspace, journal.revision);
-        if let Err(error) = tilo_files::native::atomic::append(&path, &entry) {
-            if error.state() != tilo_files::native::atomic::PublicationState::NotPublished {
-                // Some of the entry may be on disk: the record is read back
-                // before anything else is published.
-                self.uncertain.write().extend(next.workspaces());
-                self.healthy.store(false, Ordering::Release);
-            }
-            return Err(error.into_io_error().to_string());
-        }
-        #[cfg(test)]
-        self.written.fetch_add(entry.len(), Ordering::Relaxed);
-        journal.written = written;
-        journal.appended = appended;
-        drop(journals);
-        Ok(true)
-    }
-
-    /// Replace a file of the record durably. A replacement whose publication
-    /// may have happened fences the store: the record the disk holds is then
-    /// read back before anything else is published.
+    /// Replace a file of the record durably.
     fn replace(
         &self,
         path: &Path,
@@ -495,37 +300,33 @@ impl FileStore {
             }
             Err(error) => {
                 if error.state() != tilo_files::native::atomic::PublicationState::NotPublished {
-                    self.uncertain.write().extend(next.workspaces());
-                    self.healthy.store(false, Ordering::Release);
+                    self.fence(next);
                 }
                 Err(error.into_io_error().to_string())
             }
         }
     }
 
-    /// Remove the workspace files `record`, the record as published, does not name: the one a
-    /// workspace was published over, one a publication stopped before its index wrote, and the
-    /// kept writes of ownership that moved to its head.
+    /// Remove the files `record`, the record as published, does not name: those a publication
+    /// stopped before its index wrote, and the kept writes of ownership that moved to its head.
     fn prune_parts(&self, record: &NativeAuthorityStorage) {
         let Ok(entries) = std::fs::read_dir(&self.parts) else {
             return;
         };
-        let index = index_of(&self.parts);
-        let held = self.held.read();
-        let runs: BTreeSet<PathBuf> = record
+        let mut kept: BTreeSet<PathBuf> = record
             .ownership_runs()
             .map(|name| self.parts.join(name))
             .collect();
+        kept.extend(
+            self.journaled
+                .lock()
+                .named()
+                .iter()
+                .map(|name| file_of(&self.parts, name)),
+        );
         for entry in entries.flatten() {
             let path = entry.path();
-            if path == index || runs.contains(&path) {
-                continue;
-            }
-            if path
-                .file_name()
-                .and_then(part_name)
-                .is_some_and(|(workspace, revision)| held.get(&workspace) == Some(&revision))
-            {
+            if kept.contains(&path) {
                 continue;
             }
             if let Err(error) = std::fs::remove_file(&path)
@@ -536,50 +337,27 @@ impl FileStore {
         }
     }
 
-    /// Write what `change` changed and only that: the changed workspace's
-    /// file at the new revision and the index that names it, or the index
-    /// alone for an enrollment in flight.
+    /// Write what `change` changed and only that, then install `next`.
     fn write(
         &self,
         next: &NativeAuthorityStorage,
-        changed: Option<WorkspaceId>,
+        change: &Change,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
-        if let Some(workspace) = changed
-            && self.append(next, workspace)?
-        {
-            install();
-            return Ok(());
-        }
-        let mut held = self.held.read().clone();
-        held.retain(|workspace, _| next.holds(*workspace));
-        self.journals
+        let parts = FileParts {
+            parts: &self.parts,
+            writing: Some((self, next)),
+        };
+        let indexed = self
+            .journaled
             .lock()
-            .retain(|workspace, _| next.holds(*workspace));
-        if let Some(workspace) = changed {
-            let stored = next
-                .workspaces
-                .get(&workspace)
-                .ok_or("the published workspace is not in the record")?;
-            self.write_part(workspace, next.revision, stored, next)?;
-            held.insert(workspace, next.revision);
-        }
-        // A workspace this store has no file for yet is written at this
-        // revision: the index names only files that are there.
-        for (workspace, stored) in &next.workspaces {
-            if held.contains_key(workspace) {
-                continue;
-            }
-            self.write_part(*workspace, next.revision, stored, next)?;
-            held.insert(*workspace, next.revision);
-        }
-        // The index names each workspace's file at the revision it was
-        // written at, and is the commit point: once it is written, the record
-        // holds the change, and the file it named before is not the record's.
-        self.write_index(next, &held)?;
-        *self.held.write() = held;
+            .publish_indexed(&parts, next, change)?;
         install();
-        self.prune_parts(next);
+        // Once the index moved, what it named before and the runs of
+        // ownership that moved to its head are not the record's.
+        if indexed {
+            self.prune_parts(next);
+        }
         Ok(())
     }
 }
@@ -641,12 +419,18 @@ impl Store for FileStore {
         if !self.healthy() {
             return Err("joined-workspace store is fenced after an uncertain publication".into());
         }
-        let changed = match &change {
-            Change::Workspace { workspace, .. } => Some(*workspace),
-            Change::Pending | Change::Released { .. } => None,
+        let written = match &change {
+            Change::Pending => Change::Pending,
+            Change::Workspace { workspace, shown } => Change::Workspace {
+                workspace: *workspace,
+                shown: *shown,
+            },
+            Change::Released { workspace } => Change::Released {
+                workspace: *workspace,
+            },
         };
         self.host
-            .publish(next, change, &mut || self.write(next, changed, install))
+            .publish(next, change, &mut || self.write(next, &written, install))
     }
 }
 

@@ -46,6 +46,13 @@ fn journal_files(path: &Path) -> BTreeMap<String, Vec<u8>> {
     files_ending(path, ".log")
 }
 
+/// Every chunk of a workspace's replica and every list of them on disk, by name.
+fn chunk_files(path: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut files = files_ending(path, ".chunk");
+    files.extend(files_ending(path, ".chunks"));
+    files
+}
+
 fn files_ending(path: &Path, suffix: &str) -> BTreeMap<String, Vec<u8>> {
     let Ok(entries) = std::fs::read_dir(parts_of(path)) else {
         return BTreeMap::new();
@@ -105,8 +112,9 @@ fn a_change_writes_only_its_own_workspace_file_and_the_index() {
     let (created, replaced) = replacements(|| testing::founded(&owner, &device, &key));
     created.unwrap();
     assert_eq!(
-        replaced, 4,
-        "the index naming the enrollment, then the workspace's file, its journal and the index"
+        replaced, 6,
+        "the index naming the enrollment, then the workspace's chunk, their list, its journal, \
+         its file and the index"
     );
 
     let after = part_files(&path);
@@ -122,10 +130,16 @@ fn a_change_writes_only_its_own_workspace_file_and_the_index() {
     // A publication writes one workspace's record and the index, not the
     // record: the third file and the index against the whole record.
     let record = read_file(&path).unwrap();
+    let chunks_before = chunk_files(&path);
     let written = after
         .iter()
         .chain(&journal_files(&path))
-        .filter(|(name, _)| !before.contains_key(*name) && !journals_before.contains_key(*name))
+        .chain(&chunk_files(&path))
+        .filter(|(name, _)| {
+            !before.contains_key(*name)
+                && !journals_before.contains_key(*name)
+                && !chunks_before.contains_key(*name)
+        })
         .map(|(_, bytes)| bytes.len())
         .sum::<usize>()
         + index_bytes(&path).len();
@@ -148,9 +162,9 @@ fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
     let owner = open_file(&path).unwrap();
     let first = testing::founded(&owner, &device, &key).unwrap();
 
-    // The enrollment's index, the workspace's journal and its file are
-    // written; the index that would name them is not.
-    let stopped = with_failure_on_nth(Checkpoint::BeforePublish, 4, || {
+    // The enrollment's index, the workspace's chunk, their list, its journal
+    // and its file are written; the index that would name them is not.
+    let stopped = with_failure_on_nth(Checkpoint::BeforePublish, 6, || {
         testing::founded(&owner, &device, &key)
     });
     assert!(stopped.is_err());
@@ -223,6 +237,7 @@ fn a_released_workspace_leaves_no_file_behind() {
     assert!(owner.release_workspace(workspace).unwrap());
 
     assert!(part_files(&path).is_empty());
+    assert!(chunk_files(&path).is_empty());
     assert!(read_file(&path).unwrap().is_empty());
     assert_eq!(open_file(&path).unwrap().storage().held().count(), 0);
 }
