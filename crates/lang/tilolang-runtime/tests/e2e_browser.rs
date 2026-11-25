@@ -10,7 +10,7 @@ mod cases {
     use std::rc::Rc;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::files::{Entry, FileTarget, FilesHost};
-    use tilolang_runtime::host_work::{EngineHost, Push};
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::page::PageHost;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, Value, ViewInstance,
@@ -135,22 +135,8 @@ mod cases {
         file: Rc<RefCell<Option<FileValue>>>,
         /// The downloads the app started, as the engine was asked: the op and its input.
         started: Rc<RefCell<Vec<(String, Json)>>>,
-        /// Where each job stands, as the engine tells it, by the job's id.
-        jobs: Rc<RefCell<std::collections::HashMap<String, Json>>>,
         /// The jobs the app stopped, in order.
         cancelled: Rc<RefCell<Vec<String>>>,
-    }
-
-    impl Device {
-        /// The job `job` now stands as `state` says.
-        fn job_stands(&self, job: &str, state: Json) {
-            let mut standing = json!({"state": "running", "done": 0, "total": 0, "path": "",
-                "name": "", "error": ""});
-            for (field, value) in state.as_object().expect("a job's fields") {
-                standing[field] = value.clone();
-            }
-            self.jobs.borrow_mut().insert(job.to_owned(), standing);
-        }
     }
 
     // The device's engine, as the Browser's downloads reach it: each start is a job of its own.
@@ -159,7 +145,13 @@ mod cases {
             Err(format!("`{op}` is no op this device answers"))
         }
 
-        fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            input: &str,
+            _handlers: &JobHandlers,
+        ) -> Result<String, String> {
             if op != "download" {
                 return Err(format!("`{op}` is no op this device starts"));
             }
@@ -168,28 +160,12 @@ mod cases {
                 op.to_owned(),
                 serde_json::from_str(input).expect("the ask is JSON"),
             ));
-            let job = format!("browser-{}", started.len());
-            drop(started);
-            self.job_stands(&job, json!({}));
-            Ok(json!({ "job": job }).to_string())
+            Ok(format!("browser-{}", started.len()))
         }
 
-        fn stream(
-            &self,
-            _app: &str,
-            _op: &str,
-            _input: &str,
-            _push: std::sync::Arc<dyn Push>,
-        ) -> Result<String, String> {
-            Err("this device shows no moving picture".to_owned())
-        }
-
-        fn status(&self, job: &str) -> Result<String, String> {
-            self.jobs
-                .borrow()
-                .get(job)
-                .map(Json::to_string)
-                .ok_or_else(|| format!("no job {job}"))
+        fn job(&self, _job: &str) -> Result<Option<Json>, String> {
+            // The window reads a job from its record, which the device hands it as it moves.
+            Ok(None)
         }
 
         fn cancel(&self, job: &str) -> bool {
@@ -239,6 +215,21 @@ mod cases {
     }
 
     impl Browser {
+        /// The job `job` now stands as `said` says: its state (`running` unless it says), and the
+        /// engine's own fields, as the device records each move it tells.
+        fn job_stands(&self, job: &str, said: Json) {
+            let mut detail = said;
+            let state = detail
+                .as_object_mut()
+                .expect("a job's fields")
+                .remove("state")
+                .and_then(|state| state.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "running".to_owned());
+            let record = json!({"id": job, "app": "so.tilo.browser", "op": "download",
+                "state": state, "detail": detail});
+            self.rt.set_job(job, &record);
+        }
+
         fn new() -> Self {
             Self::built(true)
         }
@@ -454,8 +445,7 @@ mod cases {
             b.page.ops()
         );
 
-        b.device
-            .job_stands("browser-1", json!({"done": 2048, "total": 8192}));
+        b.job_stands("browser-1", json!({"done": 2048, "total": 8192}));
         let view = b.page_view();
         assert_eq!(row_secondary(&view, "report.pdf"), "2.0 KB of 8.1 KB");
         let bar = of_kind(view.tree(), "ui.ProgressBar");
@@ -487,7 +477,7 @@ mod cases {
             "download",
             &[("url", Value::text("https://example.org/files/map.pdf"))],
         );
-        b.device.job_stands(
+        b.job_stands(
             "browser-1",
             json!({"state": "failed", "error": "example.org no longer has this file (404)"}),
         );
@@ -522,10 +512,10 @@ mod cases {
                 ("name", Value::text("report.pdf")),
             ],
         );
-        b.device.job_stands(
+        b.job_stands(
             "browser-1",
-            json!({"state": "done", "done": 8192, "total": 8192,
-                "path": "/home/ada/Downloads/report 2.pdf", "name": "report 2.pdf"}),
+            json!({"state": "done", "path": "/home/ada/Downloads/report 2.pdf",
+                "name": "report 2.pdf"}),
         );
         let view = b.page_view();
         assert_eq!(
@@ -557,8 +547,7 @@ mod cases {
                 ("request", Value::text("77aa")),
             ],
         );
-        b.device
-            .job_stands("browser-1", json!({"done": 1_000_000, "total": 0}));
+        b.job_stands("browser-1", json!({"done": 1_000_000, "total": 0}));
         let made = Browser::call(
             &b.app,
             &b.rt,

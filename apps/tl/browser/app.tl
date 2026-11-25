@@ -275,16 +275,10 @@ type Download (title: name) {
     }
 }
 
-/// Where a download's job stands, as the job tells it: `running`, `done`, `failed` or
-/// `cancelled`, how many bytes of how many (0 while the size is unknown), where it was saved and
-/// as what, and why it failed.
-type DownloadJob {
-    state: Text
-    done: Int
-    total: Int
-    path: Text
-    name: Text
-    error: Text
+/// Where a finished download was saved and as what, as its job's record says.
+type DownloadSaved {
+    path: Text = ""
+    name: Text = ""
 }
 
 /// What the Browser asks its engine to download: the address, the name the page suggested, and
@@ -4030,65 +4024,62 @@ view history_list(b: Browser, query: Text) {
 /// One file the Browser downloads: what it is called, how far its job has come, and what the
 /// person may do with it now.
 view download_row(d: Download) {
-    let job = json.decode<DownloadJob>(if d.job == "" { "" } else { engine.state(d.job) })
-    match job {
-        .ok(now) => {
-            stack(padding: .related) {
-                ui.ListRow(
-                    title: if now.name == "" { d.name } else { now.name },
-                    secondary: download_secondary(now),
-                    mark: if now.state == "failed" { .triangle_alert } else { .download },
-                )
-                if now.state == "running" and now.total > 0 {
-                    ui.ProgressBar(
-                        value: now.done.to_float() / now.total.to_float(),
-                        label: "Downloading",
-                    )
-                }
-                if now.state == "running" {
-                    ui.Button("Cancel", icon: .x, role: .plain) {
-                        on press: cancel_download(d)
-                    }
-                }
-                if now.state == "failed" or now.state == "cancelled" {
-                    ui.Button("Retry", icon: .refresh, role: .plain) {
-                        on press: retry_download(d)
-                    }
-                }
-                if now.state == "done" and now.path != "" {
-                    ui.Button("Open", icon: .external_link, role: .plain) {
-                        on press: open_download(now.name, now.path)
-                    }
-                    ui.Button("Show in Files", icon: .folder, role: .plain) {
-                        on press: reveal_download(now.path)
-                    }
+    if let j = engine.job(d.job) {
+        let saved = match json.decode<DownloadSaved>(j.detail) {
+            .ok(said) => said,
+            .err(_) => DownloadSaved(),
+        }
+        stack(padding: .related) {
+            ui.ListRow(
+                title: if saved.name == "" { d.name } else { saved.name },
+                secondary: download_secondary(j, saved),
+                mark: if j.state == .failed { .triangle_alert } else { .download },
+            )
+            if j.state == .running and j.total > 0 {
+                ui.ProgressBar(value: j.done.to_float() / j.total.to_float(), label: "Downloading")
+            }
+            if j.state == .queued or j.state == .running {
+                ui.Button("Cancel", icon: .x, role: .plain) {
+                    on press: cancel_download(d)
                 }
             }
-        }
-        .err => {
-            stack(padding: .related) {
-                ui.ListRow(title: d.name, secondary: std.say("Not on this device"), mark: .download)
+            if j.state == .failed or j.state == .cancelled {
                 ui.Button("Retry", icon: .refresh, role: .plain) {
                     on press: retry_download(d)
                 }
+            }
+            if j.state == .done and saved.path != "" {
+                ui.Button("Open", icon: .external_link, role: .plain) {
+                    on press: open_download(saved.name, saved.path)
+                }
+                ui.Button("Show in Files", icon: .folder, role: .plain) {
+                    on press: reveal_download(saved.path)
+                }
+            }
+        }
+    } else {
+        stack(padding: .related) {
+            ui.ListRow(title: d.name, secondary: std.say("Not on this device"), mark: .download)
+            ui.Button("Retry", icon: .refresh, role: .plain) {
+                on press: retry_download(d)
             }
         }
     }
 }
 
-/// What a download says under its name: how far it has come, or how it ended.
-fn download_secondary(now: DownloadJob) -> Text {
-    if now.state == "running" {
-        let done = size_text(now.done)
-        if now.total > 0 {
-            let total = size_text(now.total)
+/// What a download says under its name: how far its job has come, or how it ended.
+fn download_secondary(j: host.Job, saved: DownloadSaved) -> Text {
+    if j.state == .running {
+        let done = size_text(j.done)
+        if j.total > 0 {
+            let total = size_text(j.total)
             std.say("{done} of {total}")
         } else { std.say("{done} downloaded") }
-    } else if now.state == "done" {
-        std.say("Saved to {now.path}")
-    } else if now.state == "failed" {
-        if now.error == "" { std.say("The download failed") } else { now.error }
-    } else if now.state == "cancelled" { std.say("Cancelled") } else { std.say("Waiting to start") }
+    } else if j.state == .done {
+        std.say("Saved to {saved.path}")
+    } else if j.state == .failed {
+        if j.error == "" { std.say("The download failed") } else { j.error }
+    } else if j.state == .cancelled { std.say("Cancelled") } else { std.say("Waiting to start") }
 }
 
 /// The next size up: 1.2 times the page's font, kept between a quarter and five times its own.
