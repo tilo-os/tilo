@@ -310,6 +310,40 @@ mod tests {
         assert!(log.page(Some(&page.cursor), None).changes.is_empty());
     }
 
+    /// A record's content is read for the record the feed lists it under: the document it reads
+    /// is the record's content, and each change says what it did to the record — the first made
+    /// it, the next edited it, both naming it.
+    #[test]
+    fn a_records_content_says_what_each_change_did() {
+        let mut saved = Saved::default();
+        let mut log = ChangeLog::new();
+        saved.take_into(&mut log);
+        let start = log.page(None, None);
+        assert!(start.changes.is_empty());
+
+        let record = route("note1");
+        let mut content = AutoCommit::new();
+        write(&mut content, "title", "Plan");
+        content.put(automerge::ROOT, "title", "Plan B").unwrap();
+        content.commit();
+        saved.save(&record, &mut content);
+        saved.take_into(&mut log);
+
+        let page = log.page(Some(&start.cursor), None);
+        assert_eq!(page.changes.len(), 2, "{page:?}");
+        let told: Vec<(&str, &str)> = page
+            .changes
+            .iter()
+            .map(|change| {
+                (
+                    change.entry["happened"].as_str().unwrap_or_default(),
+                    change.entry["item"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(told, [("created", "note1"), ("edited", "note1")], "{page:?}");
+    }
+
     #[test]
     fn a_cursor_of_another_log_reads_on_from_now() {
         let mut saved = Saved::default();

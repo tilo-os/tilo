@@ -84,6 +84,9 @@ type FieldWrite = (String, String, Option<ScalarValue>);
 /// The resources `change` touches in the store document `doc_id`, `doc` with it applied: what a
 /// reader of the store's changes (a trigger watching a kind) sees each change do. `None` when it
 /// writes where the store writes nothing.
+///
+/// `doc_id` names what the document holds ([`content_of`]): a content document's id, the id of the
+/// record a change feed reads a content document by, or none for a document of records.
 #[must_use]
 pub fn touches(doc: &Automerge, doc_id: &str, change: &AmChange) -> Option<Touched> {
     touched(doc, doc_id, change).map(|(touched, _)| touched)
@@ -103,7 +106,7 @@ pub fn touched(
         doc,
         made: HashMap::new(),
     };
-    let content_of = content_resource(doc_id);
+    let content = content_of(doc_id);
     let mut touched = Touched::default();
     let mut writes = Vec::new();
     for (at, op) in (0_u64..).zip(&expanded.operations) {
@@ -126,10 +129,13 @@ pub fn touched(
                 _ => keys.push(key),
             }
         }
-        match (content_of.as_ref(), keys.as_slice()) {
+        match (content.as_ref(), keys.as_slice()) {
             (Some((kind, id)), _) => {
                 let touch = touched.resources.entry(id.clone()).or_default();
-                touch.kind = Some(kind.clone());
+                // A feed names the record, not the kind its document is of.
+                if !kind.is_empty() {
+                    touch.kind = Some(kind.clone());
+                }
                 touch.content = true;
             }
             (None, ["w"]) => match &op.action {
@@ -183,7 +189,7 @@ pub fn touched(
             _ => return None,
         }
     }
-    if content_of.is_none() {
+    if content.is_none() {
         held_kinds(doc, change.deps(), &mut touched);
     }
     Some((touched, writes))
@@ -217,6 +223,21 @@ fn kind_at(doc: &Automerge, id: &str, heads: &[automerge::ChangeHash]) -> Option
         (automerge::Value::Scalar(kind), _) => kind.as_str().map(str::to_owned),
         _ => None,
     }
+}
+
+/// The resource whose content the document `doc_id` holds: a content document's id
+/// (`<readers>/<kind>/<id>~<n>`), or the id of the record a change feed names its content
+/// document by. `None` for a document of records: no id, or a store document
+/// (`<readers>/<owner>#<n>`), whose changes are its resources'.
+#[must_use]
+pub fn content_of(doc_id: &str) -> Option<(String, String)> {
+    if let Some((kind, id)) = content_resource(doc_id) {
+        return Some((kind, id));
+    }
+    if doc_id.is_empty() || crate::is_store_document(doc_id) {
+        return None;
+    }
+    Some((String::new(), doc_id.to_owned()))
 }
 
 /// The resource whose content `doc_id` holds, by kind and id; `None` for a document of resources.

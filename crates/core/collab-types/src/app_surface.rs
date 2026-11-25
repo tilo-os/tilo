@@ -114,11 +114,13 @@ impl Surfaces {
     /// the one it runs with, replacing any held before (an update of the app). Bytes that are not
     /// the canonical compiled form name none.
     ///
-    /// A package that declares a record the system keeps ([`Self::declare_system`]) names none:
-    /// its type is the system's on every device, and a package's copy of it would judge that
-    /// record's writes by another.
+    /// A record the system keeps ([`Self::declare_system`]) is declared from its type on every
+    /// device, so the package's copy of it neither declares nor judges it: the kinds the system
+    /// declares here are left out of what the package declares, while the bytes and their hash —
+    /// what its changes name — stay as the package ships them. A kind the system does not declare
+    /// here stays the package's, so a package is still the one place its type is written.
     pub fn register_package(&self, app_id: &str, bytes: &[u8]) {
-        let file = match crate::surface::SurfaceFile::compiled(bytes) {
+        let mut file = match crate::surface::SurfaceFile::compiled(bytes) {
             Ok(file) => file,
             Err(error) => {
                 tracing::warn!(
@@ -129,18 +131,8 @@ impl Surfaces {
                 return;
             }
         };
-        if let Some(kept) = file
-            .resources
-            .iter()
-            .find(|resource| self.keeps_system(&resource.kind))
-        {
-            tracing::warn!(
-                app = app_id,
-                kind = kept.kind,
-                "the package declares a record the system keeps; its surface is refused"
-            );
-            return;
-        }
+        file.resources
+            .retain(|resource| !self.keeps_system(&resource.kind));
         let hash = *blake3::hash(bytes).as_bytes();
         if self
             .named
@@ -560,6 +552,34 @@ mod tests {
             );
             assert_eq!(bytes_of("test.surface-a"), Some(file.as_bytes()));
             assert_eq!(parse_hash(&hex::encode([7; 32])), Some([7; 32]));
+        }
+
+        phase a_record_the_system_declares_is_the_systems_to_judge;
+        {
+            // A record the system keeps, declared here as the device declares it.
+            let system = compiled(
+                "[[resources]]\nkind = \"tilo.workspace.emoji\"\nlabel = \"Workspace emoji\"\nversion = 1\n",
+            );
+            let kept = crate::surface::SurfaceFile::compiled(system.as_bytes()).expect("a surface");
+            Surfaces::process().declare_system("so.tilo.chat", kept.resources[0].clone());
+
+            // A package that publishes the record beside its own kinds keeps its bytes — the
+            // hash its changes name — and its own kinds, while the system's declaration is the
+            // one that judges the record.
+            let package = compiled(
+                "[[resources]]\nkind = \"test.keeps\"\nlabel = \"Mine\"\nversion = 1\n\n[[resources]]\nkind = \"tilo.workspace.emoji\"\nlabel = \"Emoji\"\nversion = 1\n",
+            );
+            register_package("test.keeps-system", package.as_bytes());
+            assert_eq!(
+                bytes_of("test.keeps-system"),
+                Some(package.as_bytes()),
+                "its bytes stay what its changes name"
+            );
+            assert_eq!(
+                Surfaces::process().kinds_of("test.keeps-system"),
+                ["test.keeps"],
+                "its own kind stays; the record the system keeps is the system's"
+            );
         }
 
         phase a_surface_in_the_authored_form_names_none;

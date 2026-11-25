@@ -1320,12 +1320,11 @@ fn stamped_verb(doc: &AutoCommit, version: &Version) -> Option<String> {
 }
 
 /// What `version` did to the resource it is a change of, and that resource's id, as the store
-/// reads the change in its document `doc_id` (`""` where the document is not named): it made the
-/// resource, removed it, or edited it. A content document names the resource whose content it
-/// holds: its first change made that content, as the action that made the resource wrote it, and
-/// every later one edits it. `None` for a document
-/// whose changes are not resources kept in the store: a change with no word for what it did is
-/// a fault to a watcher, never an edit.
+/// reads the change in its document `doc_id`: it made the resource, removed it, or edited it.
+/// `doc_id` names the resource whose content the document holds ([`crate::touch::content_of`]): a
+/// content document's content is that resource's, its first change made it as the action that made
+/// the resource wrote it and every later one edits it; a document of records (`""`) holds many.
+/// `None` only for a change the store cannot read, which no watcher may read as an edit.
 fn happened(
     (doc, doc_id): (&AutoCommit, &str),
     version: &Version,
@@ -1334,8 +1333,7 @@ fn happened(
     let committed = doc.committed_document();
     let change = committed.get_change_by_hash(&version.hash)?;
     let touched = crate::touch::touches(committed, doc_id, &change)?;
-    let first_content =
-        change.deps().is_empty() && crate::touch::content_resource(doc_id).is_some();
+    let first_content = change.deps().is_empty() && crate::touch::content_of(doc_id).is_some();
     let made = touched
         .resources
         .iter()
@@ -2192,8 +2190,9 @@ mod tests {
     }
 
     /// A resource's content, kept in a document of its own, is that resource's: the document's
-    /// name says whose content it holds. Its first change made the content, as the action that
-    /// made the resource wrote it; a later one edits it.
+    /// name says whose content it holds, and so does the record's id a feed lists the document
+    /// under. Its first change made the content, as the action that made the resource wrote it; a
+    /// later one edits it.
     #[test]
     fn a_resources_content_is_made_then_edited() {
         let mut doc = AutoCommit::new();
@@ -2205,19 +2204,21 @@ mod tests {
         doc.splice_text(&body, 0, 5, "second").unwrap();
         doc.commit();
 
-        let entries = entries_after((&doc, "*/tl.test.Message/m1~0"), &[], &TestWords);
-        let told: Vec<_> = entries
-            .iter()
-            .map(|entry| (&entry["happened"], &entry["item"]))
-            .collect();
-        assert_eq!(
-            told,
-            [
-                (&json!("created"), &json!("m1")),
-                (&json!("edited"), &json!("m1"))
-            ],
-            "{entries:?}"
-        );
+        for doc_id in ["*/tl.test.Message/m1~0", "m1"] {
+            let entries = entries_after((&doc, doc_id), &[], &TestWords);
+            let told: Vec<_> = entries
+                .iter()
+                .map(|entry| (&entry["happened"], &entry["item"]))
+                .collect();
+            assert_eq!(
+                told,
+                [
+                    (&json!("created"), &json!("m1")),
+                    (&json!("edited"), &json!("m1"))
+                ],
+                "{doc_id}: {entries:?}"
+            );
+        }
     }
 
     /// Every change says what it did to the resource it is a version of, read from the change
