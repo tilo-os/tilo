@@ -128,17 +128,24 @@ pub fn granted_to(member: &MemberId) -> Grantee {
 /// acting carries (`granted`, what its certificate's delegation gives it). An
 /// agent is the pair of its id and the person it acts for, whom its
 /// certificate chains to: only the grants and answers naming that pair reach
-/// it.
+/// it, and once its person answered it ([`WorkspacePolicy::answers_narrow`]) what
+/// `granted` hands it decides nothing.
 fn software_party<'a>(
     member: &MemberId,
     policy: &'a WorkspacePolicy,
     granted: &'a [Grant],
 ) -> Party<'a> {
-    let party = match member {
-        MemberId::Agent { id, person } => policy.party_of_agent(id, person.as_str()),
-        member => policy.party_of(granted_to(member)),
-    };
-    party.with_grants(granted)
+    match member {
+        // A person's answer for their agent narrows it to what their answers name, whatever its
+        // delegation hands it.
+        MemberId::Agent { id, person } => policy.party_of_agent(id, person.as_str()).narrowed_by(
+            granted,
+            policy
+                .grants_of_agent(id, person.as_str())
+                .filter(|grant| crate::agent_answers::is_answer(grant)),
+        ),
+        member => policy.party_of(granted_to(member)).with_grants(granted),
+    }
 }
 
 /// One invocation, as admission weighs it.

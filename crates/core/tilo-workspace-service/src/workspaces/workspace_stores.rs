@@ -361,6 +361,9 @@ impl Workspaces {
         let acting = tilo_action_policy::Acting::member(agent.clone())
             .handed()
             .acting_for(tilo_action_policy::Acting::person(person.as_str()));
+        // What its delegation hands it: the preset of a handed agent and its caller's grants.
+        let mut handed = acting.handed_preset(policy.workspace.as_str());
+        handed.extend(turn.caller.granted());
         let Some(access) =
             tilo_action_policy::MemberAccess::person(policy, person.as_str()).as_acting(acting)
         else {
@@ -368,10 +371,29 @@ impl Workspaces {
         };
         let access = access.granted(turn.caller.granted());
         let node = store.node(access.workspace(), action);
-        let verdict = access.verdict(&node, effect, &Context::at_time(tilo_clock::wall()));
+        let cx = Context::at_time(tilo_clock::wall());
+        let mut verdict = access.verdict(&node, effect, &cx);
         let narrowed = narrowed(access.policy.as_ref(), turn.caller);
+        // A narrowed agent takes only the actions its person's answers name, which each caller
+        // checks where the action is taken. The store is what such an action reaches, so the
+        // agent's own part reaches it as its grants and its delegation let it.
+        if narrowed
+            && let Some((id, own_person)) = agent.as_agent()
+            && let Some(own) = verdict.parts.last_mut()
+        {
+            *own = access
+                .policy
+                .party_of_agent(id, own_person.as_str())
+                .with_grants(&handed)
+                .decide(&node, effect, &cx);
+        }
         let answer = if effect == ActionKind::Read {
-            verdict.answer
+            // The agent's own part, decided again above for a narrowed agent, joins its people's.
+            if narrowed {
+                agent_read(&verdict, narrowed)
+            } else {
+                verdict.answer
+            }
         } else {
             agent_change(&verdict, narrowed)
         };
@@ -443,7 +465,10 @@ fn narrowed(policy: &tilo_action_policy::WorkspacePolicy, caller: &Caller) -> bo
 /// the app's name; a grant that denies it refuses it.
 fn app_answer(
     app: &str,
-    (policy, granted): (&tilo_action_policy::WorkspacePolicy, &[tilo_action_policy::Grant]),
+    (policy, granted): (
+        &tilo_action_policy::WorkspacePolicy,
+        &[tilo_action_policy::Grant],
+    ),
     (node, effect): (&TreePath, ActionKind),
     cx: &Context<'_>,
 ) -> Answer {

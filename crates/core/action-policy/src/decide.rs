@@ -167,6 +167,12 @@ pub struct Party<'g> {
     pub held_off: Vec<&'g Grant>,
     /// A cap the code puts on this party, below whatever its grants allow.
     pub cap: Option<Cap>,
+    /// Grants a delegation hands the party (an agent's preset, its certificate's), which decide
+    /// for it only while none of `narrowing` stands ([`Self::narrowed_by`]).
+    pub delegated: Vec<&'g Grant>,
+    /// The answers that narrow the party to what they name: while one stands, `delegated`
+    /// decides nothing.
+    pub narrowing: Vec<&'g Grant>,
 }
 
 /// What a device or a piece of software may do at most, whatever its grants
@@ -256,6 +262,8 @@ impl<'g> Party<'g> {
             own_records: Vec::new(),
             held_off: Vec::new(),
             cap: None,
+            delegated: Vec::new(),
+            narrowing: Vec::new(),
         }
     }
 
@@ -296,6 +304,20 @@ impl<'g> Party<'g> {
     #[must_use]
     pub fn with_grants(mut self, grants: impl IntoIterator<Item = &'g Grant>) -> Self {
         self.grants.extend(grants);
+        self
+    }
+
+    /// The same party, handed `grants` by a delegation, which decide for it only while none of
+    /// `answers` stands at the moment it decides: an agent's person who answered it narrows it to
+    /// what those answers name, wherever its other grants came from.
+    #[must_use]
+    pub fn narrowed_by(
+        mut self,
+        grants: impl IntoIterator<Item = &'g Grant>,
+        answers: impl IntoIterator<Item = &'g Grant>,
+    ) -> Self {
+        self.delegated.extend(grants);
+        self.narrowing.extend(answers);
         self
     }
 
@@ -402,8 +424,11 @@ impl<'g> Party<'g> {
     /// The grants that can decide for this party: those naming one of its grantees
     /// ([`names`]). Every decision it makes reads these and no other.
     fn deciding<'s>(&'s self, cx: &'s Context<'_>) -> impl Iterator<Item = &'g Grant> + 's {
+        let narrowed = self.narrowing.iter().any(|answer| answer.is_live(cx));
+        let delegated: &[&'g Grant] = if narrowed { &[] } else { &self.delegated };
         self.grants
             .iter()
+            .chain(delegated)
             .copied()
             .filter(move |grant| names(grant, &self.grantees, cx))
     }
@@ -419,6 +444,8 @@ impl<'g> Party<'g> {
             own_records: self.own_records.clone(),
             held_off: self.held_off.iter().copied().cloned().collect(),
             cap: self.cap,
+            delegated: self.delegated.iter().copied().cloned().collect(),
+            narrowing: self.narrowing.iter().copied().cloned().collect(),
         }
     }
 }
@@ -445,6 +472,8 @@ struct EffectiveParty {
     own_records: Vec<(TreePath, KindSet)>,
     held_off: Vec<Grant>,
     cap: Option<Cap>,
+    delegated: Vec<Grant>,
+    narrowing: Vec<Grant>,
 }
 
 impl Effective {
@@ -454,7 +483,14 @@ impl Effective {
     pub fn lapses_between(&self, from_ms: u64, to_ms: u64) -> bool {
         self.parties
             .iter()
-            .flat_map(|party| party.grants.iter().chain(&party.held_off))
+            .flat_map(|party| {
+                party
+                    .grants
+                    .iter()
+                    .chain(&party.held_off)
+                    .chain(&party.delegated)
+                    .chain(&party.narrowing)
+            })
             .any(|grant| match grant.lifetime {
                 Lifetime::Until(at) => from_ms < at && at <= to_ms,
                 _ => false,
