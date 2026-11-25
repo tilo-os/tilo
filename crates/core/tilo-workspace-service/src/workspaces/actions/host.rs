@@ -1710,6 +1710,8 @@ mod formats_tests;
 mod mail_reach_tests;
 #[cfg(all(test, feature = "agents"))]
 mod mail_sign_in_tests;
+#[cfg(all(test, feature = "agents"))]
+mod mail_turn_tests;
 #[cfg(test)]
 mod own_tests;
 #[cfg(all(test, feature = "agents"))]

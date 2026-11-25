@@ -21,6 +21,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_account_probe::AccountTester as _;
 use tilo_actions::remote::person_accounts;
+use tilo_actions::remote::person_vault;
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_resource::{Id, Replica, Resource as _};
@@ -34,6 +35,8 @@ use super::fixtures::{TestHost, device_cert, governor, signed_pre_admission, tes
 
 use super::{MemberDevice, PreAdmitRequest, Workspaces};
 use crate::own_device::KeyService;
+use crate::work::{HostConnections, Order, Turn, takes_turn_in};
+use crate::workspaces::vault_release::AppProcess;
 
 /// The mail account both members read.
 const ADDRESS: &str = "team@example.test";
@@ -1100,5 +1103,151 @@ fn the_account_actions_declare_steps_the_accounts_record_takes() {
     assert!(
         person_accounts::effects(person_accounts::RESOURCE, person_accounts::LIST).is_empty(),
         "a read writes nothing"
+    );
+}
+
+/// Mail, installed here and holding its long-lived connection: what the device that keeps the
+/// vault runs for the app that signs in.
+struct MailHeld;
+
+impl HostConnections for MailHeld {
+    fn connections(&self) -> Vec<(String, Vec<String>)> {
+        vec![(MAIL.to_owned(), Vec::new())]
+    }
+    fn installed(&self, app: &str) -> bool {
+        app == MAIL
+    }
+    fn gives(&self, _: &str, _: &str, _: &str) -> bool {
+        true
+    }
+    fn on_power(&self) -> bool {
+        true
+    }
+    fn start(&self, _: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn runs(&self, _: &str, _: &str) -> bool {
+        true
+    }
+    fn stop(&self, _: &str, _: &str) {}
+}
+
+/// The release of `item`, as Mail's own connection calls it: no arguments.
+fn release_of(item: &ItemRef) -> InvokeRequest {
+    InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: person_vault::release_target(item),
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// An owner sets the workspace's Passwords to ask an editor first. No password reaches the
+/// editor's device: what it kept of the vault releases none, and nothing its caller is answered
+/// holds one. Mail's own held connection, on the device that keeps the vault, is released the
+/// account's sign-in, and the entry stays as the owner kept it.
+#[tokio::test]
+async fn an_editor_the_rules_ask_first_reads_mail_where_the_vault_is_and_holds_no_password() {
+    let server = tokio::task::spawn_blocking(MailServer::start)
+        .await
+        .unwrap();
+    let members = Members::new().await;
+    let workspace = members.workspace.clone();
+    let item = members.owner_keeps_the_password(&server).await;
+    members
+        .rule_passwords_for_the_member(tilo_action_policy::Answer::Ask)
+        .await;
+    assert!(
+        !members.member_holds_the_vaults_keys().await,
+        "a device whose person is asked first is handed no vault key"
+    );
+
+    // Once the editor's device reads the rule, what it kept of the vault releases nothing.
+    let member = members.member.clone();
+    let by = members.member_caller();
+    let named = named_entry(&member, &workspace).await;
+    assert_eq!(named, item);
+    tilo_test_env::within("the editor's device reads the rule", async {
+        loop {
+            match member.account_secret(&workspace, &by, MAIL, &named).await {
+                Err(error) if error == ASKS_FIRST => return,
+                Ok(_) => panic!("the editor's device released the password"),
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+            }
+        }
+    })
+    .await;
+
+    // Mail's own held connection, on the device that keeps the vault, is released the sign-in:
+    // the one grant that names the app for the entry is what lets it read there.
+    let owner = &members.owner;
+    let person = hex::encode(members.owner_cert.user_public_key);
+    owner
+        .put_workspace_grants(
+            &workspace,
+            &members.owner_cert,
+            [73; 32],
+            vec![tilo_action_policy::Grant::new(
+                "test:mail-sign-in",
+                tilo_action_policy::Grantee::app(MAIL),
+                tilo_action_policy::TreePath::workspace(&workspace)
+                    .app(person_vault::PROVIDER)
+                    .kind(person_vault::ITEM_KIND)
+                    .resource(named.to_string())
+                    .action(person_vault::RELEASE),
+                tilo_action_policy::KindSet::READ,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Grantee::person(person),
+            )],
+        )
+        .await
+        .unwrap();
+    owner.run_connections(Arc::new(MailHeld));
+    takes_turn_in(
+        owner,
+        &workspace,
+        &Turn::connection(MAIL, Vec::new()),
+        Order {
+            server_grace: std::time::Duration::ZERO,
+            other_grace: std::time::Duration::ZERO,
+        },
+    )
+    .await
+    .expect("this device takes Mail's connection");
+    let released = owner
+        .release_to(
+            (MAIL, &workspace),
+            &AppProcess::connection(MAIL),
+            &release_of(&named),
+        )
+        .await
+        .expect("Mail's own connection signs in");
+    assert_eq!(released.secret, PASSWORD, "Mail is handed the sign-in");
+
+    // The editor's caller is answered no password, the entry is as the owner kept it, and no
+    // record of the workspace holds one.
+    assert!(
+        member
+            .account_secret(&workspace, &by, MAIL, &named)
+            .await
+            .is_err(),
+        "the editor's device releases nothing"
+    );
+    let opened = owner.open_vault(&workspace).await.unwrap();
+    assert_eq!(
+        opened.entry(named.id()).unwrap().password,
+        PASSWORD,
+        "the entry is as the owner kept it"
+    );
+    let reading = owner.accounts_reading(&workspace).await;
+    assert!(
+        !serde_json::to_string(&reading).unwrap().contains(PASSWORD),
+        "no record of the workspace holds the password"
     );
 }
