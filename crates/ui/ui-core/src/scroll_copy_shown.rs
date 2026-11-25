@@ -336,6 +336,7 @@ impl<L: PartialEq, P: PartialEq> ShownFrames<Showing<L, P>> {
     /// changed, came or went where the screen showed them before; the viewport when the
     /// frame repaints.
     pub fn damage<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) -> Since {
+        let first = regions.len();
         let since = self.compare(owner, regions);
         let Some((drawing, presented)) = self.frames().filter(|_| since != Since::Repaint) else {
             if let Some(drawing) = self.drawing() {
@@ -377,7 +378,51 @@ impl<L: PartialEq, P: PartialEq> ShownFrames<Showing<L, P>> {
                 );
             }
         }
-        regions.retain(|rect| rect.width() > 0.0 && rect.height() > 0.0);
+        // Only what this scroller added: the list is its parent's, and a row that merges its
+        // children's damage counts on finding what was there before them.
+        let mine = regions.split_off(first);
+        regions.extend(
+            mine.into_iter()
+                .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0),
+        );
         since
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scroller inside a row adds its damage to the list the row's earlier children
+    /// filled: it drops the empty rects it found itself and leaves theirs, so the row finds
+    /// every region it counted before the scroller.
+    #[test]
+    fn a_scroller_leaves_the_damage_before_its_own_alone() {
+        let frame = Showing::<(), u64> {
+            scroll: Vec2::ZERO,
+            clip: Rect::new(0.0, 0.0, 200.0, 100.0),
+            transform: Affine::IDENTITY,
+            look: (),
+            overlays: Vec::new(),
+            pieces: vec![Piece { key: 1, rect: Rect::new(0.0, 0.0, 200.0, 20.0), paint: 1 }],
+            fixed: Vec::new(),
+        };
+        let mut frames = ShownFrames::default();
+        frames.note(frame.clone());
+        frames.present();
+        let mut moved = frame;
+        moved.pieces.push(Piece { key: 2, rect: Rect::new(0.0, 300.0, 200.0, 320.0), paint: 2 });
+        frames.note(moved);
+        let before = vec![
+            Rect::new(0.0, 0.0, 10.0, 10.0),
+            Rect::new(5.0, 5.0, 5.0, 5.0),
+            Rect::new(20.0, 0.0, 30.0, 10.0),
+        ];
+        let mut regions = before.clone();
+        frames.damage(&(), &mut regions);
+        assert_eq!(
+            regions, before,
+            "the piece out of view adds nothing, and the rects before it stay as they were"
+        );
     }
 }
