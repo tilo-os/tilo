@@ -113,9 +113,12 @@ impl DaemonProfile {
         profile.found()?;
         Ok(profile)
     }
-    /// Start the profile's daemon, and wait until it answers: its native endpoint, its status,
-    /// and the device it is. Its person's workspace is not founded yet: nothing founds one at
-    /// the daemon's start, since their desktop may still hand over the one it kept.
+    /// Start the profile's daemon, wait until it answers its native endpoint and status, and set
+    /// this computer up the way a person does: the founding call `tilo login --new-identity`
+    /// makes, asking the daemon, since it is the one process that signs as the device.
+    ///
+    /// Its person's workspace is not founded yet: nothing founds one at the daemon's start,
+    /// since their desktop may still hand over the one it kept.
     fn start(&mut self) -> Result<()> {
         let log = std::fs::File::create(self.path().join("daemon.log"))?;
         self.daemon = Some(
@@ -168,7 +171,20 @@ impl DaemonProfile {
             self.end();
             std::panic::resume_unwind(panic);
         }
-        Ok(())
+        self.found_person()
+    }
+    /// Set this computer up for the account that runs it, as `tilo login --new-identity` does: a
+    /// device no person's certificate names yet answers its own actions, and its founding call
+    /// makes this account's person and certifies this device's key. The daemon takes the key and
+    /// signs as the device, so no process beside it makes the identity. A daemon that serves a
+    /// person already says so, which is no failure here.
+    fn found_person(&self) -> Result<()> {
+        let place = tilo_api::daemon::DaemonPlace::at(&sockets_dir(self.path())?, self.path());
+        place
+            .found(&tilo_api::daemon::Founding::default())
+            // None: the daemon serves this account's person already, which is set up as it is.
+            .map(|_| ())
+            .map_err(|why| anyhow::anyhow!("setting this computer up for its person: {why}"))
     }
     /// End the daemon this profile started: a start that never answered is not asked first.
     fn end(&mut self) {
@@ -274,7 +290,6 @@ impl DaemonProfile {
             .context("creating the daemon profile")?;
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
             .context("making the daemon profile private")?;
-        set_up(root.path())?;
         Ok(Self { root, daemon: None })
     }
     fn path(&self) -> &Path {
@@ -332,51 +347,6 @@ impl Drop for DaemonProfile {
         }
     }
 }
-/// Names the profile whose computer [`a_computer_is_set_up`] sets Tilo up on.
-const SET_UP: &str = "TILO_TEST_SET_UP_PROFILE";
-
-/// Set Tilo up on the computer the daemon of `profile` runs as: the person it acts as, kept in
-/// the profile's identity, as Tilo set up on a computer keeps them. A daemon with no identity
-/// and no login says to set Tilo up first, and serves nothing.
-fn set_up(profile: &Path) -> Result<()> {
-    let module = module_path!();
-    let name = format!(
-        "{}::a_computer_is_set_up",
-        module.split_once("::").map_or(module, |(_, within)| within)
-    );
-    let status = Command::new(std::env::current_exe()?)
-        .args(["--exact", &name, "--nocapture", "--test-threads", "1"])
-        .env(SET_UP, profile)
-        .env("XDG_CONFIG_HOME", profile.join("config"))
-        .env("XDG_DATA_HOME", profile.join("data"))
-        .env("XDG_CACHE_HOME", profile.join("cache"))
-        .env("XDG_STATE_HOME", profile.join("state"))
-        .env("TILO_IDENTITY_ROOT", profile.join("identity"))
-        .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
-        .stdout(Stdio::null())
-        .status_locked()?;
-    ensure!(
-        status.success(),
-        "setting Tilo up for the daemon failed: {status}"
-    );
-    Ok(())
-}
-
-/// The body of [`set_up`]'s child, and a no-op in every other run.
-#[test]
-fn a_computer_is_set_up() {
-    if std::env::var_os(SET_UP).is_none() {
-        return;
-    }
-    let registry = tilo_identity::store::IdentityRegistryStore::from_env().unwrap();
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        registry.identity_dir(),
-        &tilo_identity::provisioning::collaboration_identity_paths(),
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .unwrap();
-}
-
 /// The runtime's answer to `request` on the profile's socket.
 fn ask(profile: &Path, request: &Value) -> Result<Value> {
     let mut stream = UnixStream::connect(native_socket(profile)?)
@@ -1107,7 +1077,6 @@ fn sigterm_ends_a_daemon_started_before_its_person() -> Result<()> {
     let path = profile.path().to_owned();
     // No identity: the daemon serves this computer before there is a person, as a stack starts
     // it while the person it will serve does not exist yet.
-    std::fs::remove_dir_all(path.join("identity"))?;
     let mut command = host(&path);
     command
         .env("RUST_LOG", "info")
@@ -1174,7 +1143,11 @@ fn served_socket(profile: &Path) -> Result<PathBuf> {
 /// and its endpoint goes with it.
 #[test]
 fn sigterm_ends_a_daemon_held_between_its_person_parts() -> Result<()> {
-    let profile = DaemonProfile::unstarted()?;
+    // This computer set up by its daemon, which then ends: what starts next starts over a
+    // profile whose person is already there, and holds before its person's part begins.
+    let mut profile = DaemonProfile::unstarted()?;
+    profile.start()?;
+    profile.end();
     let path = profile.path().to_owned();
     let socket = served_socket(&path)?;
     let mut command = host(&path);
