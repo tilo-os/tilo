@@ -878,7 +878,7 @@ impl EngineConnector {
                 out.push(Event::Unfiled {
                     request: request_id,
                     reason,
-                })
+                });
             }
             EngineEvent::Connected { .. }
             | EngineEvent::Folders { .. }
