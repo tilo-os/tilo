@@ -132,7 +132,7 @@ grep -q '^tilo-api:x:65532:' "$root/etc/passwd" || die 'no tilo-api account at 6
 # service, the API (inert), and the assessment that rolls a bad update back,
 # judged by this image's own server probe.
 wants=$root/etc/systemd/system
-for unit in tilo-server.service tilo-server-firstboot.service \
+for unit in tilo-server.service tilo-server-firstboot.service tilo-server-unlock.service \
   tilo-hosted.service tilo-api.service; do
   [[ -L $wants/multi-user.target.wants/$unit ]] || die "$unit is not enabled"
 done
@@ -154,6 +154,13 @@ grep -q 'status --daemon' "$root/usr/libexec/tilo-server-health" \
   || die 'the server health check does not ask the daemon a status call'
 grep -q '^User=tilo-server$' "$root/usr/lib/systemd/system/tilo-server-health.service" \
   || die 'the server health check does not run as the daemon account'
+# The disk unlock is asked of the daemon as its own account, the way the health check asks it,
+# while the volume's header stays root's.
+grep -q '^User=tilo-server$' "$root/usr/lib/systemd/system/tilo-server-unlock.service" \
+  || die 'the server unlock does not ask the daemon as the daemon account'
+grep -q '^ExecStartPre=+/usr/libexec/tilo-server-unlock prepare$' \
+  "$root/usr/lib/systemd/system/tilo-server-unlock.service" \
+  || die 'the server unlock does not add its key slot as root'
 grep -q '^ExecStartPre=+/usr/libexec/tilo-hosted-prepare' \
   "$root/usr/lib/systemd/system/tilo-hosted.service" \
   || die 'the hosted-VM service does not run its machine setup as root'

@@ -803,8 +803,7 @@ impl Daemon {
                 let _locks = self.account_locks(DEVICE_ACCOUNT)?;
                 let (_, session) = self.user_account(DEVICE_ACCOUNT)?;
                 self.require_device_action_owner(&session)?;
-                let uid = self.apply.account_uid(&session.user)?;
-                out::<p::DeviceUnlockEnrol>(&self.apply.enroll_device_unlock(uid, &p)?)
+                out::<p::DeviceUnlockEnrol>(&self.apply.enroll_device_unlock(&p)?)
             }
             p::Status::ACTION => {
                 let p: p::Status = parse(args)?;

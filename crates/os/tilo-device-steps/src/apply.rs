@@ -116,10 +116,9 @@ pub trait Apply {
     fn device_action_owner(&mut self, _session: &Session) -> bool {
         false
     }
-    /// Enroll the current encrypted root for the existing owner's actual session.
+    /// Set up the current encrypted root's unlock, asked by the device's owner.
     fn enroll_device_unlock(
         &mut self,
-        _uid: u32,
         _request: &tilo_device_protocol::DeviceUnlockEnrol,
     ) -> Result<tilo_device_protocol::DeviceUnlockEnrolResult, DaemonError> {
         Err(DaemonError::Apply {

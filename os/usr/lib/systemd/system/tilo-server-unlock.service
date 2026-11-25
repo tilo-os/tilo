@@ -1,0 +1,67 @@
+[Unit]
+Description=Set up this server's disk unlock with the person's other devices
+Documentation=file:///usr/share/doc/tilo/server.md
+# The server's own daemon has the person's root certify the boot key, as every computer's does,
+# so this runs once the daemon does, and only where the install kept a key for it
+# (tilo-disk-encrypt finish --unlock owner-device).
+After=tilo-server.service
+Requires=tilo-server.service
+ConditionPathExists=/var/lib/tilo/sibling-enrol/enrol.conf
+ConditionPathExists=!/var/lib/tilo-server/decommissioned
+
+[Service]
+# Started once its request is handed over, so no boot waits for the person: it stays running
+# until they answer on a device of theirs that keeps the root.
+Type=exec
+# The request goes to the daemon as the daemon's own account, in its environment, as
+# tilo-server.service runs it: the daemon admits its own account as the device's system, and its
+# sockets are that account's alone.
+User=tilo-server
+Group=tilo-server
+SupplementaryGroups=tilo-identity
+Environment=HOME=/var/lib/tilo-server TILO_IDENTITY_ROOT=/var/lib/tilo
+Environment=XDG_STATE_HOME=/var/lib/tilo/state TILO_RUNTIME_PROFILE=/var/lib/tilo-server
+Environment=XDG_RUNTIME_DIR=/run/tilo-server
+# Where root hands the request to that account, and the account keeps the daemon's answer.
+RuntimeDirectory=tilo-server-unlock
+RuntimeDirectoryMode=0700
+# The volume's header, the TPM and the install key are root's: root adds the key slot before the
+# request goes, and writes the token with the answer (or removes the slot again) after, whatever
+# the request ended in.
+ExecStartPre=+/usr/libexec/tilo-server-unlock prepare
+ExecStart=/usr/libexec/tilo-server-unlock register
+ExecStopPost=+/usr/libexec/tilo-server-unlock finish
+TimeoutStartSec=5min
+TimeoutStopSec=5min
+StandardOutput=journal+console
+StandardError=journal+console
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+KeyringMode=private
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

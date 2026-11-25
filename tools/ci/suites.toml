@@ -294,7 +294,7 @@ suites = [
   "os/tests/nearby_privileged_processes_test.sh",
   "os/tests/vm_release_check_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
-  "os/tests/server_firstboot_sibling.sh",
+  "os/tests/server_unlock.sh",
   "os/tests/disk_encrypt_finish_sibling.sh",
   "os/tests/plan_network_keyfile.sh",
 ]

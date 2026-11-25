@@ -131,7 +131,7 @@ COPY os/usr/libexec/tilo-hosted-prepare os/usr/libexec/tilo-hosted-serve \
      os/usr/libexec/tilo-update-policy-set \
      os/usr/libexec/tilo-image-trust-staged os/usr/libexec/tilo-esp-mount \
      os/usr/libexec/tilo-server-firstboot os/usr/libexec/tilo-server-state-migrate \
-     os/usr/libexec/tilo-server-update-policy \
+     os/usr/libexec/tilo-server-unlock os/usr/libexec/tilo-server-update-policy \
      os/usr/libexec/tilo-server-control os/usr/libexec/tilo-server-device-config \
      os/usr/libexec/tilo-disk-encrypt os/usr/libexec/tilo-store-volume \
      os/usr/libexec/tilo-rollback-common os/usr/libexec/tilo-rollback-confirm \
@@ -180,6 +180,7 @@ RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-update-policy-check /usr/libexec/tilo-update-policy-set \
         /usr/libexec/tilo-image-trust-staged \
         /usr/libexec/tilo-esp-mount /usr/libexec/tilo-server-firstboot \
+        /usr/libexec/tilo-server-unlock \
         /usr/libexec/tilo-server-state-migrate /usr/libexec/tilo-server-update-policy \
         /usr/libexec/tilo-server-device-config \
         /usr/libexec/tilo-disk-encrypt /usr/libexec/tilo-store-volume \
@@ -194,6 +195,7 @@ RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
 # ---- Units ------------------------------------------------------------------
 COPY os/usr/lib/systemd/system/tilo-server.service \
     os/usr/lib/systemd/system/tilo-server-firstboot.service \
+    os/usr/lib/systemd/system/tilo-server-unlock.service \
     os/usr/lib/systemd/system/tilo-server-state-migrate.service \
     os/usr/lib/systemd/system/tilo-hosted.service \
     os/usr/lib/systemd/system/tilo-api.service \
@@ -281,6 +283,7 @@ RUN printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo-server"
 # staged one.
 RUN systemctl enable tilo-server-firstboot.service \
     && systemctl enable tilo-server.service \
+    && systemctl enable tilo-server-unlock.service \
     && systemctl enable tilo-hosted.service \
     && systemctl enable tilo-api.service \
     && systemctl enable chronyd.service \

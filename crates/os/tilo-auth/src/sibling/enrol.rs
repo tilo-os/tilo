@@ -67,11 +67,6 @@ pub struct Args {
     /// wired links only. Needs no passphrase and no signed-in session.
     #[arg(long)]
     pub replace_networks: bool,
-    /// The account whose daemon sets up the boot key, on a machine whose
-    /// daemon runs as that person's own service. Without it this process's
-    /// own account's daemon is asked.
-    #[arg(long)]
-    pub session_uid: Option<u32>,
     /// Refuse enrollment unless the device factor can be sealed to the TPM.
     #[arg(long)]
     pub require_tpm: bool,
@@ -140,12 +135,26 @@ impl DaemonRegistrar {
         Self(daemon)
     }
 
-    /// The daemon `session_uid`'s account runs, or this account's.
+    /// This computer's daemon, as this account finds it: the system unit's, which admits root
+    /// as the device's own system, or the one a server's account runs, in its environment.
     ///
     /// # Errors
-    /// No daemon of that account can be named.
-    pub fn find(session_uid: Option<u32>) -> Result<Self> {
-        local_daemon(session_uid).map(Self)
+    /// No daemon can be named here.
+    pub fn find() -> Result<Self> {
+        tilo_api::daemon::this_computer()
+            .map(Self)
+            .map_err(|error| anyhow!("{error}"))
+    }
+
+    /// Waits up to `within` for the daemon to listen: a server's starts beside the unit that
+    /// asks it.
+    ///
+    /// # Errors
+    /// No daemon answered in `within`.
+    pub fn listening(&self, within: std::time::Duration) -> Result<()> {
+        self.0
+            .wait_for_native(within)
+            .map_err(|error| anyhow!("{error}"))
     }
 }
 
@@ -169,51 +178,6 @@ impl Registrar for DaemonRegistrar {
                 NotEnrolled::Failed(format!("the device service answered no enrolment: {answer}"))
             })
     }
-}
-
-/// Where a login account keeps its identity records, relative to its home.
-const IDENTITY_DIR_IN_HOME: &str = ".config/tilo/identity";
-
-/// The daemon that sets up the boot: this account's, or the one `session_uid` names on
-/// a machine whose daemon runs as the system unit.
-fn local_daemon(session_uid: Option<u32>) -> Result<DaemonPlace> {
-    let ours = rustix::process::geteuid().as_raw();
-    match session_uid.filter(|uid| *uid != ours) {
-        None => tilo_api::daemon::this_computer().map_err(|error| anyhow!("{error}")),
-        Some(uid) => {
-            let sockets = PathBuf::from(format!("/run/user/{uid}/tilo"));
-            let dir = home_of(uid)?.join(IDENTITY_DIR_IN_HOME);
-            Ok(DaemonPlace::at(&sockets, &dir))
-        }
-    }
-}
-
-/// The home directory of account `uid`.
-fn home_of(uid: u32) -> Result<PathBuf> {
-    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
-    let mut result: *mut libc::passwd = std::ptr::null_mut();
-    // The largest home directory Linux accepts; getpwuid_r reports what it needs.
-    let mut buffer = vec![0_u8; 4096];
-    // SAFETY: the buffer and the entry pointers are valid for the call, and the
-    // returned entry points into `buffer`, which outlives the reads below.
-    let status = unsafe {
-        libc::getpwuid_r(
-            uid,
-            entry.as_mut_ptr(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-            &raw mut result,
-        )
-    };
-    if status != 0 || result.is_null() {
-        bail!("this device has no account {uid}");
-    }
-    // SAFETY: a non-null result points at the initialized `entry`.
-    let entry = unsafe { entry.assume_init() };
-    // SAFETY: the home pointer is a NUL-terminated string inside `buffer`.
-    let home = unsafe { std::ffi::CStr::from_ptr(entry.pw_dir) };
-    let home = home.to_str().context("this account's home is not UTF-8")?;
-    Ok(PathBuf::from(home))
 }
 
 /// What Settings shows about an enrolment.
@@ -403,7 +367,7 @@ pub fn run(args: &Args, machine: Machine<'_>) -> Result<()> {
     if args.replace_networks {
         return replace_networks(machine.runner, &args.device, networks);
     }
-    let registrar = DaemonRegistrar::find(args.session_uid)?;
+    let registrar = DaemonRegistrar::find()?;
     let existing = existing_passphrase(&args.device, args.key_file.as_deref())?;
     enrol(
         machine,
@@ -437,19 +401,70 @@ pub fn enrol(
     sealing: Sealing,
     unattended: bool,
 ) -> Result<()> {
+    let (waiting, request, half) =
+        slot_for_a_boot_key(machine, device, existing, networks, sealing, unattended)?;
+    let answered = registrar
+        .register(&request, &half)
+        .map_err(anyhow::Error::from);
+    drop(half);
+    settle(machine, device, existing, &waiting, answered)
+}
+
+/// What root keeps, readable by root alone, while the person's root is asked to certify a boot
+/// key: the slot already added for it, and the material its token is to keep.
+#[derive(Serialize, Deserialize)]
+pub struct Waiting {
+    keyslot: u32,
+    sealing: Sealing,
+    material: Material,
+}
+
+/// What the daemon's own account takes to its daemon: the boot key's request, and the half the
+/// person's devices are to carry, both hex.
+#[derive(Serialize, Deserialize)]
+struct Asked {
+    request: String,
+    half: String,
+}
+
+impl Drop for Asked {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.half);
+    }
+}
+
+/// The file in the daemon account's directory that holds what it asks its daemon ([`Asked`]).
+pub const ASKED: &str = "asked.json";
+/// The file in that directory that holds its daemon's answer: the certificate and the devices
+/// that carry the half, as the daemon answered them.
+pub const ANSWER: &str = "answer";
+/// The most either file may be: a request and a half, or a certificate and some devices.
+const LARGEST: u64 = 1 << 20;
+
+/// Draws the device half, the half the person's devices carry and a boot-only key pair, and adds
+/// the key slot the two halves open: what root keeps meanwhile, the request for the person's
+/// root, and the half it hands on. A failure after the slot was added removes it again.
+fn slot_for_a_boot_key(
+    machine: Machine<'_>,
+    device: &Path,
+    existing: &[u8],
+    networks: Vec<material::Network>,
+    sealing: Sealing,
+    unattended: bool,
+) -> Result<(Waiting, EnrolRequest, Half)> {
     machine.require(unattended)?;
     let runner = machine.runner;
     let dir = crate::scratch()?;
     let ws = Workspace::new(dir.path());
     let volume_uuid = luks::uuid(runner, device)?;
     let device_half = Half::generate().map_err(|error| anyhow!("{error}"))?;
-    let sibling_half = Half::generate().map_err(|error| anyhow!("{error}"))?;
+    let carried_half = Half::generate().map_err(|error| anyhow!("{error}"))?;
     let boot_key = SigningKey::from_bytes(
         Half::generate()
             .map_err(|error| anyhow!("{error}"))?
             .expose(),
     );
-    let passphrase = derive_slot_key(&device_half, &sibling_half, &volume_uuid);
+    let passphrase = derive_slot_key(&device_half, &carried_half, &volume_uuid);
     let keyslot = luks::add_slot(
         runner,
         &ws,
@@ -458,11 +473,10 @@ pub fn enrol(
         passphrase.as_bytes(),
     )?;
     drop(passphrase);
-    // Everything after the slot exists can still fail, and the slot is
-    // removed again when it does. That includes the TPM: an unattended
-    // enrolment whose attestation key cannot be made fails rather than
-    // leaving a machine that silently falls back to a prompt.
-    let finish = || -> Result<Token> {
+    // Everything after the slot exists can still fail, and the slot is removed again when it
+    // does. That includes the TPM: an unattended setup whose attestation key cannot be made
+    // fails rather than leaving a machine that silently falls back to a prompt.
+    let asked = || -> Result<(Material, EnrolRequest)> {
         let (attestation, attestation_key, unattended_chain) = if machine.has_tpm {
             let (attestation, point) = tpm::create_attestation_key(runner)?;
             let chain = if unattended {
@@ -480,11 +494,46 @@ pub fn enrol(
         };
         let request = EnrolRequest::new(&boot_key, slot, attestation_key, unattended_chain)
             .map_err(|error| anyhow!("{error}"))?;
-        let response = registrar.register(&request, &sibling_half)?;
-        drop(sibling_half);
+        Ok((
+            Material::new(&device_half, &boot_key, networks, attestation),
+            request,
+        ))
+    };
+    match asked() {
+        Ok((material, request)) => Ok((
+            Waiting {
+                keyslot,
+                sealing,
+                material,
+            },
+            request,
+            carried_half,
+        )),
+        Err(error) => {
+            let _ = luks::kill_slot(runner, &ws, device, keyslot, Some(existing));
+            Err(error)
+        }
+    }
+}
+
+/// Ends what `waiting` began with the person's root's answer: the token written with the
+/// certificate and the devices that carry the half, or, for any refusal or failure, the slot
+/// removed again, so a half set up volume never remains.
+fn settle(
+    machine: Machine<'_>,
+    device: &Path,
+    existing: &[u8],
+    waiting: &Waiting,
+    answered: Result<EnrolResponse>,
+) -> Result<()> {
+    let runner = machine.runner;
+    let dir = crate::scratch()?;
+    let ws = Workspace::new(dir.path());
+    let written = || -> Result<Token> {
+        let response = answered?;
         let cert = &response.cert;
         verify_device_cert(cert).map_err(|error| anyhow!("the issued certificate: {error}"))?;
-        if cert.device_public_key != boot_key.verifying_key().to_bytes() {
+        if cert.device_public_key != waiting.material.boot_key()?.verifying_key().to_bytes() {
             bail!("the issued certificate is for another boot key");
         }
         if cert.capabilities != DeviceCapabilities::nothing() {
@@ -493,30 +542,255 @@ pub fn enrol(
         if response.siblings.is_empty() {
             bail!("none of your other devices holds the sibling half");
         }
-        let material = Material::new(&device_half, &boot_key, networks, attestation);
         let token = Token {
             kind: TOKEN_TYPE.into(),
-            keyslots: vec![keyslot.to_string()],
+            keyslots: vec![waiting.keyslot.to_string()],
             tilo_version: TOKEN_VERSION,
             cert: Token::encode_cert(cert)?,
             siblings: response.siblings.iter().map(Sibling::from).collect(),
-            sealing,
-            material: tpm::seal_material(runner, sealing, &material.to_json()?)?,
+            sealing: waiting.sealing,
+            material: tpm::seal_material(runner, waiting.sealing, &waiting.material.to_json()?)?,
         };
         token.validate()?;
         luks::write_sibling(runner, &ws, device, &token)?;
         Ok(token)
     };
-    match finish() {
+    match written() {
         Ok(token) => {
-            write_status(&status_of(runner, &token)?, &volume_uuid);
+            write_status(&status_of(runner, &token)?, &luks::uuid(runner, device)?);
             Ok(())
         }
         Err(error) => {
-            let _ = luks::kill_slot(runner, &ws, device, keyslot, Some(existing));
+            let _ = luks::kill_slot(runner, &ws, device, waiting.keyslot, Some(existing));
             Err(error)
         }
     }
+}
+
+/// `tilo-auth sibling prepare`: root's part before the person's root is asked, where the
+/// daemon runs as an account of its own (a server's) and that account asks it
+/// (`tilo-auth sibling register`).
+#[derive(Debug, clap::Args)]
+pub struct PrepareArgs {
+    /// The LUKS2 partition.
+    pub device: PathBuf,
+    /// A key file holding an existing passphrase of the volume.
+    #[arg(long)]
+    pub key_file: PathBuf,
+    /// A `NetworkManager` connection early boot may join (repeatable), as for `enrol`.
+    #[arg(long = "network")]
+    pub networks: Vec<String>,
+    /// Refuse unless the device factor can be sealed to the TPM.
+    #[arg(long)]
+    pub require_tpm: bool,
+    /// Accept this machine's current boot chain, as for `enrol`.
+    #[arg(long)]
+    pub unattended: bool,
+    /// The file root keeps what the token is to carry in until the answer comes, in a directory
+    /// of root's own.
+    #[arg(long)]
+    pub waiting: PathBuf,
+    /// The directory of the account whose daemon asks the person's root: what it takes to its
+    /// daemon is written there, as that account's own.
+    #[arg(long)]
+    pub hand_to: PathBuf,
+}
+
+/// `tilo-auth sibling finish`: root's part once the daemon's account was answered.
+#[derive(Debug, clap::Args)]
+pub struct FinishArgs {
+    /// The LUKS2 partition.
+    pub device: PathBuf,
+    /// A key file holding an existing passphrase of the volume.
+    #[arg(long)]
+    pub key_file: PathBuf,
+    /// The file `prepare` kept.
+    #[arg(long)]
+    pub waiting: PathBuf,
+    /// The directory `prepare` handed the request to, where the answer is.
+    #[arg(long)]
+    pub answer_in: PathBuf,
+}
+
+/// Adds the slot for a boot key and hands its request to the daemon's account in
+/// `args.hand_to`. One kept from an earlier run that ended before its answer is removed first.
+///
+/// # Errors
+/// The volume already has the unlock, or any step fails; the slot is removed again.
+pub fn prepare(args: &PrepareArgs, machine: Machine<'_>) -> Result<()> {
+    let sealing = enrollment_sealing(machine.sealing(), args.require_tpm)?;
+    machine.require(args.unattended)?;
+    if luks::sibling(machine.runner, &args.device)?.is_some() {
+        bail!("{} already has a sibling unlock", args.device.display());
+    }
+    let existing = existing_passphrase(&args.device, Some(&args.key_file))?;
+    if let Some(earlier) = waiting_in(&args.waiting)? {
+        let dir = crate::scratch()?;
+        luks::kill_slot(
+            machine.runner,
+            &Workspace::new(dir.path()),
+            &args.device,
+            earlier.keyslot,
+            Some(&existing),
+        )?;
+        remove_file(&args.waiting)?;
+    }
+    let networks = args
+        .networks
+        .iter()
+        .map(|name| network(name))
+        .collect::<Result<Vec<_>>>()?;
+    let (waiting, request, half) = slot_for_a_boot_key(
+        machine,
+        &args.device,
+        &existing,
+        networks,
+        sealing,
+        args.unattended,
+    )?;
+    let kept = || -> Result<()> {
+        tilo_files::native::atomic::write_private(
+            &args.waiting,
+            &zeroize::Zeroizing::new(serde_json::to_vec(&waiting)?),
+        )?;
+        let asked = Asked {
+            request: hex::encode(postcard::to_allocvec(&request)?),
+            half: hex::encode(half.expose()),
+        };
+        hand(
+            &args.hand_to,
+            &zeroize::Zeroizing::new(serde_json::to_vec(&asked)?),
+        )
+    };
+    kept().or_else(|error| {
+        let dir = crate::scratch()?;
+        let _ = luks::kill_slot(
+            machine.runner,
+            &Workspace::new(dir.path()),
+            &args.device,
+            waiting.keyslot,
+            Some(&existing),
+        );
+        let _ = std::fs::remove_file(&args.waiting);
+        Err(error)
+    })
+}
+
+/// Asks this account's daemon what `prepare` handed to `dir`, and keeps its answer there for
+/// `finish`. What was asked is gone from `dir` either way.
+///
+/// # Errors
+/// Nothing was handed over, or the daemon did not certify the boot key: a no and no device of
+/// the person's within reach are said in its words.
+pub fn register(dir: &Path, registrar: &impl Registrar) -> Result<()> {
+    let asked = dir.join(ASKED);
+    let read = read_small(&asked);
+    let _ = std::fs::remove_file(&asked);
+    let asked: Asked = serde_json::from_slice(&read?).context("what was handed over")?;
+    let request: EnrolRequest = postcard::from_bytes(
+        &hex::decode(&asked.request).context("the request is not hex")?,
+    )
+    .context("the request")?;
+    let half = Half::from_bytes(
+        zeroize::Zeroizing::new(hex::decode(&asked.half).context("the half is not hex")?)
+            .as_slice()
+            .try_into()
+            .context("the half is not one")?,
+    );
+    drop(asked);
+    let response = registrar.register(&request, &half)?;
+    tilo_files::native::atomic::write_private(
+        &dir.join(ANSWER),
+        hex::encode(postcard::to_allocvec(&response)?).as_bytes(),
+    )?;
+    Ok(())
+}
+
+/// Writes the token with the answer the daemon's account kept in `args.answer_in`, or, with
+/// none, removes the slot `prepare` added.
+///
+/// # Errors
+/// Nothing waits, or no answer came, or it is not one this boot key can use.
+pub fn finish(args: &FinishArgs, machine: Machine<'_>) -> Result<()> {
+    let existing = existing_passphrase(&args.device, Some(&args.key_file))?;
+    let waiting = waiting_in(&args.waiting)?
+        .ok_or_else(|| anyhow!("nothing waits in {}", args.waiting.display()))?;
+    let answer = args.answer_in.join(ANSWER);
+    let answered = read_small(&answer).and_then(|answer| {
+        let answer = std::str::from_utf8(&answer).context("the answer is not text")?;
+        let bytes = hex::decode(answer.trim()).context("the answer is not hex")?;
+        postcard::from_bytes::<EnrolResponse>(&bytes).context("the answer")
+    });
+    let _ = std::fs::remove_file(&answer);
+    let settled = settle(machine, &args.device, &existing, &waiting, answered);
+    remove_file(&args.waiting)?;
+    settled
+}
+
+/// What root kept in `file`, if anything.
+fn waiting_in(file: &Path) -> Result<Option<Waiting>> {
+    match std::fs::read(file) {
+        Ok(bytes) => {
+            let bytes = zeroize::Zeroizing::new(bytes);
+            serde_json::from_slice(&bytes)
+                .map(Some)
+                .with_context(|| format!("{} is malformed", file.display()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("could not read {}", file.display())),
+    }
+}
+
+fn remove_file(file: &Path) -> Result<()> {
+    match std::fs::remove_file(file) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("could not remove {}", file.display())),
+    }
+}
+
+/// `file`, in a directory another account owns: read only when it is a file of its own, never
+/// through a link that account put there, and never more than [`LARGEST`].
+fn read_small(file: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(file)
+        .with_context(|| format!("could not read {}", file.display()))?;
+    if !opened.metadata()?.is_file() {
+        bail!("{} is not a file", file.display());
+    }
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    opened.take(LARGEST).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Writes `bytes` as [`ASKED`] in `dir`, made the own file of the account `dir` belongs to, which
+/// alone reads it. A file there already, or a link put in its place, is replaced and never
+/// written through.
+fn hand(dir: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let owner = std::fs::symlink_metadata(dir)
+        .with_context(|| format!("could not read {}", dir.display()))?;
+    if !owner.is_dir() {
+        bail!("{} is not a directory", dir.display());
+    }
+    let file = dir.join(ASKED);
+    remove_file(&file)?;
+    let mut created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&file)
+        .with_context(|| format!("could not write {}", file.display()))?;
+    std::os::unix::fs::fchown(&created, Some(owner.uid()), Some(owner.gid()))
+        .with_context(|| format!("could not give {} to its account", file.display()))?;
+    created.write_all(bytes)?;
+    created.sync_all()?;
+    Ok(())
 }
 
 /// Chooses the unlock networks of an enrolled volume again, leaving its slot,

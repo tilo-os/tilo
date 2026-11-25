@@ -15,11 +15,7 @@ ExecStart=/usr/libexec/tilo-server-firstboot
 # on the LAN. In that case the script prints its pairing token to
 # the console and returns non-zero; systemd will retry on next
 # boot after the operator finishes the OOB handshake.
-#
-# The bound also covers the sibling-slot enrolment that follows a
-# successful enrollment (up to four minutes waiting for one of the
-# person's devices to answer).
-TimeoutStartSec=600
+TimeoutStartSec=300
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal+console
@@ -30,11 +26,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-# A server whose planned unlock is another of the owner's devices enrols that
-# LUKS2 slot here, once the enrollment above gave it the person's device
-# store: that writes the volume's header and, where the machine has one,
-# seals the token to the TPM. Both need the real device nodes.
-PrivateDevices=no
+PrivateDevices=yes
 PrivateIPC=yes
 ReadWritePaths=/etc/tilo /var/lib/tilo /var/lib/tilo-server
 ProtectKernelTunables=yes

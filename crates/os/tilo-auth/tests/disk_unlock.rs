@@ -30,7 +30,9 @@ use settings_store::sign_in_comforts::SignInComforts;
 use tilo_api::daemon::DaemonPlace;
 use tilo_auth::boot::sibling::{self, Outcome, Refusal, Siblings, Volume};
 use tilo_auth::luks;
-use tilo_auth::sibling::enrol::{self, Args, DaemonRegistrar, Machine, run};
+use tilo_auth::sibling::enrol::{
+    self, Args, DaemonRegistrar, FinishArgs, Machine, PrepareArgs, run,
+};
 use tilo_auth::sibling::material::{Material, Network};
 use tilo_auth::sibling::token::{self, TOKEN_VERSION, Token};
 use tilo_auth::tpm::{self, Sealing};
@@ -374,7 +376,6 @@ fn sets_up_and_opens(profile: &Path, root: SigningIdentity) {
         key_file: Some(key_file.clone()),
         networks: Vec::new(),
         replace_networks: false,
-        session_uid: None,
         require_tpm: false,
         unattended: false,
     };
@@ -642,6 +643,48 @@ fn sets_up_and_opens(profile: &Path, root: SigningIdentity) {
     assert_eq!(slots(&device), ["0"]);
     assert!(!sibling::enrolled(&runner, &device));
     assert!(luks::comforts(&runner, &device).unwrap().is_some());
+
+    // Where the daemon runs as an account of its own, a server's, root adds the slot and hands
+    // the request to that account, which asks its daemon; root then writes the token with the
+    // answer it kept. With no answer the slot goes again, and one prepared again before its
+    // answer replaces the earlier slot.
+    let handed = dir.path().join("handed");
+    std::fs::create_dir(&handed).unwrap();
+    let waiting = dir.path().join("root").join("waiting.json");
+    let prepared = PrepareArgs {
+        device: device.clone(),
+        key_file: key_file.clone(),
+        networks: Vec::new(),
+        require_tpm: false,
+        unattended: false,
+        waiting: waiting.clone(),
+        hand_to: handed.clone(),
+    };
+    let finished = FinishArgs {
+        device: device.clone(),
+        key_file: key_file.clone(),
+        waiting: waiting.clone(),
+        answer_in: handed.clone(),
+    };
+    enrol::prepare(&prepared, machine).unwrap();
+    assert_eq!(slots(&device), ["0", "1"]);
+    enrol::prepare(&prepared, machine).unwrap();
+    assert_eq!(slots(&device), ["0", "1"], "the earlier slot went first");
+    let refused = enrol::finish(&finished, machine).expect_err("no answer came");
+    assert!(format!("{refused:#}").contains("answer"), "{refused:#}");
+    assert_eq!(slots(&device), ["0"], "the slot is removed again");
+    assert!(!waiting.exists());
+    enrol::prepare(&prepared, machine).unwrap();
+    enrol::register(&handed, &DaemonRegistrar::new(here.clone()))
+        .expect("the daemon has the root certify the boot key");
+    assert!(!handed.join(enrol::ASKED).exists(), "what was asked is gone");
+    enrol::finish(&finished, machine).expect("root writes the token");
+    assert!(sibling::enrolled(&runner, &device));
+    assert!(!waiting.exists());
+    let status = enrol::status(&runner, &device).unwrap();
+    assert_eq!((status.keyslot, status.siblings.len()), (1, 2));
+    enrol::remove(&runner, &device, Some(DISK_PASSPHRASE)).unwrap();
+    assert_eq!(slots(&device), ["0"]);
 
     // A machine with a TPM that requires one sets up with it: the material is
     // sealed to the TPM, and the key that attests its boot goes along.

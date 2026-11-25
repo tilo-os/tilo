@@ -544,10 +544,9 @@ impl Apply for SystemdApply {
     }
     fn enroll_device_unlock(
         &mut self,
-        uid: u32,
         request: &tilo_device_protocol::DeviceUnlockEnrol,
     ) -> Result<tilo_device_protocol::DeviceUnlockEnrolResult, DaemonError> {
-        crate::disk_unlock::enroll(uid, request)
+        crate::disk_unlock::enroll(request)
     }
     fn session_layer_dropin(
         &mut self,

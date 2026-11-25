@@ -813,18 +813,25 @@ the open disk are still in hand:
 1. `tilo-enroll enroll` spends the staged token into the installed
    `/var/lib/tilo`, which hands the machine the person's device store;
 2. `tilo-disk-encrypt enrol --sibling --key-file …` adds the keyslot with the
-   installer's throwaway key, asking the person's devices over the peer
-   network for their consent, and saves the plan's static network keyfile in
-   the token so early boot joins it.
+   installer's throwaway key, and the installer's daemon has the person's root
+   certify the boot key (`devices#setUpUnlock`): the machine keeps none of it,
+   so a device of the person's that does asks them, naming the machine, before
+   it certifies anything. The plan's static network keyfile goes into the
+   token so early boot joins it.
 
 The first boot then opens with another of the person's devices approving the
-boot, and `tilo-server-firstboot` has nothing left to enrol: it removes the
-install key's LUKS2 keyslot with `cryptsetup luksRemoveKey` and shreds the key
-`tilo-disk-encrypt finish` kept root-only (0600, in a 0700 directory) inside
-the encrypted root at `/var/lib/tilo/sibling-enrol/luks.key`. Until that
-succeeds both stay in place and the next boot tries again; the installed
-system's status says `sibling unlock pending` while it waits
-(`ServerStatus.unlock`, shown by `tilo server status`). A machine that cannot
+boot, and `tilo-server-unlock.service` has nothing left to set up: it removes
+the install key's LUKS2 keyslot with `cryptsetup luksRemoveKey` and shreds the
+key `tilo-disk-encrypt finish` kept root-only (0600, in a 0700 directory)
+inside the encrypted root at `/var/lib/tilo/sibling-enrol/luks.key`. A server
+whose unlock is not set up yet sets it up there the same way, once its daemon
+runs: root adds the keyslot, the daemon's own account (`tilo-server`) asks its
+daemon, which has the person's root certify the boot key, and root writes the
+token with the answer. The unit stays running until the person answers, and no
+boot waits for it. Until that succeeds the key and its slot stay in place and
+the next boot tries again; the installed system's status says `sibling unlock
+pending` while it waits (`ServerStatus.unlock`, shown by `tilo server
+status`). A machine that cannot
 enroll or enrol the sibling keyslot fails the install instead of finishing a
 disk nobody can open.
 

@@ -67,8 +67,8 @@
 #                                     server planned for owner-device, or for
 #                                     tpm on a machine with no usable TPM,
 #                                     keeps its install key inside the
-#                                     encrypted root so its first boot can
-#                                     enrol the sibling unlock. See
+#                                     encrypted root, for the server's unlock
+#                                     unit to spend once its daemon runs. See
 #                                     tilo-disk-encrypt finish.
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
 #     --extension ID                  the owner turned on the Tilo extension ID

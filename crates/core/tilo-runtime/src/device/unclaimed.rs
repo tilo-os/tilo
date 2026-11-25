@@ -112,6 +112,22 @@ impl Founding {
     /// Have `enrolling` enrol this device's boot key from now on: the person's services run.
     pub(crate) fn enrolling(&self, enrolling: Arc<super::boot_unlock::BootUnlock>) {
         *self.enrolling.lock_recover() = Some(enrolling);
+        self.announced.notify_waiters();
+    }
+
+    /// What sets up this device's boot unlock, once the person's services run: a boot asked
+    /// while they start (a server's, asked by a unit its own boot starts beside the daemon) waits
+    /// for them, and whoever follows the call sees it pending meanwhile.
+    async fn boot_unlock(&self) -> Arc<super::boot_unlock::BootUnlock> {
+        loop {
+            let heard = self.announced.notified();
+            tokio::pin!(heard);
+            heard.as_mut().enable();
+            if let Some(unlocking) = self.enrolling.lock_recover().clone() {
+                return unlocking;
+            }
+            heard.await;
+        }
     }
 
     /// The tickets `kinds` names, each issued as `person`'s own act on this device: as
@@ -829,18 +845,13 @@ impl DeviceOnly {
             let update = ended(super::key_use::answer(action, &args, &self.0.key));
             return Pending::ready(Ok(self.keep(invocation, update)));
         }
-        // A boot is enrolled through the person's own dispatch, which their services run.
-        let Some(enrolling) = self.0.founding.enrolling.lock_recover().clone() else {
-            let update = failed(
-                invocation,
-                "this device's services are not running yet, so it cannot enrol its disk unlock",
-            );
-            return Pending::ready(Ok(self.keep(invocation, update)));
-        };
+        // A boot is set up through the person's own dispatch, which their services run.
         let receipt = self.keep(invocation, InvocationUpdate::Accepted { invocation });
         let answering = self.clone();
+        let founding = Arc::clone(&self.0.founding);
         self.0.runtime.spawn(async move {
-            let update = ended(enrolling.enrol(&args).await);
+            let unlocking = founding.boot_unlock().await;
+            let update = ended(unlocking.enrol(&args).await);
             answering.keep(invocation, update);
         });
         Pending::ready(Ok(receipt))

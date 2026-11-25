@@ -149,8 +149,8 @@ the recovery key always remains (`tilo-disk-encrypt`).
   copied boot partition alone gets nothing.
   - `tilo-disk-encrypt enrol --sibling --unattended` asks for exactly that
     auto-approval: at enrolment the machine creates an attestation key under
-    its TPM, the session holding the person's root records its public point
-    with the enrolment, and the root signs the PCR 4 + 7 composite
+    its TPM, the person's root records its public point with the enrolment,
+    and the root signs the PCR 4 + 7 composite
     the machine measures then. Every boot loads that key again and answers a
     sibling's challenge with a TPM quote over the challenge nonce, the boot id
     and the request's ephemeral key; a sibling releases the half with no
@@ -159,17 +159,18 @@ the recovery key always remains (`tilo-disk-encrypt`).
     loss, while a machine whose boot chain changed, whose TPM was cleared, or
     which has no attestation key still waits for its owner. Enrolling again
     accepts a new chain; the recovery key remains the independent last resort.
-  - A machine that holds none of the person's root enrols without one: a
-    desktop that joined the identity, or a server nobody is signed in to
-    asks the person's devices over the same peer network
-    (`tilo-auth sibling enrol`). The device that holds the root puts the
-    request to its person on its own sheet, and only an approval signs the
-    boot key. A device without the root says so and the next is asked; a
-    refusal stops the ask instead of moving to another device. A machine with
-    a session signed in on it asks that session's socket first, as before, and
-    only reaches the network when the session keeps no root either. The
-    computer's daemon dials them, as the one process that keeps its device
-    key, over the relays the person's devices use.
+  - Every machine sets the unlock up through its own daemon, the one process
+    that keeps its device key (`devices#setUpUnlock`, which `tilo-auth
+    sibling enrol` asks). Where the daemon keeps the person's root, the root
+    certifies the boot key there. A machine that keeps none of it (a desktop
+    that joined the identity, a server nobody is signed in to) asks a device
+    of the person's that keeps the root to certify it (`devices#certifyKey`):
+    that device asks the person, naming the computer and its key, and only
+    their yes certifies the boot key. A no leaves the disk as locked as it
+    was, and says so; with no device that keeps the root within reach, the
+    machine says that instead. A server's own unit does this once its daemon
+    runs, as the daemon's account (`tilo-server-unlock.service`), and stays
+    pending until the person answers.
 - **The passphrase or recovery key** at the keyboard, as today.
 
 Wi-Fi-only machines need the network in early boot. The initramfs runs the

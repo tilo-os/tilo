@@ -1,18 +1,10 @@
 #!/usr/bin/env bash
-# Complete this machine's join with one of the person's devices, its
-# provisioning, and — where the install planned it — the sibling unlock of its
-# root.
+# Complete this machine's join with one of the person's devices, and its
+# provisioning. Where the install planned the person's devices to unlock its
+# root, tilo-server-unlock.service sets that up once the server's daemon runs.
 #
-# The sibling step spends the install key the installer kept inside the
-# encrypted root (tilo-disk-encrypt finish --unlock owner-device): it enrols a
-# LUKS2 slot another of the person's devices releases at boot, then removes
-# that install slot and shreds the key. It can only run once this machine is
-# joined and holds the person's device store, which is what the login above
-# hands it. A failure leaves both in place and tries again on the next
-# boot; the installed system's status names the slot pending until then.
-#
-# Paths and commands are overridable so the logic runs against fakes
-# (os/tests/server_firstboot_sibling.sh); a boot passes none of them.
+# Paths and commands are overridable so the logic runs against fakes; a boot
+# passes none of them.
 set -euo pipefail
 
 identity_root="${TILO_SERVER_IDENTITY_ROOT:-/var/lib/tilo}"
@@ -24,20 +16,7 @@ login_file="$state_home/tilo/device/login.json"
 ticket="${TILO_SERVER_TICKET:-/etc/tilo/ticket}"
 cert="$identity_root/device/cert.bin"
 decommissioned="${TILO_SERVER_DECOMMISSIONED:-/var/lib/tilo-server/decommissioned}"
-state_root="${TILO_SERVER_STATE_ROOT:-/var/lib/tilo-server}"
-sibling_dir="${TILO_SERVER_SIBLING_DIR:-/var/lib/tilo/sibling-enrol}"
-sibling_conf="$sibling_dir/enrol.conf"
-sibling_key="$sibling_dir/luks.key"
-pending_marker="$state_root/sibling-unlock-pending"
 tilo_bin="${TILO_TILO_BIN:-/usr/bin/tilo}"
-disk_encrypt="${TILO_DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
-auth_bin="${TILO_TILO_AUTH:-/usr/libexec/tilo/tilo-auth}"
-cryptsetup_bin="${TILO_CRYPTSETUP:-cryptsetup}"
-sibling_seconds="${TILO_SIBLING_SECONDS:-240}"
-# Root in every boot; a check runs the same logic as its own account.
-sibling_owner="${TILO_SERVER_SIBLING_OWNER:-0}"
-
-log() { printf 'tilo-server-firstboot: %s\n' "$*" >&2; }
 
 valid_device_certificate() {
     local metadata size
@@ -47,79 +26,6 @@ valid_device_certificate() {
     size="${BASH_REMATCH[2]}"
     (( size > 0 && size <= 65536 ))
 }
-
-# The install-time enrolment file, read without sourcing it: it names the
-# volume and the one key file the installer left root-only in this root.
-read_sibling_enrol() {
-    local metadata uuid key
-    [[ -f "$sibling_conf" && ! -L "$sibling_conf" ]] || return 1
-    metadata="$(stat -c '%u:%a:%h:%s' -- "$sibling_conf" 2>/dev/null || true)"
-    [[ "$metadata" =~ ^$sibling_owner:600:1:([0-9]+)$ ]] || return 1
-    (( BASH_REMATCH[1] > 0 && BASH_REMATCH[1] <= 4096 )) || return 1
-    uuid="$(sed -n 's/^luks_uuid=//p' "$sibling_conf")"
-    key="$(sed -n 's/^key_file=//p' "$sibling_conf")"
-    [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
-    [ "$key" = "$sibling_key" ] || return 1
-    [ -f "$key" ] && [ ! -L "$key" ] || return 1
-    metadata="$(stat -c '%u:%a:%h:%s' -- "$key" 2>/dev/null || true)"
-    [[ "$metadata" =~ ^$sibling_owner:600:1:([0-9]+)$ ]] || return 1
-    (( BASH_REMATCH[1] >= 32 && BASH_REMATCH[1] <= 4096 ))
-    SIBLING_UUID="$uuid"
-}
-
-# What the sibling unlock will open. The installed system finds it by the LUKS
-# UUID; a check names it directly.
-sibling_device() {
-    if [ -n "${TILO_SIBLING_DEVICE:-}" ]; then
-        if [ ! -b "$TILO_SIBLING_DEVICE" ] && [ "${TILO_SIBLING_ALLOW_REGULAR:-0}" != 1 ]; then
-            return 1
-        fi
-        printf '%s' "$TILO_SIBLING_DEVICE"
-        return 0
-    fi
-    printf '/dev/disk/by-uuid/%s' "$SIBLING_UUID"
-}
-
-# Spend the kept install key: enrol the sibling slot, then remove the key's
-# own slot and the file. Returns 0 whether or not the enrolment is done yet;
-# a pending one is retried on the next boot and named by `tilo server status`.
-sibling_enrol() {
-    [ -e "$sibling_conf" ] || [ -L "$sibling_conf" ] || return 0
-    if ! read_sibling_enrol; then
-        log "refusing an unsafe or malformed sibling-enrolment file at $sibling_conf"
-        return 1
-    fi
-    local dev
-    dev="$(sibling_device)" || { log "the volume $SIBLING_UUID is not present; sibling unlock stays pending"; return 0; }
-    [ -e "$dev" ] || { log "the volume $SIBLING_UUID is not present; sibling unlock stays pending"; return 0; }
-
-    if ! "$auth_bin" sibling status "$dev" >/dev/null 2>&1; then
-        log "enrolling the sibling unlock with another of your devices"
-        if ! timeout "$sibling_seconds" "$disk_encrypt" enrol "$dev" --sibling \
-            --key-file "$sibling_key"; then
-            log "the sibling unlock is not enrolled yet; it will be retried at the next boot"
-            return 0
-        fi
-    fi
-
-    # The sibling slot may already exist; either way the install key's slot is
-    # the one that must not outlive this step.
-    if ! "$cryptsetup_bin" luksRemoveKey "$dev" --key-file "$sibling_key"; then
-        log "the install key slot could not be removed; it will be retried at the next boot"
-        return 0
-    fi
-    shred -u "$sibling_key" 2>/dev/null || rm -f "$sibling_key"
-    rm -f "$sibling_conf"
-    rmdir "$sibling_dir" 2>/dev/null || true
-    rm -f "$pending_marker"
-    log "sibling unlock enrolled and the install key removed"
-}
-
-if [ "${1:-}" = sibling-enrol ]; then
-    sibling_enrol
-    exit 0
-fi
-[ "$#" -eq 0 ] || { log "usage: $0 [sibling-enrol]"; exit 2; }
 
 if [[ -e $decommissioned ]]; then
     exit 0
@@ -131,7 +37,6 @@ if [[ -e "$cert" || -L "$cert" ]] && ! valid_device_certificate; then
 fi
 
 if valid_device_certificate && [ -s "$login_file" ]; then
-    sibling_enrol
     exit 0
 fi
 # The name this machine is offered under. `hostnamectl --static` succeeds with
@@ -173,5 +78,4 @@ find "$identity_root" -mindepth 1 -exec chown root:tilo-identity {} + \
 find "$identity_root" -mindepth 1 -type d -exec chmod g+s {} + \
     || { echo "tilo-server-firstboot: could not make the identity's directories group-inheriting" >&2; exit 1; }
 chown -R tilo-server:tilo-server "$state_home/tilo"
-sibling_enrol
 echo "tilo-server-firstboot: login and full-sync setup complete"

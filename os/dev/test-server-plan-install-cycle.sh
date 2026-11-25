@@ -571,8 +571,8 @@ for i in $(seq 1 300); do
   sleep 1
 done
 note 'the machine boots its installer'
-# The machine's asks reach the owner's session over the peer network. The
-# install, its join and the sibling keyslot are one pass; each ask is answered
+# The machine's asks reach the owner's devices over the peer network. The
+# install, its join and the unlock keyslot are one pass; each ask is answered
 # where the person's devices answer questions.
 await_owner_question() {
   local kind=$1 label=$2 listed="$out/owner-question-$2.json" resource=""
@@ -593,6 +593,25 @@ await_owner_question() {
   shot="$(server_vm shot "unasked-$label" 2>/dev/null)" && cp -f "$shot" "$out/server-screen-$label.png" || true
   die "the owner's sheet never asked a $kind question ($label)"
 }
+# The machine's daemon has the person's root certify its boot key, so the owner's device asks the
+# person (`devices#certifyKey`) in an asked record: its invocation and the workspace it waits in,
+# once it waits. The listing is kept as evidence of what asked.
+await_owner_certify_ask() {
+  local label=$1 listed="$out/owner-asked-$1.json" found=""
+  local deadline=$((SECONDS + ${TILO_SERVER_CYCLE_ASK_SECONDS:-1200}))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    owner_cmd tilo read invocations/workspace --json > "$listed" 2>/dev/null || true
+    found="$(jq -r '[.items // [] | .[]
+        | select(.status == "waiting")
+        | select((.asked.action // .action // "") | endswith("#certifyKey"))][0]
+        | select(.) | "\(.id) \(.asked.workspace)"' "$listed" 2>/dev/null || true)"
+    [ -z "$found" ] || { printf '%s\n' "$found"; return 0; }
+    sleep 1
+  done
+  [ ! -f "$server_dir/serial.log" ] \
+    || tr -d '\000' < "$server_dir/serial.log" | grep -viE 'recovery[ _-]?key' | tail -n 60 >&2 || true
+  die "the owner was never asked to certify the machine's boot key ($label)"
+}
 answer_owner() {
   local verdict=$1 resource=$2 action=answer
   [ "$verdict" = allow ] || action=cancel
@@ -605,10 +624,12 @@ answer_owner() {
 # the owner's daemon serves: the person approved it when they planned the
 # machine, so nobody is asked. Only a machine that joined can ask for the
 # unlock keyslot, so that question is the join's proof.
-sibling_question="$(await_owner_question network.device-enrol sibling)"
+read -r certify_invocation certify_workspace <<<"$(await_owner_certify_ask sibling)"
 mark_step 07-joined ok
-note "the owner approves the machine's unlock keyslot: $sibling_question"
-answer_owner allow "$sibling_question"
+note "the owner approves the machine's unlock keyslot: $certify_invocation"
+owner_cmd tilo do --in-person "invocations/workspace/$certify_invocation#resolve" \
+    resolution=approve -w "$certify_workspace" > "$out/owner-certify-answer.txt" 2>&1 \
+  || { cat "$out/owner-certify-answer.txt" >&2; die "the owner's ask to certify the boot key could not be answered"; }
 mark_step 08-sibling ok
 
 phase=first-boot

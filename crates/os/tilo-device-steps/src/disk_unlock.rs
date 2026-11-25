@@ -240,7 +240,6 @@ pub(crate) fn account_is_admin(user: &str) -> bool {
 }
 
 pub(crate) fn enroll(
-    uid: u32,
     request: &DeviceUnlockEnrol,
 ) -> Result<DeviceUnlockEnrolResult, DaemonError> {
     request.validate().map_err(DaemonError::InvalidParams)?;
@@ -257,9 +256,7 @@ pub(crate) fn enroll(
         .arg("enrol")
         .arg(&device)
         .arg("--key-file")
-        .arg(format!("/proc/self/fd/{fd}"))
-        .arg("--session-uid")
-        .arg(uid.to_string());
+        .arg(format!("/proc/self/fd/{fd}"));
     if !request.allow_unsealed {
         command.arg("--require-tpm");
     }
@@ -269,9 +266,10 @@ pub(crate) fn enroll(
     inherit_private_key(&mut command, &key);
     let result = run_bounded(
         command,
-        // The existing registrar can wait 120 s for each reply segment, so its ordinary timeout
-        // returns and rolls back before the outer bound.
-        Duration::from_secs(360),
+        // The helper asks this computer's daemon, which has the person's root certify the boot
+        // key: where it keeps no root, the person is asked on a device that does. It waits for
+        // their answer, and ends when they give one.
+        Duration::MAX,
         65536,
         std::io::sink(),
         std::io::sink(),

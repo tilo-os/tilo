@@ -117,6 +117,15 @@ enum SiblingCmd {
     /// machine's boot chain, so their devices release its half without a
     /// prompt.
     Enrol(enrol::Args),
+    /// Root's part of `enrol` where the daemon runs as an account of its own, a server's: add
+    /// the key slot, and hand the boot key's request to that account (`register`).
+    Prepare(enrol::PrepareArgs),
+    /// As the daemon's own account, ask its daemon to have the person's root certify the boot
+    /// key `prepare` handed to DIR, and keep the answer there. It waits for as long as the
+    /// person takes to answer.
+    Register { dir: PathBuf },
+    /// Root's part once `register` was answered: write the token, or remove the slot again.
+    Finish(enrol::FinishArgs),
     /// Remove the sibling key slot and its token.
     Remove {
         device: PathBuf,
@@ -165,6 +174,29 @@ fn sibling(cli: &Cli, cmd: &SiblingCmd) -> Result<ExitCode> {
                 has_tpm: tpm::present(cli.tcti.as_deref()),
             };
             enrol::run(args, machine)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        SiblingCmd::Prepare(args) => {
+            let machine = enrol::Machine {
+                runner: &runner,
+                has_tpm: tpm::present(cli.tcti.as_deref()),
+            };
+            enrol::prepare(args, machine)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        SiblingCmd::Register { dir } => {
+            let daemon = enrol::DaemonRegistrar::find()?;
+            // The daemon's own start bound (its unit's), with room to spare.
+            daemon.listening(std::time::Duration::from_secs(120))?;
+            enrol::register(dir, &daemon)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        SiblingCmd::Finish(args) => {
+            let machine = enrol::Machine {
+                runner: &runner,
+                has_tpm: tpm::present(cli.tcti.as_deref()),
+            };
+            enrol::finish(args, machine)?;
             Ok(ExitCode::SUCCESS)
         }
         SiblingCmd::Remove { device, key_file } => {
