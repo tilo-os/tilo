@@ -1972,8 +1972,22 @@ pub(crate) mod entry_tests {
             .await
             .unwrap();
 
-        // Still a listed workspace: the site's directory names it, says it is
-        // invitation-only, and names no wait list while its entry keeps none.
+        the_directory_names_an_invitation_only_entry(workspaces, &workspace, &owner).await;
+        a_stranger_is_refused_and_an_invited_person_walks_in(workspaces, &workspace, &owner).await;
+        opening_the_entry_again_lets_a_stranger_in(workspaces, &workspace, &owner).await;
+
+        server.shutdown().await;
+    }
+
+    /// Still a listed workspace: the site's directory names it, says it is invitation-only, and
+    /// names no wait list while its entry keeps none. Once its entry keeps one, the directory
+    /// names it, as the entry's refusal does: a page offers it to someone with no invitation
+    /// before anyone asks the entry.
+    async fn the_directory_names_an_invitation_only_entry(
+        workspaces: &Workspaces,
+        workspace: &str,
+        owner: &DeviceCert,
+    ) {
         let listed = workspaces
             .directory(&std::collections::BTreeSet::new())
             .await;
@@ -1981,13 +1995,10 @@ pub(crate) mod entry_tests {
         assert_eq!(listed[0].name, "Lounge");
         assert!(listed[0].invitation_only);
         assert_eq!(listed[0].wait_list, None);
-        // Once its entry keeps one, the directory names it, as the entry's refusal
-        // does: a page offers it to someone with no invitation before anyone asks
-        // the entry.
         workspaces
             .found_entry(
-                &workspace,
-                &owner,
+                workspace,
+                owner,
                 EntryPolicy {
                     listing: Some(ListingPolicy {
                         description: "Coffee and tea".into(),
@@ -2012,8 +2023,15 @@ pub(crate) mod entry_tests {
             .directory(&std::collections::BTreeSet::new())
             .await;
         assert_eq!(listed[0].wait_list, Some(offered));
+    }
 
-        // A stranger who holds no invitation is refused, and told why.
+    /// A stranger who holds no invitation is refused, and told why; a person a member invited is
+    /// let in.
+    async fn a_stranger_is_refused_and_an_invited_person_walks_in(
+        workspaces: &Workspaces,
+        workspace: &str,
+        owner: &DeviceCert,
+    ) {
         let (_stranger_key, stranger) = guest_device();
         let stranger_join = EntryJoin {
             user_public_key: hex::encode(stranger.user_public_key),
@@ -2021,20 +2039,19 @@ pub(crate) mod entry_tests {
         };
         assert_eq!(
             workspaces
-                .admit_listed(&workspace, &stranger_join)
+                .admit_listed(workspace, &stranger_join)
                 .await
                 .map(|_| ()),
             Err(EntryRefusal::InvitationOnly)
         );
 
-        // A person a member invited is let in.
         let (invited_key, invited) = guest_device();
         workspaces
             .pre_admit(
-                &owner,
+                owner,
                 crate::workspaces::PreAdmitRequest {
                     request_id: [3; 32],
-                    grant: signed_pre_admission(&workspace, b"invited-by-the-owner"),
+                    grant: signed_pre_admission(workspace, b"invited-by-the-owner"),
                     recipient_user_public_key: Some(invited.user_public_key),
                     inviter_name: Some("Ky".into()),
                 },
@@ -2047,17 +2064,23 @@ pub(crate) mod entry_tests {
         };
         let reply = walk_in_as(
             workspaces,
-            &workspace,
+            workspace,
             &invited_join,
             (&invited_key, &invited),
         )
         .await
         .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+    }
 
-        // Open again, the same workspace hands a stranger in.
+    /// Open again, the same workspace hands a stranger in.
+    async fn opening_the_entry_again_lets_a_stranger_in(
+        workspaces: &Workspaces,
+        workspace: &str,
+        owner: &DeviceCert,
+    ) {
         workspaces
-            .list_invitation_only(&workspace, &owner, false)
+            .list_invitation_only(workspace, owner, false)
             .await
             .unwrap();
         let (open_key, open) = guest_device();
@@ -2065,11 +2088,10 @@ pub(crate) mod entry_tests {
             user_public_key: hex::encode(open.user_public_key),
             display_name: "Di".into(),
         };
-        let reply = walk_in_as(workspaces, &workspace, &open_join, (&open_key, &open))
+        let reply = walk_in_as(workspaces, workspace, &open_join, (&open_key, &open))
             .await
             .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
-        server.shutdown().await;
     }
 
     /// Someone the host's operator declares an owner comes in through an

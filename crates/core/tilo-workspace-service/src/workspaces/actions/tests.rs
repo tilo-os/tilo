@@ -1808,6 +1808,49 @@ async fn a_developer_installs_its_own_build(
     developer: &DeviceCert,
     publisher: &str,
 ) {
+    a_developers_build_runs_recorded_with_who_signed_it(
+        workspaces,
+        host,
+        workspace_id,
+        workspace,
+        owner,
+        developer,
+        publisher,
+    )
+    .await;
+    the_developers_next_push_replaces_its_build(
+        workspaces,
+        host,
+        workspace_id,
+        workspace,
+        developer,
+        publisher,
+    )
+    .await;
+    a_pinned_build_holds_until_it_is_unpinned(
+        workspaces,
+        host,
+        workspace_id,
+        workspace,
+        developer,
+        publisher,
+    )
+    .await;
+    a_release_that_does_not_name_its_hashes_is_refused(host, workspace_id, workspace, developer)
+        .await;
+}
+
+/// Once the owner lets `developer` install apps, its own build runs, recorded with who signed and
+/// installed it.
+async fn a_developers_build_runs_recorded_with_who_signed_it(
+    workspaces: &Workspaces,
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    workspace: &str,
+    owner: &DeviceCert,
+    developer: &DeviceCert,
+    publisher: &str,
+) {
     grant(
         workspaces,
         workspace,
@@ -1831,8 +1874,17 @@ async fn a_developer_installs_its_own_build(
     assert_eq!(answer["running"]["release"]["version"], "1.5.0-dev.1");
     assert_eq!(answer["running"]["release"]["dev"], true);
     assert_eq!(answer["running"]["installed_by"], publisher);
+}
 
-    // The next push replaces it: one version runs at a time.
+/// The next push replaces the developer's build: one version runs at a time.
+async fn the_developers_next_push_replaces_its_build(
+    workspaces: &Workspaces,
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    workspace: &str,
+    developer: &DeviceCert,
+    publisher: &str,
+) {
     invoke(
         host,
         workspace_id,
@@ -1849,9 +1901,18 @@ async fn a_developer_installs_its_own_build(
     assert_eq!(running.len(), 1, "{running:?}");
     assert_eq!(running[0].release.version, "1.5.0-dev.2");
     assert_eq!(running[0].release.surface, hex::encode([2; 32]));
+}
 
-    // The app is a resource of the workspace's apps, which offers updating, pinning and
-    // uninstalling it; pinned, the version stays until it is unpinned.
+/// The app is a resource of the workspace's apps, which offers updating, pinning and uninstalling
+/// it; pinned, the version stays until it is unpinned.
+async fn a_pinned_build_holds_until_it_is_unpinned(
+    workspaces: &Workspaces,
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    workspace: &str,
+    developer: &DeviceCert,
+    publisher: &str,
+) {
     let verbs = offered(host, workspace_id, &caller(developer)).await;
     for verb in [
         governance::INSTALL_APP,
@@ -1906,8 +1967,15 @@ async fn a_developer_installs_its_own_build(
     let running = workspaces.app_versions(workspace).await.unwrap();
     assert_eq!(running[0].release.version, "1.5.0-dev.2");
     assert!(!running[0].release.pinned);
+}
 
-    // A release names its hashes in full.
+/// A release names its hashes in full.
+async fn a_release_that_does_not_name_its_hashes_is_refused(
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    workspace: &str,
+    developer: &DeviceCert,
+) {
     assert!(matches!(
         invoke(
             host,
@@ -2830,24 +2898,76 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let ask = |device: &DeviceCert, verb: &str, argument: Value| {
-        let asking = caller(device);
-        let asked = request(&workspace, verb, argument);
-        let host = &host;
-        async move { invoke(host, workspace_id, &asking, asked).await }
-    };
 
-    // Every member reads the lists, and an Editor by role alone changes none.
-    let read = ask(&ada, TRUSTED_ATTESTORS, json!({})).await.unwrap();
+    members_read_the_package_trust_and_registries(&host, workspace_id, &workspace, &ada).await;
+
+    grant(
+        workspaces,
+        &workspace,
+        &owner,
+        &ada,
+        governance::INSTALL_APP,
+    )
+    .await;
+
+    a_developer_adds_and_removes_an_attestor(&host, workspace_id, &workspace, &ada).await;
+    a_developer_revokes_a_publisher(&host, workspace_id, &workspace, &ada).await;
+    a_developer_adds_and_changes_a_registry(&host, workspace_id, &workspace, &ada).await;
+    a_registry_that_would_create_trust_is_refused(&host, workspace_id, &workspace, &ada).await;
+    a_developer_removes_a_registry(&host, workspace_id, &workspace, &ada).await;
+
+    server.shutdown().await;
+}
+
+/// `verb` with `argument`, asked by `device` in `workspace`: what it produced, or why not.
+async fn ask(
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    workspace: &str,
+    device: &DeviceCert,
+    verb: &str,
+    argument: Value,
+) -> Result<Value, ActionCallError> {
+    invoke(
+        host,
+        workspace_id,
+        &caller(device),
+        request(workspace, verb, argument),
+    )
+    .await
+}
+
+/// Every member reads the lists, and an Editor by role alone changes none.
+async fn members_read_the_package_trust_and_registries(
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    workspace: &str,
+    device: &DeviceCert,
+) {
+    let read = ask(
+        host,
+        workspace_id,
+        workspace,
+        device,
+        TRUSTED_ATTESTORS,
+        json!({}),
+    )
+    .await
+    .unwrap();
     assert_eq!(read["attestors"], json!([]));
     assert_eq!(read["revoked"], json!([]));
-    let read = ask(&ada, REGISTRIES, json!({})).await.unwrap();
+    let read = ask(host, workspace_id, workspace, device, REGISTRIES, json!({}))
+        .await
+        .unwrap();
     assert_eq!(read["registries"], json!([]));
     for verb in [ADD_ATTESTOR, REVOKE_PUBLISHER, ADD_REGISTRY] {
         assert!(
             matches!(
                 ask(
-                    &ada,
+                    host,
+                    workspace_id,
+                    workspace,
+                    device,
                     verb,
                     json!({
                         "id": "acme/1",
@@ -2863,19 +2983,22 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
             "{verb} is no action an Editor may take"
         );
     }
+}
 
-    grant(
-        workspaces,
-        &workspace,
-        &owner,
-        &ada,
-        governance::INSTALL_APP,
-    )
-    .await;
-
+/// A member the owner lets install apps adds an attestor and removes it, each answer being the
+/// list as it stands after the change.
+async fn a_developer_adds_and_removes_an_attestor(
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    workspace: &str,
+    device: &DeviceCert,
+) {
     let attestor_key = "ab".repeat(32);
     let added = ask(
-        &ada,
+        host,
+        workspace_id,
+        workspace,
+        device,
         ADD_ATTESTOR,
         json!({ "id": "acme/1", "pubkey": attestor_key, "scope": "prefix:so.tilo." }),
     )
@@ -2884,17 +3007,44 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     assert_eq!(added["attestors"][0]["id"], "acme/1");
     assert_eq!(added["attestors"][0]["pubkey_hex"], attestor_key);
     assert_eq!(added["attestors"][0]["scope"], "prefix:so.tilo.");
-    let listed = ask(&ada, TRUSTED_ATTESTORS, json!({})).await.unwrap();
+    let listed = ask(
+        host,
+        workspace_id,
+        workspace,
+        device,
+        TRUSTED_ATTESTORS,
+        json!({}),
+    )
+    .await
+    .unwrap();
     assert_eq!(listed["attestors"], added["attestors"]);
 
-    let removed = ask(&ada, REMOVE_ATTESTOR, json!({ "id": "acme/1" }))
-        .await
-        .unwrap();
+    let removed = ask(
+        host,
+        workspace_id,
+        workspace,
+        device,
+        REMOVE_ATTESTOR,
+        json!({ "id": "acme/1" }),
+    )
+    .await
+    .unwrap();
     assert_eq!(removed["attestors"], json!([]));
+}
 
+/// A developer revokes a publisher, and the revoked list names it with the reason given.
+async fn a_developer_revokes_a_publisher(
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    workspace: &str,
+    device: &DeviceCert,
+) {
     let refused_key = "ef".repeat(32);
     let revoked = ask(
-        &ada,
+        host,
+        workspace_id,
+        workspace,
+        device,
         REVOKE_PUBLISHER,
         json!({ "pubkey": refused_key, "reason": "lost key" }),
     )
@@ -2903,13 +3053,34 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     assert_eq!(revoked["revoked"][0]["pubkey_hex"], refused_key);
     assert_eq!(revoked["revoked"][0]["reason"], "lost key");
     assert_eq!(
-        ask(&ada, REVOKED_PUBLISHERS, json!({})).await.unwrap()["revoked"],
+        ask(
+            host,
+            workspace_id,
+            workspace,
+            device,
+            REVOKED_PUBLISHERS,
+            json!({})
+        )
+        .await
+        .unwrap()["revoked"],
         revoked["revoked"]
     );
+}
 
+/// A developer adds a registry and disables, enables and re-channels it, each answer being the
+/// list as it stands after the change.
+async fn a_developer_adds_and_changes_a_registry(
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    workspace: &str,
+    device: &DeviceCert,
+) {
     let owner_key = "cd".repeat(32);
     let added = ask(
-        &ada,
+        host,
+        workspace_id,
+        workspace,
+        device,
         ADD_REGISTRY,
         json!({ "name": "Tilo main", "url": "https://apps.tilo.so/", "owner_key": owner_key }),
     )
@@ -2921,28 +3092,55 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     assert_eq!(added["registries"][0]["enabled"], true);
     assert_eq!(added["registries"][0]["channel"], "stable");
 
-    let disabled = ask(&ada, DISABLE_REGISTRY, json!({ "name": "Tilo main" }))
-        .await
-        .unwrap();
+    let disabled = ask(
+        host,
+        workspace_id,
+        workspace,
+        device,
+        DISABLE_REGISTRY,
+        json!({ "name": "Tilo main" }),
+    )
+    .await
+    .unwrap();
     assert_eq!(disabled["registries"][0]["enabled"], false);
-    let enabled = ask(&ada, ENABLE_REGISTRY, json!({ "name": "Tilo main" }))
-        .await
-        .unwrap();
+    let enabled = ask(
+        host,
+        workspace_id,
+        workspace,
+        device,
+        ENABLE_REGISTRY,
+        json!({ "name": "Tilo main" }),
+    )
+    .await
+    .unwrap();
     assert_eq!(enabled["registries"][0]["enabled"], true);
     let development = ask(
-        &ada,
+        host,
+        workspace_id,
+        workspace,
+        device,
         REGISTRY_CHANNEL,
         json!({ "name": "Tilo main", "channel": "development" }),
     )
     .await
     .unwrap();
     assert_eq!(development["registries"][0]["channel"], "development");
+}
 
-    // A plain-HTTP address that is not loopback, and a placeholder owner key,
-    // are refused: discovery never creates trust.
+/// A plain-HTTP address that is not loopback, and a placeholder owner key, are refused: discovery
+/// never creates trust.
+async fn a_registry_that_would_create_trust_is_refused(
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    workspace: &str,
+    device: &DeviceCert,
+) {
     assert!(matches!(
         ask(
-            &ada,
+            host,
+            workspace_id,
+            workspace,
+            device,
             ADD_REGISTRY,
             json!({
                 "name": "plain",
@@ -2955,7 +3153,10 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     ));
     assert!(matches!(
         ask(
-            &ada,
+            host,
+            workspace_id,
+            workspace,
+            device,
             ADD_REGISTRY,
             json!({
                 "name": "unpinned",
@@ -2966,13 +3167,26 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
         .await,
         Err(ActionCallError::InvalidRequest { .. })
     ));
+}
 
-    let removed = ask(&ada, REMOVE_REGISTRY, json!({ "name": "Tilo main" }))
-        .await
-        .unwrap();
+/// A developer removes the registry, and the list is empty again.
+async fn a_developer_removes_a_registry(
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    workspace: &str,
+    device: &DeviceCert,
+) {
+    let removed = ask(
+        host,
+        workspace_id,
+        workspace,
+        device,
+        REMOVE_REGISTRY,
+        json!({ "name": "Tilo main" }),
+    )
+    .await
+    .unwrap();
     assert_eq!(removed["registries"], json!([]));
-
-    server.shutdown().await;
 }
 
 /// Two devices that redeem one invitation at once: `workspace/members#admit` takes the workspace

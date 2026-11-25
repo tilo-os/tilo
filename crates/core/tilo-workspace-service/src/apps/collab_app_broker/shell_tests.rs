@@ -937,7 +937,6 @@ fn stands(
     state.receipt().status
 }
 
-
 /// The device's own identity, which signs what it admits for its person, set up in a home of its
 /// own: the home and the environment are returned, to be kept for the test that made them.
 fn device_identity() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
@@ -959,11 +958,6 @@ fn device_identity() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
 /// What a test's step answers, driven on the test's one thread.
 type Driven<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
-
-
-
-
-
 /// A page's prompt the Browser raises as its own call of a page action that asks first (a site
 /// asking for the camera) waits for the person in its asked record at the device's daemon, naming
 /// the Browser by its name and the site: nobody's screen answers it in the Browser's place. The
@@ -973,221 +967,299 @@ type Driven<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>
 /// and its action answers the page.
 #[tokio::test(flavor = "current_thread")]
 async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_record() {
-    use tilo_actions::remote::asked::AskedBy;
-    use tilo_actions::remote::{ReceiptStatus, RemoteActionMessage};
-    const BROWSER: &str = "so.tilo.browser";
-    const PAGE: &str = "tl:so.tilo.browser:page-1";
+    // The device key, taken as its daemon takes it, is held for as long as the test runs.
+    let (mut asking, _taken_key) = page_asking().await;
+    declining_a_sites_prompt(&mut asking).await;
+    withdrawing_a_stopped_prompts_call(&mut asking).await;
+    approving_a_sites_prompt(&mut asking).await;
+}
 
-    // The device's own identity, which signs what it admits for its person.
-    let identity = tempfile::tempdir().unwrap();
-    let mut identity_env = tilo_test_env::ScopedEnv::new();
-    identity_env
-        .set("XDG_CONFIG_HOME", identity.path().join("config"))
-        .set("TILO_IDENTITY_ROOT", identity.path().join("identity"))
-        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    let _taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
-        &tilo_identity::store::account_identity_dir(&identity.path().join("config/tilo/identity")),
-        &tilo_device_identity::IdentityPaths::under(identity.path().join("identity")),
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .expect("the device's identity");
-    // The person's devices, as the host holding their record answers: this one is listed.
-    tilo_identity::sources::test_trust::install();
-    let host = device_with_shell().await;
-    let workspaces = host.record_host.workspaces().clone();
-    host.launched
-        .record(std::process::id(), BROWSER, &host.workspace);
-    let (mut browser, taken) = host.app(&launch_opening(BROWSER, &host.workspace)).await;
-    taken.await;
-    let channel = browser
-        .open_as(BROWSER, &host.workspace)
-        .await
-        .expect("the Browser opens its record");
-    assert_eq!(
-        browser
-            .call(Operation::Subscribe {
-                record: channel.clone(),
-                topic: Topic::Invocations { stable_ids: true },
-            })
-            .await,
-        Ok(Reply::Subscribed)
-    );
-    let (surface, _) = runtime_collab::SurfacePublication::next(
-        None,
-        std::slice::from_ref(&allow_permission(PAGE)),
-    );
-    assert_eq!(
-        browser
-            .call(Operation::Publish {
-                record: channel.clone(),
-                publication: Publication::Surface(serde_json::to_string(&surface).unwrap()),
-            })
-            .await,
-        Ok(Reply::Done)
-    );
-    let store = workspaces
-        .asked_store()
-        .expect("the daemon keeps asked records");
-    let person = tilo_actions::remote::Caller::authenticated(
-        root(3).verifying_key().to_bytes(),
-        device(3).verifying_key().to_bytes(),
-    );
-    // Raise the Browser's call for the page's prompt `prompt`: answered as going on, kept as its
-    // one asked record.
-    macro_rules! raise {
-        ($prompt:expr) => {{
-            let request = asking_for(&host.workspace, PAGE, $prompt);
-            let invocation = request.invocation;
-            assert_eq!(
-                remote_action(&mut browser, &channel, RemoteActionMessage::Invoke(request)).await,
-                RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
-                    invocation,
-                    status: ReceiptStatus::Accepted,
-                }),
-                "the call goes on, waiting for its person, rather than refused for want of their \
-                 yes"
-            );
-            let waiting = store.waiting_in(&host.workspace);
-            let [asked] = waiting.as_slice() else {
-                panic!("the Browser's call is kept as its one asked record: {waiting:?}");
-            };
-            assert_eq!(asked.invocation, invocation);
-            (invocation, asked.clone())
-        }};
-    }
+/// The device's identity, its key taken as its daemon takes it and the person's devices listed;
+/// the Browser connected with its record opened and its page's prompt published; the daemon's
+/// asked records; and the person using the Browser: what a page's prompt the Browser raises is
+/// driven through.
+struct PageAsking {
+    _identity: tempfile::TempDir,
+    _identity_env: tilo_test_env::ScopedEnv,
+    host: Device,
+    workspaces: Workspaces,
+    browser: Endpoint,
+    channel: Record,
+    store: Arc<tilo_actions::remote::asked::AskedStore>,
+    person: tilo_actions::remote::Caller,
+}
 
-    // A site asks for the camera; the person turns it down while the Browser follows its call.
-    let (invocation, asked) = raise!((7, "https://meet.example", "camera"));
-    assert_eq!(
-        asked.person,
-        hex::encode(root(3).verifying_key().to_bytes()),
-        "the person using the Browser is asked"
-    );
-    assert_eq!(
-        asked.asked.facts.by,
-        AskedBy::App {
-            app: BROWSER.to_owned(),
-            title: "Browser".to_owned(),
-            author: None,
-        },
-        "the Browser asks, by the name its manifest gives it"
-    );
-    assert_eq!(
-        asked.asked.facts.fact("origin"),
-        Some("https://meet.example"),
-        "the card reads the site from the call: {:?}",
-        asked.asked.facts
-    );
-    assert_eq!(asked.asked.facts.fact("wants"), Some("camera"));
-    let (followed, declined) = tokio::join!(
-        remote_action(&mut browser, &channel, following(invocation)),
-        workspaces.resolve_asked(&person, &resolving(&asked.asked.record, "decline")),
-    );
-    assert!(
-        matches!(
-            declined.expect("the resolve answers"),
-            Ok(tilo_actions::remote::InvocationReceipt {
-                status: ReceiptStatus::Completed { .. },
-                ..
-            })
-        ),
-        "the decline is taken"
-    );
-    assert_eq!(
-        stands(&followed),
-        ReceiptStatus::Cancelled {
-            message: Some(tilo_actions::remote::asked::DECLINED.to_owned()),
-        },
-        "the Browser's follow hears the call ended unrun: the page's no"
-    );
-    assert!(store.waiting_in(&host.workspace).is_empty());
-
-    // A site asks for the microphone, and stops asking before anyone answers: the Browser
-    // withdraws its call, which ends it unrun too.
-    let (invocation, _) = raise!((8, "https://meet.example", "microphone"));
-    assert_eq!(
-        remote_action(
-            &mut browser,
-            &channel,
-            RemoteActionMessage::Cancel { invocation }
+/// Set the device's identity up, connect the Browser and publish its page's prompt, and read the
+/// person using it. The device key, taken as its daemon takes it, answers beside it, for the test
+/// to keep while it runs.
+fn page_asking() -> Driven<'static, (PageAsking, tilo_device_identity::persist::DeviceKeyLock)> {
+    Box::pin(async move {
+        // The device's own identity, which signs what it admits for its person.
+        let identity = tempfile::tempdir().unwrap();
+        let mut identity_env = tilo_test_env::ScopedEnv::new();
+        identity_env
+            .set("XDG_CONFIG_HOME", identity.path().join("config"))
+            .set("TILO_IDENTITY_ROOT", identity.path().join("identity"))
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
+            &tilo_identity::store::account_identity_dir(
+                &identity.path().join("config/tilo/identity"),
+            ),
+            &tilo_device_identity::IdentityPaths::under(identity.path().join("identity")),
+            tilo_identity::provisioning::IdentityStorage::Files,
         )
-        .await,
-        RemoteActionMessage::CancelResponse {
-            invocation,
-            result: Ok(()),
-        }
-    );
-    assert!(
-        store.waiting_in(&host.workspace).is_empty(),
-        "nothing is asked of the person any more"
-    );
-    assert!(
-        matches!(
-            stands(&remote_action(&mut browser, &channel, following(invocation)).await),
-            ReceiptStatus::Cancelled { .. }
-        ),
-        "the withdrawn call ended unrun"
-    );
+        .expect("the device's identity");
+        // The person's devices, as the host holding their record answers: this one is listed.
+        tilo_identity::sources::test_trust::install();
+        let host = device_with_shell().await;
+        let workspaces = host.record_host.workspaces().clone();
+        host.launched
+            .record(std::process::id(), BROWSER, &host.workspace);
+        let (mut browser, taken) = host.app(&launch_opening(BROWSER, &host.workspace)).await;
+        taken.await;
+        let channel = browser
+            .open_as(BROWSER, &host.workspace)
+            .await
+            .expect("the Browser opens its record");
+        assert_eq!(
+            browser
+                .call(Operation::Subscribe {
+                    record: channel.clone(),
+                    topic: Topic::Invocations { stable_ids: true },
+                })
+                .await,
+            Ok(Reply::Subscribed)
+        );
+        let (surface, _) = runtime_collab::SurfacePublication::next(
+            None,
+            std::slice::from_ref(&allow_permission(PAGE)),
+        );
+        assert_eq!(
+            browser
+                .call(Operation::Publish {
+                    record: channel.clone(),
+                    publication: Publication::Surface(serde_json::to_string(&surface).unwrap()),
+                })
+                .await,
+            Ok(Reply::Done)
+        );
+        let store = workspaces
+            .asked_store()
+            .expect("the daemon keeps asked records");
+        let person = tilo_actions::remote::Caller::authenticated(
+            root(3).verifying_key().to_bytes(),
+            device(3).verifying_key().to_bytes(),
+        );
+        (
+            PageAsking {
+                _identity: identity,
+                _identity_env: identity_env,
+                host,
+                workspaces,
+                browser,
+                channel,
+                store,
+                person,
+            },
+            taken_key,
+        )
+    })
+}
 
-    // The site asks for the camera again, and this time the person allows it.
-    let (invocation, asked) = raise!((9, "https://meet.example", "camera"));
-    let at = asked.asked.record.clone();
-    let resolve = resolving(&at, "approve");
-    let resolved = workspaces
-        .resolve_asked(&person, &resolve)
-        .await
-        .expect("the resolve answers");
-    assert!(
-        matches!(
-            resolved,
-            Ok(tilo_actions::remote::InvocationReceipt {
-                status: ReceiptStatus::Completed { .. },
-                ..
-            })
-        ),
-        "the approve is taken: {resolved:?}"
-    );
-    assert!(
-        store.waiting_in(&host.workspace).is_empty(),
-        "nothing waits for the person any more"
-    );
-
-    // The Browser is handed its own call, carrying the approve: its action answers the page.
-    let handed = loop {
-        if let HostFrame::Event {
-            event: Event::Invocation(handed),
-            ..
-        } = browser.frame().await
-        {
-            break handed;
-        }
-    };
-    assert_eq!(handed.invocation, *invocation.0.as_bytes());
-    assert_eq!(
-        (handed.resource.as_str(), handed.action.as_str()),
-        (PAGE, "allow_permission")
-    );
-    let context: tilo_actions::ActionContext =
-        serde_json::from_str(handed.context.as_deref().expect("the call's context")).unwrap();
-    assert_eq!(
-        context.approval.map(|approval| approval.record),
-        Some(at),
-        "the call carries the person's approve of its record"
-    );
-    assert_eq!(
-        browser
-            .call(Operation::Invocation {
-                record: channel.clone(),
-                id: handed.id,
-                call: InvocationCall::Complete {
-                    code: String::new(),
-                    message: String::new(),
-                },
-            })
+/// Raise the Browser's call for the page's prompt `prompt` (`id`, `origin`, `wants`): answered as
+/// going on, kept as its one asked record.
+fn raise_prompt<'a>(
+    asking: &'a mut PageAsking,
+    prompt: (u32, &'a str, &'a str),
+) -> Driven<
+    'a,
+    (
+        tilo_actions::InvocationId,
+        tilo_actions::remote::asked::Waiting,
+    ),
+> {
+    Box::pin(async move {
+        use tilo_actions::remote::{ReceiptStatus, RemoteActionMessage};
+        let request = asking_for(&asking.host.workspace, PAGE, prompt);
+        let invocation = request.invocation;
+        assert_eq!(
+            remote_action(
+                &mut asking.browser,
+                &asking.channel,
+                RemoteActionMessage::Invoke(request)
+            )
             .await,
-        Ok(Reply::Done),
-        "the Browser answers the page and ends its call"
-    );
+            RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Accepted,
+            }),
+            "the call goes on, waiting for its person, rather than refused for want of their \
+         yes"
+        );
+        let waiting = asking.store.waiting_in(&asking.host.workspace);
+        let [asked] = waiting.as_slice() else {
+            panic!("the Browser's call is kept as its one asked record: {waiting:?}");
+        };
+        assert_eq!(asked.invocation, invocation);
+        (invocation, asked.clone())
+    })
+}
+
+/// A site asks for the camera; the person turns it down while the Browser follows its call.
+fn declining_a_sites_prompt(asking: &mut PageAsking) -> Driven<'_, ()> {
+    Box::pin(async move {
+        use tilo_actions::remote::ReceiptStatus;
+        use tilo_actions::remote::asked::AskedBy;
+        let (invocation, asked) = raise_prompt(asking, (7, "https://meet.example", "camera")).await;
+        assert_eq!(
+            asked.person,
+            hex::encode(root(3).verifying_key().to_bytes()),
+            "the person using the Browser is asked"
+        );
+        assert_eq!(
+            asked.asked.facts.by,
+            AskedBy::App {
+                app: BROWSER.to_owned(),
+                title: "Browser".to_owned(),
+                author: None,
+            },
+            "the Browser asks, by the name its manifest gives it"
+        );
+        assert_eq!(
+            asked.asked.facts.fact("origin"),
+            Some("https://meet.example"),
+            "the card reads the site from the call: {:?}",
+            asked.asked.facts
+        );
+        assert_eq!(asked.asked.facts.fact("wants"), Some("camera"));
+        let (followed, declined) = tokio::join!(
+            remote_action(&mut asking.browser, &asking.channel, following(invocation)),
+            asking
+                .workspaces
+                .resolve_asked(&asking.person, &resolving(&asked.asked.record, "decline")),
+        );
+        assert!(
+            matches!(
+                declined.expect("the resolve answers"),
+                Ok(tilo_actions::remote::InvocationReceipt {
+                    status: ReceiptStatus::Completed { .. },
+                    ..
+                })
+            ),
+            "the decline is taken"
+        );
+        assert_eq!(
+            stands(&followed),
+            ReceiptStatus::Cancelled {
+                message: Some(tilo_actions::remote::asked::DECLINED.to_owned()),
+            },
+            "the Browser's follow hears the call ended unrun: the page's no"
+        );
+        assert!(asking.store.waiting_in(&asking.host.workspace).is_empty());
+    })
+}
+
+/// A site asks for the microphone, and stops asking before anyone answers: the Browser withdraws
+/// its call, which ends it unrun too.
+fn withdrawing_a_stopped_prompts_call(asking: &mut PageAsking) -> Driven<'_, ()> {
+    Box::pin(async move {
+        use tilo_actions::remote::{ReceiptStatus, RemoteActionMessage};
+        let (invocation, _) = raise_prompt(asking, (8, "https://meet.example", "microphone")).await;
+        assert_eq!(
+            remote_action(
+                &mut asking.browser,
+                &asking.channel,
+                RemoteActionMessage::Cancel { invocation }
+            )
+            .await,
+            RemoteActionMessage::CancelResponse {
+                invocation,
+                result: Ok(()),
+            }
+        );
+        assert!(
+            asking.store.waiting_in(&asking.host.workspace).is_empty(),
+            "nothing is asked of the person any more"
+        );
+        assert!(
+            matches!(
+                stands(
+                    &remote_action(&mut asking.browser, &asking.channel, following(invocation))
+                        .await
+                ),
+                ReceiptStatus::Cancelled { .. }
+            ),
+            "the withdrawn call ended unrun"
+        );
+    })
+}
+
+/// The site asks for the camera again, and this time the person allows it: the Browser is handed
+/// its own call, carrying the approve, and its action answers the page.
+fn approving_a_sites_prompt(asking: &mut PageAsking) -> Driven<'_, ()> {
+    Box::pin(async move {
+        use tilo_actions::remote::ReceiptStatus;
+        let (invocation, asked) = raise_prompt(asking, (9, "https://meet.example", "camera")).await;
+        let at = asked.asked.record.clone();
+        let resolve = resolving(&at, "approve");
+        let resolved = asking
+            .workspaces
+            .resolve_asked(&asking.person, &resolve)
+            .await
+            .expect("the resolve answers");
+        assert!(
+            matches!(
+                resolved,
+                Ok(tilo_actions::remote::InvocationReceipt {
+                    status: ReceiptStatus::Completed { .. },
+                    ..
+                })
+            ),
+            "the approve is taken: {resolved:?}"
+        );
+        assert!(
+            asking.store.waiting_in(&asking.host.workspace).is_empty(),
+            "nothing waits for the person any more"
+        );
+
+        // The Browser is handed its own call, carrying the approve: its action answers the page.
+        let handed = loop {
+            if let HostFrame::Event {
+                event: Event::Invocation(handed),
+                ..
+            } = asking.browser.frame().await
+            {
+                break handed;
+            }
+        };
+        assert_eq!(handed.invocation, *invocation.0.as_bytes());
+        assert_eq!(
+            (handed.resource.as_str(), handed.action.as_str()),
+            (PAGE, "allow_permission")
+        );
+        let context: tilo_actions::ActionContext =
+            serde_json::from_str(handed.context.as_deref().expect("the call's context")).unwrap();
+        assert_eq!(
+            context.approval.map(|approval| approval.record),
+            Some(at),
+            "the call carries the person's approve of its record"
+        );
+        assert_eq!(
+            asking
+                .browser
+                .call(Operation::Invocation {
+                    record: asking.channel.clone(),
+                    id: handed.id,
+                    call: InvocationCall::Complete {
+                        code: String::new(),
+                        message: String::new(),
+                    },
+                })
+                .await,
+            Ok(Reply::Done),
+            "the Browser answers the page and ends its call"
+        );
+    })
 }
 
 /// The device, its shell linked to it, the Browser connected with window `window` and its surface

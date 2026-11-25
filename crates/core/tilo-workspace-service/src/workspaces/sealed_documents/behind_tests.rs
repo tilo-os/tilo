@@ -243,16 +243,39 @@ async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
     let NeighbourMsg::AppDocument { envelope, .. } = &compaction else {
         panic!("a compaction is a document write");
     };
+    the_server_keeps_the_compaction_with_the_write_it_covers(&lounge, &second, envelope).await;
+    loading_takes_the_compaction_the_copy_holds(&lounge, &state, envelope).await;
+    the_members_check_lets_the_covered_write_retire(&lounge, &session, &state, envelope, &second)
+        .await;
+    drop((state, lounge.workspaces));
+    lounge.server.shutdown().await;
+}
+
+/// The server keeps the member's compaction as its device signed it, and the write the compaction
+/// covers, until every device with the record's keys checked the compaction.
+async fn the_server_keeps_the_compaction_with_the_write_it_covers(
+    lounge: &Lounge,
+    second: &SignedOp,
+    envelope: &SignedOp,
+) {
     let kept = retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT).await;
     assert!(
         kept.contains(envelope),
         "the server keeps the member's compaction as its device signed it"
     );
     assert!(
-        kept.contains(&second),
+        kept.contains(second),
         "a write the compaction covers stays until every key holder checked the compaction"
     );
+}
 
+/// Loading the workspace takes the compaction with the node's keys, as it holds every change the
+/// copy holds.
+async fn loading_takes_the_compaction_the_copy_holds(
+    lounge: &Lounge,
+    state: &std::sync::Arc<tokio::sync::Mutex<crate::workspaces::GovernedWorkspace>>,
+    envelope: &SignedOp,
+) {
     lounge
         .workspaces
         .recall(&mut *state.lock().await)
@@ -275,10 +298,19 @@ async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
             .as_deref(),
         Some("three")
     );
+}
 
-    // The member checks the compaction it wrote, holding every write it folds as its own engine
-    // does. With the copy's check, kept as it took the compaction, every device with the record's
-    // keys has now: the server drops the write the compaction alone holds from here on.
+/// The member checks the compaction it wrote, holding every write it folds as its own engine
+/// does. With the copy's check, kept as it took the compaction, every device with the record's
+/// keys has checked it: the server drops the write the compaction alone holds as the member writes
+/// on, and the record reads whole once its covered write is gone.
+async fn the_members_check_lets_the_covered_write_retire(
+    lounge: &Lounge,
+    session: &Session,
+    state: &std::sync::Arc<tokio::sync::Mutex<crate::workspaces::GovernedWorkspace>>,
+    envelope: &SignedOp,
+    second: &SignedOp,
+) {
     {
         let mut governed = state.lock().await;
         assert_eq!(
@@ -321,13 +353,13 @@ async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
     );
     // A store retires a checked compaction's writes as the next frame reaches it: the member
     // writes on.
-    seal_and_send_title(&lounge.member, &session, &lounge.workspace, "four");
+    seal_and_send_title(&lounge.member, session, &lounge.workspace, "four");
     tilo_test_env::within(
         "the server drops the write the checked compaction covers",
         async {
             while retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT)
                 .await
-                .contains(&second)
+                .contains(second)
             {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
@@ -342,8 +374,6 @@ async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
         Some("four"),
         "the record reads whole once its covered write is gone"
     );
-    drop((state, lounge.workspaces));
-    lounge.server.shutdown().await;
 }
 
 /// The node's device folds its copy of a document its members seal, as it does before the
