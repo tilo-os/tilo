@@ -455,7 +455,7 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
             .filter_map(|row| row
                 .action
                 .as_ref()
-                .map(|action| action.address.action.to_owned()))
+                .map(|action| action.address.action.clone()))
             .collect::<Vec<_>>(),
         [LIST_WORKSPACES],
         "a member is offered the listing, and none of the host's own operations"
