@@ -283,6 +283,9 @@ notification-sender-terminal = Terminal
 ## on an address that would never carry it.
 session-feedback-nowhere = Ein Problem melden
 session-feedback-nowhere-body = Dieser Rechner ist nicht dafür eingerichtet, Berichte an Tilo zu schicken.
+# The files a report carries by default, as the chips on its box and the files in Chat name them.
+session-report-recording = Aufnahme
+session-report-picture = Bildschirmfoto
 session-apps = Apps
 session-apps-uninstall = Eine App deinstallieren
 session-param-app = Der Name der App

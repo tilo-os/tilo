@@ -2564,7 +2564,7 @@ impl App {
             return false;
         };
         // A key nothing took over a selection begins a message about it.
-        self.open_send_box(Some(selection), None, Some(text), &[]);
+        self.open_send_box(Some(selection), None, Some(text), &[], &[]);
         true
     }
 

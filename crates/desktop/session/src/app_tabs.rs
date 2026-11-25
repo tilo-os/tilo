@@ -32,7 +32,7 @@ use ui::Theme;
 use ui::WindowAppearance;
 use ui::floating_surface::{
     FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
-    FloatingSurfaceProtocolRole, HostNetworkStatus, protocol_rect,
+    FloatingSurfaceProtocolRole, HostNetworkStatus, Recipient, protocol_rect,
 };
 use ui::theme::ThemeDocument;
 use ui::workspace_sync::WorkspaceSync;
@@ -219,6 +219,57 @@ pub struct AppTabs {
     /// The listener the apps connect to, taken off on the session's own pass,
     /// and the socket's path, which goes when the session ends.
     socket: Socket,
+    /// A report's box waiting for the recording it carries to be written.
+    report: Option<Preparing>,
+}
+
+/// How long a report's box waits for its recording before it opens without one: writing out
+/// what the capture kept takes a moment, and the person waits on none past this.
+const CLIP_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// A report's box, waiting for what it carries by default: the picture of the window it is about,
+/// and the last moments the system's capture kept while that is written out.
+struct Preparing {
+    to: Vec<Recipient>,
+    /// The connection of the window the report is about, settled when it was asked: the picture
+    /// and the box are that window's, whatever comes in front while the recording is written.
+    about: Option<u64>,
+    carried: Vec<tilo_reference::Attached>,
+    clip: Option<(PathBuf, mpsc::Receiver<Result<usize, String>>)>,
+    since: std::time::Instant,
+}
+
+impl Preparing {
+    /// What the box carries, once the recording is written or will not be: `Err` with itself
+    /// while it is still being written.
+    fn ready(mut self, carried: &crate::carried::Carried) -> Result<Self, Self> {
+        let Some((path, written)) = self.clip.take() else {
+            return Ok(self);
+        };
+        match written.try_recv() {
+            Ok(Ok(_)) => {
+                let name = format!("{}.mp4", crate::i18n::t("session-report-recording"));
+                match carried.offer(&path, &name, "video/mp4", (0, 0)) {
+                    Ok(file) => self.carried.insert(0, file),
+                    Err(error) => tracing::warn!(%error, "a report's recording was not carried"),
+                }
+                Ok(self)
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "a report's recording was not written");
+                Ok(self)
+            }
+            Err(mpsc::TryRecvError::Disconnected) => Ok(self),
+            Err(mpsc::TryRecvError::Empty) if self.since.elapsed() >= CLIP_WAIT => {
+                tracing::warn!("a report's recording took too long: the box opens without it");
+                Ok(self)
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.clip = Some((path, written));
+                Err(self)
+            }
+        }
+    }
 }
 
 /// An open shell-ui connection: the app it vouches for, the launch whose
@@ -339,6 +390,7 @@ impl AppTabs {
             launches,
             host_shell: HostShellAsks::default(),
             socket,
+            report: None,
         })
     }
 
@@ -519,7 +571,7 @@ impl AppTabs {
         // What the members' sessions show of these windows' pages, and what the
         // apps sent of them since the last pass.
         self.follow_pages(shared);
-        self.deliver_box(shared, desktop, compositor);
+        self.deliver_box(shared, desktop, compositor, studio);
         // Where each app's own card stands this pass: the floating layer's place, which the shell
         // lays the app's window out by.
         self.follow_cards(desktop, compositor);
@@ -590,23 +642,80 @@ impl AppTabs {
     /// computer sends reports — or saying it is told nowhere, and still sending to an agent or a
     /// person. A window whose app cannot take a box — it never said it opens one, or it is gone —
     /// leaves the gesture to Chat, which a send has always opened.
-    fn deliver_box(&self, shared: &crate::Shared, desktop: &ShellDesktop, compositor: &Compositor) {
-        let Some(ask) = shared.take_box_ask() else {
-            return;
-        };
-        let to = match ask {
-            BoxAsk::Agent => Vec::new(),
-            BoxAsk::People => shared.people_recipients(),
-            BoxAsk::Report => vec![shared.feedback_row()],
-        };
-        let pointing = ask == BoxAsk::Report;
-        let asked = self.link_in_front(desktop, compositor).is_some_and(|link| {
-            tell(
-                &link.writer,
-                &FloatingSurfaceHostMessage::ShareSelection { to, pointing },
-                &link.app,
-            )
-        });
+    ///
+    /// A report's box carries what happened by default: the picture of the window in front, and
+    /// the last moments the system's capture kept when it keeps them, each a chip the person may
+    /// take off before sending ([`crate::carried`]). It opens once the recording is written.
+    fn deliver_box(
+        &mut self,
+        shared: &crate::Shared,
+        desktop: &ShellDesktop,
+        compositor: &mut Compositor,
+        studio: Option<&CaptureStudio>,
+    ) {
+        if let Some(ask) = shared.take_box_ask() {
+            match ask {
+                BoxAsk::Agent => {
+                    let about = self.link_in_front(desktop, compositor);
+                    self.ask_box(shared, about, Vec::new(), Vec::new());
+                }
+                BoxAsk::People => {
+                    let about = self.link_in_front(desktop, compositor);
+                    self.ask_box(shared, about, shared.people_recipients(), Vec::new());
+                }
+                BoxAsk::Report => {
+                    let about = self.link_in_front(desktop, compositor);
+                    let window = about
+                        .and_then(|connection| {
+                            let link = self.links.get(&connection)?;
+                            window_of(&self.links, desktop, connection, &link.app)
+                        })
+                        .and_then(|tab| desktop.with_policy(|policy| policy.window_of_tab(tab)))
+                        .or_else(|| desktop.with_policy(|policy| policy.focused()));
+                    self.report = Some(prepare_report(
+                        shared.feedback_row(),
+                        about,
+                        window,
+                        &shared.box_files,
+                        compositor,
+                        studio,
+                    ));
+                }
+            }
+        }
+        if let Some(preparing) = self.report.take() {
+            match preparing.ready(&shared.box_files) {
+                Ok(ready) => self.ask_box(shared, ready.about, ready.to, ready.carried),
+                Err(waiting) => self.report = Some(waiting),
+            }
+        }
+    }
+
+    /// Ask the window of connection `about` to open its box to `to`, carrying `carried`: a
+    /// report's box asks the window for what it is about first.
+    fn ask_box(
+        &self,
+        shared: &crate::Shared,
+        about: Option<u64>,
+        to: Vec<Recipient>,
+        carried: Vec<tilo_reference::Attached>,
+    ) {
+        let pointing = to
+            .iter()
+            .any(|recipient| recipient.kind == ui::floating_surface::RecipientKind::Feedback);
+        let asked = about
+            .and_then(|connection| self.links.get(&connection))
+            .is_some_and(|link| {
+                tell(
+                    &link.writer,
+                    &FloatingSurfaceHostMessage::ShareSelection {
+                        to,
+                        pointing,
+                        carried,
+                    },
+                    &link.app,
+                )
+            });
         if !asked {
             tracing::debug!("no window in front opens a box: the gesture opens Chat");
             shared.launchpad(LaunchpadAction::Chat);
@@ -617,7 +726,7 @@ impl AppTabs {
     /// never said it does is never sent a box it would not draw. A session that cannot tell which
     /// window is in front answers with its one window that takes boxes, and none when it holds
     /// more.
-    fn link_in_front(&self, desktop: &ShellDesktop, compositor: &Compositor) -> Option<&Link> {
+    fn link_in_front(&self, desktop: &ShellDesktop, compositor: &Compositor) -> Option<u64> {
         let ready = || self.links.iter().filter(|(_, link)| link.selection);
         // The window in front is the tab exactly one connection speaks for: another window of
         // the same app — one parked after its tab closed, one on another strip — is another
@@ -625,11 +734,11 @@ impl AppTabs {
         let front = desktop.with_policy(|policy| (policy.focused(), policy.focused_tab()));
         let (focused, tab) = front;
         if let Some(tab) = tab
-            && let Some((_, link)) = ready().find(|(connection, link)| {
+            && let Some((connection, _)) = ready().find(|(connection, link)| {
                 window_of(&self.links, desktop, **connection, &link.app) == Some(tab)
             })
         {
-            return Some(link);
+            return Some(*connection);
         }
         // A window whose app has not named its tab yet: the launch of the window in front, when
         // it has one window that opens a box.
@@ -644,15 +753,15 @@ impl AppTabs {
             .and_then(|pid| self.launches.launch_of(pid));
         if let Some(launch) = launch {
             let mut of_launch = ready().filter(|(_, link)| link.launch == launch);
-            if let Some((_, link)) = of_launch.next()
+            if let Some((connection, _)) = of_launch.next()
                 && of_launch.next().is_none()
             {
-                return Some(link);
+                return Some(*connection);
             }
         }
         let mut only = ready();
-        let (_, first) = only.next()?;
-        only.next().is_none().then_some(first)
+        let (first, _) = only.next()?;
+        only.next().is_none().then_some(*first)
     }
 
     /// Stand each app's own card where the floating layer put it this pass,
@@ -2385,5 +2494,56 @@ mod tests {
             );
             assert_eq!(hello_version(b"{\"type\":\"other\"}"), None);
         }
+    }
+}
+
+/// A report's box to `to` in the window of connection `about`, with what it carries by default
+/// being made: the picture of `window`, the window it is about, now, and the last moments the
+/// system's capture kept, written out to be carried when it keeps them. A window held back from
+/// captures is pictured as captures picture it.
+fn prepare_report(
+    to: Recipient,
+    about: Option<u64>,
+    window: Option<u64>,
+    carried: &crate::carried::Carried,
+    compositor: &mut Compositor,
+    studio: Option<&CaptureStudio>,
+) -> Preparing {
+    static MADE: AtomicU64 = AtomicU64::new(0);
+    let folder = crate::carried::folder();
+    if let Err(error) = std::fs::create_dir_all(&folder) {
+        tracing::warn!(%error, "a report's files have nowhere to be written");
+    }
+    let made = MADE.fetch_add(1, Ordering::Relaxed);
+    let mut files = Vec::new();
+    if let Some(identifier) = window.and_then(|window| compositor.capture_identifier(window)) {
+        let pictured = compositor
+            .read_back(&tilo_compositor::capture::Target::window(identifier))
+            .map_err(|error| error.to_string())
+            .and_then(|shot| {
+                let png = ui::png::encode_rgba8(shot.width, shot.height, &shot.rgba)
+                    .map_err(|error| error.to_string())?;
+                let path = folder.join(format!("{made}-picture.png"));
+                std::fs::write(&path, png).map_err(|error| error.to_string())?;
+                let name = format!("{}.png", crate::i18n::t("session-report-picture"));
+                carried.offer(&path, &name, "image/png", (shot.width, shot.height))
+            });
+        match pictured {
+            Ok(file) => files.push(file),
+            Err(error) => tracing::warn!(%error, "a report's picture of its window was not taken"),
+        }
+    }
+    let clip = studio.and_then(|studio| {
+        let path = folder.join(format!("{made}-recording.mp4"));
+        studio
+            .clip_for_report(path.clone())
+            .map(|written| (path, written))
+    });
+    Preparing {
+        to: vec![to],
+        about,
+        carried: files,
+        clip,
+        since: std::time::Instant::now(),
     }
 }

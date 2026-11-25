@@ -427,11 +427,17 @@ pub enum FloatingSurfaceHostMessage {
     ///
     /// `pointing` asks the window for the thing the box is about first: it lights up what lies under
     /// the pointer in this window, and the box opens about what the person clicks.
+    ///
+    /// `carried` are files the box opens carrying, each a chip of its own the person may take off
+    /// before sending: the recording of the last moments and the picture of the window a report
+    /// carries by default, which the session already holds.
     ShareSelection {
         #[serde(default)]
         to: Vec<Recipient>,
         #[serde(default)]
         pointing: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        carried: Vec<tilo_reference::Attached>,
     },
     /// The person pointed at `point` of this app's focused window, in its logical coordinates, to say
     /// what something is about (feedback on one control): answer with

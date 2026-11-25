@@ -318,6 +318,18 @@ impl SendToBox {
         }
     }
 
+    /// Carry `files` besides what the box is about: each a chip of its own after the subjects,
+    /// which the person takes off as any other before sending.
+    pub fn carry(&mut self, files: &[tilo_reference::Attached]) {
+        let before = self.subjects.len();
+        self.subjects
+            .extend(files.iter().cloned().filter_map(SharedSelection::carrying));
+        if self.subjects.len() != before {
+            self.changed();
+            self.layout = self.build_layout();
+        }
+    }
+
     /// Stand the box beside `beside` — what it is about — on its trailing
     /// side with the same top, or its leading side where the window leaves no
     /// width, or under it where neither side holds it, inside the window.

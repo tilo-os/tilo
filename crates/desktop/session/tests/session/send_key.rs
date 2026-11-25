@@ -16,12 +16,14 @@ use super::*;
 /// answers replies on its connection.
 const APP: &str = "org.example.Notes";
 
-/// A session with a window of [`APP`] in front, and that window's own shell-ui connection.
+/// A session with a window of [`APP`] in front, and that window's own shell-ui connection, with
+/// the client that maps it: the window stands for as long as it is held.
 fn session_with_a_window() -> (
     Session,
     Arc<tilo_session::Launches>,
     Window,
     std::process::Child,
+    TestClient,
 ) {
     let launches = Arc::new(tilo_session::Launches::default());
     let mut session = crate::common::headless(Options {
@@ -35,7 +37,7 @@ fn session_with_a_window() -> (
         .spawn_locked()
         .expect("a launched app's process");
     launches.started(app_process.id(), APP, "private", false);
-    let _client = mapped(&mut session, APP);
+    let client = mapped(&mut session, APP);
     let mut window = Window::open(&launches, APP, app_process.id());
     window.hello();
     window.say(&FloatingSurfaceClientMessage::SelectionCapable);
@@ -47,7 +49,7 @@ fn session_with_a_window() -> (
             break;
         }
     }
-    (session, launches, window, app_process)
+    (session, launches, window, app_process, client)
 }
 
 /// Press the send key over the window in front.
@@ -63,6 +65,27 @@ fn asked_to_send(app: &mut Window, session: &mut Session) -> bool {
     asked_for_box(app, session).is_some()
 }
 
+/// The box the session asked the window for, as [`asked_for_box`], with the files it carries.
+fn asked_for_box_carrying(
+    app: &mut Window,
+    session: &mut Session,
+) -> Option<(Vec<Recipient>, bool, Vec<tilo_reference::Attached>)> {
+    for _ in 0..200 {
+        session.step(Duration::from_millis(2)).expect("step");
+        while let Some(message) = app.next() {
+            if let FloatingSurfaceHostMessage::ShareSelection {
+                to,
+                pointing,
+                carried,
+            } = message
+            {
+                return Some((to, pointing, carried));
+            }
+        }
+    }
+    None
+}
+
 /// The box the session asked the window for within a few passes, whatever else it tells the window
 /// meanwhile: whom it opens to, and whether the window points at what it is about first. `None`
 /// when it asked for no box at all.
@@ -70,7 +93,7 @@ fn asked_for_box(app: &mut Window, session: &mut Session) -> Option<(Vec<Recipie
     for _ in 0..200 {
         session.step(Duration::from_millis(2)).expect("step");
         while let Some(message) = app.next() {
-            if let FloatingSurfaceHostMessage::ShareSelection { to, pointing } = message {
+            if let FloatingSurfaceHostMessage::ShareSelection { to, pointing, .. } = message {
                 return Some((to, pointing));
             }
         }
@@ -83,7 +106,7 @@ fn asked_for_box(app: &mut Window, session: &mut Session) -> Option<(Vec<Recipie
 fn the_send_key_asks_the_window_in_front_to_open_its_box() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
-    let (mut session, _launches, mut app, mut app_process) = session_with_a_window();
+    let (mut session, _launches, mut app, mut app_process, _window) = session_with_a_window();
 
     press_send_key(&mut session);
     assert!(
@@ -179,12 +202,18 @@ fn press_report_key(session: &mut Session) {
 fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
     let _home = told_where_reports_go();
     let _settled = ui::motion::testing::settled();
-    let (mut session, _launches, mut app, mut app_process) = session_with_a_window();
+    let (mut session, _launches, mut app, mut app_process, _window) = session_with_a_window();
 
     press_report_key(&mut session);
-    let (asked, pointing) =
-        asked_for_box(&mut app, &mut session).expect("the window in front is asked");
+    let (asked, pointing, carried) =
+        asked_for_box_carrying(&mut app, &mut session).expect("the window in front is asked");
     assert_eq!(asked.len(), 1, "a report goes to the one place it goes");
+    assert!(
+        carried.iter().any(
+            |file| matches!(file, tilo_reference::Attached::Image { w, h, .. } if *w > 0 && *h > 0)
+        ),
+        "the box carries a picture of the window the report is about: {carried:?}"
+    );
     assert_eq!(asked[0].kind, RecipientKind::Feedback);
     assert_eq!(asked[0].id, FEEDBACK_WORKSPACE);
     assert!(
@@ -206,7 +235,7 @@ fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
 fn a_computer_told_nowhere_points_and_says_so_in_the_box() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
-    let (mut session, _launches, mut app, mut app_process) = session_with_a_window();
+    let (mut session, _launches, mut app, mut app_process, _window) = session_with_a_window();
 
     press_report_key(&mut session);
     let (asked, pointing) =

@@ -439,6 +439,7 @@ fn the_sends_send_is_pressed_through_the_target_and_sends_what_the_box_holds() {
         None,
         Some("Ship the launch notes"),
         std::slice::from_ref(&adalovelace),
+        &[],
     );
     drawn(&mut app);
     let targets = told(&mut app, &mut shell);
@@ -489,6 +490,7 @@ fn shells_box() -> (App, UnixStream, Rc<Cell<u32>>) {
         app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
             to: Vec::new(),
             pointing: false,
+            carried: Vec::new(),
         }]),
         "the shell asked the window for its box"
     );

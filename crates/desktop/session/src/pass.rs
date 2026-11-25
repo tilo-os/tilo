@@ -355,7 +355,7 @@ impl Session {
         // shell was read over it — go to Chat now: a message never waits for the next wake of the
         // loop, nor for the frame that wake draws.
         self.shared.deliver_hands();
-        self.shared.deliver_sends();
+        self.shared.deliver_sends(Some(self.content.as_ref()));
         // What search and the session's steps read of what the session publishes is read once the
         // frame is out: a key's turn draws what it opens before anything is read, and the reading
         // never delays a frame. A session that keeps drawing is still read, every tenth of a second.
@@ -752,7 +752,7 @@ impl Session {
         // What was handed to an agent, and what was sent since the last look, by a box, an agent
         // or a script.
         self.shared.deliver_hands();
-        self.shared.deliver_sends();
+        self.shared.deliver_sends(Some(self.content.as_ref()));
         self.follow_power()?;
         if let Some(comforts) = &mut self.comforts {
             comforts.observe();

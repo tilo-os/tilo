@@ -458,8 +458,9 @@ impl App {
                 }
                 report_point::Taken::Picked(about, bounds) => {
                     let to = pointing.to().to_vec();
+                    let carried = pointing.carried().to_vec();
                     app.report_pointing = None;
-                    app.open_send_box(Some(about), bounds, None, &to);
+                    app.open_send_box(Some(about), bounds, None, &to, &carried);
                     handled = true;
                     window.request_redraw();
                 }

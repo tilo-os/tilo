@@ -30,6 +30,8 @@ const HINT_TOP: f64 = 10.0;
 pub(crate) struct Pointing {
     /// Whom the box the pick opens goes to, as the session named them.
     to: Vec<Recipient>,
+    /// The files the box opens carrying, as the session handed them.
+    carried: Vec<tilo_reference::Attached>,
     /// What lies under the pointer, outermost first and deepest last.
     chain: Vec<crate::pick::PickTarget>,
     /// What the window is called: the name of a part that has none of its own.
@@ -37,9 +39,14 @@ pub(crate) struct Pointing {
 }
 
 impl Pointing {
-    pub(crate) fn new(to: Vec<Recipient>, window: String) -> Self {
+    pub(crate) fn new(
+        to: Vec<Recipient>,
+        carried: Vec<tilo_reference::Attached>,
+        window: String,
+    ) -> Self {
         Self {
             to,
+            carried,
             chain: Vec::new(),
             window,
         }
@@ -124,6 +131,11 @@ impl Pointing {
     /// Whom the box the pick opens goes to.
     pub(crate) fn to(&self) -> &[Recipient] {
         &self.to
+    }
+
+    /// The files the box the pick opens carries.
+    pub(crate) fn carried(&self) -> &[tilo_reference::Attached] {
+        &self.carried
     }
 
     /// Dim the window, light the part under the pointer with its name above
@@ -325,7 +337,7 @@ mod tests {
     /// A part with no name of its own is called by the window it is in, never by its role.
     #[test]
     fn a_part_with_no_name_is_called_by_its_window() {
-        let pointing = super::Pointing::new(Vec::new(), "Notes".to_owned());
+        let pointing = super::Pointing::new(Vec::new(), Vec::new(), "Notes".to_owned());
         let part = |name: Option<&str>, kind: Option<&str>| crate::pick::PickTarget {
             path: String::new(),
             role: crate::a11y::Role::Group,

@@ -93,6 +93,9 @@ pub(crate) struct Shared {
     pub(crate) box_ask: Cell<Option<BoxAsk>>,
     #[cfg(target_os = "linux")]
     pub(crate) feedback: Option<crate::feedback::Destination>,
+    /// The files the session handed a box to carry, until the person sends them.
+    #[cfg(target_os = "linux")]
+    pub(crate) box_files: crate::carried::Carried,
     /// Where the chrome takes intents the session raises.
     pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
     /// What stands over the windows: its menus, quick settings, the picker

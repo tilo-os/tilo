@@ -1819,6 +1819,7 @@ impl Session {
             inputs,
             asks,
             box_ask: Cell::default(),
+            box_files: crate::carried::Carried::default(),
             feedback,
             intents,
             overlays,
