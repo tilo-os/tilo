@@ -450,6 +450,33 @@ d-ob6iyicm = Gefundenes leeren
     .doc = Nimmt die Antworten einer Online-Suche weg.
     .did = leerte die online gefundenen Bücher
 
+d-tavokm6y = Schriftartentitel
+    .w-serif = Serif
+    .w-sans = Sans
+    .w-monospace = Monospace
+    .w-libertinus = Libertinus
+    .w-literata = Literata
+    .w-eb-garamond = EB Garamond
+    .w-source-serif = Source Serif
+
+d-ngbcvx66 = Papier von
+    .w-f5ead6 = #f5ead6
+
+d-omlx7xsp = Tinte von
+    .w-33291d = #33291d
+
+d-o2c5xprv = Treffer gesagt
+    .w-nothing-in-this-chapter = Nichts in diesem Kapitel
+    .w-1-passage = 1 Textstelle
+    .w-passages = { $count } Textstellen
+
+d-shnvpmub = Fortschritt von
+    .w-finished = Fertig
+    .w-chapter-of = Kapitel { $clamp } von { $total }
+
+d-oxaurbg7 = Autor von
+    .w-unknown-author = Unbekannter Autor
+
 d-oxd7kaud = Ordner überwachen~present
 
 d-w4cgekcm = Stelle zeigen~present

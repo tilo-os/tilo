@@ -664,6 +664,63 @@ d-6d7v4sf5-s = S
 
 d-kpjayokp = Hinweis ausblenden
 
+d-g7qwzn3m = Größe
+    .w-mb = { $value } MB
+    .w-kb = { $value } KB
+    .w-b = { $bytes } B
+
+d-q532zjx6 = Artwort
+    .w-added = Hinzugefügt
+    .w-removed = Entfernt
+    .w-modified = Geändert
+
+d-4nawb4ax = Auflösungswort
+    .w-conflict = Konflikt
+    .w-auto-resolved-ours = Automatisch aufgelöst: unsere
+    .w-auto-resolved-theirs = Automatisch aufgelöst: ihre
+    .w-resolved-ours = Aufgelöst: unsere
+    .w-resolved-theirs = Aufgelöst: ihre
+    .w-resolved-both = Aufgelöst: beide
+    .w-resolved-my-own-text = Aufgelöst: mein eigener Text
+    .w-unchanged = Unverändert
+
+d-ktf7fimx = Sprachwort
+    .w-dockerfile = dockerfile
+    .w-rust = rust
+    .w-typst = typst
+    .w-sql = sql
+    .w-json = json
+    .w-shell = shell
+    .w-git = git
+    .w-python = python
+    .w-javascript = javascript
+    .w-typescript = typescript
+    .w-yaml = yaml
+    .w-markdown = markdown
+    .w-html = html
+    .w-css = css
+    .w-toml = toml
+    .w-c = c
+    .w-cpp = cpp
+    .w-go = go
+    .w-verilog = verilog
+    .w-system-verilog = system_verilog
+    .w-tilolang = tilolang
+    .w-plain-text = plain_text
+
+d-4vz2yslv = Zusatzzeile
+    .w-of-changes-resolved = { $count } von { $count2 } Änderungen aufgelöst
+    .w-files-differ = { $count } Dateien unterscheiden sich
+    .w-the-files-are-identical = Die Dateien sind gleich
+    .w-added-removed-modified = { $count } hinzugefügt, { $count2 } entfernt, { $count3 } geändert
+    .w-nothing-open = Nichts geöffnet
+
+d-3w45hgy5 = Ordner-Zusatzzeile
+    .w-only-here = nur hier, { $size }
+    .w-only-there = nur dort, { $size }
+    .w-became = { $size } wurde zu { $size2 }
+    .w-different-contents = andere Inhalte
+
 d-yn3g5osr = Dateien öffnen~present
 
 d-gruep3mp = Auflösen~present

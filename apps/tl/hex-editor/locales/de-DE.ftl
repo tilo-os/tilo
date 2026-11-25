@@ -707,6 +707,16 @@ d-cgsqzkz4-offset = Offset
 
 d-cgsqzkz4-len = Länge
 
+d-abtjis45 = Größe als Text
+    .w-b = { $n } B
+    .w-kb = { $value } KB
+    .w-mb = { $value } MB
+    .w-gb = { $value } GB
+
+d-tokdwzc4 = Byte-Anzahl
+    .w-1-byte = 1 Byte
+    .w-bytes = { $n } Bytes
+
 d-umksjjan = Speichern
 
 d-it2igfh4 = Bibliothek

@@ -1267,6 +1267,12 @@ d-harljhzx-problem = Problem
 d-mslrzlnl = Pumpe
     .doc = Ein Wert, den niemand liest, für das Frame des Auslösers, das selbst nichts tut: der Ursprung fragt Discords Ereignisse und die Unterhaltungen hier in seiner eigenen Schleife ab.
 
+d-wodtz62p = Schrittwörter
+    .w-type-the-token-on-the-card = Tippe den Token auf der Karte ein, die dich danach fragt.
+    .w-asking-discord-which-servers-the-bot = Discord wird gefragt, in welchen Servern der Bot ist.
+    .w-reading-the-server-s-channels-from = Die Kanäle des Servers werden von Discord gelesen.
+    .w-starting-the-sign-in-with-discord = Die Anmeldung bei Discord wird gestartet.
+
 d-rohfey6t = Kontenansicht
     .w-bring-a-discord-server-into-this = Hol einen Discord-Server in diesen Arbeitsbereich
     .w-its-channels-become-conversations-here-and = Seine Kanäle werden Unterhaltungen hier, und was Menschen auf beiden Seiten sagen, zeigt sich auf beiden.
