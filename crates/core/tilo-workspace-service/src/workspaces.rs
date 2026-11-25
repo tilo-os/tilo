@@ -3149,12 +3149,19 @@ impl Workspaces {
         // A device with the record's keys checks the checkpoint leading it against the writes it
         // stands in for, and keeps that it did: the writes stay in every store until every such
         // device has.
+        // A compaction taken behind was checked as it was taken, against every write here that
+        // it covers; the writes it alone holds cannot be read again to check it.
         #[cfg(feature = "device-keys")]
         if followed.changed {
-            if let Err(error) = self
-                .check_leading_checkpoint(workspace, (app.as_str(), record.as_str()))
-                .await
-            {
+            let route = (app.as_str(), record.as_str());
+            let checked = match &followed.taken_behind {
+                Some(compaction) => {
+                    self.keep_checkpoint_check(workspace, route, compaction)
+                        .await
+                }
+                None => self.check_leading_checkpoint(workspace, route).await,
+            };
+            if let Err(error) = checked {
                 tracing::warn!(workspace = %workspace.workspace(), %app, %record, %error,
                     "this host's check of a record's checkpoint was not kept");
             }
