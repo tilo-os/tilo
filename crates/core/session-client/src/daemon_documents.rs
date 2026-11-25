@@ -84,6 +84,27 @@ pub fn link_from_token(
 /// How long a blocking ask may wait before it says where it waits from, and again each time it
 /// waited as long once more.
 const SLOW_ASK: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a blocking ask waits for the daemon's answer before it fails, saying what it asked,
+/// how long it waited, and whether the runtime that carries the link ever ran it: a daemon
+/// answers a desktop's ask in milliseconds, so one that waits this long waits on something held.
+const ASK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+/// Why a blocking ask of `asking` failed after waiting `waited`: the daemon never answered it,
+/// or, where the runtime that carries the link never `ran` it, that runtime's thread is held and
+/// the daemon was never asked.
+fn unanswered(asking: &str, waited: std::time::Duration, ran: bool) -> String {
+    let seconds = waited.as_secs();
+    let why = if ran {
+        format!("the device's daemon did not answer it in {seconds} s")
+    } else {
+        format!(
+            "the thread that carries the device daemon's link ran nothing for {seconds} s, so the \
+             daemon was never asked"
+        )
+    };
+    tracing::error!(asking = %asking, waited_s = seconds, ran, "{why}");
+    format!("{why}: {asking}")
+}
+
 /// What a blocking ask made on the thread that carries the daemon's link is told: it could
 /// never be answered.
 pub const ASKED_ON_THE_LINK: &str =
@@ -259,7 +280,12 @@ impl DaemonShell {
         }
         let (answered, answer) = std::sync::mpsc::sync_channel(1);
         let inner = Arc::clone(&self.inner);
+        // Whether the runtime that carries the link ran the ask at all: one that never did is
+        // held by something else, and the daemon was never asked.
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let running = Arc::clone(&ran);
         self.inner.runtime.spawn(async move {
+            running.store(true, std::sync::atomic::Ordering::Release);
             let _ = answered.send(inner.ask(call).await);
         });
         let asked = tilo_clock::now();
@@ -272,6 +298,13 @@ impl DaemonShell {
                 Ok(answered) => break answered,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     let waited = tilo_clock::now().saturating_duration_since(asked);
+                    if waited >= ASK_DEADLINE {
+                        return Err(unanswered(
+                            &asking,
+                            waited,
+                            ran.load(std::sync::atomic::Ordering::Acquire),
+                        ));
+                    }
                     tracing::warn!(
                         waited_ms = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
                         thread = std::thread::current().name().unwrap_or("unnamed"),
