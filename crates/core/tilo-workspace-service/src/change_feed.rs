@@ -14,11 +14,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use collab_types::history::feed::{ChangeLog, DocumentKey};
+use collab_types::history::words::HistoryWords;
 use tilo_actions::remote::{ActionCallError, Caller, ChangePage};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::workspace_documents::{DeviceDocuments, DocumentRead, MemberChange};
-use tilo_resource_store::history::feed::{ChangeLog, DocumentKey};
-use tilo_resource_store::history::words::HistoryWords;
 
 use crate::device_documents::ServiceDocuments;
 
