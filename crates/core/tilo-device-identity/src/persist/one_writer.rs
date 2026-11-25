@@ -443,6 +443,93 @@ mod tests {
         drop(take_device_key(&paths).expect("a key let go of is taken again"));
     }
 
+    /// The seed the key file at `path` keeps, as the file itself says.
+    fn seed_in(path: &Path) -> [u8; 32] {
+        <[u8; 32]>::try_from(fs::read(path).unwrap().as_slice()).unwrap()
+    }
+
+    /// One process that takes two people's device keys (a test's host running several people's
+    /// daemons) answers each read with the key kept where it reads, never the other's.
+    #[test]
+    fn two_peoples_keys_taken_in_one_process_each_answer_their_own() {
+        let (ada, bea) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (ada, bea) = (
+            device_key_under(ada.path(), false),
+            device_key_under(bea.path(), false),
+        );
+        let ada_key = take_device_key(&ada).expect("Ada's key is taken");
+        let bea_key = take_device_key(&bea).expect("Bea's key is taken");
+        assert_ne!(ada_key.key().to_bytes(), bea_key.key().to_bytes());
+        for (paths, lock) in [(&ada, &ada_key), (&bea, &bea_key)] {
+            assert_eq!(
+                super::super::read_device_key(&paths.device_privkey)
+                    .unwrap()
+                    .to_bytes(),
+                lock.key().to_bytes()
+            );
+            assert_eq!(
+                taken_device_key(paths).unwrap().to_bytes(),
+                lock.key().to_bytes()
+            );
+        }
+        // Once Ada's key is let go of, it is read from its file again, and Bea's is still hers.
+        let ada_file = seed_in(&ada.device_privkey);
+        drop(ada_key);
+        assert!(
+            taken_device_key(&ada).is_err(),
+            "Ada's key is no longer taken"
+        );
+        assert_eq!(
+            super::super::read_device_key(&ada.device_privkey)
+                .unwrap()
+                .to_bytes(),
+            ada_file
+        );
+        assert_eq!(
+            taken_device_key(&bea).unwrap().to_bytes(),
+            bea_key.key().to_bytes()
+        );
+    }
+
+    /// A key taken from a file that is gone is never another file's: a file made later can be
+    /// given the gone one's device and inode, and a read of it answers its own key.
+    #[test]
+    fn a_key_whose_file_is_gone_is_never_the_key_of_a_file_given_its_inode() {
+        let (gone, made) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let made = device_key_under(made.path(), false);
+        let made_key = seed_in(&made.device_privkey);
+        let gone_path = gone.path().join("device-private").join("keypair.bin");
+        let other = SigningKey::from_bytes(&[42; 32]);
+        // What a process keeps of a key it took from a file since removed, whose device and
+        // inode the file made later was given.
+        taken().push(Taken {
+            path: gone_path.clone(),
+            file: file_at(&made.device_privkey),
+            key: other.clone(),
+        });
+        let read = super::super::read_device_key(&made.device_privkey).map(|key| key.to_bytes());
+        let answered_here = taken_here(&made.device_privkey).map(|key| key.to_bytes());
+        forget(&gone_path);
+        assert_eq!(
+            answered_here, None,
+            "the gone file's key answers no other file"
+        );
+        assert_eq!(
+            read.unwrap(),
+            made_key,
+            "the file made later answers its own key"
+        );
+        // The same file reached through another name is still the key taken from it.
+        let lock = take_device_key(&made).expect("the key is taken");
+        let alias = gone.path().join("alias.bin");
+        std::fs::hard_link(&made.device_privkey, &alias).unwrap();
+        assert_eq!(
+            taken_here(&alias).map(|key| key.to_bytes()),
+            Some(lock.key().to_bytes()),
+            "another name for the taken file answers the key taken from it"
+        );
+    }
+
     #[test]
     fn a_second_process_taking_the_key_is_refused_naming_the_first() {
         if let Some(root) = std::env::var_os(CHILD) {
