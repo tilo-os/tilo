@@ -1359,6 +1359,16 @@ mod cases {
                 dump(page.tree())
             );
 
+            // A draft is its person's alone until it is saved: nobody else watches it being made.
+            g.call("start_album_draft", vec![Value::resource(&g.lib), Value::text("")]);
+            let drafts = g.records("album_drafts");
+            assert_eq!(drafts.len(), 1, "the draft is open");
+            let other = tilolang_runtime::Actor::from(tilolang_runtime::ids::MemberId::person("bo"));
+            assert!(g.rt.readers_admit(&me(), &drafts[0]));
+            assert!(!g.rt.readers_admit(&other, &drafts[0]), "another member does not read it");
+            g.call("cancel_album_draft", vec![Value::resource(&g.lib)]);
+            assert!(g.records("album_drafts").is_empty(), "cancelling closes it");
+
             // A draft of that album, while someone else deletes it: saving says so, and the
             // album stays deleted rather than coming back from the draft.
             g.call("start_album_draft", vec![Value::resource(&g.lib), Value::text(albums[0].id_string())]);

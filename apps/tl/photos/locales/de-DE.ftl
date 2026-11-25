@@ -807,15 +807,22 @@ d-nyatlpd5 = Bildzustand
 d-jcilt5zf = Hinweis
     .doc = Was das Letzte, das die Bibliothek tat, der Person zu sagen hat: ein gespeichertes Album, eine Änderung, die ein anderes Mitglied zuerst gemacht hat.
 
-d-kg3gc2rb = Album-Entwurf offen
-    .doc = Ob ein Album-Entwurf offen ist und, wenn ja, sein Name und die dafür gewählten Fotos: das Album selbst ändert sich erst, wenn die Person den Entwurf speichert.
+d-nyozkafm = Album-Entwürfe
+    .doc = Das Album, für das eine Person Fotos auswählt, jedes ihr eigenes, bis sie es speichert.
 
-d-xjkjqqf5 = Album-Entwurf-Kennung
+d-vyvrwqlp = Album-Entwurf
+    .doc = Ein Album, für das eine Person Fotos auswählt: sein Name und die bisher gewählten Fotos. Das Album selbst ändert sich erst, wenn sie den Entwurf speichert, und bis dahin gehört der Entwurf ihr allein, sodass niemand einen halb getippten Namen oder eine halbe Auswahl mitansieht.
+    .noun = { $count ->
+        [one] Album-Entwurf
+       *[other] Album-Entwürfe
+    }
+
+d-53utp7nd = Album
     .doc = Das Album, von dem der Entwurf ist, und leer für eines, das er beginnen wird.
 
-d-2ql3qzqp = Name des Album-Entwurfs
+d-jaabesu7 = Name
 
-d-myrcknu3 = Fotos des Album-Entwurfs
+d-l4infwly = Fotos
 
 d-lost5zj5 = Bild prüfen
     .doc = Sieht nach, wie dieses Gerät zum Bild eines Fotos steht: ob es die Bytes schon hält und ob das Gehaltene ein Bild ist, das es öffnet.
@@ -869,6 +876,3 @@ d-pzcabmuh = Analyseseite
     .w-resume = Fortsetzen
     .w-retry-failed-photos = Fehlgeschlagene Fotos erneut versuchen
     .w-revision = Revision
-
-
-d-j45kskqf-filter-album_draft_open = Album-Entwurf offen
