@@ -198,6 +198,7 @@ session-input-devices = Eingabegeräte
 session-privacy = Privatsphäre
 session-workspace-access = Zugriff im Arbeitsbereich
 session-access-revoke = Zugriff zurücknehmen
+session-access-set-outside = Einer App den Ausgang erlauben oder verwehren
 session-access-you = Du
 session-access-allows-read = Darf es lesen
 session-access-allows-write = Darf es lesen und ändern

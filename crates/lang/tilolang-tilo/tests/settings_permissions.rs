@@ -200,9 +200,12 @@ fn the_pane_lists_the_workspaces_grants_and_never_confuses_absent_with_unread() 
         &host,
         "workspace/access",
         "tilo.workspace#Access",
-        r#"{"known": true, "workspaces": [{"name": "Home", "grants": [
+        r#"{"known": true, "workspaces": [{"id": "w1", "name": "Home", "grants": [
             {"id": "cap:1", "section": "Apps", "holder": "Photos",
-             "allows": "Read and write /photos", "expiry": "Always", "granted_by": "Ada"}
+             "allows": "Read and write /photos", "expiry": "Always", "granted_by": "Ada",
+             "app": "so.tilo.photos", "path": "/photos", "workspace": "w1",
+             "holder_kind": "app", "granted_by_name": "Ada", "granted_by_kind": "you",
+             "granted_by_you": true, "device": false, "can_revoke": true}
         ]}]}"#,
     );
     let said = line(&host).join(" | ");
@@ -544,4 +547,166 @@ fn the_pane_says_what_protects_this_device() {
         !said.contains("Not active"),
         "a firewall nobody could read is not said to be off: {said}"
     );
+}
+
+/// The host as a session has it when the Apps pane draws: Settings, and the file explorer whose
+/// access list the pane draws the files with.
+fn settings_with_files() -> Host {
+    let host = settings();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/files");
+    let source = tilolang::PackageSource::read_dir(&dir).expect("the files package reads");
+    let ids = tilolang::IdsLock::parse(
+        &std::fs::read_to_string(dir.join("app.ids")).expect("the files package's ids"),
+    )
+    .expect("its ids parse");
+    let metas = crate::fixtures::settings_packages().expect("the platform's packages read");
+    let compiled = tilolang::compile_package_source(&source, &ids, &metas)
+        .unwrap_or_else(|diagnostics| panic!("the files package compiles: {diagnostics:#?}"));
+    host.load_compiled(&compiled).expect("the files package loads");
+    tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
+    host
+}
+
+/// The Apps pane opened as its own view.
+fn apps_pane(host: &Host) -> ViewInstance {
+    let id = host
+        .package(APP)
+        .expect("the app is loaded")
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "apps_access_pane")
+        .expect("the Apps pane is declared")
+        .id
+        .clone();
+    let mut view = host
+        .runtime()
+        .open_view(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            &id,
+            Vec::new(),
+        )
+        .expect("the pane opens");
+    view.poll_patches().expect("the pane draws");
+    view
+}
+
+/// What the session publishes of a workspace's apps and their outside capabilities.
+const OUTSIDE: &str = r#"{
+    "known": true,
+    "workspaces": [],
+    "outside": [{
+        "workspace": "w1", "workspace_name": "Home",
+        "apps": [{
+            "app": "so.tilo.mail", "name": "Mail",
+            "capabilities": [
+                {"capability": "imap.search", "allowed": false, "can_change": true},
+                {"capability": "smtp.send", "allowed": true, "can_change": true}
+            ]
+        }]
+    }]
+}"#;
+
+/// Each declared outside capability reads in plain words on its app's page, with a switch that
+/// turns it off through the access root's own action and the app, workspace and capability it
+/// names; a capability is never shown as its id.
+#[test]
+fn the_apps_pane_lists_each_declared_capability_and_turns_one_off() {
+    let host = settings_with_files();
+    serve(&host, "workspace/access", "tilo.workspace#Access", OUTSIDE);
+    let view = apps_pane(&host);
+    let said = texts(&view).join(" | ");
+    for expected in [
+        "Beyond the workspace",
+        "Home",
+        "Mail",
+        "Send email",
+        "Search the mail server",
+        "Sends beyond the workspace",
+        "Stopped: what it queues for this settles as refused",
+        "Allowed",
+        "Blocked",
+    ] {
+        assert!(said.contains(expected), "`{expected}` is shown: {said}");
+    }
+    assert!(
+        !said.contains("smtp.send") && !said.contains("imap.search"),
+        "a capability reads in words, never as its id: {said}"
+    );
+
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    let email = labelled(view.tree(), "ui.Toggle", "Allowed");
+    view.fire_with(&email, "check", Some(&Value::Bool(false)))
+        .expect("the switch turns the capability off");
+    let sent = sent.borrow();
+    let [
+        Invocation::Action {
+            app,
+            name,
+            target,
+            args,
+            ..
+        },
+    ] = sent.as_slice()
+    else {
+        panic!("one capability's own verb: {sent:?}");
+    };
+    assert_eq!(
+        (app.as_str(), name.as_str()),
+        ("tilo.workspace", "set-outside"),
+        "the access root's typed action, as the Workspace package publishes it"
+    );
+    assert_eq!(
+        target
+            .as_ref()
+            .map(tilolang_tilo::runtime::ResourceRef::id_string),
+        Some("workspace/access".to_owned()),
+        "the call is on the root the page reads"
+    );
+    let argument = |name: &str| {
+        args.iter()
+            .find(|(named, _)| named.as_str() == name)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| panic!("`{name}` is an argument: {args:?}"))
+    };
+    assert_eq!(argument("workspace"), Value::text("w1"));
+    assert_eq!(argument("app"), Value::text("so.tilo.mail"));
+    assert_eq!(argument("capability"), Value::text("smtp.send"));
+    // A switch's value is the event's own, an option the host hands over as the plain answer
+    // its action declares.
+    assert_eq!(argument("allowed"), Value::some(Value::Bool(false)));
+}
+
+/// A capability turned off elsewhere reaches every open page on the next reading: what the pane
+/// shows is the workspace's grant, never a switch's own memory.
+#[test]
+fn a_capability_turned_off_elsewhere_shows_off_in_every_open_pane() {
+    let host = settings_with_files();
+    serve(&host, "workspace/access", "tilo.workspace#Access", OUTSIDE);
+    let mut first = apps_pane(&host);
+    let mut second = apps_pane(&host);
+    for shown in [&first, &second] {
+        let said = texts(shown).join(" | ");
+        assert!(said.contains("Allowed"), "the send goes now: {said}");
+    }
+
+    let off = OUTSIDE.replace(
+        "\"capability\": \"smtp.send\", \"allowed\": true",
+        "\"capability\": \"smtp.send\", \"allowed\": false",
+    );
+    serve(&host, "workspace/access", "tilo.workspace#Access", &off);
+    for shown in [&mut first, &mut second] {
+        shown.poll_patches().expect("the pane draws the new reading");
+        let said = texts(shown).join(" | ");
+        assert!(
+            !said.contains("Allowed"),
+            "both capabilities are off now: {said}"
+        );
+        assert_eq!(
+            said.matches("Blocked").count(),
+            2,
+            "each of the two reads blocked: {said}"
+        );
+    }
 }

@@ -8,13 +8,19 @@
 /// workspace's change or the device's record as the person.
 ///
 /// The list is the platform's virtual one, so a folder shared with many people shows only the rows
-/// in view. `by_app` is the Settings pane's list: each row names the file rather than the holder,
-/// stands under a band naming the app that holds the grant, and the list is the column's own body.
-template view access_list(entries: List<workspace.AccessEntry>, empty: Text, by_app: Bool = false) {
+/// in view. `by_app` is the Settings pane's list: each row names the file rather than the holder
+/// and stands under a band naming the app that holds the grant. `in_column` is whether it fills
+/// the column as its own body; a pane that draws sections above it scrolls it with them instead.
+template view access_list(
+    entries: List<workspace.AccessEntry>,
+    empty: Text,
+    by_app: Bool = false,
+    in_column: Bool = true,
+) {
     if entries.is_empty() {
         ui.Text(empty, role: .caption, secondary: true)
     } else {
-        ui.VirtualList(name: "Access", in_column: by_app) {
+        ui.VirtualList(name: "Access", in_column: in_column) {
             for entry in entries {
                 ui.ListItem(
                     value: entry.id,

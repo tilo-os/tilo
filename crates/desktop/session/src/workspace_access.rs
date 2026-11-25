@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ApiError, ResourceSpec};
+use tilo_action_policy::Grantee;
 use tilo_desktop_model::Workspace;
 use tilo_dialogs::chosen::{AppKey, ChosenTable, Kind as ChosenKind};
 use tilo_service::{Service, Started};
@@ -39,11 +40,17 @@ use crate::workspace_view::WorkspaceView;
 /// The workspace's grants in the session's catalogue, as the Workspace package's root.
 pub(crate) const RESOURCE: &str = "workspace/access";
 
-/// The action that takes a grant or a device-record choice back, by its id.
+/// The action that takes a grant or a device-record choice back, by its id: what a test names the
+/// published verb by.
 #[cfg(test)]
 pub(crate) const REVOKE: &str = "revoke";
 
-/// What the workspace's access list offers: taking a grant or a chosen file back.
+/// The action that lets an app reach outside the workspace through one capability, or stops it.
+#[cfg(test)]
+pub(crate) const SET_OUTSIDE: &str = "set-outside";
+
+/// What the workspace's access list offers: taking a grant or a chosen file back, and turning
+/// one of an app's outside capabilities off or back on.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "workspace.access")]
 pub enum AccessEffect {
@@ -54,6 +61,24 @@ pub enum AccessEffect {
         /// The grant or chosen file to take back.
         #[param("The grant or chosen file to take back.")]
         id: String,
+    },
+    /// Let an app reach outside the workspace through one of its declared capabilities, or stop
+    /// it: turning it off writes the denial the workspace's policy decides by.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-access-set-outside")]
+    SetOutside {
+        /// The workspace whose grant it is, by its id.
+        #[param("The workspace whose grant it is, by its id.")]
+        workspace: String,
+        /// The app, by its package id.
+        #[param("The app, by its package id.")]
+        app: String,
+        /// The capability, as the app's package declares it (`smtp.send`).
+        #[param("The capability, as the app's package declares it.")]
+        capability: String,
+        /// Whether the app may carry it out.
+        #[param("Whether the app may carry it out.")]
+        allowed: bool,
     },
 }
 
@@ -110,14 +135,43 @@ impl MountMoves {
 }
 
 /// What the reading is made from besides the person's own request: the workspaces' governance as
-/// the daemon published it, the device's record of chosen files, and the mounts' record index.
-/// Each moves only when it changed, so the reading is read again when one of them did and never on
-/// a clock.
+/// the daemon published it, the device's record of chosen files, the mounts' record index and what
+/// the device's packages declare their code can reach outside. Each moves only when it changed, so
+/// the reading is read again when one of them did and never on a clock.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Inputs {
     tree: u64,
     chosen: u64,
     mounts: u64,
+    outside: u64,
+}
+
+/// The outside capabilities each app's package on this device declares, by app, as the surfaces
+/// this process registered (`smtp.send`): what the app's page lists and what a toggle writes.
+pub(crate) type DeclaredOutside = dyn Fn() -> Vec<(String, Vec<String>)>;
+
+/// The outside capabilities the packages this device carries declare, by app, each app's sorted.
+#[must_use]
+pub(crate) fn declared_outside() -> Vec<(String, Vec<String>)> {
+    let mut apps: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for (app, surface) in collab_types::app_surface::Surfaces::process().resources() {
+        for verb in &surface.verbs {
+            apps.entry(app.clone()).or_default().extend(verb.outside.iter().cloned());
+        }
+    }
+    apps.into_iter()
+        .map(|(app, capabilities)| (app, capabilities.into_iter().collect()))
+        .collect()
+}
+
+/// What the device's packages declare their code can reach outside, as one number that moves only
+/// when a declaration does: what the reading is read again by.
+fn outside_revision(outside: Vec<(String, Vec<String>)>) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    outside.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The workspace's grants, published as `workspace/access`.
@@ -130,6 +184,8 @@ pub(crate) struct Served {
     view: Option<Arc<WorkspaceView>>,
     /// The files people chose for apps outside any workspace: the device's own record.
     chosen: Option<Arc<ChosenTable>>,
+    /// The outside capabilities the device's app packages declare, as the app's page lists them.
+    outside: std::rc::Rc<DeclaredOutside>,
     /// The mounts' record index, as the device's daemon tells each write it takes.
     mounts: MountMoves,
     /// What the last published reading was read from.
@@ -172,6 +228,7 @@ impl Served {
         person: String,
         view: Option<Arc<WorkspaceView>>,
         chosen: Option<Arc<ChosenTable>>,
+        outside: std::rc::Rc<DeclaredOutside>,
         mounts: MountMoves,
     ) -> Self {
         Self {
@@ -179,6 +236,7 @@ impl Served {
             person,
             view,
             chosen,
+            outside,
             mounts,
             read_from: RefCell::new(None),
             last: RefCell::new(None),
@@ -193,6 +251,7 @@ impl Served {
             tree: self.handle.revision(),
             chosen: self.chosen.as_ref().map_or(0, |table| table.revision()),
             mounts: self.mounts.revision(),
+            outside: outside_revision((self.outside)()),
         }
     }
 
@@ -205,9 +264,11 @@ impl Served {
             .map(|table| table.all())
             .unwrap_or_default();
         let mounts = self.mounts.revision();
+        let outside = (self.outside)();
         let mut paths = self.paths.borrow_mut();
-        self.handle
-            .read(|tree| reading_of(tree, person, &chosen, &mut paths, mounts))
+        self.handle.read(|tree| {
+            reading_of(tree, person, &chosen, &outside, &mut paths, mounts)
+        })
     }
 
     /// The reading, read again when what it is made from moved since it was last read.
@@ -266,20 +327,107 @@ impl Served {
         if edit.is_empty() {
             return Err(ApiError::Failed(t("session-access-already-gone")));
         }
-        let Some(view) = self.view.clone() else {
+        let view = self.view.clone();
+        let written = view.as_ref().map(|view| {
+            crate::membership::Membership::of(&**view, held.id()).changes(held, &edit)
+        });
+        let workspace_id = held.id();
+        self.write(tree, workspace_id, view, written, output(&id))
+    }
+
+    /// Let `app` carry out `capability` in `workspace`, or stop it: the denial is a grant of the
+    /// workspace's, written through the governance a chosen file's grant is written through, as
+    /// the person at this desktop, and taking it back revokes that same grant.
+    fn set_outside(
+        &self,
+        workspace: &str,
+        app: &str,
+        capability: &str,
+        allowed: bool,
+    ) -> Result<Started, ApiError> {
+        // Only a capability its package declares is the app's to reach: the page lists what is
+        // declared, and a change naming another would write a grant nothing reads.
+        if !(self.outside)().iter().any(|(declared_app, capabilities)| {
+            declared_app == app && capabilities.iter().any(|declared| declared == capability)
+        }) {
+            return Err(ApiError::InvalidArguments(format!(
+                "{app} declares no outside capability `{capability}`"
+            )));
+        }
+        let mut tree = self.handle.read(Clone::clone);
+        let Some(held) = tree
+            .workspaces
+            .iter_mut()
+            .find(|held| held.id().to_string() == workspace)
+        else {
+            return Err(ApiError::Failed(t("session-access-already-gone")));
+        };
+        let id = tilo_action_policy::roles::outside_capability_grant_id(app, capability);
+        let now = tilo_clock::unix_now();
+        let edit = if allowed {
+            // Nothing to hand back: the app's declared capability already goes.
+            if held.policy.grants.iter().all(|held| held.id != id) {
+                return Ok(Started::Done(outside_output(id.as_str())));
+            }
+            held.policy
+                .change_all_as_at(
+                    &self.person,
+                    vec![tilo_action_policy::Change::Revoke(id.clone())],
+                    now,
+                )
+                .map_err(|refusal| ApiError::Failed(refusal.to_string()))?
+        } else {
+            let denial = tilo_action_policy::roles::outside_capability_denial(
+                workspace,
+                app,
+                capability,
+                Grantee::person(self.person.clone()),
+            );
+            held.policy
+                .change_all_as_at(
+                    &self.person,
+                    vec![tilo_action_policy::Change::Grant(denial)],
+                    now,
+                )
+                .map_err(|refusal| ApiError::Failed(refusal.to_string()))?
+        };
+        let view = self.view.clone();
+        let written = view
+            .as_ref()
+            .map(|view| crate::membership::Membership::of(&**view, held.id()).changes(held, &edit));
+        let workspace_id = held.id();
+        self.write(
+            tree,
+            workspace_id,
+            view,
+            written,
+            outside_output(id.as_str()),
+        )
+    }
+
+    /// Write what `edit` changed in `workspace` through `view`'s governance, or keep it here when
+    /// this session holds none: what a revoke and an outside capability's toggle both answer.
+    fn write(
+        &self,
+        tree: tilo_desktop_model::Layout,
+        workspace: tilo_desktop_model::WorkspaceId,
+        view: Option<Arc<WorkspaceView>>,
+        written: Option<Vec<tilo_peer_state::workspace_membership::WorkspaceMembershipCommand>>,
+        answer: tilo_actions::ActionOutput,
+    ) -> Result<Started, ApiError> {
+        let Some(view) = view else {
             // A session that holds no workspace's governance has only the shell: the change
             // stands here, and nowhere else.
             self.handle.replace_tree(tree);
-            return Ok(Started::Done(output(&id)));
+            return Ok(Started::Done(answer));
         };
-        let workspace_id = held.id();
-        let written = crate::membership::Membership::of(&*view, workspace_id).changes(held, &edit);
+        let written = written.unwrap_or_default();
         Ok(Started::Later(crate::landing::off_loop(async move {
-            crate::membership::Membership::of(&*view, workspace_id)
+            crate::membership::Membership::of(&*view, workspace)
                 .write(&written)
                 .await
                 .map_err(ApiError::Failed)?;
-            Ok(output(&id))
+            Ok(answer)
         })))
     }
 
@@ -362,14 +510,34 @@ impl Service for Served {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
-        let AccessEffect::Revoke { id } =
-            tilo_service::decode::<AccessEffect>(&self.resources(), resource, action, arguments)?;
-        if id.is_empty() {
-            return Err(ApiError::InvalidArguments(
-                "an id names what to take back".to_owned(),
-            ));
+        match tilo_service::decode::<AccessEffect>(
+            &self.resources(),
+            resource,
+            action,
+            arguments,
+        )? {
+            AccessEffect::Revoke { id } => {
+                if id.is_empty() {
+                    return Err(ApiError::InvalidArguments(
+                        "an id names what to take back".to_owned(),
+                    ));
+                }
+                self.revoke(&id)
+            }
+            AccessEffect::SetOutside {
+                workspace,
+                app,
+                capability,
+                allowed,
+            } => {
+                if workspace.is_empty() || app.is_empty() || capability.is_empty() {
+                    return Err(ApiError::InvalidArguments(
+                        "a workspace, an app and a capability name which reach to set".to_owned(),
+                    ));
+                }
+                self.set_outside(&workspace, &app, &capability, allowed)
+            }
         }
-        self.revoke(&id)
     }
 }
 
@@ -377,6 +545,14 @@ impl Service for Served {
 fn output(id: &str) -> tilo_actions::ActionOutput {
     tilo_actions::ActionOutput {
         value: Some(serde_json::json!({ "revoked": id })),
+        resources: Vec::new(),
+    }
+}
+
+/// What a capability's toggle answers.
+fn outside_output(id: &str) -> tilo_actions::ActionOutput {
+    tilo_actions::ActionOutput {
+        value: Some(serde_json::json!({ "outside": id })),
         resources: Vec::new(),
     }
 }
@@ -391,12 +567,13 @@ fn chosen_id(id: &str) -> Option<(String, String, String)> {
 }
 
 /// The grants the workspaces of `tree` give, as the Permissions tab lists them, each with the app
-/// it is for and the file or folder its node is; and the files chosen outside any workspace, in
-/// the same list.
+/// it is for and the file or folder its node is; the files chosen outside any workspace, in the
+/// same list; and each app's outside capabilities, as its page turns them off and on.
 fn reading_of(
     tree: &tilo_desktop_model::Layout,
     person: &str,
     chosen: &[(AppKey, String, tilo_dialogs::chosen::Chosen)],
+    outside: &[(String, Vec<String>)],
     paths: &mut Paths,
     mounts: u64,
 ) -> Value {
@@ -430,10 +607,81 @@ fn reading_of(
             })
         })
         .collect();
+    let outside: Vec<Value> = tree
+        .workspaces
+        .iter()
+        .filter_map(|workspace| outside_of(workspace, person, outside, now))
+        .collect();
     serde_json::json!({
         "known": !tree.workspaces.is_empty(),
         "workspaces": workspaces,
+        "outside": outside,
     })
+}
+
+/// One workspace's apps that declare outside capabilities, each capability with whether it goes
+/// now and whether this person may turn it; `None` for a workspace none of whose apps does.
+fn outside_of(
+    workspace: &Workspace,
+    person: &str,
+    declared: &[(String, Vec<String>)],
+    now: u64,
+) -> Option<Value> {
+    let context = tilo_action_policy::Context::at_secs(now);
+    let node = tilo_action_policy::TreePath::workspace(workspace.id().to_string());
+    let apps: Vec<Value> = declared
+        .iter()
+        .filter_map(|(app, capabilities)| {
+            let app_node = node.clone().app(app.clone());
+            let mut capabilities: Vec<&String> = capabilities.iter().collect();
+            capabilities.sort();
+            let capabilities: Vec<Value> = capabilities
+                .into_iter()
+                .map(|capability| {
+                    let denial = workspace.policy.grants.iter().find(|grant| {
+                        tilo_action_policy::roles::outside_denial_stops(grant, app, capability)
+                            && grant.is_live(&context)
+                            && context.covers(&grant.node, &app_node)
+                    });
+                    // The page turns its own capability's denial off and on: one naming the
+                    // whole app (a restriction, a manual grant) is another page's to take back.
+                    let ours = denial.is_some_and(|grant| {
+                        grant.id
+                            == tilo_action_policy::roles::outside_capability_grant_id(
+                                app, capability,
+                            )
+                    });
+                    let change = if denial.is_none() {
+                        tilo_action_policy::roles::governance::GRANT
+                    } else {
+                        tilo_action_policy::roles::governance::REVOKE
+                    };
+                    serde_json::json!({
+                        "capability": capability,
+                        "allowed": denial.is_none(),
+                        "can_change": (denial.is_none() || ours)
+                            && workspace.policy.may_change_at(person, change, now),
+                    })
+                })
+                .collect();
+            if capabilities.is_empty() {
+                return None;
+            }
+            Some(serde_json::json!({
+                "app": app,
+                "name": crate::app_names::listed_name(app).unwrap_or_else(|| app.clone()),
+                "capabilities": capabilities,
+            }))
+        })
+        .collect();
+    if apps.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "workspace": workspace.id().to_string(),
+        "workspace_name": workspace.name,
+        "apps": apps,
+    }))
 }
 
 /// One grant the workspace lists, with what a view needs to show and take it back; `None` for a
@@ -538,6 +786,7 @@ fn chosen_entry(key: &AppKey, token: &str, held: &tilo_dialogs::chosen::Chosen) 
 #[cfg(test)]
 mod tests {
     use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Scope};
+    use serde_json::{Map, Value};
     use tilo_action_policy::Grantee;
     use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 
@@ -553,6 +802,43 @@ mod tests {
 
     fn paths() -> Paths {
         Paths::default()
+    }
+
+    /// Nothing outside is declared: the reading a test of grants alone is made from.
+    fn no_outside() -> std::rc::Rc<DeclaredOutside> {
+        std::rc::Rc::new(|| Vec::new())
+    }
+
+    /// A workspace whose policy `owner` owns, so a change of its grants is theirs to make.
+    fn workspace_owned_by(owner: &str) -> Layout {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(7), "settings-access-test");
+        workspace.policy =
+            tilo_action_policy::WorkspacePolicy::new(workspace.id().to_string(), owner);
+        Layout {
+            workspaces: vec![workspace],
+            ..Layout::default()
+        }
+    }
+
+    /// What the packages declare `app` may queue, as `Served` reads it from this device.
+    fn declares(app: &str, capabilities: &[&str]) -> Vec<(String, Vec<String>)> {
+        vec![(
+            app.to_owned(),
+            capabilities.iter().map(|one| (*one).to_owned()).collect(),
+        )]
+    }
+
+    /// The action's arguments, named as the surface declares them.
+    fn set_outside_args(workspace: &str, allowed: bool) -> Map<String, Value> {
+        Map::from_iter([
+            ("workspace".to_owned(), Value::String(workspace.to_owned())),
+            ("app".to_owned(), Value::String("so.tilo.mail".to_owned())),
+            (
+                "capability".to_owned(),
+                Value::String("smtp.send".to_owned()),
+            ),
+            ("allowed".to_owned(), Value::Bool(allowed)),
+        ])
     }
 
     /// What an app was given beyond its documents is said with what it allows, on which
@@ -581,7 +867,7 @@ mod tests {
             )
             .through("so.tilo.browser"),
         ]);
-        let read = reading_of(&tree, "ada", &[], &mut paths(), 0);
+        let read = reading_of(&tree, "ada", &[], &[], &mut paths(), 0);
         assert_eq!(read["known"], serde_json::json!(true));
         // The capabilities are no file access, so this view holds none of them; the Permissions
         // tab still lists them.
@@ -596,12 +882,13 @@ mod tests {
             &workspace_with_caps(Vec::new()),
             "ada",
             &[],
+            &[],
             &mut paths(),
             0,
         );
         assert_eq!(empty["known"], serde_json::json!(true));
         assert_eq!(empty["workspaces"], serde_json::json!([]));
-        let unread = reading_of(&Layout::default(), "ada", &[], &mut paths(), 0);
+        let unread = reading_of(&Layout::default(), "ada", &[], &[], &mut paths(), 0);
         assert_eq!(unread["known"], serde_json::json!(false));
     }
 
@@ -624,6 +911,7 @@ mod tests {
             &tree,
             "ada",
             &[(key, "token".to_owned(), held)],
+            &[],
             &mut paths(),
             0,
         );
@@ -639,13 +927,17 @@ mod tests {
     #[test]
     fn the_service_publishes_the_reading_where_a_view_reads_it() {
         let handle = DesktopHandle::new(workspace_with_caps(Vec::new()), 1);
-        let served = Served::new(handle, "ada".into(), None, None, MountMoves::default());
+        let served = Served::new(handle, "ada".into(), None, None, no_outside(), MountMoves::default());
         let published = served.resources();
         assert_eq!(published.len(), 1);
         assert_eq!(published[0].id.as_str(), RESOURCE);
         assert!(
             published[0].actions.iter().any(|spec| spec.id == REVOKE),
             "the view's one action is published"
+        );
+        assert!(
+            published[0].actions.iter().any(|spec| spec.id == SET_OUTSIDE),
+            "and the app page's capability switch"
         );
         let read = served.read(RESOURCE).expect("the reading");
         assert_eq!(read["known"], serde_json::json!(true));
@@ -663,6 +955,147 @@ mod tests {
         assert_eq!(chosen_id("some-grant"), None);
     }
 
+    /// Each app's declared outside capabilities read on the workspace, each with whether it goes
+    /// and whether this person may turn it: nothing about an app no package here declares.
+    #[test]
+    fn an_apps_outside_capabilities_read_with_what_its_package_declares() {
+        let tree = workspace_owned_by("ada");
+        let workspace = tree.workspaces[0].id().to_string();
+        let declared = declares("so.tilo.mail", &["imap.search", "smtp.send"]);
+        let read = reading_of(&tree, "ada", &[], &declared, &mut paths(), 0);
+        let outside = &read["outside"][0];
+        assert_eq!(
+            outside["workspace"],
+            serde_json::json!(workspace),
+            "the workspace the capabilities are turned in"
+        );
+        let app = &outside["apps"][0];
+        assert_eq!(app["app"], serde_json::json!("so.tilo.mail"));
+        assert_eq!(
+            app["capabilities"],
+            serde_json::json!([
+                {"capability": "imap.search", "allowed": true, "can_change": true},
+                {"capability": "smtp.send", "allowed": true, "can_change": true},
+            ]),
+            "each declared capability, in name order, going until it is turned off"
+        );
+        // A package this device does not carry declares nothing, so it lists nothing.
+        let read = reading_of(&tree, "ada", &[], &[], &mut paths(), 0);
+        assert_eq!(read["outside"], serde_json::json!([]));
+    }
+
+    /// Turning one capability off writes the workspace's denial of that capability alone, and
+    /// turning it back on revokes it: the reading says which, and the session's next pass sees it.
+    #[test]
+    fn turning_a_capability_off_and_on_writes_and_revokes_the_one_grants_denial() {
+        let handle = DesktopHandle::new(workspace_owned_by("ada"), 1);
+        let workspace = handle.read(|tree| tree.workspaces[0].id().to_string());
+        let capability = tilo_action_policy::roles::outside_capability_grant_id(
+            "so.tilo.mail",
+            "smtp.send",
+        );
+        let declared = declares("so.tilo.mail", &["imap.search", "smtp.send"]);
+        let mut served = Served::new(
+            handle.clone(),
+            "ada".into(),
+            None,
+            None,
+            std::rc::Rc::new(move || declared.clone()),
+            MountMoves::default(),
+        );
+        let state = |served: &Served| {
+            let read = served.read(RESOURCE).expect("the reading");
+            read["outside"][0]["apps"][0]["capabilities"].clone()
+        };
+        assert_eq!(
+            state(&served)[1],
+            serde_json::json!({"capability": "smtp.send", "allowed": true, "can_change": true})
+        );
+
+        served
+            .invoke(
+                RESOURCE,
+                SET_OUTSIDE,
+                &set_outside_args(&workspace, false),
+            )
+            .expect("the capability is turned off");
+        assert!(
+            served.poll(),
+            "the change reaches what the session publishes next"
+        );
+        let held = state(&served);
+        assert_eq!(
+            held[1],
+            serde_json::json!({"capability": "smtp.send", "allowed": false, "can_change": true}),
+            "the capability turned off says so"
+        );
+        assert_eq!(
+            held[0]["allowed"],
+            serde_json::json!(true),
+            "and the app's other capability still goes"
+        );
+        let denial = tilo_action_policy::roles::outside_capability_denial(
+            &workspace,
+            "so.tilo.mail",
+            "smtp.send",
+            Grantee::person("ada"),
+        );
+        assert!(
+            handle.read(|tree| tree.workspaces[0].policy.grants.contains(&denial)),
+            "the denial is the workspace's grant"
+        );
+
+        served
+            .invoke(RESOURCE, SET_OUTSIDE, &set_outside_args(&workspace, true))
+            .expect("the capability is turned back on");
+        assert_eq!(
+            state(&served)[1],
+            serde_json::json!({"capability": "smtp.send", "allowed": true, "can_change": true}),
+            "and it goes again"
+        );
+        assert!(
+            handle.read(|tree| tree
+                .workspaces[0]
+                .policy
+                .grants
+                .iter()
+                .all(|grant| grant.id != capability)),
+            "the denial is taken back"
+        );
+    }
+
+    /// A capability the app's package does not declare is refused, and writes no grant: the page
+    /// lists what is declared, and nothing else is the app's to reach.
+    #[test]
+    fn a_capability_an_app_does_not_declare_is_refused() {
+        let handle = DesktopHandle::new(workspace_owned_by("ada"), 1);
+        let workspace = handle.read(|tree| tree.workspaces[0].id().to_string());
+        let declared = declares("so.tilo.mail", &["smtp.send"]);
+        let mut served = Served::new(
+            handle.clone(),
+            "ada".into(),
+            None,
+            None,
+            std::rc::Rc::new(move || declared.clone()),
+            MountMoves::default(),
+        );
+        let mut args = set_outside_args(&workspace, false);
+        args.insert(
+            "capability".to_owned(),
+            Value::String("music.stream".to_owned()),
+        );
+        assert!(matches!(
+            served.invoke(RESOURCE, SET_OUTSIDE, &args),
+            Err(ApiError::InvalidArguments(_))
+        ));
+        assert!(handle.read(|tree| tree.workspaces[0]
+            .policy
+            .grants
+            .iter()
+            .all(|grant| tilo_action_policy::roles::outside_capability_of(grant.id.as_str())
+                .is_none())));
+    }
+
     /// A workspace that lands on the shell reaches the reading on the session's next pass, with no
     /// clock between: what the reading is made from is what the shell holds.
     #[test]
@@ -673,6 +1106,7 @@ mod tests {
             "ada".into(),
             None,
             None,
+            no_outside(),
             MountMoves::default(),
         );
         assert!(served.poll(), "the first reading is published");
@@ -703,6 +1137,7 @@ mod tests {
             "ada".into(),
             None,
             Some(Arc::clone(&table)),
+            no_outside(),
             MountMoves::default(),
         );
         assert!(served.poll(), "the first reading is published");

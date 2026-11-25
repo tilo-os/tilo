@@ -942,9 +942,13 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantRecipient, Listed<'_>)> {
                 let admission = grant.grantee.agent_id().is_some()
                     && grant.id.as_str().starts_with("agent-member:");
                 let document_access = grant.id.as_str().starts_with("document-access:");
+                // An app's outside capability is the app's page's: it is turned off and on
+                // there, and lists as a grant here never.
+                let outside_capability =
+                    tilo_action_policy::roles::outside_capability_of(grant.id.as_str()).is_some();
                 // What visitors may do is the entry's setting, shown there.
                 let entry = grant.grantee == Grantee::AnyKey;
-                !preset && !admission && !document_access && !entry
+                !preset && !admission && !document_access && !outside_capability && !entry
             })
             .map(|grant| (classify_grantee(&grant.grantee), Listed::Grant(grant))),
     );

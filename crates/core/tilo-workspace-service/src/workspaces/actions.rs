@@ -5338,9 +5338,10 @@ mod surface_tests {
         // beyond their own documents: what the session publishes as `workspace/access`,
         // in the words the workspace's Permissions tab lists them.
         if kind == "access" {
-            // The one action the access view offers: take a grant or a device-record
-            // choice back. The session that publishes this reading answers it where the
-            // person's own device keeps the choice.
+            // The two actions the access view offers: take a grant or a device-record choice
+            // back, and turn one of an app's outside capabilities off or on. The session that
+            // publishes this reading answers both where the person's own device keeps the
+            // choice and the workspace keeps its grants.
             resource["verbs"] = json!([
                 {
                     "id": "revoke",
@@ -5349,12 +5350,27 @@ mod surface_tests {
                         { "name": "id", "required": true, "schema": { "type": "string" } },
                     ],
                 },
+                {
+                    "id": "set-outside",
+                    "kind": "outside",
+                    "params": [
+                        { "name": "workspace", "required": true, "schema": { "type": "string" } },
+                        { "name": "app", "required": true, "schema": { "type": "string" } },
+                        { "name": "capability", "required": true, "schema": { "type": "string" } },
+                        { "name": "allowed", "required": true, "schema": { "type": "boolean" } },
+                    ],
+                },
             ]);
             resource["fields"] = json!([
                 { "path": "known", "type": "bool", "readonly": true },
                 {
                     "path": "workspaces",
                     "type": { "list": { "named": "WorkspaceAccess" } },
+                    "readonly": true,
+                },
+                {
+                    "path": "outside",
+                    "type": { "list": { "named": "OutsideAccess" } },
                     "readonly": true,
                 },
             ]);
@@ -5391,6 +5407,41 @@ mod surface_tests {
                         { "name": "granted_by_you", "type": "bool", "title": "Whether the viewer gave it." },
                         { "name": "device", "type": "bool", "title": "Whether this device's own record keeps it." },
                         { "name": "can_revoke", "type": "bool", "title": "Whether the viewer may take it back." },
+                    ],
+                },
+                {
+                    "name": "OutsideAccess",
+                    "doc": "The outside capabilities the apps of one workspace declare.",
+                    "fields": [
+                        { "name": "workspace", "type": "text", "title": "The workspace's id." },
+                        { "name": "workspace_name", "type": "text", "title": "What the workspace is called." },
+                        {
+                            "name": "apps",
+                            "type": { "list": { "named": "OutsideApp" } },
+                            "title": "The apps that declare outside capabilities, by id.",
+                        },
+                    ],
+                },
+                {
+                    "name": "OutsideApp",
+                    "doc": "One app that declares outside capabilities, and what it may reach.",
+                    "fields": [
+                        { "name": "app", "type": "text", "title": "The app, by its package id." },
+                        { "name": "name", "type": "text", "title": "What the app is called." },
+                        {
+                            "name": "capabilities",
+                            "type": { "list": { "named": "OutsideCapability" } },
+                            "title": "Each capability its code can queue, in name order.",
+                        },
+                    ],
+                },
+                {
+                    "name": "OutsideCapability",
+                    "doc": "One capability an app's code can queue, and whether it goes.",
+                    "fields": [
+                        { "name": "capability", "type": "text", "title": "The capability, as the app's package names it." },
+                        { "name": "allowed", "type": "bool", "title": "Whether the app may carry it out now." },
+                        { "name": "can_change", "type": "bool", "title": "Whether the viewer may turn it." },
                     ],
                 },
             ]);

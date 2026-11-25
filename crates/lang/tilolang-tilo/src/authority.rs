@@ -274,11 +274,7 @@ impl Authority for TiloAuthority {
             .iter()
             .chain(&access.granted)
             .any(|grant| {
-                grant.grantee == Grantee::app(app)
-                    && grant.answer == Answer::Deny
-                    && grant
-                        .kinds
-                        .contains(tilo_action_policy::ActionKind::Outside)
+                tilo_action_policy::roles::outside_denial_stops(grant, app, capability)
                     && grant.is_live(&cx)
                     && cx.covers(&grant.node, &node)
             })
@@ -717,6 +713,45 @@ mod tests {
                 )]
             );
         }
+    }
+
+    /// A workspace's denial of one outside capability stops that capability alone; a denial that
+    /// names none stops the app's whole outside reach.
+    #[test]
+    fn a_capabilitys_denial_stops_that_capability_alone() {
+        let deny = |id: &str| {
+            Grant::new(
+                id,
+                Grantee::app(APP),
+                TreePath::workspace(WORKSPACE).app(APP),
+                tilo_action_policy::KindSet::OUTSIDE,
+                Answer::Deny,
+                Grantee::person(PERSON),
+            )
+        };
+        let with = |grants: Vec<Grant>| {
+            let authority = authority(grants);
+            authority.state.borrow_mut().outside.insert(
+                APP.to_owned(),
+                ["imap.search".to_owned(), "smtp.send".to_owned()]
+                    .into_iter()
+                    .collect(),
+            );
+            authority
+        };
+        let one = with(vec![deny(&format!(
+            "outside:{APP}:smtp.send"
+        ))]);
+        assert!(!one.may_reach(APP, "smtp.send"), "the denied one stops");
+        assert!(
+            one.may_reach(APP, "imap.search"),
+            "the app's other capability still goes"
+        );
+        let whole = with(vec![deny("mail-denied")]);
+        assert!(!whole.may_reach(APP, "smtp.send"));
+        assert!(!whole.may_reach(APP, "imap.search"));
+        // A capability no package declared never goes, granted or not.
+        assert!(!with(Vec::new()).may_reach(APP, "music.stream"));
     }
 
     #[test]

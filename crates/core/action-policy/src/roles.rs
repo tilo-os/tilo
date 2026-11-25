@@ -783,6 +783,55 @@ pub fn restriction_grant(
     }
 }
 
+/// The id of the grant that stops `app` carrying out one of its outside capabilities.
+#[must_use]
+pub fn outside_capability_grant_id(app: &str, capability: &str) -> GrantId {
+    GrantId(format!("outside:{app}:{capability}"))
+}
+
+/// The app and capability a grant id names, when it names one of an app's outside
+/// capabilities ([`outside_capability_grant_id`]).
+#[must_use]
+pub fn outside_capability_of(id: &str) -> Option<(&str, &str)> {
+    let rest = id.strip_prefix("outside:")?;
+    let (app, capability) = rest.split_once(':')?;
+    (!app.is_empty() && !capability.is_empty()).then_some((app, capability))
+}
+
+/// The grant that stops `app` carrying out `capability` in `workspace`, given by `granted_by`: a
+/// person turning one outside capability off on the app's page. It is a denial of outside effects
+/// on the app's node, as any grant is, and its id names the one capability it stops
+/// ([`outside_capability_of`]), so the app's other capabilities still go.
+#[must_use]
+pub fn outside_capability_denial(
+    workspace: &str,
+    app: &str,
+    capability: &str,
+    granted_by: Grantee,
+) -> Grant {
+    Grant {
+        id: outside_capability_grant_id(app, capability),
+        grantee: Grantee::app(app),
+        node: TreePath::workspace(workspace).app(app),
+        kinds: KindSet::OUTSIDE,
+        answer: Answer::Deny,
+        lifetime: Lifetime::UntilRevoked,
+        granted_by,
+    }
+}
+
+/// Whether `grant` stops `app` carrying out `capability`: a denial of outside effects on the
+/// app's node that names no capability ([`restriction_grant`], a whole-app denial), or names this
+/// one ([`outside_capability_denial`]).
+#[must_use]
+pub fn outside_denial_stops(grant: &Grant, app: &str, capability: &str) -> bool {
+    grant.grantee == Grantee::app(app)
+        && grant.answer == Answer::Deny
+        && grant.kinds.contains(crate::ActionKind::Outside)
+        && outside_capability_of(grant.id.as_str())
+            .is_none_or(|(named_app, named)| named_app == app && named == capability)
+}
+
 /// The governance a Moderator may exercise: removing, banning and
 /// restricting members, which the workspace keeps its owner through, and
 /// naming the workspace, which is what people find it by.
@@ -1295,5 +1344,52 @@ mod tests {
         ] {
             assert_eq!(administrator_named(&id), Some("a person"), "{id}");
         }
+    }
+
+    /// A capability's denial stops that capability alone, while a denial naming no capability
+    /// stops the app's whole outside reach.
+    #[test]
+    fn an_outside_capabilitys_denial_names_the_one_it_stops() {
+        let denial = outside_capability_denial(
+            "w",
+            "so.tilo.mail",
+            "smtp.send",
+            Grantee::person("ada"),
+        );
+        assert_eq!(
+            outside_capability_of(denial.id.as_str()),
+            Some(("so.tilo.mail", "smtp.send"))
+        );
+        assert!(outside_denial_stops(&denial, "so.tilo.mail", "smtp.send"));
+        assert!(
+            !outside_denial_stops(&denial, "so.tilo.mail", "imap.search"),
+            "the app's other capabilities still go"
+        );
+        assert!(!outside_denial_stops(&denial, "so.tilo.tube", "smtp.send"));
+
+        let whole = Grant::new(
+            "no-outside",
+            Grantee::app("so.tilo.mail"),
+            TreePath::workspace("w").app("so.tilo.mail"),
+            KindSet::OUTSIDE,
+            Answer::Deny,
+            Grantee::person("ada"),
+        );
+        for capability in ["smtp.send", "imap.search"] {
+            assert!(
+                outside_denial_stops(&whole, "so.tilo.mail", capability),
+                "a denial naming no capability stops them all"
+            );
+        }
+        let allow = Grant::new(
+            "mail-may",
+            Grantee::app("so.tilo.mail"),
+            TreePath::workspace("w").app("so.tilo.mail"),
+            KindSet::OUTSIDE,
+            Answer::Allow,
+            Grantee::person("ada"),
+        );
+        assert!(!outside_denial_stops(&allow, "so.tilo.mail", "smtp.send"));
+        assert_eq!(outside_capability_of("no-outside"), None);
     }
 }

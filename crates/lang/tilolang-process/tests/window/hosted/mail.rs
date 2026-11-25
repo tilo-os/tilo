@@ -1346,6 +1346,100 @@ fn a_send_the_workspace_denies_settles_refused_and_nothing_is_sent() {
     );
 }
 
+/// A workspace that denies Mail one of its outside capabilities stops that one alone: the send
+/// for another capability it also denies still refuses to leave, and the server receives nothing.
+#[test]
+fn a_send_the_workspace_denies_for_its_capability_settles_refused() {
+    use collaboration::RouteSpec;
+    use tilolang_process::hosted::Spec;
+    use ui::permissions::policy::{Grantee, MemberAccess, WorkspacePolicy};
+
+    let servers = servers();
+    let connector = MailConnector::of(account(&servers));
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let workspace = route.cluster_id.to_string();
+    let mut policy = WorkspacePolicy::new(workspace.clone(), "ada");
+    // The person turned `smtp.send` off on Mail's page, and another capability with it: only
+    // `smtp.send` decides what the reply queued.
+    policy.grants.push(tilo_action_policy::roles::outside_capability_denial(
+        &workspace,
+        APP,
+        "smtp.send",
+        Grantee::person("ada"),
+    ));
+    policy.grants.push(tilo_action_policy::roles::outside_capability_denial(
+        &workspace,
+        APP,
+        "imap.search",
+        Grantee::person("ada"),
+    ));
+    let spec = Spec::new(APP, workspace, 1, "ada")
+        .in_language("en-US")
+        .access(MemberAccess::person(policy, "ada"));
+    let session = Session::brokered_as(&route, spec, Window::in_harness);
+    let mut session = connector.attach(session);
+    synced(&mut session);
+    session.hold_for(0);
+    let plan = session.thread("Launch plan");
+    let draft = session.made("reply", &plan, &json!({}));
+    session.call("send", &draft, &json!({}));
+    session.until("the queued effect to settle", |session| {
+        session.instance_host().store().outbox_pending().is_empty()
+    });
+    assert!(
+        servers.smtp.sent().is_empty(),
+        "nothing the workspace denied reached the server"
+    );
+    let (state, reason) = session
+        .delivery_of(&draft)
+        .expect("the draft says how it stands");
+    assert_eq!(state, "rejected", "{reason}");
+    assert!(
+        reason.contains("does not let so.tilo.mail use smtp.send"),
+        "{reason}"
+    );
+}
+
+/// With only another of Mail's capabilities turned off, the send goes: the denial names one
+/// capability, and the rest of the app's reach is its own.
+#[test]
+fn a_send_goes_while_another_capability_is_the_one_denied() {
+    use collaboration::RouteSpec;
+    use tilolang_process::hosted::Spec;
+    use ui::permissions::policy::{Grantee, MemberAccess, WorkspacePolicy};
+
+    let servers = servers();
+    let connector = MailConnector::of(account(&servers));
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let workspace = route.cluster_id.to_string();
+    let mut policy = WorkspacePolicy::new(workspace.clone(), "ada");
+    policy.grants.push(tilo_action_policy::roles::outside_capability_denial(
+        &workspace,
+        APP,
+        "imap.search",
+        Grantee::person("ada"),
+    ));
+    let spec = Spec::new(APP, workspace, 1, "ada")
+        .in_language("en-US")
+        .access(MemberAccess::person(policy, "ada"));
+    let session = Session::brokered_as(&route, spec, Window::in_harness);
+    let mut session = connector.attach(session);
+    synced(&mut session);
+    session.hold_for(0);
+    let plan = session.thread("Launch plan");
+    let draft = session.made("reply", &plan, &json!({}));
+    session.call("send", &draft, &json!({}));
+    session.until("the server to take the reply", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    session.until("the queued effect to settle", |session| {
+        session.instance_host().store().outbox_pending().is_empty()
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
+    assert!(session.flag(&draft, "sent"));
+}
+
 /// The conversation's reply bar answers and sends in one press: the person is asked once, and
 /// allowing it sends the answer the bar made, as the Send of a draft does.
 #[test]

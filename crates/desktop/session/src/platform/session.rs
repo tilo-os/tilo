@@ -1634,6 +1634,7 @@ impl Session {
                     .desktop
                     .as_ref()
                     .map(|desktop| std::sync::Arc::clone(desktop.chosen())),
+                std::rc::Rc::new(crate::workspace_access::declared_outside),
                 mounts,
             )));
         // The layouts this machine installs and the keys of the one inspected, drawn for a pane.
