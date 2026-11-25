@@ -290,6 +290,32 @@ d-i5l2mswn = Farbe
 
 d-53uahg6d-filter-anchor_at = Indigo
 
+d-prcfqlmt = Belegt
+    .doc = Eine Zeit, zu der die Kalender des Arbeitsbereichs belegt sind: wann sie beginnt und endet und ob sie den ganzen Tag einnimmt.
+    .noun = { $count ->
+        [one] belegte Zeit
+       *[other] belegte Zeiten
+    }
+
+d-76f4x76t = Beginn
+
+d-25wuuu2f = Ende
+
+d-f5uwvzvm = Ganztägig
+
+d-prcfqlmt-filter-start = Beginn
+
+d-prcfqlmt-filter-end = Ende
+
+d-prcfqlmt-filter-all_day = Ganztägig
+
+d-qj3kjrcv = Belegte Zeiten
+    .doc = Wann die Kalender des Arbeitsbereichs zwischen zwei Tagen belegt sind, beide eingeschlossen: jedes Vorkommen jedes nicht abgesagten Termins, wie der Kalender es zeigt, in der Reihenfolge seines Beginns.
+
+d-qj3kjrcv-from = Von
+
+d-qj3kjrcv-to = Bis
+
 d-kitpj7rj = Moment
     .doc = An event at one of its moments: the time it is shown at and the day that time is on in the event's own zone, in order with every other.
     .noun = { $count ->

@@ -31,6 +31,7 @@ __all__ = [
     "Event",
     "Calendar",
     "Calendars",
+    "Busy",
     "Moment",
     "TiloCalendar",
     "SetProjectColorArgs",
@@ -224,7 +225,7 @@ ThisWeekArgs = TypedDict("ThisWeekArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
+    __surface__ = "so.tilo.calendar@191f0c5f024db437"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -285,7 +286,7 @@ class Notice(Resource):
 
 class Attendee(Resource):
     """Attendee — `tl.so.tilo.calendar.Attendee`."""
-    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
+    __surface__ = "so.tilo.calendar@191f0c5f024db437"
     oiolhfhy: str  # name
     zr5l6sfu: str  # email
     wyfwksgq: str  # status
@@ -294,7 +295,7 @@ class Attendee(Resource):
 
 class Account(Resource):
     """Account — `tl.so.tilo.calendar.Account`."""
-    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
+    __surface__ = "so.tilo.calendar@191f0c5f024db437"
     f44j5f26: str  # key
     gxn236ef: str  # address
     rfeeyuff: str  # name
@@ -323,7 +324,7 @@ class Account(Resource):
 
 class Project(Resource):
     """Project — `tl.so.tilo.calendar.Project`."""
-    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
+    __surface__ = "so.tilo.calendar@191f0c5f024db437"
     iivr4dfm: str  # name
     @property
     def _5kprlx3s(self) -> Color:
@@ -358,7 +359,7 @@ class Project(Resource):
 
 class Task(Resource):
     """Task — `tl.so.tilo.calendar.Task`."""
-    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
+    __surface__ = "so.tilo.calendar@191f0c5f024db437"
     r2vx64eh: str  # title
     s6raiajy: bool  # done
     kibl2yut: str | None  # due
@@ -496,7 +497,7 @@ class Task(Resource):
 
 class Event(Resource):
     """Event — `tl.so.tilo.calendar.Event`."""
-    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
+    __surface__ = "so.tilo.calendar@191f0c5f024db437"
     qqkexjof: str  # key
     yclpjnie: str  # href
     lpmkddba: str  # etag
@@ -856,7 +857,7 @@ class Event(Resource):
 
 class Calendar(Resource):
     """Calendar — `tl.so.tilo.calendar.Calendar`."""
-    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
+    __surface__ = "so.tilo.calendar@191f0c5f024db437"
     gzrwihvd: str  # key
     pwrd7qqx: str  # account
     dn3prfqt: str  # sync_token
@@ -879,7 +880,7 @@ class Calendar(Resource):
 
 class Calendars(Resource):
     """Calendars — `tl.so.tilo.calendar.Calendars`."""
-    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
+    __surface__ = "so.tilo.calendar@191f0c5f024db437"
     g3gq3jmz: list[Entry[Event]]  # events
     ozulkrgt: list[Entry[Calendar]]  # calendars
     lubytvuv: list[Entry[Account]]  # accounts
@@ -1055,6 +1056,17 @@ class Calendars(Resource):
         """Runs `this_week` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("this_week", items)
 
+    def busy(self,
+        *,
+        from_: str,
+        to: str,
+    ) -> list[Busy]:
+        """When the workspace's calendars are taken between two days, both included: every occurrence of each entry that is not called off, as the calendar shows it, in the order they start. What a member, or their agent, reads to find a time that suits; somebody who is no member of the workspace reads nothing."""
+        args: dict[str, Any] = {}
+        args["from"] = from_
+        args["to"] = to
+        return self.action("busy", **args)
+
     def export_calendar(self,
         *,
         e: Event | None = None,
@@ -1075,12 +1087,34 @@ class Calendars(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_event", "new_between", "new_task", "add_step", "remove_task", "remove_task_many", "new_project", "move_project", "move_project_many", "remove_project", "remove_project_many", "go_to_day", "go_to_day_many", "previous_day", "previous_day_many", "next_day", "next_day_many", "this_day", "this_day_many", "sync", "new_calendar", "discard_draft", "previous_week", "previous_week_many", "next_week", "next_week_many", "previous_month", "previous_month_many", "next_month", "next_month_many", "this_week", "this_week_many", "export_calendar", "take_invitation", "import_ics"})
+    __actions__ = frozenset({"new_event", "new_between", "new_task", "add_step", "remove_task", "remove_task_many", "new_project", "move_project", "move_project_many", "remove_project", "remove_project_many", "go_to_day", "go_to_day_many", "previous_day", "previous_day_many", "next_day", "next_day_many", "this_day", "this_day_many", "sync", "new_calendar", "discard_draft", "previous_week", "previous_week_many", "next_week", "next_week_many", "previous_month", "previous_month_many", "next_month", "next_month_many", "this_week", "this_week_many", "busy", "export_calendar", "take_invitation", "import_ics"})
+
+
+class Busy(Resource):
+    """Busy — `tl.so.tilo.calendar.Busy`."""
+    __surface__ = "so.tilo.calendar@191f0c5f024db437"
+    @property
+    def _76f4x76t(self) -> str:
+        """start (`76f4x76t` on the wire)."""
+        return self.fields["76f4x76t"]
+
+    @_76f4x76t.setter
+    def _76f4x76t(self, value: str) -> None:
+        self.edit("76f4x76t", value=value)
+    @property
+    def _25wuuu2f(self) -> str:
+        """end (`25wuuu2f` on the wire)."""
+        return self.fields["25wuuu2f"]
+
+    @_25wuuu2f.setter
+    def _25wuuu2f(self, value: str) -> None:
+        self.edit("25wuuu2f", value=value)
+    f5uwvzvm: bool  # all_day
 
 
 class Moment(Resource):
     """Moment — `tl.so.tilo.calendar.Moment`."""
-    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
+    __surface__ = "so.tilo.calendar@191f0c5f024db437"
     kd3noj7y: Event  # event
     ejfozpye: str  # at
     @property
@@ -1095,5 +1129,5 @@ class Moment(Resource):
 
 class TiloCalendar(Resource):
     """Calendar — `tl.so.tilo.calendar`."""
-    __surface__ = "so.tilo.calendar@d74fb1f7da382914"
+    __surface__ = "so.tilo.calendar@191f0c5f024db437"
 

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.calendar@d74fb1f7da382914";
+export const SURFACE = "so.tilo.calendar@191f0c5f024db437";
 
 /** The colours a calendar, an event or a project can take, each a place in the theme. One of "indigo", "emerald", "amber", "red", "blue", "violet", "slate". */
 export type Color = "indigo" | "emerald" | "amber" | "red" | "blue" | "violet" | "slate";
@@ -724,6 +724,11 @@ export interface Calendars extends tilo.Resource {
   this_week(): Promise<void>;
   /** Runs `this_week` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   this_weekMany(items: ThisWeekArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** When the workspace's calendars are taken between two days, both included: every occurrence of each entry that is not called off, as the calendar shows it, in the order they start. What a member, or their agent, reads to find a time that suits; somebody who is no member of the workspace reads nothing. */
+  busy(args: {
+    from: string;
+    to: string;
+  }): Promise<Busy[]>;
   /** The calendar — every event and task it holds, or only one event — as an iCalendar file, for a person to save or an agent to hand on. Nothing is written by this. The system's one Export… lists it, and saves the file where the person says. */
   export_calendar(args?: {
     e?: Event;
@@ -740,11 +745,27 @@ export interface Calendars extends tilo.Resource {
 
 /** The actions `Calendars` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CALENDARS_ACTIONS = ["new_event", "new_between", "new_task", "add_step", "remove_task", "remove_taskMany", "new_project", "move_project", "move_projectMany", "remove_project", "remove_projectMany", "go_to_day", "go_to_dayMany", "previous_day", "previous_dayMany", "next_day", "next_dayMany", "this_day", "this_dayMany", "sync", "new_calendar", "discard_draft", "previous_week", "previous_weekMany", "next_week", "next_weekMany", "previous_month", "previous_monthMany", "next_month", "next_monthMany", "this_week", "this_weekMany", "export_calendar", "take_invitation", "import_ics"] as const;
+export const CALENDARS_ACTIONS = ["new_event", "new_between", "new_task", "add_step", "remove_task", "remove_taskMany", "new_project", "move_project", "move_projectMany", "remove_project", "remove_projectMany", "go_to_day", "go_to_dayMany", "previous_day", "previous_dayMany", "next_day", "next_dayMany", "this_day", "this_dayMany", "sync", "new_calendar", "discard_draft", "previous_week", "previous_weekMany", "next_week", "next_weekMany", "previous_month", "previous_monthMany", "next_month", "next_monthMany", "this_week", "this_weekMany", "busy", "export_calendar", "take_invitation", "import_ics"] as const;
 
 /** The `tl.so.tilo.calendar.Calendars` kind at `path`. */
 export function calendars(ws: tilo.Workspace, path: string): Calendars {
   return resourceProxy(ws, path, SURFACE, CALENDARS_ACTIONS) as unknown as Calendars;
+}
+
+/** Busy — `tl.so.tilo.calendar.Busy`. */
+export interface Busy extends tilo.Resource {
+  "76f4x76t": string;  // start
+  "25wuuu2f": string;  // end
+  f5uwvzvm: boolean;  // all_day
+}
+
+/** The actions `Busy` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const BUSY_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.calendar.Busy` kind at `path`. */
+export function busy(ws: tilo.Workspace, path: string): Busy {
+  return resourceProxy(ws, path, SURFACE, BUSY_ACTIONS) as unknown as Busy;
 }
 
 /** Moment — `tl.so.tilo.calendar.Moment`. */

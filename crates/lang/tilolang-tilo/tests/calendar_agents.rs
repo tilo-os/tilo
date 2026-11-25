@@ -241,6 +241,8 @@ impl Ada {
                         self.field("Event", "end"),
                         Value::text("2026-11-20T11:00:00"),
                     ),
+                    (self.field("Event", "day"), Value::text("2026-11-20")),
+                    (self.field("Event", "end_day"), Value::text("2026-11-20")),
                     (self.field("Event", "organizer"), Value::text(organizer)),
                     (
                         self.field("Event", "calendar"),
@@ -478,6 +480,147 @@ tilo_test_env::scenario! {
         let why = refused("a cancellation from another sender", ada.allowed(&assistant, "take_invitation", ada.taking_in(&forged)));
         assert!(why.contains("sender"), "{why}");
         assert!(ada.entry_under("offsite-9@example.org").is_some());
+    }
+
+    phase an_invitation_that_names_people_shows_her_every_address_before_it_goes_in;
+    {
+        let ada = Ada::new();
+        let assistant = assistant_of("ada").actor;
+        let rows = |shown: Vec<(String, String)>, label: &str| -> Vec<String> {
+            shown
+                .into_iter()
+                .filter(|(l, _)| l == label)
+                .map(|(_, value)| value)
+                .collect()
+        };
+        let dinner = invitation("REQUEST", "dinner-3@example.org", "bo@example.test", &[ADDRESS, "eve@elsewhere.test"]);
+
+        // Her assistant's call waits for her, showing how many addresses it names, who
+        // organises it and each address it invites.
+        asked("an invitation that names people", ada.call(&assistant, "take_invitation", ada.taking_in(&dinner)));
+        let shown = ada.asks.shown();
+        assert_eq!(rows(shown.clone(), "Addresses named"), ["3"], "{shown:?}");
+        assert_eq!(rows(shown.clone(), "Organised by"), ["bo@example.test"], "{shown:?}");
+        assert_eq!(rows(shown.clone(), "Invites"), [format!("{ADDRESS}\neve@elsewhere.test")], "{shown:?}");
+        assert!(ada.entry_under("dinner-3@example.org").is_none(), "nothing unallowed");
+
+        // Bo's agent is asked about the same rows; somebody who is no member is nobody here.
+        asked(
+            "another member's agent",
+            ada.call(&assistant_of("bo").actor, "take_invitation", ada.taking_in(&dinner)),
+        );
+        assert_eq!(ada.asks.count(), 2);
+        assert_eq!(rows(ada.asks.shown(), "Organised by"), ["bo@example.test"]);
+        let stranger = Actor::from(MemberId::person("zed"));
+        let theirs = ada.call(&stranger, "take_invitation", ada.taking_in(&dinner));
+        assert!(matches!(theirs, Ok(InvokeOutcome::Denied)), "{theirs:?}");
+
+        // More addresses than one question shows, and an address she could misread: refused
+        // with nobody asked.
+        let guests: Vec<String> = (0..21).map(|guest| format!("guest{guest}@example.test")).collect();
+        let guests: Vec<&str> = guests.iter().map(String::as_str).collect();
+        let crowd = invitation("REQUEST", "crowd-5@example.org", "bo@example.test", &guests);
+        let why = format!(
+            "{:?}",
+            ada.call(&assistant, "take_invitation", ada.taking_in(&crowd)).expect_err("too many to show")
+        );
+        assert!(why.contains("22 addresses"), "{why}");
+        let misread = invitation("REQUEST", "misread-6@example.org", "bo@example.test", &["b\u{f6}@example.test"]);
+        let why = format!(
+            "{:?}",
+            ada.call(&assistant, "take_invitation", ada.taking_in(&misread)).expect_err("one she could misread")
+        );
+        assert!(why.contains("plain ASCII"), "{why}");
+        assert_eq!(ada.asks.count(), 2, "she is asked nothing about what cannot be shown whole");
+        assert!(ada.entry_under("crowd-5@example.org").is_none() && ada.entry_under("misread-6@example.org").is_none());
+
+        // Her own word asks her nothing, whatever it names.
+        let hers = ada.call(&herself(), "take_invitation", ada.taking_in(&crowd));
+        assert!(matches!(hers, Ok(InvokeOutcome::Done(_))), "{hers:?}");
+        assert_eq!(ada.asks.count(), 2);
+
+        // Inviting somebody to an entry its assistant put in shows her the entry, who organises
+        // it, who comes already and whom it would invite.
+        let made = ada.allowed(&assistant, "take_invitation", ada.taking_in(&dinner));
+        assert!(matches!(made, Ok(InvokeOutcome::Done(_))), "{made:?}");
+        let its_own = ada.entry_under("dinner-3@example.org").expect("the invitation went in");
+        asked(
+            "inviting somebody",
+            ada.call(
+                &assistant,
+                "invite",
+                vec![Value::resource(&its_own), Value::text("Cy"), Value::text("cy@example.test")],
+            ),
+        );
+        let shown = ada.asks.shown();
+        assert_eq!(rows(shown.clone(), "Title"), ["Offsite"], "{shown:?}");
+        assert_eq!(rows(shown.clone(), "Organizer"), ["bo@example.test"], "{shown:?}");
+        assert_eq!(rows(shown.clone(), "Email"), ["cy@example.test"], "{shown:?}");
+        assert_eq!(rows(shown, "Guests"), [""], "nobody comes yet");
+    }
+
+    phase every_members_agent_reads_the_calendars_and_their_notes_and_changes_nothing;
+    {
+        let ada = Ada::new();
+        let review = ada.entry_from_her_server("review-1@example.test", "Review", "bo@elsewhere.test", &[ADDRESS]);
+        ada.origin(vec![OriginWrite::Set {
+            target: review.clone(),
+            fields: vec![(ada.field("Event", "notes"), Value::text("Bring the numbers, all of them."))],
+        }]);
+        let read = |reader: &Actor| {
+            ada.replica.host.read_resource(
+                &tilolang_tilo::ReadAsk::of(Some(&tilolang_tilo::publish::resource_id(APP, &review.id_string()))),
+                &ada.replica.host.reads_for(reader),
+            )
+        };
+        for (who, caller) in [("her assistant", assistant_of("ada")), ("Bo's agent", assistant_of("bo"))] {
+            let entry = read(&caller.reader()).unwrap_or_else(|why| panic!("{who} reads the entry: {why}"));
+            let text = entry.to_string();
+            assert!(text.contains("Review"), "{who}: {text}");
+            assert!(text.contains("Bring the numbers, all of them."), "{who} reads its notes: {text}");
+        }
+        for stranger in [Actor::from(MemberId::person("zed")), Actor::from(MemberId::agent("assistant", "zed"))] {
+            assert!(read(&stranger).is_err(), "{stranger:?} reads nothing of the workspace's calendars");
+        }
+        assert!(ada.replica.host.runtime().pending_outbox().is_empty(), "a read tells her server nothing");
+        assert_eq!(ada.asks.count(), 0, "and asks nobody");
+    }
+
+    phase busy_times_are_read_by_the_workspaces_members_and_their_agents_alone;
+    {
+        let ada = Ada::new();
+        ada.entry_from_her_server("review-1@example.test", "Review", "bo@elsewhere.test", &[ADDRESS]);
+        let week = |who: &Actor| {
+            ada.call(
+                who,
+                "busy",
+                vec![
+                    Value::resource(&ada.root),
+                    Value::text("2026-11-16"),
+                    Value::text("2026-11-22"),
+                ],
+            )
+        };
+        for (who, caller) in [
+            ("she", herself()),
+            ("her assistant", assistant_of("ada").actor),
+            ("Bo's agent", assistant_of("bo").actor),
+        ] {
+            match week(&caller) {
+                Ok(InvokeOutcome::Done(Value::List(taken))) => {
+                    assert_eq!(taken.len(), 1, "{who} reads the one time the week holds taken: {taken:?}");
+                    let shown = format!("{taken:?}");
+                    assert!(!shown.contains("Review"), "a busy time says nothing of what the entry is: {shown}");
+                }
+                other => panic!("{who} reads when the calendars are busy: {other:?}"),
+            }
+        }
+        let theirs = week(&Actor::from(MemberId::person("zed")));
+        assert!(matches!(theirs, Ok(InvokeOutcome::Denied)), "who is no member reads nothing: {theirs:?}");
+        let agents = week(&Actor::from(MemberId::agent("assistant", "zed")));
+        assert!(matches!(agents, Ok(InvokeOutcome::Denied)), "nor does their agent: {agents:?}");
+        assert_eq!(ada.asks.count(), 0, "a read asks nobody");
+        assert!(ada.replica.host.runtime().pending_outbox().is_empty(), "and tells her server nothing");
     }
 
     phase an_invitation_her_assistant_did_not_put_in_is_not_its_to_change;

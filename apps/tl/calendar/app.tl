@@ -371,7 +371,11 @@ action remove_category(e: Event, category: Text) (icon: .x, label: "Remove a cat
 }
 
 /// Makes someone the organiser of an event.
-action organize(e: Event, who: Text) (label: "Organiser", icon: .user) {
+action organize(e: Event, who: Text) (
+    label: "Organiser",
+    icon: .user,
+    shows: [e.title, (who, .addresses), (guests(e), .addresses)],
+) {
     require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     e.organizer = who
@@ -925,7 +929,11 @@ action file_in(e: Event, k: Calendar) (label: "Calendar", icon: .calendar) {
 }
 
 /// Invites someone to an event, by the name and address the person gives.
-action invite(e: Event, name: Text, email: Text) -> Attendee (icon: .user_plus, label: "Invite") {
+action invite(e: Event, name: Text, email: Text) -> Attendee (
+    icon: .user_plus,
+    label: "Invite",
+    shows: [e.title, (e.organizer, .addresses), (guests(e), .addresses), name, (email, .addresses)],
+) {
     require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require email.trim().contains("@") "That is not an email address"
@@ -1156,14 +1164,34 @@ fn invitation_from_sender(c: Calendars, text: Text, by: Actor) -> Bool {
     } else { true }
 }
 
-/// The addresses an invitation's text invites, each once, in its order.
-fn invitation_guests(text: Text) -> List<Text> {
+/// Who an invitation's text invites: each address it names as a guest, in its order. What its
+/// person reads before an agent takes it in.
+fn invites(text: Text) -> List<Text> {
     text
         .split("\n")
         .map(x -> x.trim())
         .filter(x -> x.starts_with("ATTENDEE"))
         .map(x -> ics_mailto(x))
         .filter(x -> x != "")
+}
+
+/// Who organises the invitation `text`: the address its `ORGANIZER` names, empty where it names
+/// none.
+fn organised_by(text: Text) -> Text {
+    invitation_line(text, "ORGANIZER")
+}
+
+/// How many addresses an invitation's text names: its organiser's and each guest's. Every one of
+/// them is shown to the person before an agent takes it in, so a text naming more than one
+/// question shows is not put to them at all.
+fn addresses_named(text: Text) -> Int {
+    let organiser = if organised_by(text) == "" { 0 } else { 1 }
+    organiser + invites(text).len()
+}
+
+/// The addresses an event invites, in its order.
+fn guests(e: Event) -> List<Text> {
+    e.attendees.map(g -> g.email)
 }
 
 /// The palette place a colour's name stands for, as a calendar server writes the name.
@@ -1351,6 +1379,32 @@ fn meets(e: Event, from: Date, to: Date) -> List<Time> {
 /// series' own first, which its own event stands for.
 fn meets_on(e: Event, d: Date) -> List<Time> {
     meets(e, d, d).filter(at -> at != starts(e))
+}
+
+/// A time the workspace's calendars hold taken: when it starts and ends, and whether it takes the
+/// whole day. What a reader of free and busy times learns of an entry, and nothing else of it.
+type Busy (noun: "busy time") {
+    start: Time
+    end: Time
+    all_day: Bool = false
+}
+
+/// When the workspace's calendars are taken between two days, both included: every occurrence of
+/// each entry that is not called off, as the calendar shows it, in the order they start. What a
+/// member, or their agent, reads to find a time that suits; somebody who is no member of the
+/// workspace reads nothing.
+action busy(c: Calendars, from: Date, to: Date) -> List<Busy> (
+    icon: .calendar,
+    label: "Busy times",
+) {
+    let taken: List<Busy> = []
+    let held = c.events.filter(e -> not e.cancelled and (e.recurrence != "" or e.day <= to and e.end_day >= from))
+    for e in held {
+        for at in moments(e, from, to) {
+            taken = taken + [Busy(start: at, end: at + (ends(e) - starts(e)), all_day: e.all_day)]
+        }
+    }
+    taken.sort_by(b -> b.start)
 }
 
 /// An event at one of its moments: the time it is shown at and the day that time is on in the
@@ -1615,7 +1669,12 @@ action export_calendar(c: Calendars, e: Option<Event> = .none) -> File (
 action take_invitation(c: Calendars, text: Text) -> Text uses time (
     icon: .calendar,
     label: "Take an invitation in",
-    shows: [(text, .long)],
+    shows: [
+        addresses_named(text),
+        (organised_by(text), .addresses),
+        (invites(text), .addresses),
+        (text, .long),
+    ],
 ) {
     require text.find("BEGIN:VEVENT") != .none "That is not a calendar invitation"
     // An agent brings up to date and takes out only an invitation it put in itself, and only

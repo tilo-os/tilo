@@ -14984,6 +14984,24 @@
         "required": [],
         "description": "The window shows this week."
       },
+      "tl.so.tilo.calendar.Calendars.busy.Arguments": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "format": "date",
+            "type": "string"
+          },
+          "to": {
+            "format": "date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "description": "When the workspace's calendars are taken between two days, both included: every occurrence of\neach entry that is not called off, as the calendar shows it, in the order they start. What a\nmember, or their agent, reads to find a time that suits; somebody who is no member of the\nworkspace reads nothing."
+      },
       "tl.so.tilo.calendar.Calendars.export_calendar.Arguments": {
         "type": "object",
         "properties": {
@@ -15044,6 +15062,55 @@
           "file"
         ],
         "description": "Imports the events and tasks of an iCalendar file, and answers how many it took: what a\nperson's own file offers, and what another calendar exported. A line naming a zone this\nbuild cannot read is read in the person's zone."
+      },
+      "tl.so.tilo.calendar.Busy.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.calendar.Busy.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Busy.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "all_day"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Busy.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
       },
       "tl.so.tilo.calendar.Moment.$create.Arguments": {
         "type": "object",
@@ -102104,6 +102171,12 @@
     {
       "app": "so.tilo.calendar",
       "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "busy",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.busy.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
       "action": "export_calendar",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.export_calendar.Arguments"
     },
@@ -102118,6 +102191,30 @@
       "resource": "tl.so.tilo.calendar.Calendars",
       "action": "import_ics",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.import_ics.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Busy",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Busy.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Busy",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Busy.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Busy",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Busy.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Busy",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Busy.$origin.Arguments"
     },
     {
       "app": "so.tilo.calendar",
