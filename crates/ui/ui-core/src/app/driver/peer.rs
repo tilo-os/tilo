@@ -939,6 +939,9 @@ impl Driver {
             .inbound
             .push_back(CollabEvent::InvocationCancellation { id });
         self.take_delivery();
+        // The call ended: the frame after the cancellation shows what it left, as the person's
+        // own cancel runs the frame it asks for.
+        self.run_frame();
     }
 
     /// Every update the app sent its peer about the call `invocation`, oldest first: its

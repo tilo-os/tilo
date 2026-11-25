@@ -728,6 +728,12 @@ fn every_mutable_entry_point_brings_its_change_to_a_frame() {
         "self.app.present_history_in_header()",
         "self.refresh_model()",
         "self.idle_pass(",
+        // What the peer carries is the frame that runs it ([`Driver::peer_delivering`]): a call
+        // delivered to it, and the cancellation it takes up, leave work the next frame owes.
+        "self.peer_mut().deliver(",
+        "self.cancel_call(",
+        // Admitting the kept call again runs the frame that shows it.
+        "self.resolve_asked(",
     ];
     let mut checked = 0;
     let mut impls = 0;
