@@ -992,6 +992,13 @@ pub fn look(
     })
 }
 
+/// A soft edge a refinement keeps, as the picture's address, its bytes and the rect they cover.
+pub type SoftEdge = (String, Vec<u8>, [f64; 4]);
+
+/// The area a find answers: its outline as SVG path data, and the refined edge's picture when
+/// the find keeps one.
+pub type FoundArea = (String, Option<SoftEdge>);
+
 /// The area `request` names in `art` as the window shows it, as SVG path data: the magic wand at
 /// a point or a colour, a picture's subject, or the selection's edge refined. The soft edge a
 /// refine keeps is not carried: the records this bridge serves hold the area's outline.
@@ -1003,7 +1010,7 @@ pub fn find_area(
     art: &Artwork,
     request: &str,
     pictures: &[(String, Vec<u8>)],
-) -> Result<(String, Option<(String, Vec<u8>, [f64; 4])>), String> {
+) -> Result<FoundArea, String> {
     let select: crate::resource::FindArea = serde_json::from_str(request)
         .map_err(|error| format!("what to find cannot be read: {error}"))?;
     lending_with(pictures, |store| {
@@ -1078,8 +1085,8 @@ pub fn remove_along(art: &Artwork, request: &str) -> Result<String, String> {
         .map(|mark| mark.id.as_str())
         .filter(|id| !kept.contains(id))
         .collect();
-    Ok(serde_json::to_string(&removed)
-        .map_err(|error| format!("what was removed cannot be written: {error}"))?)
+    serde_json::to_string(&removed)
+        .map_err(|error| format!("what was removed cannot be written: {error}"))
 }
 
 /// Combines the marks `request` names into one path, as the path the bottom mark becomes: its
