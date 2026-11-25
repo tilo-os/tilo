@@ -121,7 +121,7 @@ fn tokens(setup: &Setup, root: &[u8; 32]) -> Vec<String> {
         .workspaces
         .push_addresses(root)
         .into_iter()
-        .map(|address| address.token.clone())
+        .map(|address| address.token)
         .collect()
 }
 

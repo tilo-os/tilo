@@ -432,7 +432,7 @@ async fn an_answer_that_meets_the_record_is_carried_out() {
         );
         assert_eq!(
             logins(&service, workspace_id, (&ada, &as_ada)).await,
-            before + if approve { 1 } else { 0 },
+            before + usize::from(approve),
             "an approve keeps the login, a decline keeps nothing"
         );
         server.shutdown().await;

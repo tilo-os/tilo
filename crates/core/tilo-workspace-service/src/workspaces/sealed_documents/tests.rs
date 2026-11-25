@@ -415,13 +415,13 @@ pub(super) async fn member_session(
         .prove_member(cert, key, &host_cert)
         .await
         .expect("the host proves the member");
-    let dialed = link
+    let connected = link
         .dial_over(std::sync::Arc::new(link_end), host_device)
         .await
         .expect("the link opens");
     let pairing = {
         let link = link.clone();
-        tokio::spawn(async move { dialed.run(&link).await })
+        tokio::spawn(async move { connected.run(&link).await })
     };
     tilo_test_env::within("the device catches up with the host", async {
         caught_up.wait_for(|set| *set).await.unwrap();

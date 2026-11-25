@@ -18,7 +18,6 @@ use std::sync::Arc;
 
 use accounts::person::AccountList;
 use ed25519_dalek::SigningKey;
-use serde_json::json;
 use tilo_account_probe::AccountTester as _;
 use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::person_vault;

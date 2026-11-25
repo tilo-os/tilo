@@ -348,7 +348,7 @@ fn program_request<T>(
         .or(execution.as_deref());
     let caller = match who {
         ProgramCaller::Person { person, .. } => ProgramCaller::Person { person, session },
-        agent => agent,
+        agent @ ProgramCaller::Agent { .. } => agent,
     };
     let group = request
         .context
@@ -677,7 +677,7 @@ mod tests {
             );
             assert_eq!(*host.went.lock_recover(), vec![Go::Preview]);
 
-            let mut approved = many.clone();
+            let mut approved = many;
             approved.confirmation = Some(tilo_actions::remote::Confirmation::Asked(
                 asked::Approval::new(
                     asked::RecordRef {

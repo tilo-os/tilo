@@ -226,8 +226,8 @@ async fn a_device_holds_one_key_per_app_and_purpose_answered_to_the_apps_own_pro
     assert!(!asked.is_empty(), "the asks are recorded");
     assert!(asked.iter().all(|recorded| recorded.secret));
     assert!(asked.iter().all(|recorded| {
-        recorded.caller.acting().app().map(|app| app.to_string()) == Some(BRIDGE.to_owned())
-            || recorded.caller.acting().app().map(|app| app.to_string()) == Some(READER.to_owned())
+        recorded.caller.acting().app().map(std::string::ToString::to_string) == Some(BRIDGE.to_owned())
+            || recorded.caller.acting().app().map(std::string::ToString::to_string) == Some(READER.to_owned())
     }));
     let recorded: String = listed
         .iter()

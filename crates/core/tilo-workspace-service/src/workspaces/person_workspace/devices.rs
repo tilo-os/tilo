@@ -2128,7 +2128,7 @@ mod tests {
             pointer: true,
             granted_ms: 12,
             until_ms: 1_000,
-            ..asked.clone()
+            ..asked
         };
         assert!(
             devices
@@ -2398,7 +2398,7 @@ mod tests {
                 &SharedNotice {
                     shown_ms: 61_000,
                     until_ms: 70_000,
-                    ..notice.clone()
+                    ..notice
                 },
             ))
             .expect("a later mail is shown");

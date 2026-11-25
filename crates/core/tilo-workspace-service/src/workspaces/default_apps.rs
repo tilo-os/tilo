@@ -257,7 +257,7 @@ mod tests {
         };
         let offered = vec![entry("so.tilo.files", "2.1.0", &root, &"b".repeat(64), "")];
         assert_eq!(
-            resolve(&["so.tilo.files"], &offered, &held(root.clone()))[0].surface,
+            resolve(&["so.tilo.files"], &offered, &held(root))[0].surface,
             "c".repeat(64),
             "the package's own signed surface, read where the device holds it"
         );

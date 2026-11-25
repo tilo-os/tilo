@@ -79,7 +79,7 @@ enum Flow {
         name: String,
         /// The sign-in awaiting the code the provider showed; `None` while
         /// the loopback waits for the browser instead.
-        pasted: Option<Authorization>,
+        pasted: Option<Box<Authorization>>,
         /// Stops the loopback wait.
         stop: Option<account_credentials::LoopbackCancel>,
     },
@@ -87,14 +87,6 @@ enum Flow {
     /// or Microsoft's own, kept as a mail account once the browser approves it.
     OauthMail {
         provider: Provider,
-        /// The name the account is shown under.
-        name: String,
-        /// The address the person signed in with, when they typed it.
-        address: String,
-        /// What the account feeds.
-        services: Services,
-        /// The account this signs in again, when its sign-in stopped working.
-        replace: String,
         /// Stops the loopback wait.
         stop: Option<account_credentials::LoopbackCancel>,
     },
@@ -388,15 +380,11 @@ impl Workspaces {
             Begun {
                 id: id.clone(),
                 person,
-                root: root.clone(),
+                root: root,
                 until_ms,
                 failed: None,
                 flow: Flow::OauthMail {
                     provider,
-                    name: name.clone(),
-                    address: address.clone(),
-                    services,
-                    replace: asking.account.trim().to_owned(),
                     stop: Some(stop),
                 },
             },
@@ -562,7 +550,7 @@ impl Workspaces {
                     flow: Flow::Oauth {
                         cloud,
                         name,
-                        pasted: Some(authorization),
+                        pasted: Some(Box::new(authorization)),
                         stop: None,
                     },
                 },
@@ -745,7 +733,7 @@ impl Workspaces {
         });
         enum Finish {
             Icloud(ICloudChallenge, String, String),
-            Pasted(Authorization, OAuthCloud, String),
+            Pasted(Box<Authorization>, OAuthCloud, String),
             None,
         }
         let finish = {
@@ -808,7 +796,7 @@ impl Workspaces {
             }
             Finish::Pasted(authorization, cloud, name) => {
                 let finished = tokio::task::spawn_blocking(move || {
-                    CredentialStore::finish_sign_in_with_code(authorization, &code)
+                    CredentialStore::finish_sign_in_with_code(*authorization, &code)
                 })
                 .await
                 .map_err(|_| "the code was not read to the end".to_owned())?;

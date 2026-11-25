@@ -440,7 +440,7 @@ fn body_of(
             bytes,
         });
     }
-    multipart(parts)
+    multipart(&parts)
 }
 
 /// The bytes `reference` names, from the workspace's store: the one place
@@ -473,7 +473,7 @@ fn media_type(reference: &ContentRef, fallback: &str) -> String {
 
 /// `parts` framed as one multipart body, its boundary one no part's bytes
 /// hold.
-fn multipart(parts: Vec<SentPart>) -> Result<Option<Sending>, String> {
+fn multipart(parts: &[SentPart]) -> Result<Option<Sending>, String> {
     let mut boundary = String::from("tilo-web-call-boundary-7f3c9a");
     while parts.iter().any(|part| {
         part.bytes
@@ -483,7 +483,7 @@ fn multipart(parts: Vec<SentPart>) -> Result<Option<Sending>, String> {
         boundary.push('x');
     }
     let mut bytes = Vec::new();
-    for part in &parts {
+    for part in parts {
         let name = part.name.replace(['"', '\r', '\n'], "_");
         let filename = part
             .filename

@@ -405,7 +405,7 @@ async fn an_icloud_drive_waits_for_the_code_apple_sends() {
         .expect("the drive is kept");
     assert_eq!(kept["identity"], json!("ada@icloud.example"));
     let reference = accounts::email::password_item(&kept).expect("its sign-in is named");
-    let entry = tilo_actions::remote::person_vault::ItemRef::parse(&reference)
+    let entry = tilo_actions::remote::person_vault::ItemRef::parse(reference)
         .expect("a reference to a vault item")
         .id()
         .to_owned();

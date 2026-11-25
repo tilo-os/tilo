@@ -643,14 +643,6 @@ pub(crate) struct TestStores {
 
 #[cfg(test)]
 impl TestStores {
-    /// The workspace's accounts as they are now.
-    pub(crate) fn accounts_now(&self) -> accounts::person::AccountList {
-        self.accounts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
     /// The account `id`, as the workspace's accounts keep it now.
     pub(crate) fn account(&self, id: &str) -> Option<accounts::Account> {
         self.accounts
@@ -675,30 +667,6 @@ impl std::ops::Deref for TestStores {
 
     fn deref(&self) -> &Self::Target {
         &self.items
-    }
-}
-
-/// [`VaultAt`] for work that runs where nothing it borrowed reaches: the thread that asks a
-/// server, which resolves an account's sign-in the moment it signs in.
-#[cfg(feature = "agents")]
-#[derive(Clone)]
-pub(crate) enum VaultOf {
-    Workspace(Workspaces, String, Option<Acting>, Option<InvokeRequest>),
-    #[cfg(test)]
-    Held(&'static TestStores),
-}
-
-#[cfg(feature = "agents")]
-impl VaultOf {
-    /// The vault this names, to change.
-    pub(crate) fn at(&self) -> VaultAt<'_> {
-        match self {
-            Self::Workspace(workspaces, workspace, acting, call) => {
-                VaultAt::Workspace(workspaces, workspace, acting.as_ref(), call.as_ref())
-            }
-            #[cfg(test)]
-            Self::Held(items) => VaultAt::Held(items),
-        }
     }
 }
 
@@ -735,21 +703,6 @@ impl<'a> VaultAt<'a> {
             Self::Workspace(_, _, _, call) => call,
             #[cfg(test)]
             Self::Held(_) => None,
-        }
-    }
-
-    /// The same vault, for work that runs where nothing it borrowed reaches.
-    #[cfg(feature = "agents")]
-    pub(crate) fn owned(&self) -> VaultOf {
-        match *self {
-            Self::Workspace(workspaces, workspace, acting, call) => VaultOf::Workspace(
-                workspaces.clone(),
-                workspace.to_owned(),
-                acting.cloned(),
-                call.cloned(),
-            ),
-            #[cfg(test)]
-            Self::Held(items) => VaultOf::Held(items),
         }
     }
 

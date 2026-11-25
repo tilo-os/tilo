@@ -566,7 +566,7 @@ mod tests {
             cluster_id: workspace.clone(),
             document: String::new(),
         };
-        workspaces.own_route_keys(&route, true).await.unwrap();
+        workspaces.own_route_keys(&route, true).await.unwrap().unwrap();
         workspace
     }
 
@@ -649,13 +649,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (host, workspace) = kitchen(dir.path()).await;
         let workspaces = host.workspaces();
-        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let me = caller_of(workspaces, &workspace).acting().by.clone();
         let someone_else = Actor::Member(MemberId::person("someone-else"));
 
         let mut forged = automerge::AutoCommit::new();
         forged.put(automerge::ROOT, "title", "Not mine").unwrap();
         commit(&mut forged, &typed_by(&someone_else));
-        let refused = write(&workspaces, &workspace, "forged", forged.save()).await;
+        let refused = write(workspaces, &workspace, "forged", forged.save()).await;
         assert!(
             refused
                 .as_ref()
@@ -663,29 +663,29 @@ mod tests {
             "{refused:?}"
         );
         assert!(
-            heads(&workspaces, &workspace, "forged").await.is_empty(),
+            heads(workspaces, &workspace, "forged").await.is_empty(),
             "the refused record is not kept"
         );
 
         let mut note = automerge::AutoCommit::new();
         note.put(automerge::ROOT, "title", "Plan").unwrap();
         commit(&mut note, &typed_by(&me));
-        write(&workspaces, &workspace, "plan", note.save())
+        write(workspaces, &workspace, "plan", note.save())
             .await
             .expect("the caller's own typing founds the record");
-        let kept = heads(&workspaces, &workspace, "plan").await;
+        let kept = heads(workspaces, &workspace, "plan").await;
         assert!(!kept.is_empty());
 
         let before = note.get_heads();
         note.put(automerge::ROOT, "title", "Plan B").unwrap();
         commit(&mut note, &typed_by(&someone_else));
         assert!(
-            write(&workspaces, &workspace, "plan", note.save_after(&before))
+            write(workspaces, &workspace, "plan", note.save_after(&before))
                 .await
                 .is_err(),
             "a kept record takes no change naming someone else either"
         );
-        assert_eq!(heads(&workspaces, &workspace, "plan").await, kept);
+        assert_eq!(heads(workspaces, &workspace, "plan").await, kept);
     }
 
     /// A record's change is judged by the verb its label names: one the app's surface does not
@@ -695,7 +695,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (host, workspace) = kitchen(dir.path()).await;
         let workspaces = host.workspaces();
-        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let me = caller_of(workspaces, &workspace).acting().by.clone();
         let mut note = automerge::AutoCommit::new();
         note.put(automerge::ROOT, "title", "Plan").unwrap();
         commit(
@@ -706,11 +706,11 @@ mod tests {
             },
         );
         assert!(
-            write(&workspaces, &workspace, "plan", note.save())
+            write(workspaces, &workspace, "plan", note.save())
                 .await
                 .is_err()
         );
-        assert!(heads(&workspaces, &workspace, "plan").await.is_empty());
+        assert!(heads(workspaces, &workspace, "plan").await.is_empty());
     }
 
     /// One change larger than a frame is written and read back whole: it is kept as segments,
@@ -721,7 +721,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (host, workspace) = kitchen(dir.path()).await;
         let workspaces = host.workspaces();
-        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let me = caller_of(workspaces, &workspace).acting().by.clone();
 
         let text = noise(4_500_000, 3);
         let mut note = automerge::AutoCommit::new();
@@ -729,11 +729,11 @@ mod tests {
         commit(&mut note, &typed_by(&me));
         let change = note.save();
         assert!(change.len() > collab_types::MAX_DOCUMENT_MUTATION_BYTES);
-        write(&workspaces, &workspace, "long", change)
+        write(workspaces, &workspace, "long", change)
             .await
             .expect("the store keeps a change larger than a frame");
         assert_eq!(
-            title_in(&workspaces, &workspace, "long").await.as_deref(),
+            title_in(workspaces, &workspace, "long").await.as_deref(),
             Some(text.as_str()),
             "the store holds all of it"
         );
@@ -770,7 +770,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (host, workspace) = kitchen(dir.path()).await;
         let workspaces = host.workspaces();
-        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let me = caller_of(workspaces, &workspace).acting().by.clone();
 
         let mut note = automerge::AutoCommit::new();
         let mut changes = Vec::new();
@@ -781,7 +781,7 @@ mod tests {
             changes.push(note.save_after(&heads));
         }
         for change in &changes {
-            write(&workspaces, &workspace, "plan", change.clone())
+            write(workspaces, &workspace, "plan", change.clone())
                 .await
                 .expect("the store keeps the app's change");
         }
@@ -916,41 +916,41 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (host, workspace) = kitchen(dir.path()).await;
         let workspaces = host.workspaces();
-        let me = caller_of(&workspaces, &workspace).acting().by.clone();
-        let mut plan = note(&workspaces, &workspace, "plan", "Plan", &me).await;
-        let mut list = note(&workspaces, &workspace, "list", "List", &me).await;
+        let me = caller_of(workspaces, &workspace).acting().by.clone();
+        let mut plan = note(workspaces, &workspace, "plan", "Plan", &me).await;
+        let mut list = note(workspaces, &workspace, "list", "List", &me).await;
         let (plan_b, plan_heads) = retitled(&mut plan, "Plan B", &me);
         let (list_b, list_heads) = retitled(&mut list, "List B", &me);
         let both = action(&workspace, [("plan", plan_heads), ("list", list_heads)]);
 
-        write_part(&workspaces, &workspace, "plan", plan_b, Some(&both))
+        write_part(workspaces, &workspace, "plan", plan_b, Some(&both))
             .await
             .expect("the store keeps the first record's part");
         assert_eq!(
-            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            title_in(workspaces, &workspace, "plan").await.as_deref(),
             Some("Plan"),
             "the first record waits for the action's other record"
         );
-        write_part(&workspaces, &workspace, "list", list_b, Some(&both))
+        write_part(workspaces, &workspace, "list", list_b, Some(&both))
             .await
             .expect("the store keeps the second record's part");
         assert_eq!(
-            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            title_in(workspaces, &workspace, "plan").await.as_deref(),
             Some("Plan B")
         );
         assert_eq!(
-            title_in(&workspaces, &workspace, "list").await.as_deref(),
+            title_in(workspaces, &workspace, "list").await.as_deref(),
             Some("List B")
         );
 
         // A change of one record alone after it, an action of one part: kept and read as any,
         // where the note was founded as one action with where its store places it.
         let (list_c, _) = retitled(&mut list, "List C", &me);
-        write_part(&workspaces, &workspace, "list", list_c, None)
+        write_part(workspaces, &workspace, "list", list_c, None)
             .await
             .expect("the store keeps a change of one record");
         assert_eq!(
-            title_in(&workspaces, &workspace, "list").await.as_deref(),
+            title_in(workspaces, &workspace, "list").await.as_deref(),
             Some("List C")
         );
     }
@@ -962,32 +962,32 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (host, workspace) = kitchen(dir.path()).await;
         let workspaces = host.workspaces();
-        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let me = caller_of(workspaces, &workspace).acting().by.clone();
         let someone_else = Actor::Member(MemberId::person("someone-else"));
-        let mut plan = note(&workspaces, &workspace, "plan", "Plan", &me).await;
-        let mut list = note(&workspaces, &workspace, "list", "List", &me).await;
+        let mut plan = note(workspaces, &workspace, "plan", "Plan", &me).await;
+        let mut list = note(workspaces, &workspace, "list", "List", &me).await;
         let (plan_heads, list_heads) = (
-            heads(&workspaces, &workspace, "plan").await,
-            heads(&workspaces, &workspace, "list").await,
+            heads(workspaces, &workspace, "plan").await,
+            heads(workspaces, &workspace, "list").await,
         );
         let (plan_b, plan_at) = retitled(&mut plan, "Plan B", &me);
         // Named as someone else's: the store refuses it.
         let (list_b, list_at) = retitled(&mut list, "List B", &someone_else);
         let both = action(&workspace, [("plan", plan_at), ("list", list_at)]);
 
-        write_part(&workspaces, &workspace, "plan", plan_b, Some(&both))
+        write_part(workspaces, &workspace, "plan", plan_b, Some(&both))
             .await
             .expect("the store keeps the first record's part");
-        let refused = write_part(&workspaces, &workspace, "list", list_b, Some(&both)).await;
+        let refused = write_part(workspaces, &workspace, "list", list_b, Some(&both)).await;
         assert!(refused.is_err(), "{refused:?}");
-        assert_eq!(heads(&workspaces, &workspace, "plan").await, plan_heads);
-        assert_eq!(heads(&workspaces, &workspace, "list").await, list_heads);
+        assert_eq!(heads(workspaces, &workspace, "plan").await, plan_heads);
+        assert_eq!(heads(workspaces, &workspace, "list").await, list_heads);
         assert_eq!(
-            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            title_in(workspaces, &workspace, "plan").await.as_deref(),
             Some("Plan")
         );
         assert_eq!(
-            title_in(&workspaces, &workspace, "list").await.as_deref(),
+            title_in(workspaces, &workspace, "list").await.as_deref(),
             Some("List")
         );
     }

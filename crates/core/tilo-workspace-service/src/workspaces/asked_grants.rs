@@ -76,9 +76,7 @@ impl Workspaces {
         {
             let state = workspace.collaboration().clone();
             workspace.keep(candidate, key, at, |_, _| Ok(state))?;
-            self.settle(workspace)
-                .await
-                .map_err(|error| error.to_string())?;
+            self.settle(workspace).await?;
         }
         Ok(())
     }

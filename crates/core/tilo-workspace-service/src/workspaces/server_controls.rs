@@ -123,10 +123,7 @@ impl Workspaces {
     /// A server's controls do not read or take the grants.
     pub async fn refresh_server_controls(&self, workspace: &str) -> Result<(), String> {
         let ours = hex::encode(self.inner.host.cert.user_public_key);
-        let keepers = self
-            .keeping_devices(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
+        let keepers = self.keeping_devices(workspace).await?;
         for keeper in keepers.into_iter().filter(|keeper| keeper.person == ours) {
             let Some(device) = tilo_failure::ignored!(
                 "a keeping device's key is hex, in thirty-two bytes",

@@ -105,8 +105,8 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
     let by = actor(owner.user_public_key);
     let target = [9u8; 32];
 
-    let workspace = made_workspace(&workspaces, "Added").await;
-    let before = listed(&workspaces, &workspace).await;
+    let workspace = made_workspace(workspaces, "Added").await;
+    let before = listed(workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
         .add_member(
@@ -122,13 +122,13 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         .await
         .unwrap();
     assert_one(
-        &stamped(&workspaces, &workspace, before).await,
+        &stamped(workspaces, &workspace, before).await,
         governance::ADD_MEMBER,
         &by,
         started,
     );
 
-    let before = listed(&workspaces, &workspace).await;
+    let before = listed(workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
         .set_member_role(
@@ -143,13 +143,13 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         .await
         .unwrap();
     assert_one(
-        &stamped(&workspaces, &workspace, before).await,
+        &stamped(workspaces, &workspace, before).await,
         governance::SET_ROLE,
         &by,
         started,
     );
 
-    let before = listed(&workspaces, &workspace).await;
+    let before = listed(workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
         .remove_member(
@@ -163,13 +163,13 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         .await
         .unwrap();
     assert_one(
-        &stamped(&workspaces, &workspace, before).await,
+        &stamped(workspaces, &workspace, before).await,
         governance::REMOVE_MEMBER,
         &by,
         started,
     );
 
-    let workspace = made_workspace(&workspaces, "Banned").await;
+    let workspace = made_workspace(workspaces, "Banned").await;
     let banned = [10u8; 32];
     workspaces
         .add_member(
@@ -184,7 +184,7 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         )
         .await
         .unwrap();
-    let before = listed(&workspaces, &workspace).await;
+    let before = listed(workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
         .ban_member(
@@ -199,7 +199,7 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         .unwrap();
     // A ban is one action across two governance changes: the removal, then
     // the block that keeps the person out. Both name the ban.
-    let stamps = stamped(&workspaces, &workspace, before).await;
+    let stamps = stamped(workspaces, &workspace, before).await;
     assert!(
         (1..=2).contains(&stamps.len()),
         "a ban is one removal and its block, got {stamps:?}"
@@ -211,7 +211,7 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         assert!(*time >= started, "{time} < {started}");
     }
 
-    let before = listed(&workspaces, &workspace).await;
+    let before = listed(workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
         .unban_member(
@@ -225,7 +225,7 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
         .await
         .unwrap();
     assert_one(
-        &stamped(&workspaces, &workspace, before).await,
+        &stamped(workspaces, &workspace, before).await,
         governance::UNBAN,
         &by,
         started,
@@ -240,7 +240,7 @@ async fn a_ban_and_an_unban_reach_the_members_in_that_order() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let workspace = made_workspace(&workspaces, "Moderated").await;
+    let workspace = made_workspace(workspaces, "Moderated").await;
     let person = [11u8; 32];
     workspaces
         .add_member(
@@ -255,7 +255,7 @@ async fn a_ban_and_an_unban_reach_the_members_in_that_order() {
         )
         .await
         .unwrap();
-    let before = listed(&workspaces, &workspace).await;
+    let before = listed(workspaces, &workspace).await;
     workspaces
         .ban_member(
             &workspace,
@@ -278,7 +278,7 @@ async fn a_ban_and_an_unban_reach_the_members_in_that_order() {
         )
         .await
         .unwrap();
-    let stamps = stamped(&workspaces, &workspace, before).await;
+    let stamps = stamped(workspaces, &workspace, before).await;
     // The two changes a ban makes name it; lifting it names the unban after.
     let mut verbs: Vec<&str> = stamps
         .iter()
@@ -304,10 +304,10 @@ async fn a_refused_member_action_stamps_no_members_change() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let workspace = made_workspace(&workspaces, "Refused").await;
+    let workspace = made_workspace(workspaces, "Refused").await;
     let (_, stranger) = guest_device();
-    let before = heads(&workspaces, &workspace).await;
-    let listed_before = listed(&workspaces, &workspace).await;
+    let before = heads(workspaces, &workspace).await;
+    let listed_before = listed(workspaces, &workspace).await;
 
     // Someone the workspace has never let in cannot move its people, ban one
     // or remove one: the change is refused before any is written.
@@ -336,13 +336,13 @@ async fn a_refused_member_action_stamps_no_members_change() {
     assert!(refused.is_err(), "a stranger bans nobody");
 
     assert!(
-        stamped(&workspaces, &workspace, listed_before)
+        stamped(workspaces, &workspace, listed_before)
             .await
             .is_empty(),
         "a refused change is no change, and appears in no feed"
     );
     assert_eq!(
-        heads(&workspaces, &workspace).await,
+        heads(workspaces, &workspace).await,
         before,
         "the workspace's governance stands where it did"
     );
@@ -366,8 +366,8 @@ async fn a_base_keeps_every_action_the_history_before_it_took() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let by = actor(owner.user_public_key);
-    let workspace = made_workspace(&workspaces, "Kept").await;
-    let founded = listed(&workspaces, &workspace).await;
+    let workspace = made_workspace(workspaces, "Kept").await;
+    let founded = listed(workspaces, &workspace).await;
     let (first, second) = ([21u8; 32], [22u8; 32]);
     let add = |request: u8, person: [u8; 32]| AddMemberRequest {
         request_id: [request; 32],
@@ -489,7 +489,7 @@ async fn a_watcher_of_the_workspace_reads_each_member_action_once_with_who_and_w
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let by = collab_types::Stamp::by(&actor(owner.user_public_key));
-    let workspace = made_workspace(&workspaces, "Watched").await;
+    let workspace = made_workspace(workspaces, "Watched").await;
     let documents = crate::device_documents::ServiceDocuments::of(workspaces.clone());
     let mut log = collab_types::history::feed::ChangeLog::new();
     let cursor = feed_after(&documents, &mut log, &workspace, None).cursor;
@@ -574,7 +574,7 @@ async fn a_person_accepting_an_invitation_is_listed_once_as_joining() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let workspace = made_workspace(&workspaces, "Joined").await;
+    let workspace = made_workspace(workspaces, "Joined").await;
     let documents = crate::device_documents::ServiceDocuments::of(workspaces.clone());
     let mut log = collab_types::history::feed::ChangeLog::new();
     let cursor = feed_after(&documents, &mut log, &workspace, None).cursor;
@@ -621,7 +621,7 @@ async fn a_person_accepting_an_invitation_is_listed_once_as_joining() {
     let time = join.entry["time_ms"].as_i64().unwrap_or_default();
     assert!(time >= started, "{time} < {started}: {join:?}");
     // The governance names who sent the invitation beside who accepted it.
-    let named = stamped(&workspaces, &workspace, 0).await;
+    let named = stamped(workspaces, &workspace, 0).await;
     let (stamp, _) = named
         .iter()
         .find(|(stamp, _)| stamp.verb == governance::JOIN)

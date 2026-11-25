@@ -255,7 +255,7 @@ impl Workspaces {
                 if agents
                     .agents
                     .find(&tilo_resource::Id::from_raw(agent.to_owned()))
-                    .is_some_and(|kept| kept.is_active())
+                    .is_some_and(tilo_workspace_agent::Agent::is_active)
         )
     }
 

@@ -902,7 +902,7 @@ impl Workspaces {
         let args = Args::of(&request.argument)?;
         let asked =
             administered_request(&args.0).map_err(|error| ActionCallError::InvalidRequest {
-                reason: error.to_string(),
+                reason: error,
             })?;
         let reply = self.answer_administration(device, caller, asked).await;
         administered_answer(&reply).map_err(|reason| ActionCallError::Refused { reason })
@@ -970,7 +970,7 @@ impl Workspaces {
                     person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
                 if !theirs || !self.lists_to(device, workspace) {
                     return Err(ActionCallError::refused(
-                        &AdminRefusal::NotYourOwn.to_reason(),
+                        AdminRefusal::NotYourOwn.to_reason(),
                     ));
                 }
                 false
@@ -1298,7 +1298,7 @@ impl Workspaces {
                 }))
         {
             return Err(ActionCallError::refused(
-                &AdminRefusal::NotYourOwn.to_reason(),
+                AdminRefusal::NotYourOwn.to_reason(),
             ));
         }
         // A backend that keeps a workspace per customer labels each with its own id for that
@@ -1315,7 +1315,7 @@ impl Workspaces {
             let summary = self
                 .summary(&existing)
                 .await
-                .map_err(|error| ActionCallError::refused(&error.to_string()))?;
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
             return self
                 .invite_own_person(
                     summary,
@@ -1378,7 +1378,7 @@ impl Workspaces {
             // of its own choosing, so an id it does not know is never theirs,
             // and it is never read as some other workspace they have.
             return Err(ActionCallError::refused(
-                &AdminRefusal::NotYourOwn.to_reason(),
+                AdminRefusal::NotYourOwn.to_reason(),
             ));
         } else if name.is_none()
             && let Some(first) = own.first_of(&person)
@@ -1389,7 +1389,7 @@ impl Workspaces {
                 .map_err(|error| ActionCallError::refused(error.to_string()))?
         } else if !makes {
             return Err(ActionCallError::refused(
-                &AdminRefusal::NotYourOwn.to_reason(),
+                AdminRefusal::NotYourOwn.to_reason(),
             ));
         } else {
             // Another one, for a person the site let in ([`Self::check_account`]):
@@ -1437,7 +1437,7 @@ impl Workspaces {
             (None, Some(workspace)) if self.lists_to(device, workspace) => workspace,
             _ => {
                 return Err(ActionCallError::refused(
-                    &AdminRefusal::NotYourOwn.to_reason(),
+                    AdminRefusal::NotYourOwn.to_reason(),
                 ));
             }
         };

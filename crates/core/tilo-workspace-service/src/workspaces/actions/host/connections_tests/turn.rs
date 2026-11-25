@@ -223,7 +223,7 @@ impl<'a> Team<'a> {
     /// the one before it kept: no workspace is made and nobody is admitted.
     fn back(workspaces: &'a Workspaces, members: Members) -> Self {
         workspaces.call_private_model_addresses(true);
-        let actions = super::super::super::tests::host_dispatch(&workspaces);
+        let actions = super::super::super::tests::host_dispatch(workspaces);
         Self {
             as_ada: caller(&members.ada),
             ada_id: hex::encode(members.ada.user_public_key),
@@ -268,7 +268,7 @@ impl<'a> Team<'a> {
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,
     ) -> Result<Value, Refused> {
-        dispatched(&self.workspaces, turn, request).await
+        dispatched(self.workspaces, turn, request).await
     }
 
     /// `request` of `turn` again, as its person's approve admits it.
@@ -278,7 +278,7 @@ impl<'a> Team<'a> {
         request: &InvokeRequest,
     ) -> Result<Value, Refused> {
         let approved = approved(request, &self.workspace_id.to_string());
-        dispatched(&self.workspaces, turn, &approved).await
+        dispatched(self.workspaces, turn, &approved).await
     }
 
     /// The actions `turn` finds of its person's connections in its listing.

@@ -316,7 +316,7 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
         .release_to((BRIDGE, &workspace), &connection, &call)
         .await
         .expect("still allowed");
-    let taken = ask(
+    let taken_back = ask(
         &service,
         workspace_id,
         mine,
@@ -325,7 +325,7 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
     )
     .await
     .expect("the person takes the bridge's leave back");
-    assert!(leaves(taken).is_empty(), "the leave is gone");
+    assert!(leaves(taken_back).is_empty(), "the leave is gone");
     assert_eq!(
         refusal(
             workspaces
@@ -1127,7 +1127,7 @@ async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_ke
     assert_eq!(kept_record.request.target, person_vault::keep_target());
     assert_eq!(kept_record.sealed, vec!["value".to_owned()]);
     assert_eq!(
-        kept_record.caller.acting().app().map(|app| app.to_string()),
+        kept_record.caller.acting().app().map(std::string::ToString::to_string),
         Some(BRIDGE.to_owned())
     );
     assert!(
@@ -1238,11 +1238,11 @@ async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_ke
     ))
     .await
     .expect("their answer is taken");
-    let lent: Released = workspaces
+    let borrowed: Released = workspaces
         .release_to((BRIDGE, &workspace), &held, &lend)
         .await
         .expect("the held connection reads what it was lent");
-    assert_eq!(lent.secret, OTHER);
+    assert_eq!(borrowed.secret, OTHER);
     assert_eq!(
         refusal(
             workspaces

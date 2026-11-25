@@ -852,7 +852,7 @@ mod tests {
             self.0
                 .lock()
                 .expect("the calls taken")
-                .push(request.target.provider.to_string());
+                .push(request.target.provider);
             Pending::ready(Err(ActionCallError::Unavailable {
                 reason: "the app's answer is its own".into(),
             }))
@@ -925,7 +925,7 @@ mod tests {
         );
         assert_eq!(
             process.0.lock().expect("the calls taken").clone(),
-            vec![target.provider.clone()],
+            vec![target.provider],
             "the call reached the app's process under its token"
         );
 

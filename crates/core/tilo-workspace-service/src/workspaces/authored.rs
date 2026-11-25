@@ -160,11 +160,6 @@ impl Workspaces {
 }
 
 impl HeldRecord {
-    /// The workspace the record is of.
-    pub(super) fn workspace(&self) -> &str {
-        &self.workspace
-    }
-
     /// Make `change` to the record as `candidate` holds it, or to `genesis`
     /// (else nothing) while it holds none, and publish what it added into
     /// `candidate`, signed with `key` at `now`: the record is committed with

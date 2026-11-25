@@ -294,8 +294,8 @@ impl TerminalService {
         };
         let ran = match ran {
             Ok(Ok(ran)) => ran,
-            Ok(Err(reason)) => return failed(invocation, reason),
-            Err(error) => return failed(invocation, error.to_string()),
+            Ok(Err(reason)) => return failed(invocation, &reason),
+            Err(error) => return failed(invocation, &error.to_string()),
         };
         let id = self.record(workspace, record, caller, ran.clone());
         if ran.cancelled {
@@ -463,7 +463,7 @@ impl TerminalService {
 }
 
 /// Why a command did not run, as the invocation's failure.
-fn failed(invocation: InvocationId, reason: String) -> InvocationUpdate {
+fn failed(invocation: InvocationId, reason: &str) -> InvocationUpdate {
     InvocationUpdate::Failed {
         invocation,
         error: tilo_actions::ActionFailure {

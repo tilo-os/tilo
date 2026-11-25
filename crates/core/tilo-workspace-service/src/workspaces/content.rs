@@ -107,7 +107,7 @@ pub trait ContentKeeper: Send + Sync {
         workspace: &str,
         from: [u8; 32],
         message: NeighbourMsg,
-    ) -> Result<(), NeighbourMsg>;
+    ) -> Result<(), Box<NeighbourMsg>>;
 
     /// A link to `workspace`'s devices started: ask again at once for what
     /// is still being gathered there, since what a link that ended carried
@@ -719,7 +719,7 @@ impl Workspaces {
         for keeper in self.inner.content.keepers() {
             match keeper.take(workspace, from, message) {
                 Ok(()) => return,
-                Err(back) => message = back,
+                Err(back) => message = *back,
             }
         }
         // The asker of a surface is this host: a piece is kept when it is

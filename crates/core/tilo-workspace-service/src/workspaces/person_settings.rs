@@ -182,7 +182,7 @@ impl Workspaces {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Arc::new(tilo_account_probe::TrustingMailTester {
-                reach: reach.clone(),
+                reach: reach,
                 extra: extra.clone(),
             });
     }
@@ -240,7 +240,10 @@ impl Workspaces {
     /// Control this device's cloud mounts through `cloud` from now on: a
     /// test's service stands in for the files service that mounts them.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn cloud_control_through(&self, cloud: std::sync::Arc<dyn cloud_control::CloudControl>) {
+    pub(crate) fn cloud_control_through(
+        &self,
+        cloud: std::sync::Arc<dyn cloud_control::CloudControl>,
+    ) {
         *self
             .inner
             .cloud_control

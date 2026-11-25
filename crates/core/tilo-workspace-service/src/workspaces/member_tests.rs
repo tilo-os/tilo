@@ -1726,7 +1726,7 @@ async fn a_receipt_the_shell_sends_is_kept_in_the_joined_workspace() {
         .await
         .unwrap();
     assert!(
-        matches!(reply, ShellReply::Receipted(Ok(_))),
+        matches!(reply, ShellReply::Receipted(Ok(()))),
         "the daemon records the receipt: {reply:?}"
     );
     let state = member.workspaces().state(&created.workspace).await.unwrap();

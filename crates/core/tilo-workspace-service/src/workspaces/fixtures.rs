@@ -1389,7 +1389,7 @@ pub async fn list_itself_on_link(
         Err(tilo_server_protocol::refusal::Refusal::Listed),
         "the link the device listed itself on ends, telling it so"
     );
-    let dialed = dial()
+    let connected = dial()
         .await
         .expect("the host admits the listed device as a member device");
     let mut caught_up = link.caught_up();
@@ -1397,7 +1397,7 @@ pub async fn list_itself_on_link(
         let link = link.clone();
         let dialer = Arc::clone(&dialer);
         tokio::spawn(async move {
-            let ran = dialed.run(&link).await;
+            let ran = connected.run(&link).await;
             drop(dialer);
             ran
         })

@@ -16,6 +16,7 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, InvocationReceipt, InvokeRequest, Pending,
     ReceiptStatus,
 };
+use tilo_actions::ActionOutput;
 use tilo_automation::{AutomationInvocationId, InvocationReport};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -459,7 +460,7 @@ impl BridgeProcess {
             done.complete(Ok(InvocationReceipt {
                 invocation,
                 status: ReceiptStatus::Completed {
-                    output: Default::default(),
+                    output: ActionOutput::default(),
                 },
             }));
         }
@@ -537,7 +538,7 @@ impl ActionProvider for BridgeProcess {
         Pending::ready(Ok(InvocationReceipt {
             invocation,
             status: ReceiptStatus::Completed {
-                output: Default::default(),
+                output: ActionOutput::default(),
             },
         }))
     }

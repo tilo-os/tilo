@@ -1030,7 +1030,7 @@ pub(crate) mod entry_tests {
     ) -> serde_json::Value {
         let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key);
         let receipt = {
-            let host = crate::workspaces::actions::tests::host_dispatch(&workspaces);
+            let host = crate::workspaces::actions::tests::host_dispatch(workspaces);
             settled(host.in_workspace(workspace).invoke(&caller, request))
                 .await
                 .unwrap()

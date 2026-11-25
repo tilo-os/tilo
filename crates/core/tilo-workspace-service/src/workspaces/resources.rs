@@ -914,13 +914,13 @@ impl GovernedWorkspace {
         let mut store = self.resources.store.lock_recover();
         action.parts.iter().all(|part| {
             part.heads.iter().all(|head| {
-                let head = ChangeHash(*head);
+                let hash = ChangeHash(*head);
                 held.is_some_and(|writes| {
                     writes.iter().any(|write| {
                         write.doc == part.document
-                            && write.changes.iter().any(|change| change.hash() == head)
+                            && write.changes.iter().any(|change| change.hash() == hash)
                     })
-                }) || store.has_change(&part.document, &head)
+                }) || store.has_change(&part.document, &hash)
             })
         })
     }

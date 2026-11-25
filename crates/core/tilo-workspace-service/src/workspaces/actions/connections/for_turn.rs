@@ -125,7 +125,7 @@ fn names(turn: &HostedTurn<'_>, workspace: &str, id: &str) -> bool {
         .kind(person_connections::CONNECTION_KIND)
         .resource(resource.clone())
         .action(person_connections::CALL);
-    let decision = crate::workspaces::hosted_use::agent_decision(policy, (agent, &person), &node);
+    let decision = crate::workspaces::hosted_use::agent_decision(policy, (agent, person), &node);
     // An answer for every connection names none of them.
     let named = policy.grants_of_agent(agent, person).any(|grant| {
         grant.node.segments().iter().any(|segment| {

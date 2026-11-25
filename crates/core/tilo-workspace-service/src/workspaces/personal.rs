@@ -467,7 +467,7 @@ impl Workspaces {
             else {
                 return;
             };
-            session.name = client.to_owned();
+            client.clone_into(&mut session.name);
             session
                 .cert
                 .clone()

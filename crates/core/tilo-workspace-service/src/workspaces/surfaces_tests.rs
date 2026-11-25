@@ -21,7 +21,6 @@ use super::Workspaces;
 use super::fixtures::{TestGroupKeys, governor_with, test_host_holding};
 
 const APP: &str = "so.tilo.test.older-version";
-const KIND: &str = "so.tilo.test.older-version.article";
 const RECORDS: usize = 12;
 
 /// The app's compiled surface as the earlier build shipped it, version 1.
