@@ -2654,8 +2654,8 @@ impl ActionProvider for RemoteDevice {
         )
     }
 
-    /// Records read on the device: each read is asked of it, as this device, and its reading
-    /// answered as it comes.
+    /// Records read on the device: each read is asked of it whole, as this device, its wait
+    /// included.
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
         Some(Arc::new(self.clone()))
     }
