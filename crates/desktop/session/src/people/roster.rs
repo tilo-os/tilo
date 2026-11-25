@@ -53,8 +53,6 @@ pub enum PeopleHit {
     Unfollow(usize),
     /// Wave at the person at this row index.
     Wave(usize),
-    /// Join the voice channel the person at this row index is in.
-    JoinCall(usize),
     /// Bring forward the window the software at this row index works in.
     OpenTab(usize),
     /// Inside the panel, but not on an action.
@@ -84,8 +82,6 @@ pub struct PeopleModel<'a> {
     /// Each person's screen, by roster id (`None`: they keep where they are to themselves), mirrored under their card.
     pub screens: &'a [(String, Option<Screen>)],
     pub followed_id: Option<&'a str>,
-    /// Ephemeral workspace-local attachments, expressed using roster ids.
-    pub following_pairs: &'a [(String, String)],
     /// Whom this person waved at a moment ago, by roster id: their row shows the wave sent.
     pub waved: &'a [String],
     /// When the wave stops showing: the row it went to is drawn again without one then.
@@ -153,7 +149,6 @@ struct RowPlace {
     rect: Rect,
     follow: Rect,
     wave: Rect,
-    join: Rect,
     /// What software works in, under its row (software has no screen to mirror).
     working_in: Rect,
     /// The one line under a person's name saying why their screen is not shown there.
@@ -188,10 +183,8 @@ pub struct PeopleOverlay {
     pin: Rect,
     /// Where each row's mirror of that person's screen stands.
     mirrors: Vec<(usize, Rect)>,
-    /// The trailing slot every row reserves for Wave and Follow, and Join where anyone has a call to join.
+    /// The trailing slot every row reserves for Wave and Follow.
     trailing_w: f64,
-    /// What Join adds to [`Self::trailing_w`]: none when nobody has a call.
-    join_extra: f64,
     keyboard_focus: Option<PeopleHit>,
     targets: ui::widget::PaintedTargets,
     painted_actions: Vec<(String, PeopleHit)>,
@@ -323,6 +316,7 @@ impl PeopleOverlay {
         // Keyboard focus stays with the person and control it was on, not the row index, when
         // people come, go or reorder.
         let focused = self.keyboard_focus.and_then(|hit| self.target_id(hit));
+        self.follow_expansion(model);
         self.host = model.host;
         self.shown_rows = model.rows.to_vec();
         self.shown_pinned = model.pinned;
@@ -377,7 +371,7 @@ impl PeopleOverlay {
         let mirror_h = mirror_height(model, width, row_h, theme);
         // What stands under each row: a person's picture of their screen, one line saying why there
         // is none, software's where-it-works line, or nothing.
-        self.measure_trailing(text, theme, model);
+        self.measure_trailing(text, theme);
         let under: Vec<f64> = model
             .rows
             .iter()
@@ -516,7 +510,7 @@ impl PeopleOverlay {
         let gap = f64::from(spacing.s2);
         let bleed = ui::chrome::row_bleed(theme);
         let mut y = self.body.y0;
-        let widths = self.measure_trailing(text, theme, model);
+        let widths = self.measure_trailing(text, theme);
         for (key, group) in groups {
             if group.is_empty() {
                 continue;
@@ -575,7 +569,7 @@ impl PeopleOverlay {
         }
     }
 
-    /// The row `index` at `rect` with its trailing buttons: Join where the person has a call to join, Follow where they can be followed, Wave for a person (never an agent).
+    /// The row `index` at `rect` with its trailing buttons: Follow where they can be followed, Wave for a person (never an agent).
     fn row_place(
         &self,
         text: &mut TextRenderer,
@@ -585,63 +579,29 @@ impl PeopleOverlay {
         widths: ButtonWidths,
     ) -> (RowPlace, f64) {
         let (follow, wave) = self.trailing_slots(text, theme, rect, &row.label, widths.follow);
-        // Join stands beside Follow, Wave (shown on hover) before it.
-        let control = f64::from(theme.tokens.metrics.bar_control_height);
-        let (join, wave) = if row.join.is_some() {
-            let join = Rect::new(
-                follow.x0 - TRAILING_GAP - widths.join,
-                follow.y0,
-                follow.x0 - TRAILING_GAP,
-                follow.y1,
-            );
-            let wave = Rect::new(
-                join.x0 - TRAILING_GAP - control,
-                join.y0,
-                join.x0 - TRAILING_GAP,
-                join.y1,
-            );
-            (join, wave)
-        } else {
-            (Rect::ZERO, wave)
-        };
         let place = RowPlace {
             index,
             rect,
             follow: if row.followable { follow } else { Rect::ZERO },
             wave: if row.is_agent() { Rect::ZERO } else { wave },
-            join,
             ..RowPlace::default()
         };
         (place, follow.x1)
     }
 
-    /// Join (where anyone has a call to join), Wave and Follow sit in a row's trailing slot, inside
-    /// its disclosure chevron when it has one: the room the list keeps for them.
-    fn measure_trailing(
-        &mut self,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        model: &PeopleModel<'_>,
-    ) -> ButtonWidths {
+    /// Wave and Follow sit in a row's trailing slot, inside its disclosure chevron when it has
+    /// one: the room the list keeps for them.
+    fn measure_trailing(&mut self, text: &mut TextRenderer, theme: &Theme) -> ButtonWidths {
         let widths = ButtonWidths::measure(text, theme);
         let control = f64::from(theme.tokens.metrics.bar_control_height);
-        let any_join = model.rows.iter().any(|row| row.join.is_some());
-        self.trailing_w = widths.trailing(any_join, control);
-        self.join_extra = if any_join {
-            TRAILING_GAP + widths.join
-        } else {
-            0.0
-        };
+        self.trailing_w = widths.trailing(control);
         widths
     }
 
-    /// The trailing room the row keeps for the controls it has: Follow, Wave (never for software
-    /// or the person's own devices) and Join where it has a call to join.
-    fn row_trailing(&self, row: &RosterRow, joins: bool, theme: &Theme) -> f64 {
+    /// The trailing room the row keeps for the controls it has: Follow, and Wave (never for
+    /// software or the person's own devices).
+    fn row_trailing(&self, row: &RosterRow, theme: &Theme) -> f64 {
         let mut trailing = self.trailing_w;
-        if !joins {
-            trailing -= self.join_extra;
-        }
         if row.is_agent() {
             trailing -= TRAILING_GAP + f64::from(theme.tokens.metrics.bar_control_height);
         }
@@ -670,7 +630,7 @@ impl PeopleOverlay {
         );
         let probe = ListRowFace::new(&row.label)
             .leading_column(FACE)
-            .trailing_width(self.row_trailing(row, row.join.is_some(), theme));
+            .trailing_width(self.row_trailing(row, theme));
         let start = probe.text_column(rect, text, theme);
         let end = probe
             .trailing_rect(rect, text, theme)
@@ -835,7 +795,6 @@ impl PeopleOverlay {
         let stop_label = t("people-panel-stop-following");
         let wave_label = t("people-panel-wave");
         let sent_label = t("people-panel-waved");
-        let join_label = t("people-panel-join");
         let now = ui::time::now();
         let in_call = model.rows.iter().any(|row| row.call.is_some());
         let since = *self.call_since.get_or_insert(now);
@@ -933,9 +892,8 @@ impl PeopleOverlay {
             let mut face = face
                 .leading(RowLeading::Paint(&paint_face))
                 .leading_column(FACE)
-                // Only a row with Join gives its name the less room, and software, which is never
-                // waved at, keeps no room for Wave.
-                .trailing_width(self.row_trailing(row, place.join.area() > 0.0, theme))
+                // Software, which is never waved at, keeps no room for Wave.
+                .trailing_width(self.row_trailing(row, theme))
                 .interaction(interaction);
             face.paint(
                 &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
@@ -960,18 +918,6 @@ impl PeopleOverlay {
                         .role(ButtonRole::Plain)
                         .hovered(cursor.is_some_and(|p| place.wave.contains(p)))
                         .focused(self.keyboard_focus == Some(PeopleHit::Wave(place.index))),
-                );
-            }
-            if place.join.area() > 0.0 {
-                ui::widget::Button::paint(
-                    scene,
-                    scrolled,
-                    text,
-                    theme,
-                    &ButtonFace::new(place.join, &join_label)
-                        .role(ButtonRole::Plain)
-                        .hovered(cursor.is_some_and(|p| place.join.contains(p)))
-                        .focused(self.keyboard_focus == Some(PeopleHit::JoinCall(place.index))),
                 );
             }
             if place.follow.area() > 0.0 {
@@ -1125,7 +1071,6 @@ impl PeopleOverlay {
             PeopleHit::Follow(index) => id_of(index).map(|id| format!("follow:{id}")),
             PeopleHit::Unfollow(index) => id_of(index).map(|id| format!("unfollow:{id}")),
             PeopleHit::Wave(index) => id_of(index).map(|id| format!("wave:{id}")),
-            PeopleHit::JoinCall(index) => id_of(index).map(|id| format!("join:{id}")),
             PeopleHit::OpenTab(index) => id_of(index).map(|id| format!("work:{id}")),
             other => Some(format!("{other:?}")),
         }
@@ -1178,11 +1123,13 @@ impl PeopleOverlay {
     }
 
     pub fn needs_animation_frame(&self) -> bool {
-        self.scroll_theme.as_ref().is_some_and(|theme| {
-            self.scroll
-                .as_ref()
-                .is_some_and(|scroll| scroll.needs_animation_frame(theme))
-        })
+        let now = ui::motion::frame_now();
+        self.reveal.is_moving(now)
+            || self.scroll_theme.as_ref().is_some_and(|theme| {
+                self.scroll
+                    .as_ref()
+                    .is_some_and(|scroll| scroll.needs_animation_frame(theme))
+            })
     }
 
     pub fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -1366,11 +1313,6 @@ impl PeopleOverlay {
             .map(|row| row.id.as_str())
     }
 
-    /// The voice channel behind a painted Join button: the one the person at this row index is in.
-    pub fn join_target(&self, index: usize) -> Option<&VoiceChannel> {
-        self.shown_rows.get(index).and_then(|row| row.join.as_ref())
-    }
-
     /// Where a painted row's header stands, so a card about that person opens under it.
     pub fn row_rect(&self, index: usize) -> Option<Rect> {
         self.rows
@@ -1405,9 +1347,6 @@ impl PeopleOverlay {
             if place.wave.contains(point) {
                 return PeopleHit::Wave(place.index);
             }
-            if place.join.contains(point) {
-                return PeopleHit::JoinCall(place.index);
-            }
             if place.working_in.contains(point) {
                 return PeopleHit::OpenTab(place.index);
             }
@@ -1422,9 +1361,6 @@ impl PeopleOverlay {
             order.push(PeopleHit::Pin);
         }
         for place in &self.rows {
-            if place.join.area() > 0.0 {
-                order.push(PeopleHit::JoinCall(place.index));
-            }
             if place.wave.area() > 0.0 {
                 order.push(PeopleHit::Wave(place.index));
             }
@@ -1462,7 +1398,6 @@ impl PeopleOverlay {
                 place(index).map(|place| place.follow)
             }
             PeopleHit::Wave(index) => place(index).map(|place| place.wave),
-            PeopleHit::JoinCall(index) => place(index).map(|place| place.join),
             PeopleHit::OpenTab(index) => place(index).map(|place| place.working_in),
             PeopleHit::Absorb | PeopleHit::Dismiss => None,
         }
@@ -1579,10 +1514,6 @@ impl PeopleOverlay {
                     t("a11y-shell-follow-description"),
                 ),
                 PeopleHit::Wave(index) => (self.wave_name(index), t("a11y-shell-wave-description")),
-                PeopleHit::JoinCall(index) => (
-                    t_args("a11y-shell-join-call", &[("name", name_of(index).into())]),
-                    t("a11y-shell-join-call-description"),
-                ),
                 // The window software works in, by what it is called here.
                 PeopleHit::OpenTab(index) => (
                     self.working_in_name(index),
@@ -1735,11 +1666,11 @@ struct RowsPlan<'p> {
     labelled: bool,
 }
 
-/// The widths of a row's text buttons, each its label plus its padding: Follow (wide enough for either of its labels) and Join.
+/// The widths of a row's text buttons, each its label plus its padding: Follow (wide enough for
+/// either of its labels) and the changes link.
 #[derive(Clone, Copy)]
 struct ButtonWidths {
     follow: f64,
-    join: f64,
 }
 
 impl ButtonWidths {
@@ -1752,18 +1683,12 @@ impl ButtonWidths {
         ));
         Self {
             follow: follow + pad,
-            join: text_width(text, &t("people-panel-join"), theme) + pad,
         }
     }
 
-    /// The width a row's trailing slot keeps: Follow and Wave (a `control` square), and Join where any row has a call to join (`any_join`).
-    fn trailing(self, any_join: bool, control: f64) -> f64 {
-        let join = if any_join {
-            TRAILING_GAP + self.join
-        } else {
-            0.0
-        };
-        self.follow + TRAILING_GAP + control + join
+    /// The width a row's trailing slot keeps: Follow and Wave (a `control` square).
+    fn trailing(self, control: f64) -> f64 {
+        self.follow + TRAILING_GAP + control
     }
 }
 
