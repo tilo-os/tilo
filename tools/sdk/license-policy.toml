@@ -231,7 +231,6 @@ toolkit_reaches = [
     "tilo-sort",                        # crates/platform/tilo-sort
     "tilo-spellcheck",                  # crates/ui/spellcheck
     "tilo-startup-metrics",             # crates/core/tilo-startup-metrics
-    "tilo-surface-compile",             # crates/core/tilo-surface-compile
     "tilo-taffy",                       # vendor/taffy
     "tilo-test-env",                    # tools/test-env
     "tilo-theme-painter-wasm",          # crates/ui/theme-painter-wasm
