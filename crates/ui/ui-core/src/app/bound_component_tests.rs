@@ -2807,6 +2807,7 @@ fn deferred_input_stamp_survives_an_idle_retained_owner_model_pass() {
                 .app
                 .bindings
                 .binding_for(**node)
+                .map(|binding| crate::bound_dispatch::callback_binding_of(&*binding).clone())
                 .is_some_and(|binding| binding.same_component(&owner))
         })
         .unwrap();
@@ -2819,11 +2820,12 @@ fn deferred_input_stamp_survives_an_idle_retained_owner_model_pass() {
             .unwrap()
     };
     for _ in 0..2 {
-        let before = fixture
-            .app
-            .bindings
-            .document_edit_stamp(node, &fixture.app.state.doc)
-            .unwrap();
+        let before = crate::bound_dispatch::document_edit_stamp(
+            &fixture.app.bindings,
+            node,
+            &fixture.app.state.doc,
+        )
+        .unwrap();
         let document = canonical(&fixture);
         let admission = fixture
             .records
@@ -2854,11 +2856,12 @@ fn deferred_input_stamp_survives_an_idle_retained_owner_model_pass() {
             "exclusive callback admission must continue advancing independently"
         );
         assert!(
-            fixture
-                .app
-                .bindings
-                .document_edit_stamp(node, &fixture.app.state.doc)
-                .unwrap()
+            crate::bound_dispatch::document_edit_stamp(
+                &fixture.app.bindings,
+                node,
+                &fixture.app.state.doc
+            )
+            .unwrap()
                 == before,
             "idle admission bookkeeping must not cancel a deferred native insertion"
         );

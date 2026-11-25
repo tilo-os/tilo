@@ -65,7 +65,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
     root: *mut dyn crate::widget::Widget,
     nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
     order: impl IntoIterator<Item = taffy::NodeId>,
-    bindings: &crate::bound_dispatch::BoundNodeMap,
+    bindings: &crate::widget::bound_nodes::BoundNodeMap,
     author: &crate::permissions::MemberId,
 ) -> bool {
     let mut brackets = Vec::new();
@@ -73,7 +73,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
         // SAFETY: the host provides its live, exclusively owned root. This borrow
         // ends before any descendant pointer is admitted below.
         let root = unsafe { &mut *root };
-        if let Ok(_entry) = crate::bound_dispatch::enter_widget(root)
+        if let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root)
             && let Some(before) = crate::undo::take_committed_action(root)
         {
             brackets.push(before);
@@ -94,7 +94,9 @@ pub(crate) unsafe fn record_dispatched_action_bound(
         if !visited.insert(unsafe { crate::widget::node_sweep_identity(pointer) }) {
             continue;
         }
-        let binding = bindings.binding_for(node);
+        let binding = bindings
+            .binding_for(node)
+            .map(|binding| crate::bound_dispatch::callback_binding_of(&*binding).clone());
         // A closed scope is the node's own refusal: the visits below answer nothing for it.
         let _ = held.enter(binding.as_ref());
         if let Some(binding) = binding {
@@ -104,7 +106,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
             // SAFETY: the stable host topology supplies exclusive node access;
             // admission and lifetime are checked before the widget is reached.
             let taken = unsafe {
-                crate::bound_dispatch::mutate_bound_node(
+                crate::widget::bound_nodes::mutate_bound_node(
                     bindings,
                     nodes,
                     node,
@@ -120,7 +122,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
         } else {
             // SAFETY: each unique live node is visited only once this sweep.
             if let Ok(Some(before)) = unsafe {
-                crate::bound_dispatch::mutate_bound_node(bindings, nodes, node, |widget| {
+                crate::widget::bound_nodes::mutate_bound_node(bindings, nodes, node, |widget| {
                     crate::undo::take_committed_action(widget)
                 })
             } {

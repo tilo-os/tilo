@@ -95,7 +95,7 @@ pub(crate) fn capture_widget_view_bound(
     viewport: ViewRect,
 ) -> View {
     #[cfg(feature = "model")]
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root) else {
         return View {
             focus,
             viewport,
@@ -130,7 +130,7 @@ pub(crate) fn capture_focus(
 /// Restore `view`'s scroll and view mode onto `root`.
 pub(crate) fn restore_widget_view_bound(root: &mut dyn crate::widget::Widget, view: &View) {
     #[cfg(feature = "model")]
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root) else {
         return;
     };
     crate::view::capability::restore_view_state(
@@ -144,7 +144,7 @@ pub(crate) fn restore_widget_view_bound(root: &mut dyn crate::widget::Widget, vi
 
 /// The caller resolves the saved ordinal in its current component's focus order.
 pub(crate) fn restore_focus_state_bound(widget: &mut dyn crate::widget::Widget, focus: &FocusView) {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
         return;
     };
     if !focus.ephemeral.is_empty() {
@@ -155,7 +155,7 @@ pub(crate) fn restore_focus_state_bound(widget: &mut dyn crate::widget::Widget, 
 /// Prepared components have no runner node map yet.
 pub(crate) fn capture_tree_focus_bound(root: &dyn crate::widget::Widget) -> Option<FocusView> {
     fn visit(root: &dyn crate::widget::Widget, ordinal: &mut usize) -> Option<FocusView> {
-        let _entry = crate::bound_dispatch::enter_widget(root).ok()?;
+        let _entry = crate::widget::bound_nodes::enter_widget(root).ok()?;
         if root.is_focusable() && root.is_enabled() {
             let current = *ordinal;
             *ordinal = ordinal.saturating_add(1);
@@ -175,7 +175,7 @@ pub(crate) fn capture_tree_focus_bound(root: &dyn crate::widget::Widget) -> Opti
 
 pub(crate) fn restore_tree_focus_bound(root: &mut dyn crate::widget::Widget, focus: &FocusView) {
     fn visit(root: &mut dyn crate::widget::Widget, ordinal: &mut usize, focus: &FocusView) {
-        let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
+        let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root) else {
             return;
         };
         if root.is_focusable() && root.is_enabled() {
@@ -192,7 +192,7 @@ pub(crate) fn restore_tree_focus_bound(root: &mut dyn crate::widget::Widget, foc
     }
     // An ordinal absent from the current tree must leave existing focus alone.
     fn count(root: &dyn crate::widget::Widget) -> usize {
-        let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
+        let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root) else {
             return 0;
         };
         root.children().iter().fold(

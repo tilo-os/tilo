@@ -463,7 +463,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
         cycle: &[Color; 3],
         label_ground: Color,
     ) {
-        let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+        let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
             return;
         };
         let rect = widget.get_rect();

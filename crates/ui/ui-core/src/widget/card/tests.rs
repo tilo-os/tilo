@@ -102,7 +102,7 @@ fn lay_out_grid(mut g: CardGrid, w: f64, h: f64) -> CardGrid {
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let mut tr = TextRenderer::new();
     let node = g.build_layout(&mut taffy, &theme, &mut map);
-    let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
     unsafe {
         bindings.rebuild(&g, &taffy, node, &map);
     }

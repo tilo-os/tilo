@@ -427,7 +427,7 @@ pub(crate) fn fullscreen_request_decision(requested: bool, want: Option<bool>) -
 
 #[cfg(feature = "native")]
 fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceIntent> {
-    let _entry = crate::bound_dispatch::enter_widget(w).ok()?;
+    let _entry = crate::widget::bound_nodes::enter_widget(w).ok()?;
     if let Some(intent) = w.appearance_intent() {
         return Some(intent);
     }
@@ -536,7 +536,7 @@ pub struct App {
     palette_source: PaletteSource,
     watch_system_settings: bool,
     layout: LayoutRuntime,
-    bindings: crate::bound_dispatch::BoundNodeMap,
+    bindings: crate::widget::bound_nodes::BoundNodeMap,
     #[cfg(feature = "model")]
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     close_admission: crate::close_admission::Admission,
@@ -2455,7 +2455,7 @@ impl App {
         let mut name = None;
         // SAFETY: the caller owns this tree; nothing borrows the widget.
         let _ = unsafe {
-            crate::bound_dispatch::inspect_bound_node(
+            crate::widget::bound_nodes::inspect_bound_node(
                 &self.bindings,
                 &self.layout.node_map,
                 node,
@@ -2469,7 +2469,7 @@ impl App {
         let mut answers = false;
         // SAFETY: the caller owns this tree; nothing borrows the widget.
         let _ = unsafe {
-            crate::bound_dispatch::inspect_bound_node(
+            crate::widget::bound_nodes::inspect_bound_node(
                 &self.bindings,
                 &self.layout.node_map,
                 node,

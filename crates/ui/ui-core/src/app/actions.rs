@@ -160,10 +160,11 @@ impl App {
         controls: &std::collections::HashMap<String, u64>,
         mut resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
-        let Some(binding) = controls
-            .get(resource.id.as_str())
-            .and_then(|node| self.bindings.binding_ref(taffy::NodeId::from(*node)))
-        else {
+        let Some(binding) = controls.get(resource.id.as_str()).and_then(|node| {
+            self.bindings
+                .binding_ref(taffy::NodeId::from(*node))
+                .map(|binding| crate::bound_dispatch::callback_binding_of(&**binding))
+        }) else {
             return Some(resource);
         };
         let permissions = binding.permissions.borrow();

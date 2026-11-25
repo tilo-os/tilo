@@ -5,6 +5,7 @@ use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::{AppKind, AppWidget};
+use crate::widget::component_walk::ComponentBoundary;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     AudiencePresentationProvider, AudiencePresentationWidgetExt, CompleteContentWidgetExt as _,
@@ -550,7 +551,7 @@ impl TileHost {
         &mut self,
         invocation: tilo_actions::ControlInvocation,
     ) -> Result<(), tilo_actions::ControlInvocation> {
-        let Some(binding) = self.callback_binding() else {
+        let Some(binding) = crate::bound_dispatch::callback_binding(self) else {
             return self.run_in_own_document(invocation);
         };
         let Ok(_entry) = binding.enter() else {
@@ -933,7 +934,7 @@ impl TileHost {
         if self.resource_error.is_some() || !self.owner_lifetime.active.get() {
             return None;
         }
-        crate::bound_dispatch::BoundWidget::callback_binding(self)
+        crate::bound_dispatch::callback_binding(self)
     }
 
     /// Stand where this tile stands from now on: `next`, built for the same
@@ -1508,6 +1509,7 @@ impl Widget for TileHost {
         dyn crate::component_lifecycle::ComponentLifecycle,
         dyn crate::widget::ResourceOperations,
         dyn crate::bound_dispatch::BoundWidget,
+        dyn crate::widget::component_walk::ComponentBoundary,
         dyn crate::bound_dispatch::BoundTraversal
     );
 
@@ -2169,10 +2171,12 @@ impl crate::bound_dispatch::BoundWidget for TileHost {
         self.owner_binding()
             .map(crate::history_mode::HistoryOwner::component)
     }
+}
 
-    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+impl crate::widget::component_walk::ComponentBoundary for TileHost {
+    fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
         match &self.content {
-            TileContent::App(widget) => crate::bound_dispatch::callback_binding(widget.as_ref()),
+            TileContent::App(widget) => crate::widget::component_walk::binding_of(widget.as_ref()),
             _ => None,
         }
     }
@@ -2231,7 +2235,7 @@ impl crate::widget::ResourceOperations for TileHost {
         if matches!(
             started,
             Some(crate::widget::ResourceOperationStart::Accepted)
-        ) && self.callback_binding().is_some()
+        ) && self.component_scope().is_some()
         {
             self.component_invocations.insert(op.invocation());
         }

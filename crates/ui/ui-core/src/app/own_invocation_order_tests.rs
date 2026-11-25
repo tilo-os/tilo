@@ -32,6 +32,8 @@ impl crate::widget::Decorator for KeepsBeside {
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn crate::bound_dispatch::BoundWidget>() {
             request.provide::<dyn crate::bound_dispatch::BoundWidget>(self);
+        } else if request.wants::<dyn crate::widget::component_walk::ComponentBoundary>() {
+            request.provide::<dyn crate::widget::component_walk::ComponentBoundary>(self);
         } else if request.wants::<dyn crate::widget::decorator::Decorated>() {
             request.provide::<dyn crate::widget::decorator::Decorated>(self);
         } else {
@@ -40,10 +42,13 @@ impl crate::widget::Decorator for KeepsBeside {
     }
 }
 
-impl crate::bound_dispatch::BoundWidget for KeepsBeside {
-    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
-        crate::bound_dispatch::callback_binding(self.content.as_ref())
+impl crate::widget::component_walk::ComponentBoundary for KeepsBeside {
+    fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
+        crate::widget::component_walk::binding_of(self.content.as_ref())
     }
+}
+
+impl crate::bound_dispatch::BoundWidget for KeepsBeside {
     fn resource_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
         let mut owners = crate::bound_dispatch::resource_owners(self.content.as_ref());
         owners.push(self.owner.clone());

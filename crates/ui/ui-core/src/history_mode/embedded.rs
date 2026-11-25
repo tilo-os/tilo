@@ -5,7 +5,7 @@
     reason = "private implementation module shares its enclosing host types"
 )]
 use super::*;
-use crate::{bound_dispatch::BoundNodeMap, widget::Widget};
+use crate::{widget::Widget, widget::bound_nodes::BoundNodeMap};
 use std::collections::{HashMap, HashSet};
 use taffy::{NodeId, TaffyTree};
 use winit::event::{ElementState, WindowEvent};
@@ -333,14 +333,17 @@ pub(crate) unsafe fn move_focus(
         for &node in nodes.keys() {
             if Some(node) != target
                 && unsafe {
-                    crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                        widget.is_focused()
-                    })
+                    crate::widget::bound_nodes::inspect_bound_node(
+                        bindings,
+                        nodes,
+                        node,
+                        |widget| widget.is_focused(),
+                    )
                 }
                 .unwrap_or(false)
             {
                 let _ = unsafe {
-                    crate::bound_dispatch::mutate_bound_node(bindings, nodes, node, |widget| {
+                    crate::widget::bound_nodes::mutate_bound_node(bindings, nodes, node, |widget| {
                         widget.set_focus(false);
                     })
                 };

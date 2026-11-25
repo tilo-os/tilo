@@ -1070,7 +1070,7 @@ impl DocumentViewport {
                 reason = "narrowing content-space layout dimensions for taffy; never near f32::MAX"
             )]
             let (w, h) = (cw as f32, ch as f32);
-            let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+            let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
             // SAFETY: `child`, `taffy` and `nodes` come from the build above
             // and stay exclusively borrowed until layout has been applied.
             unsafe {

@@ -149,7 +149,7 @@ fn lay_out(g: &mut WindowGroup, theme: &Theme) {
             height: taffy::AvailableSpace::Definite(f32_of_f64(H - TOP)),
         };
         let mut text = TextRenderer::new();
-        let mut bindings = crate::bound_dispatch::BoundNodeMap::default();
+        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::default();
         // SAFETY: `map` describes the tree just built from `g`, which this
         // function holds exclusively.
         unsafe {

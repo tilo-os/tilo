@@ -506,7 +506,7 @@ fn solve(widget: &mut dyn Widget, width: f32, theme: &Theme) {
     let mut tree = TaffyTree::new();
     let mut nodes = HashMap::new();
     let node = widget.build_layout(&mut tree, theme, &mut nodes);
-    let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
     let mut text = crate::font_catalog::fixture_renderer();
     // SAFETY: exact live, exclusively owned widget tree and matching maps.
     unsafe {

@@ -864,11 +864,12 @@ impl Widget for EmbeddedApp {
             .app
             .inspect_node(node, |widget| widget.ime_edit_fingerprint(key))
             .ok()??;
-        let document = self
-            .app
-            .bindings
-            .document_edit_stamp(node, &self.app.state.doc)
-            .ok()?;
+        let document = crate::bound_dispatch::document_edit_stamp(
+            &self.app.bindings,
+            node,
+            &self.app.state.doc,
+        )
+        .ok()?;
         Some(document.bind_fingerprint(node, field, key))
     }
 

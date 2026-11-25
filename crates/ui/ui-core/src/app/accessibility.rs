@@ -628,12 +628,15 @@ impl App {
             if !visited.insert(unsafe { crate::widget::node_sweep_identity(*pointer) }) {
                 continue;
             }
-            let binding = self.bindings.binding_for(node);
+            let binding = self
+                .bindings
+                .binding_for(node)
+                .map(|binding| crate::bound_dispatch::callback_binding_of(&*binding).clone());
             // A closed scope is the node's own refusal: the visits below answer nothing for it.
             let _ = held.enter(binding.as_ref());
             // SAFETY: no target reference escapes and this layout is unchanged.
             let control = unsafe {
-                crate::bound_dispatch::mutate_bound_node(
+                crate::widget::bound_nodes::mutate_bound_node(
                     &self.bindings,
                     &self.layout.node_map,
                     node,
@@ -707,7 +710,7 @@ impl App {
             };
             // SAFETY: the same unique admitted node remains live and exclusive.
             let _ = unsafe {
-                crate::bound_dispatch::mutate_bound_node(
+                crate::widget::bound_nodes::mutate_bound_node(
                     &self.bindings,
                     &self.layout.node_map,
                     node,
@@ -740,13 +743,16 @@ impl App {
         // same scope.
         let mut held = crate::bound_dispatch::HeldScope::default();
         for &node in self.layout.node_map.keys() {
-            let binding = self.bindings.binding_ref(node);
+            let binding = self
+                .bindings
+                .binding_ref(node)
+                .map(|binding| crate::bound_dispatch::callback_binding_of(&**binding));
             sweep.any_unbound |= binding.is_none();
             let _ = held.enter(binding);
             // SAFETY: the admitted layout is unchanged and nothing escapes.
             let takes_part = self.bindings.has_owner(node)
                 || unsafe {
-                    crate::bound_dispatch::inspect_bound_node(
+                    crate::widget::bound_nodes::inspect_bound_node(
                         &self.bindings,
                         &self.layout.node_map,
                         node,

@@ -38,7 +38,7 @@ impl Driver {
     #[must_use]
     pub fn pending_visual_work(&self) -> Vec<String> {
         fn visit(widget: &dyn Widget, path: &mut Vec<String>, out: &mut Vec<String>) {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+            let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
                 return;
             };
             if !widget.has_pending_visual_work() {

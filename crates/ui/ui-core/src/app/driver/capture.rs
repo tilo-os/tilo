@@ -379,6 +379,7 @@ impl Driver {
         self.app
             .bindings
             .binding_for(node)
+            .map(|binding| crate::bound_dispatch::callback_binding_of(&*binding).clone())
             .map(|binding| binding.instance_id)
     }
 }

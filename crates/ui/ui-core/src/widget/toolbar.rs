@@ -2719,7 +2719,7 @@ mod lifecycle_tests {
             height: Dimension::length(height),
         };
         tree.set_style(node, style).unwrap();
-        let mut bindings = crate::bound_dispatch::BoundNodeMap::default();
+        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::default();
         unsafe {
             bindings.rebuild(tb, &tree, node, &nodes);
             crate::widget::layout::compute_widget_layout(
@@ -3157,7 +3157,7 @@ mod lifecycle_tests {
                         tree.set_style(*child, style).unwrap();
                     }
                     let mut text = TextRenderer::new();
-                    let mut bindings = crate::bound_dispatch::BoundNodeMap::default();
+                    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::default();
                     unsafe {
                         bindings.rebuild(&host, &tree, node, &nodes);
                         crate::widget::compute_widget_layout(

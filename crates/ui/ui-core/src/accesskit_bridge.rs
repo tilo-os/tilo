@@ -408,7 +408,7 @@ fn search_synthetic_routed<const BOUND: bool>(
     wanted: AkNodeId,
     route: Option<ChildRoute>,
 ) -> Option<A11yTarget> {
-    let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_traversal::<BOUND>(w) else {
         return None;
     };
     let taffy = ptr_to_taffy.get(w);
@@ -538,7 +538,7 @@ fn reverse_node_map<S: BuildHasher, const BOUND: bool>(
         seen: &mut std::collections::HashSet<*const ()>,
         aliases: &mut std::collections::HashSet<*const ()>,
     ) {
-        let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(widget) else {
+        let Ok(_entry) = crate::widget::bound_nodes::enter_traversal::<BOUND>(widget) else {
             return;
         };
         let address = std::ptr::from_ref(widget).cast::<()>();

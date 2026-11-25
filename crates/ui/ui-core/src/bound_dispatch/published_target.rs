@@ -20,7 +20,7 @@ pub(super) fn resolve_published_action(
     binding: &CallbackBinding,
     address: &tilo_actions::ActionAddress,
 ) -> Option<ResourceSpec> {
-    if crate::bound_dispatch::has_separate_document_owner(widget) {
+    if crate::widget::component_walk::has_separate_document_owner(widget) {
         return None;
     }
     let forest = crate::widget::resources::shared_resources(widget, doc);

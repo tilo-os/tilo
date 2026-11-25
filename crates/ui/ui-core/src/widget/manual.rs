@@ -2,7 +2,7 @@
 use super::composition_parts::{Parts, retained_parts};
 use super::layout_info::ManualLayout;
 use super::{Element, LayoutInfo, Widget, WidgetLayoutError};
-use crate::{Theme, bound_dispatch::BoundNodeMap, text_render::TextRenderer};
+use crate::{Theme, text_render::TextRenderer, widget::bound_nodes::BoundNodeMap};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};

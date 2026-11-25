@@ -360,7 +360,7 @@ struct Laid {
     taffy: TaffyTree<()>,
     node: NodeId,
     node_map: HashMap<NodeId, *mut dyn Widget>,
-    bindings: ui::bound_dispatch::BoundNodeMap,
+    bindings: ui::widget::bound_nodes::BoundNodeMap,
     text: TextRenderer,
     viewport: (f32, f32),
 }
@@ -375,7 +375,7 @@ impl Laid {
                 taffy: TaffyTree::new(),
                 node: NodeId::from(0usize),
                 node_map: HashMap::new(),
-                bindings: ui::bound_dispatch::BoundNodeMap::new(),
+                bindings: ui::widget::bound_nodes::BoundNodeMap::new(),
                 text,
                 viewport,
             };

@@ -322,7 +322,7 @@ impl HistoryRegistration {
             root: &dyn Widget,
             actual: &mut Vec<super::HistoryOwner>,
         ) -> Result<(), HistoryRegistrationError> {
-            if crate::bound_dispatch::has_separate_document_owner(root) {
+            if crate::widget::component_walk::has_separate_document_owner(root) {
                 let owner = crate::bound_dispatch::history_owner(root)
                     .ok_or(HistoryRegistrationError::UnsupportedOwner)?;
                 owner.validate()?;

@@ -1082,7 +1082,7 @@ impl HistoryHost {
         &mut self,
         focus: Option<NodeId>,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
-        bindings: &crate::bound_dispatch::BoundNodeMap,
+        bindings: &crate::widget::bound_nodes::BoundNodeMap,
         tree: &TaffyTree<()>,
     ) {
         if self.saved_focus.is_none() && focus.is_some_and(|node| !self.owns_node(node, tree)) {
@@ -1093,7 +1093,7 @@ impl HistoryHost {
     pub(crate) unsafe fn restore_focus(
         &mut self,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
-        bindings: &crate::bound_dispatch::BoundNodeMap,
+        bindings: &crate::widget::bound_nodes::BoundNodeMap,
     ) -> Option<NodeId> {
         if !self.returning_live {
             return None;

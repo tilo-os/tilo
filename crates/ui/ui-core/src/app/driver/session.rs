@@ -205,7 +205,7 @@ impl Driver {
     #[must_use]
     pub fn layout_measure_requesters(&self) -> Vec<String> {
         fn visit(widget: &dyn Widget, path: &mut Vec<String>, out: &mut Vec<String>) {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+            let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
                 return;
             };
             if !widget.layout_needs_measure() {
@@ -381,7 +381,7 @@ fn index_widgets<'a>(
     path: String,
     out: &mut HashMap<usize, Vec<(String, &'a dyn Widget)>>,
 ) {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
         return;
     };
     let mut child_counts = HashMap::new();
@@ -561,7 +561,7 @@ impl<'a> Walk<'a> {
         };
         let widget: &dyn Widget = *widget;
         self.placed.borrow_mut().insert(address(widget));
-        let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+        let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
             return Composed::new(path.clone(), "ClosedComponent", [x, y, size.0, size.1]);
         };
         let rect = widget.get_rect();

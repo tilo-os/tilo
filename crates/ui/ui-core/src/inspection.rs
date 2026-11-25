@@ -255,7 +255,7 @@ fn collect_targets_called(
     sibling_counts: &mut HashMap<String, usize>,
     out: &mut HashMap<String, Rect>,
 ) {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(w) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(w) else {
         return;
     };
     if w.accessibility_hidden() {
@@ -347,7 +347,7 @@ fn collect_named_targets_called(
     sibling_counts: &mut HashMap<String, usize>,
     out: &mut Vec<RetainedNamedTarget>,
 ) {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
         return;
     };
     let (name, path, my_index) =
@@ -402,7 +402,7 @@ fn collect_inspection_called(
     sibling_counts: &mut HashMap<String, usize>,
     slot: Option<(&dyn Widget, usize)>,
 ) -> InspectionNode {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
         return InspectionNode {
             path: parent_path.into(),
             widget: "ClosedComponent".into(),

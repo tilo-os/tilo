@@ -17,7 +17,7 @@ pub(super) fn targets_under(
     point: Point,
     out: &mut Vec<(Rect, String, TooltipSide)>,
 ) {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
         return;
     };
     out.extend(crate::widget::tooltip::placed_target_at(widget, point));

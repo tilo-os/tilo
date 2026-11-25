@@ -10,8 +10,8 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{Modifiers, WindowEvent};
 
 use super::Widget;
-use crate::bound_dispatch::BoundNodeMap;
 use crate::widget::DrawChild;
+use crate::widget::bound_nodes::BoundNodeMap;
 use crate::{Theme, text_render::TextRenderer};
 
 /// A widget laid out and driven by the widget that owns it.

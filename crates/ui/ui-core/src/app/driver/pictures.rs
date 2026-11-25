@@ -91,7 +91,7 @@ impl Driver {
         // SAFETY: the driver owns the app's laid-out tree and holds it exclusively here; no
         // reference into it outlives the call.
         unsafe {
-            crate::bound_dispatch::mutate_bound_node(
+            crate::widget::bound_nodes::mutate_bound_node(
                 &app.bindings,
                 &app.layout.node_map,
                 node,

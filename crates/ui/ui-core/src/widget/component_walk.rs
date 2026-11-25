@@ -1,124 +1,162 @@
 //! How a walk of a widget tree crosses the components it hosts: entering a
 //! component's scope before calling into its widgets.
 //!
-//! A component is an app's record owner, which only Tilo's model has: without
-//! the `model` feature a tree hosts no components, every widget answers to
-//! the window, and a walk reads the document as it is.
+//! A component is an app's record owner. The toolkit knows it only as the
+//! [`ComponentScope`] a widget standing for it answers ([`ComponentBoundary`]);
+//! the app layer implements both. A tree no such widget is in hosts no
+//! components: every widget answers to the window.
 
 use super::Widget;
+use super::capability::capability;
+use std::rc::Rc;
+
+/// Why a walk could not reach a node, or enter the component it belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalkError {
+    /// The node is not admitted, was replaced, or is inactive.
+    MissingNode,
+    /// The component has closed.
+    ClosedLifetime,
+    /// Entering the component would reach another record while one is open.
+    CrossResourceReentry,
+}
+
+/// A component a widget tree hosts, as a walk crosses it.
+pub trait ComponentScope: std::any::Any {
+    /// Enter this component's scope for the calls about to run, held until the
+    /// entry drops.
+    ///
+    /// # Errors
+    /// When the component has closed, or another record is open.
+    fn enter(&self) -> Result<ScopeEntry, WalkError>;
+
+    /// Whether entering `other` sets exactly what entering `self` sets.
+    fn enters_same_scope(&self, other: &dyn ComponentScope) -> bool;
+
+    /// Whether `other` is the same component.
+    fn same_component(&self, other: &dyn ComponentScope) -> bool;
+
+    /// Whether the component can be entered now, without entering it.
+    ///
+    /// # Errors
+    /// As [`Self::enter`].
+    fn check_open(&self) -> Result<(), WalkError>;
+
+    /// Input reached the component outside its passes: it counts the input as
+    /// the person's.
+    fn note_input(&self);
+}
+
+/// What entering a component holds until it drops: the slot its scope stands
+/// in, which `leave` releases.
+pub struct ScopeEntry(Option<(fn(usize), usize)>);
+
+impl ScopeEntry {
+    /// An entry into a scope this thread holds already: dropping it releases
+    /// nothing.
+    #[must_use]
+    pub fn held() -> Self {
+        Self(None)
+    }
+
+    /// An entry that `leave(slot)` releases when it drops.
+    #[must_use]
+    pub fn opened(leave: fn(usize), slot: usize) -> Self {
+        Self(Some((leave, slot)))
+    }
+}
+
+impl Drop for ScopeEntry {
+    fn drop(&mut self) {
+        if let Some((leave, slot)) = self.0.take() {
+            leave(slot);
+        }
+    }
+}
+
+/// What a widget standing for a component answers, as a capability
+/// ([`capability`]).
+pub trait ComponentBoundary {
+    /// The component this widget's descendants belong to, if it hosts one.
+    fn component_scope(&self) -> Option<Rc<dyn ComponentScope>>;
+
+    /// Whether this widget introduces a document owner distinct from the
+    /// runner's outer State.
+    fn has_separate_document_owner(&self) -> bool {
+        self.component_scope().is_some()
+    }
+}
 
 /// The component a widget belongs to, as a walk hands it down to the
 /// widget's children.
-#[cfg(feature = "model")]
-pub(crate) type Binding = crate::bound_dispatch::CallbackBinding;
-
-/// Without the model no widget belongs to a component, so no binding exists.
-#[cfg(not(feature = "model"))]
-#[derive(Clone)]
-pub(crate) enum Binding {}
+pub type Binding = Rc<dyn ComponentScope>;
 
 /// The component `widget` hosts, if it is a component's boundary.
-#[cfg(feature = "model")]
-pub(crate) fn binding_of<W: Widget + ?Sized>(widget: &W) -> Option<Binding> {
-    crate::bound_dispatch::callback_binding(widget)
-}
-
-#[cfg(not(feature = "model"))]
-pub(crate) fn binding_of<W: Widget + ?Sized>(_widget: &W) -> Option<Binding> {
-    None
+pub fn binding_of<W: Widget + ?Sized>(widget: &W) -> Option<Binding> {
+    capability::<dyn ComponentBoundary>(widget).and_then(ComponentBoundary::component_scope)
 }
 
 /// Whether `widget` owns a document apart from the window's: a component
 /// boundary, or a widget that stands for one.
-#[cfg(feature = "model")]
-pub(crate) fn has_separate_document_owner<W: Widget + ?Sized>(widget: &W) -> bool {
-    crate::bound_dispatch::has_separate_document_owner(widget)
-}
-
-#[cfg(not(feature = "model"))]
-pub(crate) fn has_separate_document_owner<W: Widget + ?Sized>(_widget: &W) -> bool {
-    false
+pub fn has_separate_document_owner<W: Widget + ?Sized>(widget: &W) -> bool {
+    capability::<dyn ComponentBoundary>(widget)
+        .is_some_and(ComponentBoundary::has_separate_document_owner)
 }
 
 /// The scope of a component a walk is inside, held while the answer is.
-#[cfg(feature = "model")]
-pub(crate) struct Entry(
-    #[expect(dead_code, reason = "held for its drop")]
-    Option<crate::bound_dispatch::CallbackScopeGuard>,
-);
-
-#[cfg(not(feature = "model"))]
-pub(crate) struct Entry;
+pub(crate) struct Entry(#[expect(dead_code, reason = "held for its drop")] Option<ScopeEntry>);
 
 /// Enter `binding`'s component for the calls about to run. `None` when the
 /// component has closed, so the walk leaves its widgets alone.
-#[cfg(feature = "model")]
 pub(crate) fn enter(binding: Option<&Binding>) -> Option<Entry> {
-    binding.map(Binding::enter).transpose().ok().map(Entry)
-}
-
-#[cfg(not(feature = "model"))]
-pub(crate) fn enter(binding: Option<&Binding>) -> Option<Entry> {
-    match binding {
-        Some(binding) => match *binding {},
-        None => Some(Entry),
-    }
+    binding
+        .map(|binding| binding.enter())
+        .transpose()
+        .ok()
+        .map(Entry)
 }
 
 /// The component the walk is in at node `node` of `bindings`' tree.
-#[cfg(feature = "model")]
 pub(crate) fn node_binding(
-    bindings: &crate::bound_dispatch::BoundNodeMap,
+    bindings: &super::bound_nodes::BoundNodeMap,
     node: taffy::NodeId,
 ) -> Option<Binding> {
     bindings.binding_for(node)
 }
 
-#[cfg(not(feature = "model"))]
-pub(crate) fn node_binding(
-    _bindings: &crate::bound_dispatch::BoundNodeMap,
-    _node: taffy::NodeId,
-) -> Option<Binding> {
-    None
-}
-
-#[cfg(not(feature = "model"))]
-impl Binding {
-    /// Whether `self` and `other` are the same component.
-    pub(crate) fn same_component(&self, _other: &Self) -> bool {
-        match *self {}
-    }
-}
-
 /// Note that input reached node `node`: its component then counts it as the person's.
-#[cfg(feature = "model")]
-pub(crate) fn note_input(bindings: &crate::bound_dispatch::BoundNodeMap, node: taffy::NodeId) {
+pub(crate) fn note_input(bindings: &super::bound_nodes::BoundNodeMap, node: taffy::NodeId) {
     if let Some(binding) = bindings.binding_ref(node) {
         binding.note_input();
     }
 }
 
-#[cfg(not(feature = "model"))]
-pub(crate) fn note_input(_bindings: &crate::bound_dispatch::BoundNodeMap, _node: taffy::NodeId) {}
-
 /// One component scope a walk holds across every node it asks, entered again
 /// only when the walk reaches another component.
-#[cfg(feature = "model")]
-pub(crate) type HeldScope = crate::bound_dispatch::HeldScope;
-
-#[cfg(not(feature = "model"))]
 #[derive(Default)]
-pub(crate) struct HeldScope;
+pub(crate) struct HeldScope {
+    held: Option<(Binding, ScopeEntry)>,
+}
 
-#[cfg(not(feature = "model"))]
 impl HeldScope {
-    pub(crate) fn enter(
-        &mut self,
-        binding: Option<&Binding>,
-    ) -> Result<(), std::convert::Infallible> {
-        match binding {
-            Some(binding) => match *binding {},
-            None => Ok(()),
+    /// Enter `binding`'s scope for the visit about to run, unless it is the one this walk holds.
+    ///
+    /// # Errors
+    /// As [`ComponentScope::enter`].
+    pub(crate) fn enter(&mut self, binding: Option<&Binding>) -> Result<(), WalkError> {
+        let Some(binding) = binding else {
+            self.held = None;
+            return Ok(());
+        };
+        if let Some((held, _)) = &self.held
+            && held.enters_same_scope(&**binding)
+        {
+            binding.check_open()?;
+            return Ok(());
         }
+        self.held = None;
+        let entry = binding.enter()?;
+        self.held = Some((Rc::clone(binding), entry));
+        Ok(())
     }
 }

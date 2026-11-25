@@ -852,7 +852,7 @@ fn lay_out(host: &mut TileHost, theme: &Theme, text: &mut TextRenderer) -> bool 
         width: taffy::AvailableSpace::Definite(VIEW.0 as f32),
         height: taffy::AvailableSpace::Definite(VIEW.1 as f32),
     };
-    let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
     // SAFETY: the arena and node map were just built from `host` alone, which stays in place and
     // unaliased for both calls.
     let solved = unsafe {

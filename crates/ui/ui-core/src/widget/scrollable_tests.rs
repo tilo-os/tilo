@@ -680,7 +680,7 @@ tilo_test_env::scenario! {
         let mut nodes = HashMap::new();
         let mut text = TextRenderer::new();
         let node = scroll.build_layout(&mut taffy, &theme, &mut nodes);
-        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
         // SAFETY: the boxed tree owns this exact stable node map.
         unsafe { bindings.rebuild(scroll.as_ref(), &taffy, node, &nodes) };
         let child_node = scroll.child_node;
@@ -2025,7 +2025,7 @@ fn host_solve(root: &mut dyn Widget, width: f32, height: f32) {
     let mut tree = TaffyTree::<()>::new();
     let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = root.build_layout(&mut tree, &theme, &mut nodes);
-    let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
     let mut text = crate::font_catalog::fixture_renderer();
     // SAFETY: exact live, exclusively owned widget tree and matching maps.
     unsafe {

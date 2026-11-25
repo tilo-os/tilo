@@ -397,7 +397,7 @@ mod tests {
         let theme = Theme::dark();
         let node = d.build_layout(&mut taffy, &theme, &mut node_map);
         let mut text = TextRenderer::new();
-        let mut bindings = crate::bound_dispatch::BoundNodeMap::default();
+        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::default();
         // SAFETY: `node_map` describes the tree just built from `d`.
         unsafe {
             bindings.rebuild(&d, &taffy, node, &node_map);

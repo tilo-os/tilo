@@ -123,7 +123,7 @@ fn layout_fit_host(
         style.align_items = Some(alignment);
     }
     tree.set_style(root, style).unwrap();
-    let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
     unsafe {
         bindings.rebuild(host, &tree, root, &map);
         crate::widget::compute_widget_layout(

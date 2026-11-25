@@ -1,7 +1,8 @@
 //! Controlled callback routing fixtures: in-memory widgets, explicit persistence only.
 use automerge::ROOT;
 use std::collections::HashMap;
-use tilo_ui::bound_dispatch::{BoundDispatchError, BoundNodeMap, invoke_bound_node};
+use tilo_ui::bound_dispatch::{BoundDispatchError, invoke_bound_node};
+use tilo_ui::widget::bound_nodes::BoundNodeMap;
 use tilo_ui::widget::{AppModel, ModelPath};
 use tilo_ui::widget::{Button, Widget};
 

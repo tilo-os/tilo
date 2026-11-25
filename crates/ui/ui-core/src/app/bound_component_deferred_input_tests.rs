@@ -20,20 +20,18 @@ tilo_test_env::scenario! {
                     .app
                     .bindings
                     .binding_for(**node)
+            .map(|binding| crate::bound_dispatch::callback_binding_of(&*binding).clone())
                     .is_some_and(|binding| binding.same_component(&owner))
             })
             .unwrap();
         owner
             .with_settlement(&mut fixture.app.state.doc, |doc, _| {
                 assert!(
-                    fixture.app.bindings.document_edit_stamp(node, doc).is_ok(),
+                    crate::bound_dispatch::document_edit_stamp(&fixture.app.bindings, node, doc).is_ok(),
                     "an active read needs the explicit canonical document observation"
                 );
                 assert!(
-                    fixture
-                        .app
-                        .bindings
-                        .document_edit_stamp(node, &automerge::AutoCommit::new())
+                    crate::bound_dispatch::document_edit_stamp(&fixture.app.bindings, node, &automerge::AutoCommit::new())
                         .is_err(),
                     "a host or unrelated document cannot stand in for an active canonical loan"
                 );
@@ -43,10 +41,7 @@ tilo_test_env::scenario! {
             .records
             .with_history(&owner.checkout.id, |_, _| {
                 assert!(
-                    fixture
-                        .app
-                        .bindings
-                        .document_edit_stamp(node, &fixture.app.state.doc)
+                    crate::bound_dispatch::document_edit_stamp(&fixture.app.bindings, node, &fixture.app.state.doc)
                         .is_err(),
                     "a borrowed parked record cannot issue a stamp"
                 );
@@ -59,10 +54,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
         assert!(
-            fixture
-                .app
-                .bindings
-                .document_edit_stamp(node, &fixture.app.state.doc)
+            crate::bound_dispatch::document_edit_stamp(&fixture.app.bindings, node, &fixture.app.state.doc)
                 .is_err(),
             "an exhausted admission counter must fail closed even though its value is not hashed"
         );
@@ -82,19 +74,14 @@ tilo_test_env::scenario! {
                     .app
                     .bindings
                     .binding_for(**node)
+            .map(|binding| crate::bound_dispatch::callback_binding_of(&*binding).clone())
                     .is_some_and(|binding| binding.same_component(&owner))
             })
             .unwrap();
         let pending = fixture.app.state.doc.pending_ops();
-        let before = fixture
-            .app
-            .bindings
-            .document_edit_stamp(node, &fixture.app.state.doc)
+        let before = crate::bound_dispatch::document_edit_stamp(&fixture.app.bindings, node, &fixture.app.state.doc)
             .unwrap();
-        let repeated = fixture
-            .app
-            .bindings
-            .document_edit_stamp(node, &fixture.app.state.doc)
+        let repeated = crate::bound_dispatch::document_edit_stamp(&fixture.app.bindings, node, &fixture.app.state.doc)
             .unwrap();
         assert!(before == repeated);
         assert_eq!(
@@ -107,10 +94,7 @@ tilo_test_env::scenario! {
                 doc.put(ROOT, "dictation-guard", "edit").unwrap();
             })
             .unwrap();
-        let edited = fixture
-            .app
-            .bindings
-            .document_edit_stamp(node, &fixture.app.state.doc)
+        let edited = crate::bound_dispatch::document_edit_stamp(&fixture.app.bindings, node, &fixture.app.state.doc)
             .unwrap();
         assert!(edited != before);
         owner
@@ -118,10 +102,7 @@ tilo_test_env::scenario! {
                 doc.delete(ROOT, "dictation-guard").unwrap();
             })
             .unwrap();
-        let reverted = fixture
-            .app
-            .bindings
-            .document_edit_stamp(node, &fixture.app.state.doc)
+        let reverted = crate::bound_dispatch::document_edit_stamp(&fixture.app.bindings, node, &fixture.app.state.doc)
             .unwrap();
         assert!(
             reverted != edited && reverted != before,
@@ -129,10 +110,7 @@ tilo_test_env::scenario! {
         );
         owner.closing.set(true);
         assert!(
-            fixture
-                .app
-                .bindings
-                .document_edit_stamp(node, &fixture.app.state.doc)
+            crate::bound_dispatch::document_edit_stamp(&fixture.app.bindings, node, &fixture.app.state.doc)
                 .is_err(),
             "a retired owner cannot issue a live stamp"
         );

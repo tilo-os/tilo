@@ -1567,7 +1567,7 @@ impl Driver {
     pub fn cursor_at(&self, point: Point) -> Option<winit::window::CursorIcon> {
         let mut pick = self.app.tree().cursor_pick_at(point);
         for root in self.app.presentation_roots() {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
+            let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root) else {
                 continue;
             };
             pick.offer_tree(root, point);

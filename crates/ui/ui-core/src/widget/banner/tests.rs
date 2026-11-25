@@ -581,7 +581,7 @@ fn a_banner_whose_dismiss_is_bound_runs_the_action_it_names_once() {
 /// window's origin, where a box nothing placed stands.
 #[test]
 fn the_layout_places_the_controls_without_a_paint() {
-    use crate::bound_dispatch::BoundNodeMap;
+    use crate::widget::bound_nodes::BoundNodeMap;
     use crate::widget::layout::compute_widget_layout;
     use taffy::{AvailableSpace, TaffyTree};
 

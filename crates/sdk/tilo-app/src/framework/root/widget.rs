@@ -224,11 +224,13 @@ impl RootWidget {
 
 // The root stands in the record its view stands in, and keeps the person's
 // records open beside it.
-impl BoundWidget for RootWidget {
-    fn callback_binding(&self) -> Option<ui_core::bound_dispatch::CallbackBinding> {
-        ui_core::bound_dispatch::callback_binding(self.0.view())
+impl ui_core::widget::component_walk::ComponentBoundary for RootWidget {
+    fn component_scope(&self) -> Option<ui_core::widget::component_walk::Binding> {
+        ui_core::widget::component_walk::binding_of(self.0.view())
     }
+}
 
+impl BoundWidget for RootWidget {
     fn resource_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
         self.0.resource_owners()
     }
@@ -254,6 +256,8 @@ impl Decorator for RootWidget {
             request.provide::<dyn ResourceOperations>(self);
         } else if request.wants::<dyn BoundWidget>() {
             request.provide::<dyn BoundWidget>(self);
+        } else if request.wants::<dyn ui_core::widget::component_walk::ComponentBoundary>() {
+            request.provide::<dyn ui_core::widget::component_walk::ComponentBoundary>(self);
         } else {
             self.0.provide(request);
         }

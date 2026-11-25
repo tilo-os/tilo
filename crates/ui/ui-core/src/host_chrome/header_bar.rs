@@ -209,7 +209,7 @@ impl HeaderBar {
             width: taffy::AvailableSpace::Definite(width as f32),
             height: taffy::AvailableSpace::MaxContent,
         };
-        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
         // SAFETY: the arena and node map were just built from this bar alone,
         // which stays in place and unaliased for both calls.
         let solved = unsafe {

@@ -87,7 +87,7 @@ pub(super) struct AppAssemblyValues {
     pub palette_source: Option<PaletteSource>,
     pub watch_system_settings: Option<bool>,
     pub layout: Option<LayoutRuntime>,
-    pub bindings: Option<crate::bound_dispatch::BoundNodeMap>,
+    pub bindings: Option<crate::widget::bound_nodes::BoundNodeMap>,
     #[cfg(feature = "model")]
     pub component_close_reports: Option<Vec<crate::application::ComponentCloseReport>>,
     pub close_admission: Option<crate::close_admission::Admission>,
@@ -196,7 +196,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     assembly.values.palette_source = Some(inputs.palette_source);
     assembly.values.watch_system_settings = Some(inputs.watch_system_settings);
     assembly.values.layout = Some(LayoutRuntime::new());
-    assembly.values.bindings = Some(crate::bound_dispatch::BoundNodeMap::new());
+    assembly.values.bindings = Some(crate::widget::bound_nodes::BoundNodeMap::new());
     assembly.values.close_admission = Some(crate::close_admission::Admission::default());
     #[cfg(feature = "model")]
     {

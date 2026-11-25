@@ -37,7 +37,7 @@ impl<'a> WidgetNodeMap<'a> {
             widget: &dyn Widget,
             names: &mut HashMap<*const (), HashMap<String, usize>>,
         ) {
-            let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(widget) else {
+            let Ok(_entry) = crate::widget::bound_nodes::enter_traversal::<BOUND>(widget) else {
                 return;
             };
             *names

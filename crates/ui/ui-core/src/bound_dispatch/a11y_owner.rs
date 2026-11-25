@@ -1,7 +1,7 @@
 //! The admitted nodes the accessibility bridge may name and address.
-use super::BoundNodeMap;
 use crate::accesskit_bridge::A11yTarget;
 use crate::widget::Widget;
+use crate::widget::bound_nodes::BoundNodeMap;
 use std::collections::HashMap;
 use taffy::NodeId;
 

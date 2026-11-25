@@ -100,7 +100,7 @@ fn lay_out<C: Widget + 'static>(d: &mut ModalDialog<C>, area: Rect, theme: &Them
     let node = d.build_layout(&mut taffy, theme, &mut node_map);
     let mut text = TextRenderer::new();
     text.set_text_scale(theme.text_scale);
-    let mut bindings = crate::bound_dispatch::BoundNodeMap::default();
+    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::default();
     #[allow(clippy::cast_possible_truncation, reason = "test geometry")]
     let available = Size {
         width: taffy::AvailableSpace::Definite(area.width() as f32),

@@ -29,7 +29,7 @@ pub(crate) struct AppTree<'a> {
     /// The app's registered framework History, when it has one.
     #[cfg(feature = "model")]
     pub(crate) history: Option<&'a crate::history_mode::host::HistoryHost>,
-    pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
+    pub(crate) bindings: &'a crate::widget::bound_nodes::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
     pub(crate) taffy: &'a TaffyTree<()>,
     pub(crate) focused: Option<NodeId>,
@@ -82,7 +82,13 @@ impl AppTree<'_> {
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
         // SAFETY: the host owns this stable tree; no target reference escapes.
         unsafe {
-            crate::bound_dispatch::inspect_bound_node(self.bindings, self.node_map, node, callback)
+            crate::widget::bound_nodes::inspect_bound_node(
+                self.bindings,
+                self.node_map,
+                node,
+                callback,
+            )
+            .map_err(Into::into)
         }
     }
 
@@ -147,7 +153,7 @@ impl AppTree<'_> {
     ) -> (Vec<NodeId>, bool) {
         // One sweep asks every mapped node, entering each component's scope
         // once rather than once a node.
-        let sweep = std::cell::RefCell::new(crate::bound_dispatch::NodeSweep::new(
+        let sweep = std::cell::RefCell::new(crate::widget::bound_nodes::NodeSweep::new(
             self.bindings,
             self.node_map,
         ));
@@ -314,7 +320,7 @@ impl AppTree<'_> {
 /// A host's document beside its bindings, borrowed for one write through a laid-out widget.
 pub(crate) struct HostDocument<'a> {
     pub(crate) state: &'a mut crate::State,
-    pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
+    pub(crate) bindings: &'a crate::widget::bound_nodes::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
 }
 
@@ -384,7 +390,7 @@ impl<'a> ResourceInvocation<'a> {
 pub(crate) struct HostLayout<'a> {
     pub(crate) taffy: &'a mut TaffyTree<()>,
     pub(crate) node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
-    pub(crate) bindings: &'a mut crate::bound_dispatch::BoundNodeMap,
+    pub(crate) bindings: &'a mut crate::widget::bound_nodes::BoundNodeMap,
     pub(crate) focused: &'a mut Option<NodeId>,
 }
 
@@ -394,7 +400,7 @@ pub(crate) struct HostFocus<'a> {
     #[cfg(feature = "model")]
     pub(crate) history: Option<&'a mut crate::history_mode::host::HistoryChrome>,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
-    pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
+    pub(crate) bindings: &'a crate::widget::bound_nodes::BoundNodeMap,
     pub(crate) taffy: &'a TaffyTree<()>,
     pub(crate) focused: &'a mut Option<NodeId>,
 }
@@ -406,7 +412,7 @@ pub(crate) struct HostRemount<'a> {
     pub(crate) theme: &'a crate::theme::Theme,
     pub(crate) taffy: &'a mut TaffyTree<()>,
     pub(crate) node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
-    pub(crate) bindings: &'a mut crate::bound_dispatch::BoundNodeMap,
+    pub(crate) bindings: &'a mut crate::widget::bound_nodes::BoundNodeMap,
     #[cfg(feature = "model")]
     pub(crate) close_reports: &'a mut Vec<crate::application::ComponentCloseReport>,
     /// How the person reaches the window: what the remount mounts hears it.
@@ -684,12 +690,13 @@ impl crate::app::App {
         crate::widget::component_walk::note_input(document.bindings, node);
         // SAFETY: exclusive host access prevents overlapping target references.
         unsafe {
-            crate::bound_dispatch::mutate_bound_node(
+            crate::widget::bound_nodes::mutate_bound_node(
                 document.bindings,
                 document.node_map,
                 node,
                 callback,
             )
+            .map_err(Into::into)
         }
     }
 

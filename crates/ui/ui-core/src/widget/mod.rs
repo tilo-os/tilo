@@ -7,7 +7,8 @@ pub use contract::{
     RowShape, ScrollAxis, ScrollMetrics, SkeletonShape, TooltipSide, Widget, WidthClass,
 };
 mod action_directory_identity;
-pub(crate) mod component_walk;
+pub mod bound_nodes;
+pub mod component_walk;
 mod wheel;
 pub use wheel::{PhaselessWheel, WHEEL_GESTURE_GAP, line_of_wheel, sideways_travel};
 mod action_emitter;
@@ -1329,7 +1330,7 @@ impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
 /// Drain collaboration capabilities throughout a retained widget tree.
 #[cfg(feature = "model")]
 pub(crate) fn take_collab_requests(widget: &mut dyn Widget) -> Vec<::collaboration::CollabRequest> {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
         return Vec::new();
     };
     let mut requests = capability::capability_mut::<dyn Collaborative>(&mut *widget)
@@ -1344,7 +1345,7 @@ pub(crate) fn take_collab_requests(widget: &mut dyn Widget) -> Vec<::collaborati
 /// Bound callback context remains entered for the complete descendant walk.
 #[cfg(feature = "model")]
 pub(crate) fn handle_collab_event(widget: &mut dyn Widget, event: &::collaboration::CollabEvent) {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
         return;
     };
     if let Some(collaborative) = capability::capability_mut::<dyn Collaborative>(&mut *widget) {

@@ -1,8 +1,8 @@
 //! Keep the production layout tree alive between keystrokes. Rebuilding it would erase Taffy's
 //! intrinsic-size cache and conceal stale paragraph heights.
 use super::*;
-use ui::bound_dispatch::BoundNodeMap;
 use ui::testing::Dispatch;
+use ui::widget::bound_nodes::BoundNodeMap;
 use winit::event::MouseButton;
 use winit::keyboard::ModifiersState;
 

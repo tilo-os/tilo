@@ -2,8 +2,8 @@
 //! the narrowed column until they pass its bottom, and take the whole width again below it.
 
 use super::*;
-use ui::bound_dispatch::BoundNodeMap;
 use ui::testing::Dispatch;
+use ui::widget::bound_nodes::BoundNodeMap;
 use winit::event::MouseButton;
 
 /// One visual row of a line: where its words start and end, and which bytes they are.

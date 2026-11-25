@@ -96,7 +96,7 @@ pub(crate) fn walk<const BOUND: bool, V: A11yVisitor>(
     slot: Option<(&dyn Widget, usize)>,
     parent: &mut V::Scope,
 ) {
-    let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_traversal::<BOUND>(w) else {
         return;
     };
     match v.open(w, slot, parent) {
@@ -163,7 +163,7 @@ fn walk_children<const BOUND: bool, V: A11yVisitor>(
     w: &dyn Widget,
     parent: &mut V::Scope,
 ) {
-    let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_traversal::<BOUND>(w) else {
         return;
     };
     let mut stated = crate::a11y::stated_node(w);

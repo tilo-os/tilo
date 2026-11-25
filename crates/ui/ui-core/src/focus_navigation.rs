@@ -95,7 +95,7 @@ fn collect_focusable(
     owners: &NodeOwners,
     order: &mut Vec<NodeId>,
 ) {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
         return;
     };
     if widget.is_focusable() && widget.is_enabled() {
@@ -111,7 +111,7 @@ fn find_trap_focusables(
     taffy: &TaffyTree<()>,
     owners: &NodeOwners,
 ) -> Option<Vec<NodeId>> {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
         return None;
     };
     for (child_widget, child_node) in laid_out_children(node_id, widget, taffy, owners) {

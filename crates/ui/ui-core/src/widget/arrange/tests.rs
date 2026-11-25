@@ -19,7 +19,7 @@ fn solve_in(root: &mut dyn Widget, theme: &Theme, width: f32, height: taffy::Ava
     let mut tree = TaffyTree::new();
     let mut nodes: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
     let node = root.build_layout(&mut tree, theme, &mut nodes);
-    let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
     let mut text = crate::font_catalog::fixture_renderer();
     // SAFETY: exact live, exclusively owned widget tree and matching maps.
     unsafe {
@@ -1484,7 +1484,7 @@ fn solve_with_a_copy(
     let mut tree = TaffyTree::new();
     let mut nodes: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
     let node = root.build_layout(&mut tree, theme, &mut nodes);
-    let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
     let mut text = crate::font_catalog::fixture_renderer();
     let mut copy = tree.clone();
     let available = |width: f32| taffy::Size {

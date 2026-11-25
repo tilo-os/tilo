@@ -1390,10 +1390,13 @@ mod tests {
         }
     }
 
-    impl crate::bound_dispatch::BoundWidget for Shows {
-        fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+    impl crate::widget::component_walk::ComponentBoundary for Shows {
+        fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
             None
         }
+    }
+
+    impl crate::bound_dispatch::BoundWidget for Shows {
         fn resource_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
             vec![self.owner.clone()]
         }

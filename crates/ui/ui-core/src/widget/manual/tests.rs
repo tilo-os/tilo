@@ -194,7 +194,7 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
         let mut tree = TaffyTree::new();
         let mut nodes = HashMap::new();
         let root = widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
         unsafe {
             bindings.rebuild(&widget, &tree, root, &nodes);
         }

@@ -8,26 +8,19 @@
 //! answers with its children ([`Widget::retained_children_mut`]).
 
 use super::local_target::ResourceReadRequest;
-use super::{BoundDispatchError, CallbackBinding, ComponentRequest};
+use super::{BoundDispatchError, CallbackBinding, ComponentRequest, callback_binding_of};
 use crate::history_mode::HistoryOwner;
 use crate::widget::Widget;
 use crate::widget::capability::{capability, capability_mut};
+use crate::widget::component_walk::{ComponentBoundary, binding_of};
 
-/// Which record owner a widget stands in, and the history it keeps beside the
-/// document it shows.
-pub trait BoundWidget {
-    /// The runtime binding descendants in a matching layout topology inherit.
-    fn callback_binding(&self) -> Option<CallbackBinding>;
-
-    /// Whether this widget introduces a document owner distinct from the
-    /// runner's outer State.
-    fn has_separate_document_owner(&self) -> bool {
-        self.callback_binding().is_some()
-    }
-
+/// Which record owner a widget stands in ([`ComponentBoundary`]: the runtime
+/// binding descendants in a matching layout topology inherit), and the history
+/// it keeps beside the document it shows.
+pub trait BoundWidget: ComponentBoundary {
     /// Opaque actual ownership for framework History source registration.
     fn history_owner(&self) -> Option<HistoryOwner> {
-        self.callback_binding().map(HistoryOwner::component)
+        own_binding(self).map(HistoryOwner::component)
     }
 
     /// Records this widget keeps open beside the document it shows, each
@@ -40,8 +33,15 @@ pub trait BoundWidget {
     /// Exact app instance whose non-text shortcuts this subtree owns when
     /// activation has no control target.
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
-        self.callback_binding().map(|binding| binding.instance_id)
+        own_binding(self).map(|binding| binding.instance_id)
     }
+}
+
+/// The callback binding `widget` answers as its component's boundary.
+fn own_binding(widget: &(impl ComponentBoundary + ?Sized)) -> Option<CallbackBinding> {
+    widget
+        .component_scope()
+        .map(|scope| callback_binding_of(&*scope).clone())
 }
 
 /// How a traversal reaches the components a widget retains, when they differ
@@ -61,14 +61,10 @@ pub(crate) trait BoundTraversal: Widget {
     }
 }
 
-/// [`BoundWidget::callback_binding`] of `widget`.
+/// The callback binding of the component `widget` is the boundary of
+/// ([`ComponentBoundary::component_scope`]).
 pub fn callback_binding<W: Widget + ?Sized>(widget: &W) -> Option<CallbackBinding> {
-    capability::<dyn BoundWidget>(widget).and_then(BoundWidget::callback_binding)
-}
-
-/// [`BoundWidget::has_separate_document_owner`] of `widget`.
-pub(crate) fn has_separate_document_owner<W: Widget + ?Sized>(widget: &W) -> bool {
-    capability::<dyn BoundWidget>(widget).is_some_and(BoundWidget::has_separate_document_owner)
+    binding_of(widget).map(|scope| callback_binding_of(&*scope).clone())
 }
 
 /// [`BoundWidget::history_owner`] of `widget`.

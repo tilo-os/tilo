@@ -123,7 +123,7 @@ fn child_paths<'a>(widget: &'a dyn Widget, path: &str) -> Vec<(&'a dyn Widget, S
 }
 
 fn access(widget: &dyn Widget) -> Option<AccessNode> {
-    let _entry = crate::bound_dispatch::enter_widget(widget).ok()?;
+    let _entry = crate::widget::bound_nodes::enter_widget(widget).ok()?;
     widget
         .accessibility()
         .map(|node| crate::a11y::with_synthetic_bounds(node, widget))

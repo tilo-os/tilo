@@ -2743,11 +2743,13 @@ impl FloatingSurfaceProvider for WindowGroup {
 
 /// A group stands in no record of its own; its keyboard shortcuts are those
 /// of the window it shows.
-impl crate::bound_dispatch::BoundWidget for WindowGroup {
-    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+impl crate::widget::component_walk::ComponentBoundary for WindowGroup {
+    fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
         None
     }
+}
 
+impl crate::bound_dispatch::BoundWidget for WindowGroup {
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
         (!self.is_closing()).then(|| self.active_tab_id())
     }

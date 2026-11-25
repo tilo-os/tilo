@@ -1010,6 +1010,7 @@ mod component_adapter {
             dyn crate::undo::UndoPoints,
             dyn crate::widget::ResourceOperations,
             dyn crate::bound_dispatch::BoundWidget,
+            dyn crate::widget::component_walk::ComponentBoundary,
             dyn crate::bound_dispatch::BoundTraversal
         );
         fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -1645,9 +1646,11 @@ mod component_adapter {
         }
     }
 
-    impl crate::bound_dispatch::BoundWidget for BoundAppWidget {
-        fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
-            Some(self.component.callback_binding())
+    impl crate::bound_dispatch::BoundWidget for BoundAppWidget {}
+
+    impl crate::widget::component_walk::ComponentBoundary for BoundAppWidget {
+        fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
+            Some(std::rc::Rc::new(self.component.callback_binding()))
         }
     }
 

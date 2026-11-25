@@ -204,8 +204,8 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
     {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
-        use tilo_ui::bound_dispatch::BoundNodeMap;
         use tilo_ui::text_render::TextRenderer;
+        use tilo_ui::widget::bound_nodes::BoundNodeMap;
         use tilo_ui::widget::{Widget, compute_widget_layout};
         use vello::kurbo::Point;
 

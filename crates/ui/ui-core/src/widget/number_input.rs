@@ -1190,7 +1190,7 @@ mod tests {
         let node = n.build_layout(&mut tree, theme, &mut std::collections::HashMap::new());
         let mut nodes = std::collections::HashMap::new();
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(n));
-        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
         unsafe {

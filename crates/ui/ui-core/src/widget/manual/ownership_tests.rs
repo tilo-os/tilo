@@ -12,13 +12,17 @@ struct BoundRoot {
     parts: Parts,
     binding: CallbackBinding,
 }
-impl crate::bound_dispatch::BoundWidget for BoundRoot {
-    fn callback_binding(&self) -> Option<CallbackBinding> {
-        Some(self.binding.clone())
+impl crate::bound_dispatch::BoundWidget for BoundRoot {}
+impl crate::widget::component_walk::ComponentBoundary for BoundRoot {
+    fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
+        Some(std::rc::Rc::new(self.binding.clone()))
     }
 }
 impl Widget for BoundRoot {
-    crate::provides!(dyn crate::bound_dispatch::BoundWidget);
+    crate::provides!(
+        dyn crate::bound_dispatch::BoundWidget,
+        dyn crate::widget::component_walk::ComponentBoundary
+    );
     retained_parts!("BoundRoot");
     fn build_layout(
         &mut self,

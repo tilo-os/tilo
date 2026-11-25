@@ -112,7 +112,11 @@ impl App {
             .and_then(|id| self.focusable_order.iter().position(|x| *x == id));
         let binding = self
             .focused_node
-            .and_then(|node| self.bindings.binding_for(node))
+            .and_then(|node| {
+                self.bindings
+                    .binding_for(node)
+                    .map(|binding| crate::bound_dispatch::callback_binding_of(&*binding).clone())
+            })
             .or_else(|| crate::bound_dispatch::callback_binding(&*self.root_widget));
         if let Some(binding) = binding {
             let moved = self.move_bound_history(&binding, request);
@@ -201,7 +205,11 @@ impl App {
     fn focused_document_undo_status(&mut self) -> crate::undo::UndoStatus {
         let focused = self.focused_node;
         if let Some(binding) = focused
-            .and_then(|node| self.bindings.binding_for(node))
+            .and_then(|node| {
+                self.bindings
+                    .binding_for(node)
+                    .map(|binding| crate::bound_dispatch::callback_binding_of(&*binding).clone())
+            })
             .or_else(|| crate::bound_dispatch::callback_binding(&*self.root_widget))
         {
             return binding.undo_status(&mut self.state.doc).unwrap_or_default();

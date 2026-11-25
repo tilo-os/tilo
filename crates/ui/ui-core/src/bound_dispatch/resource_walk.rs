@@ -42,6 +42,13 @@ pub(crate) fn cross(widget: &dyn Widget, inherited: Option<Binding>) -> Option<C
 impl Crossing {
     /// `read` of `doc` as the widget holds it: its component's document, else
     /// the window's. `None` when the component's document cannot be read now.
+    #[cfg_attr(
+        not(feature = "model"),
+        expect(
+            clippy::unreachable,
+            reason = "without the model no widget answers a component scope"
+        )
+    )]
     pub(crate) fn read<T>(
         &self,
         doc: &AutoCommit,
@@ -49,9 +56,11 @@ impl Crossing {
     ) -> Option<T> {
         match &self.binding {
             #[cfg(feature = "model")]
-            Some(binding) => binding.read_document(doc, |doc, _| read(doc)).ok(),
+            Some(binding) => crate::bound_dispatch::callback_binding_of(&**binding)
+                .read_document(doc, |doc, _| read(doc))
+                .ok(),
             #[cfg(not(feature = "model"))]
-            Some(binding) => match *binding {},
+            Some(_) => unreachable!("only the model's callback bindings are component scopes"),
             None => Some(read(doc)),
         }
     }

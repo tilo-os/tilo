@@ -6,8 +6,7 @@ mod bound_widget;
 pub(crate) use bound_widget::keyboard_input_scope;
 #[cfg(feature = "model")]
 pub(crate) use bound_widget::{
-    BoundTraversal, has_separate_document_owner, history_owner, visit_components,
-    visit_resource_owners,
+    BoundTraversal, history_owner, visit_components, visit_resource_owners,
 };
 #[cfg(feature = "model")]
 pub use bound_widget::{BoundWidget, callback_binding, resource_owners};
@@ -31,11 +30,11 @@ use tilo_actions::ResourceSpec;
 
 mod node_map;
 mod resource_walk;
-pub use node_map::{BoundNodeMap, invoke_bound_node};
-pub(crate) use node_map::{
-    NodeSweep, enter_traversal, enter_widget, inspect_bound_node, layout_bound_node,
-    mutate_bound_node,
-};
+#[cfg(feature = "model")]
+pub(crate) use node_map::callback_binding_of;
+#[cfg(feature = "model")]
+pub use node_map::document_edit_stamp;
+pub use node_map::invoke_bound_node;
 #[cfg(feature = "model")]
 pub(crate) use resource_walk::action_directory_page_at;
 pub(crate) use resource_walk::collect_widget_resources;
@@ -85,6 +84,9 @@ use crate::resource::{DocumentCheckout, ResourceOpenError, ResourceSaveStatus, R
 #[cfg(feature = "model")]
 use crate::wake::{WakeHandle, WakeScopeGuard};
 use crate::widget::Widget;
+use crate::widget::bound_nodes::BoundNodeMap;
+#[cfg(feature = "model")]
+use crate::widget::component_walk::has_separate_document_owner;
 #[cfg(feature = "model")]
 use automerge::{AutoCommit, ChangeHash, ObjId, ROOT, transaction::Transactable};
 #[cfg(feature = "model")]
@@ -4305,6 +4307,11 @@ pub struct CallbackScopeGuard {
 
 #[cfg(feature = "model")]
 impl CallbackScopeGuard {
+    /// Whether this guard opened a scope, rather than running inside one this thread held.
+    fn opens(&self) -> bool {
+        self.opened.is_some()
+    }
+
     /// The guard for work that runs inside a scope this thread already holds
     /// ([`CallbackBinding::enter`]).
     fn held() -> Self {
@@ -5101,13 +5108,6 @@ impl CallbackBinding {
             })
             .map_err(BoundDispatchError::Record)
     }
-}
-
-struct BoundNode {
-    pointer: *mut dyn Widget,
-    semantic_name: String,
-    binding: node_map::Scope,
-    inactive: bool,
 }
 
 #[cfg(feature = "model")]

@@ -8,9 +8,9 @@ use taffy::{AvailableSpace, Dimension, LengthPercentage, NodeId, Size, TaffyTree
 
 use super::Widget;
 use crate::Theme;
-use crate::bound_dispatch::{BoundNodeMap, layout_bound_node, mutate_bound_node};
 use crate::text_render::TextRenderer;
 use crate::tokens::TextRole;
+use crate::widget::bound_nodes::{BoundNodeMap, layout_bound_node, mutate_bound_node};
 
 /// What sizes an extent handed to a responsive shell (HIG §9.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -655,7 +655,7 @@ unsafe fn solve_widget_layout(
     let mut policies = Vec::new();
     let mut pending = vec![root];
     let mut sized = Vec::with_capacity(nodes.len());
-    let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
+    let mut sweep = crate::widget::bound_nodes::NodeSweep::new(bindings, nodes);
     while let Some(node) = pending.pop() {
         if nodes.contains_key(&node) {
             sized.push(node);
@@ -774,7 +774,7 @@ unsafe fn solve_widget_layout(
             }
             changed |= placed;
         }
-        let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
+        let mut sweep = crate::widget::bound_nodes::NodeSweep::new(bindings, nodes);
         for &node in nodes.keys() {
             // SAFETY: same contract as measurement; no topology mutation is
             // permitted by adjust_layout_style.
@@ -801,7 +801,7 @@ unsafe fn solve_widget_layout(
             // come: a widget placed and not drawn (a shut overflow API's
             // controls, a row a scroll hides) would otherwise ask again on
             // every frame after, and re-measure its path to the root.
-            let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
+            let mut sweep = crate::widget::bound_nodes::NodeSweep::new(bindings, nodes);
             for node in std::mem::take(&mut asked) {
                 // SAFETY: the caller's exact live-tree ownership contract.
                 let _ = unsafe { sweep.layout(node, |widget| widget.layout_measured()) };
@@ -856,7 +856,7 @@ unsafe fn solve_widget_layout(
     // ([`take_unsettled_layout`]).
     // SAFETY: as in the passes above.
     unsafe { solve_widgets(taffy, root, available, nodes, bindings, text) }?;
-    let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
+    let mut sweep = crate::widget::bound_nodes::NodeSweep::new(bindings, nodes);
     for node in asked {
         // SAFETY: the caller's exact live-tree ownership contract.
         let _ = unsafe { sweep.layout(node, |widget| widget.layout_measured()) };
@@ -1065,7 +1065,7 @@ impl CompositionFocus {
             focused_ancestor: bool,
             visit: &mut Visit<'_>,
         ) {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+            let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
                 return;
             };
             let reset = widget.resets_binding_inheritance();
@@ -1116,7 +1116,7 @@ impl CompositionFocus {
             ambiguous = ambiguous
                 || (visited != target
                     && match (&focus.binding, binding) {
-                        (Some(a), Some(b)) => a.same_component(b),
+                        (Some(a), Some(b)) => a.same_component(&**b),
                         (None, None) => true,
                         _ => false,
                     }
@@ -1132,7 +1132,7 @@ impl CompositionFocus {
             &self.binding,
             crate::widget::component_walk::node_binding(bindings, node),
         ) {
-            (Some(a), Some(b)) => a.same_component(&b),
+            (Some(a), Some(b)) => a.same_component(&*b),
             (None, None) => true,
             _ => false,
         }
@@ -1148,7 +1148,7 @@ impl CompositionFocus {
         let mut state_node = node;
         // SAFETY: the caller owns the exact admitted tree.
         let mut focus = unsafe {
-            crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| Self {
+            crate::widget::bound_nodes::inspect_bound_node(bindings, nodes, node, |widget| Self {
                 ambiguous: false,
                 key: Self::key(widget),
                 semantic_key: None,
@@ -1171,7 +1171,7 @@ impl CompositionFocus {
                 candidate != node
                     && focus.same_owner(bindings, candidate)
                     && unsafe {
-                        crate::bound_dispatch::inspect_bound_node(
+                        crate::widget::bound_nodes::inspect_bound_node(
                             bindings,
                             nodes,
                             candidate,
@@ -1188,10 +1188,15 @@ impl CompositionFocus {
             .collect();
         if let [aggregate] = aggregates.as_slice() {
             let _ = unsafe {
-                crate::bound_dispatch::inspect_bound_node(bindings, nodes, *aggregate, |widget| {
-                    focus.key = Self::key(widget);
-                    state_node = *aggregate;
-                })
+                crate::widget::bound_nodes::inspect_bound_node(
+                    bindings,
+                    nodes,
+                    *aggregate,
+                    |widget| {
+                        focus.key = Self::key(widget);
+                        state_node = *aggregate;
+                    },
+                )
             };
         } else if aggregates.len() > 1 {
             focus.ambiguous = true;
@@ -1206,9 +1211,12 @@ impl CompositionFocus {
                 .filter(|&&node| {
                     // SAFETY: the same exclusive admitted tree is still live.
                     unsafe {
-                        crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                            focus.same_owner(bindings, node) && Self::has_key(widget, key)
-                        })
+                        crate::widget::bound_nodes::inspect_bound_node(
+                            bindings,
+                            nodes,
+                            node,
+                            |widget| focus.same_owner(bindings, node) && Self::has_key(widget, key),
+                        )
                     }
                     .unwrap_or(false)
                 })
@@ -1216,7 +1224,7 @@ impl CompositionFocus {
                 .count();
             if matches > 1 && focus.semantic_key.is_none() {
                 focus.semantic_key = unsafe {
-                    crate::bound_dispatch::inspect_bound_node(
+                    crate::widget::bound_nodes::inspect_bound_node(
                         bindings,
                         nodes,
                         state_node,
@@ -1235,14 +1243,19 @@ impl CompositionFocus {
                 nodes
                     .keys()
                     .filter(|&&node| unsafe {
-                        crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                            focus.same_owner(bindings, node)
-                                && Self::has_key(widget, key)
-                                && widget
-                                    .accessibility_root()
-                                    .and_then(|access| access.semantic_key)
-                                    == focus.semantic_key
-                        })
+                        crate::widget::bound_nodes::inspect_bound_node(
+                            bindings,
+                            nodes,
+                            node,
+                            |widget| {
+                                focus.same_owner(bindings, node)
+                                    && Self::has_key(widget, key)
+                                    && widget
+                                        .accessibility_root()
+                                        .and_then(|access| access.semantic_key)
+                                        == focus.semantic_key
+                            },
+                        )
                         .unwrap_or(false)
                     })
                     .take(2)
@@ -1254,9 +1267,12 @@ impl CompositionFocus {
         }
         if !focus.ambiguous {
             focus.state = unsafe {
-                crate::bound_dispatch::inspect_bound_node(bindings, nodes, state_node, |widget| {
-                    crate::undo::get_state(widget)
-                })
+                crate::widget::bound_nodes::inspect_bound_node(
+                    bindings,
+                    nodes,
+                    state_node,
+                    |widget| crate::undo::get_state(widget),
+                )
             }
             .ok()
             .flatten();
@@ -1276,7 +1292,7 @@ impl CompositionFocus {
     ) -> Option<NodeId> {
         let allowed: Option<std::collections::HashSet<NodeId>> =
             allowed.map(|order| order.iter().copied().collect());
-        let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
+        let mut sweep = crate::widget::bound_nodes::NodeSweep::new(bindings, nodes);
         let focused: Vec<_> = nodes
             .keys()
             .copied()
@@ -1343,21 +1359,26 @@ impl CompositionFocus {
             .filter(|&node| {
                 // SAFETY: the caller owns the exact admitted tree.
                 unsafe {
-                    crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                        !self.ambiguous
-                            && self.same_owner(bindings, node)
-                            && match &self.key {
-                                Some(key) => Self::has_key(widget, key),
-                                None => false,
-                            }
-                    })
+                    crate::widget::bound_nodes::inspect_bound_node(
+                        bindings,
+                        nodes,
+                        node,
+                        |widget| {
+                            !self.ambiguous
+                                && self.same_owner(bindings, node)
+                                && match &self.key {
+                                    Some(key) => Self::has_key(widget, key),
+                                    None => false,
+                                }
+                        },
+                    )
                 }
                 .unwrap_or(false)
             })
             .collect();
         if (self.qualified_semantic || candidates.len() > 1) && self.semantic_key.is_some() {
             candidates.retain(|&node| unsafe {
-                crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
+                crate::widget::bound_nodes::inspect_bound_node(bindings, nodes, node, |widget| {
                     widget
                         .accessibility_root()
                         .and_then(|access| access.semantic_key)
@@ -1375,9 +1396,12 @@ impl CompositionFocus {
                 // Identity must be unique BEFORE focusability/enabled checks;
                 // a disabled duplicate must never transfer state to its peer.
                 unsafe {
-                    crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                        widget.is_focusable() && widget.is_enabled()
-                    })
+                    crate::widget::bound_nodes::inspect_bound_node(
+                        bindings,
+                        nodes,
+                        node,
+                        |widget| widget.is_focusable() && widget.is_enabled(),
+                    )
                 }
                 .unwrap_or(false)
             })
@@ -2362,7 +2386,7 @@ mod tests {
             let source = *nodes
                 .keys()
                 .find(|&&node| unsafe {
-                    crate::bound_dispatch::inspect_bound_node(&bindings, &nodes, node, |widget| {
+                    crate::widget::bound_nodes::inspect_bound_node(&bindings, &nodes, node, |widget| {
                         widget
                             .accessibility()
                             .and_then(|a| a.semantic_key)
@@ -2388,7 +2412,7 @@ mod tests {
                 assert_eq!(restored.is_some(), ids.contains(&3));
                 if let Some(node) = restored {
                     assert!(unsafe {
-                        crate::bound_dispatch::inspect_bound_node(&bindings, &nodes, node, |widget| {
+                        crate::widget::bound_nodes::inspect_bound_node(&bindings, &nodes, node, |widget| {
                             widget
                                 .accessibility()
                                 .and_then(|a| a.semantic_key)

@@ -3047,6 +3047,7 @@ struct ComponentControlSlot {
 impl crate::widget::Widget for ComponentControlSlot {
     crate::provides!(
         dyn crate::bound_dispatch::BoundWidget,
+        dyn crate::widget::component_walk::ComponentBoundary,
         dyn crate::bound_dispatch::BoundTraversal
     );
     fn name(&self) -> &str {
@@ -3101,9 +3102,11 @@ impl crate::widget::Widget for ComponentControlSlot {
     }
 }
 
-impl crate::bound_dispatch::BoundWidget for ComponentControlSlot {
-    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
-        Some(self.binding.clone())
+impl crate::bound_dispatch::BoundWidget for ComponentControlSlot {}
+
+impl crate::widget::component_walk::ComponentBoundary for ComponentControlSlot {
+    fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
+        Some(std::rc::Rc::new(self.binding.clone()))
     }
 }
 

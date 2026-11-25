@@ -87,7 +87,7 @@ fn owned_resources_at<W: Widget + ?Sized>(
         });
     }
     widget.for_each_child(&mut |child| {
-        if !crate::bound_dispatch::has_separate_document_owner(child) {
+        if !crate::widget::component_walk::has_separate_document_owner(child) {
             owned_resources_at(child, owner.map(|_| false), doc, address, resources);
         }
     });
@@ -106,7 +106,7 @@ pub(crate) fn resolve_on_demand(
     binding
         .read_document(doc, |doc, _| {
             root.for_each_child(&mut |child| {
-                if !crate::bound_dispatch::has_separate_document_owner(child) {
+                if !crate::widget::component_walk::has_separate_document_owner(child) {
                     component_resources(child, doc, Some(address), &mut resources);
                 }
             });
@@ -155,7 +155,7 @@ fn provider_at<W: Widget + ?Sized>(
             }
         });
     widget.for_each_child(&mut |child| {
-        if found.is_none() && !crate::bound_dispatch::has_separate_document_owner(child) {
+        if found.is_none() && !crate::widget::component_walk::has_separate_document_owner(child) {
             found = provider_at(child, false, binding, address);
         }
     });
@@ -176,7 +176,7 @@ impl ResourceReadRequest<'_> {
                     .read_document(&AutoCommit::new(), |doc, _| {
                         let mut resources = Vec::new();
                         root.for_each_child(&mut |child| {
-                            if !crate::bound_dispatch::has_separate_document_owner(child) {
+                            if !crate::widget::component_walk::has_separate_document_owner(child) {
                                 component_resources(child, doc, self.address, &mut resources);
                             }
                         });
@@ -184,8 +184,9 @@ impl ResourceReadRequest<'_> {
                             && claims(&resources, address) == 0
                         {
                             root.for_each_child(&mut |child| {
-                                if !crate::bound_dispatch::has_separate_document_owner(child)
-                                    && let Some(resource) = provider(child, &binding, address)
+                                if !crate::widget::component_walk::has_separate_document_owner(
+                                    child,
+                                ) && let Some(resource) = provider(child, &binding, address)
                                 {
                                     resources.push(resource);
                                 }
@@ -200,7 +201,7 @@ impl ResourceReadRequest<'_> {
                     interactive: !self.hidden,
                 });
             }
-        } else if crate::bound_dispatch::has_separate_document_owner(root) {
+        } else if crate::widget::component_walk::has_separate_document_owner(root) {
             return Err(refused(
                 "resource_unavailable",
                 "Separate document ownership is unavailable",
@@ -258,7 +259,7 @@ pub(crate) fn select_local_target(
     address: &ActionAddress,
 ) -> Result<LocalResourceTarget, ApiError> {
     let mut resources = Vec::new();
-    if !crate::bound_dispatch::has_separate_document_owner(root) {
+    if !crate::widget::component_walk::has_separate_document_owner(root) {
         owned_resources(root, doc, Some(address), &mut resources);
     }
     let mut count = claims(&resources, address);

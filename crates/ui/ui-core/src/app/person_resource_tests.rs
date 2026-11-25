@@ -72,10 +72,13 @@ impl crate::widget::Decorator for Holds {
     }
 }
 
-impl crate::bound_dispatch::BoundWidget for Holds {
-    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+impl crate::widget::component_walk::ComponentBoundary for Holds {
+    fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
         None
     }
+}
+
+impl crate::bound_dispatch::BoundWidget for Holds {
     fn resource_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
         vec![self.owner.clone()]
     }

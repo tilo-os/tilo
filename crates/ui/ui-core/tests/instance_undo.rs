@@ -3,8 +3,9 @@ use automerge::ReadDoc;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use std::collections::HashMap;
 use tilo_ui::application::{LaunchTarget, RestoreInput};
-use tilo_ui::bound_dispatch::{BoundNodeMap, invoke_bound_node};
+use tilo_ui::bound_dispatch::invoke_bound_node;
 use tilo_ui::state::UndoLog;
+use tilo_ui::widget::bound_nodes::BoundNodeMap;
 use tilo_ui::widget::{TileHost, Widget};
 
 struct BoundProbe {
