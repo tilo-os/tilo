@@ -951,6 +951,7 @@ async fn a_founding_issues_the_first_tickets_its_person_asked_for_as_their_own_a
         .issue(
             issuer_cert.user_public_key,
             &["device".to_owned(), "device".to_owned()],
+            |_stage| {},
         )
         .await
         .expect("the founding issues the tickets its person asked for");

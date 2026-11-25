@@ -2087,6 +2087,13 @@ impl Daemon {
             kept: kept_protocols,
             terminals: terminals.into_iter().chain(live.protocols()).collect(),
         });
+        // A founding call that asked for the person's first tickets is answered them from here
+        // on: the tickets, the endpoint they name and what serves it are up, and nothing the
+        // rest of the part opens is needed to issue one. The founder waits for a start, not for
+        // every service of it.
+        if let Some(founding) = founding.as_ref() {
+            founding.serving(identity.cert.user_public_key, Arc::clone(&tickets));
+        }
         // What is the person's alone is kept in their own workspace, read and written here on
         // this daemon's runtime once its service holds it: their devices, and the answers they
         // gave about this device's camera and microphone, which their other devices see and can
@@ -2501,9 +2508,6 @@ impl Daemon {
         stage("publishing the styles the installed packages offer");
         #[cfg(not(windows))]
         let styles = super::styles::publish(&workspaces);
-        // What a founding call that asked for the person's first tickets is answered them with.
-        let founding_person = identity.cert.user_public_key;
-        let founding_tickets = Arc::clone(&tickets);
         let daemon = Self {
             _files_tree: files_tree,
             #[cfg(not(windows))]
@@ -2609,11 +2613,6 @@ impl Daemon {
         match daemon.person() {
             Ok(person) => shell_dispatch.serve(person),
             Err(error) => tracing::warn!(%error, "this daemon's shell reaches no dispatch"),
-        }
-        // A founding call that asked for the person's first tickets is answered them here, from
-        // now on: they are issued as the person's own act, on the device that founded them.
-        if let Some(founding) = founding {
-            founding.serving(founding_person, founding_tickets);
         }
         Ok(daemon)
     }

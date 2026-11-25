@@ -341,6 +341,123 @@ fn a_founding_call_asked_for_tickets_is_followed_after_its_person_serves() {
     drop(environment);
 }
 
+const SLOW_FOUNDING_TEST: &str =
+    "device::founding_tests::a_founding_call_follows_a_person_part_that_starts_past_one_answer";
+
+/// A founding call that asks for tickets is answered at once, and followed by the stages the
+/// daemon reports: its person's part may start more than the ten seconds one answer is waited
+/// for, and the call is still answered the tickets it asked for.
+#[test]
+fn a_founding_call_follows_a_person_part_that_starts_past_one_answer() {
+    let Some(profile) = isolated_root(SLOW_FOUNDING_TEST) else {
+        return;
+    };
+    let mut environment = isolated_environment();
+    // The person's part starts after more than the ten seconds one answer waits for.
+    environment.set("TILO_TEST_HOLD_BETWEEN_PARTS_MS", "11000");
+    let keys = tilo_api::calls::device_keys();
+    reset_identity(&keys);
+    let _ = std::fs::remove_file(&keys.device_privkey);
+    let running = crate::daemon::Running::start(&profile).unwrap();
+    let socket = running.native_socket().to_owned();
+    let place = tilo_api::daemon::DaemonPlace::at(
+        socket.parent().expect("the native socket's directory"),
+        &profile,
+    );
+    let founding = tilo_api::daemon::Founding {
+        name: Some("Ada".to_owned()),
+        tickets: vec![tilo_api::daemon::TicketKind::Server],
+    };
+    let began = std::time::Instant::now();
+    let answer = place
+        .found(&founding)
+        .expect("the founding call is answered");
+    let took = began.elapsed();
+    assert!(
+        took > Duration::from_secs(10),
+        "the person's part was not slowed past one answer: {took:?}"
+    );
+    let answer = answer.expect("a person is founded where this computer has none");
+    let tickets = answer["tickets"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the founding call answered no tickets: {answer}"));
+    assert!(
+        tickets.iter().any(|ticket| {
+            ticket["kind"] == "server"
+                && ticket["ticket"]
+                    .as_str()
+                    .is_some_and(|ticket| !ticket.is_empty())
+        }),
+        "the founding call answered no server ticket: {answer}"
+    );
+    running.stop().unwrap();
+    drop(environment);
+}
+
+const STOPPED_REPORTING_TEST: &str =
+    "device::founding_tests::a_founding_call_that_stops_reporting_names_its_last_stage";
+
+/// A daemon that reports a stage and then stops answering is told as one, naming the stage it
+/// reached: a caller waits for each report, never for ever, and never fails without saying
+/// where the call was.
+#[test]
+fn a_founding_call_that_stops_reporting_names_its_last_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("native");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let invocation = tilo_actions::InvocationId::new().0.to_string();
+    let pending = |stage: Option<&str>| {
+        let mut typed = json!({"status": "pending", "invocation_id": invocation});
+        if let Some(stage) = stage {
+            typed["waiting_for"] = json!(stage);
+        }
+        json!({"jsonrpc": "2.0", "id": 1, "result": {
+            "content": [{"type": "text", "text": ""}],
+            "structuredContent": typed,
+        }})
+        .to_string()
+    };
+    let taken = pending(None);
+    let staged = pending(Some("starting the person part"));
+    let server = std::thread::spawn(move || {
+        // The request, then the stage it reached, then none: a daemon that stopped reporting.
+        let mut held = Vec::new();
+        for answer in [Some(taken), Some(staged), None] {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            if let Some(answer) = answer {
+                writeln!(&stream, "{answer}").unwrap();
+            } else {
+                // The connection stays open, as a daemon that stopped answering keeps it.
+                let mut waiting = std::io::BufReader::new(stream);
+                let _ = waiting.read_line(&mut line);
+                held.push(waiting);
+            }
+        }
+    });
+    let place = tilo_api::daemon::DaemonPlace::at(dir.path(), dir.path());
+    let founding = tilo_api::daemon::Founding {
+        name: None,
+        tickets: vec![tilo_api::daemon::TicketKind::Device],
+    };
+    let began = std::time::Instant::now();
+    let refused = place
+        .found(&founding)
+        .expect_err("a daemon that stops reporting fails");
+    assert!(
+        began.elapsed() >= Duration::from_secs(9),
+        "the call failed before the daemon's answer was waited for: {refused}"
+    );
+    assert!(
+        refused.contains("starting the person part"),
+        "the failure names no stage the daemon reached: {refused}"
+    );
+    server.join().unwrap();
+}
+
 const TWO_STORES_TEST: &str =
     "device::founding_tests::a_second_accounts_store_naming_the_same_person_is_never_picked";
 

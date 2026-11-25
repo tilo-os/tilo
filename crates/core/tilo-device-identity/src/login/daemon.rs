@@ -22,6 +22,8 @@ use super::RESOURCE;
 pub const NOT_RUNNING: &str = "not-running";
 /// The code of a device action's refusal that named none.
 pub const REFUSED: &str = "refused";
+/// The code of a refusal that the daemon took the request and stopped answering.
+pub const UNANSWERED: &str = "unanswered";
 
 /// Where the system unit keeps the daemon's sockets on Tilo OS.
 const SYSTEM_SOCKETS: &str = tilo_paths::machine::DAEMON_SOCKETS;
@@ -34,9 +36,10 @@ const SOCKET_PATH_MAX: usize = 103;
 /// How long one read of a followed call waits for it to move before it is read again.
 const FOLLOW_WAIT_MS: u64 = 60_000;
 
-/// How long a device action's answer is waited for before the caller is told the daemon took it
-/// and did not answer. A daemon whose person's part is still starting, or whose workspace cannot
-/// be read, answers nothing at all: what a command does meanwhile is say so, within seconds.
+/// How long a call's answer is waited for, and how long a followed call may go without a report
+/// before the caller is told the daemon took it and did not answer. A daemon whose person's part
+/// is still starting, or whose workspace cannot be read, answers nothing at all: what a command
+/// does meanwhile is say so, within seconds.
 const ANSWERING_WITHIN: Duration = Duration::from_secs(10);
 
 /// Why the daemon did not do a device action: its stable code, and its words.
@@ -278,12 +281,27 @@ impl DeviceActions {
         reason = "the caller builds the answer's arguments for this one call"
     )]
     pub fn ask(&self, action: &str, args: Value) -> Result<Value, DeviceRefusal> {
-        let (typed, text, failed) = self.call(action, &args, None)?;
+        let (typed, text, failed) = self.call(action, &args, None).map_err(|refusal| {
+            if refusal.code == UNANSWERED {
+                DeviceRefusal {
+                    code: refusal.code,
+                    message: format!(
+                        "{}: run `tilo status` to see how it stands, then try again",
+                        refusal.message
+                    ),
+                }
+            } else {
+                refusal
+            }
+        })?;
         answered(&typed, &text, failed)
     }
 
     /// [`Self::ask`] for an action that may wait (for the person's answer at a device of theirs,
-    /// say): its call is followed by its invocation until it settles.
+    /// say): its call is followed by its invocation until it settles, and a call that reports
+    /// the stage it is in is answered each time it moves. The daemon has [`ANSWERING_WITHIN`]
+    /// for each report: one that stops reporting is told as such, naming the last stage it
+    /// reached.
     ///
     /// # Errors
     /// The daemon does not answer, or the call failed or was refused.
@@ -293,10 +311,40 @@ impl DeviceActions {
     )]
     pub fn ask_followed(&self, action: &str, args: Value) -> Result<Value, DeviceRefusal> {
         let mut following = None;
+        // The stage the daemon last said the call is in, in words that follow "it last
+        // reported that": what a caller is told when it stops reporting.
+        let mut stage: Option<String> = None;
         loop {
-            let (typed, text, failed) = self.call(action, &args, following.as_deref())?;
+            let (typed, text, failed) = match self.call(action, &args, following.as_deref()) {
+                Ok(answer) => answer,
+                Err(refusal) if refusal.code == UNANSWERED => {
+                    return Err(DeviceRefusal {
+                        code: refusal.code,
+                        message: stage.map_or_else(
+                            || {
+                                format!(
+                                    "{}: run `tilo status` to see how it stands, then try again",
+                                    refusal.message
+                                )
+                            },
+                            |stage| {
+                                format!(
+                                    "{}; it last reported that {stage}: run `tilo status` to see \
+                                     how it stands, then try again",
+                                    refusal.message
+                                )
+                            },
+                        ),
+                    });
+                }
+                Err(refusal) => return Err(refusal),
+            };
+            if let Some(reported) = typed.get("waiting_for").and_then(Value::as_str) {
+                stage = Some(format!("it is {}", reported.trim_end_matches('.')));
+            }
             match typed.get("status").and_then(Value::as_str) {
                 Some("asked" | "pending") => {
+                    stage.get_or_insert_with(|| "it took the request".to_owned());
                     following = Some(
                         typed
                             .get("invocation_id")
@@ -414,13 +462,13 @@ impl DeviceActions {
 /// is told as one.
 fn read_failed(error: &std::io::Error) -> DeviceRefusal {
     match error.kind() {
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
-            DeviceRefusal::said(format!(
-                "Tilo's daemon took this request and did not answer it within {} seconds: run \
-                 `tilo status` to see how it stands, then try again",
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => DeviceRefusal {
+            code: UNANSWERED.to_owned(),
+            message: format!(
+                "Tilo's daemon took this request and did not answer it within {} seconds",
                 ANSWERING_WITHIN.as_secs()
-            ))
-        }
+            ),
+        },
         _ => DeviceRefusal::said(error.to_string()),
     }
 }

@@ -42,9 +42,16 @@ pub const TICKET_CREDENTIAL: &str = "tilo.ticket";
 const HANDED_AGENT: &str = "tilo";
 /// How often the daemon looks whether a person's certificate now names its key.
 const LOOKING: Duration = Duration::from_secs(2);
-/// How long a founding call waits for the person's own services to start and issue the tickets
-/// it asked for: founding a person opens their workspace here, which is the work of a start.
-const SERVING_WAIT: Duration = Duration::from_secs(120);
+/// How often a founding call reports the stage it is in while that stage runs: a caller that
+/// follows the call sees it move, and a stage that takes long is never mistaken for a daemon
+/// that stopped answering.
+const REPORTING: Duration = Duration::from_secs(2);
+/// What a founding call reports as it makes the person and starts their part.
+pub(crate) const FOUNDING_STARTING: &str = "starting the person part";
+/// What it reports while it waits for them to found their own workspace here.
+pub(crate) const FOUNDING_FOUNDING: &str = "founding";
+/// What it reports as the tickets the founder asked for are issued.
+pub(crate) const FOUNDING_ISSUING: &str = "issuing the tickets";
 
 /// This computer's device key, its login's place, and the lock that makes this process its one
 /// daemon: taken at boot, before anything else, and handed to the person's services once they
@@ -101,28 +108,41 @@ impl Founding {
     }
 
     /// The tickets `kinds` names, each issued as `person`'s own act on this device: as
-    /// `[{"kind": …, "ticket": …}]`, or why they were not.
-    pub(crate) async fn issue(&self, person: [u8; 32], kinds: &[String]) -> Result<Value, String> {
-        let tickets = tokio::time::timeout(SERVING_WAIT, async {
-            loop {
-                let heard = self.announced.notified();
-                tokio::pin!(heard);
-                heard.as_mut().enable();
-                if let Some((serving, tickets)) = self.serving.lock_recover().clone()
-                    && serving == person
-                {
-                    return tickets;
-                }
-                heard.await;
+    /// `[{"kind": …, "ticket": …}]`, or why they were not. `reporting` is told the stage under
+    /// way again every [`REPORTING`], so whoever follows the call sees it move even while one
+    /// stage takes minutes.
+    pub(crate) async fn issue(
+        &self,
+        person: [u8; 32],
+        kinds: &[String],
+        mut reporting: impl FnMut(&str),
+    ) -> Result<Value, String> {
+        let tickets = loop {
+            let heard = self.announced.notified();
+            tokio::pin!(heard);
+            heard.as_mut().enable();
+            if let Some((serving, tickets)) = self.serving.lock_recover().clone()
+                && serving == person
+            {
+                break tickets;
             }
-        })
-        .await
-        .map_err(|_| {
-            "this device's person's services did not start in time to issue the tickets".to_owned()
-        })?;
+            // The person's part starts: no fixed wait ends this, the caller following the call
+            // decides when a stage has stopped reporting.
+            if tokio::time::timeout(REPORTING, heard).await.is_err() {
+                reporting(FOUNDING_FOUNDING);
+            }
+        };
         let mut issued = Vec::with_capacity(kinds.len());
         for kind in kinds {
-            let ticket = tickets.issue_first(person, kind).await?;
+            reporting(FOUNDING_ISSUING);
+            let issuing = tickets.issue_first(person, kind);
+            tokio::pin!(issuing);
+            let ticket = loop {
+                match tokio::time::timeout(REPORTING, &mut issuing).await {
+                    Ok(answered) => break answered?,
+                    Err(_) => reporting(FOUNDING_ISSUING),
+                }
+            };
             let ticket = ticket.get("ticket").cloned().unwrap_or(Value::Null);
             issued.push(serde_json::json!({ "kind": kind, "ticket": ticket }));
         }
@@ -357,6 +377,20 @@ struct Answering {
     records: Arc<super::records::DeviceRecords>,
 }
 
+impl Answering {
+    /// Keep `update` as where `invocation` stands, and answer the receipt that says so: what a
+    /// caller following the call reads.
+    fn keep(&self, invocation: InvocationId, update: InvocationUpdate) -> InvocationReceipt {
+        let state = InvocationState::new(invocation, update);
+        let receipt = state.receipt();
+        self.founding
+            .calls()
+            .lock_recover()
+            .insert(invocation, state);
+        receipt
+    }
+}
+
 impl DeviceOnly {
     /// The device actions of the device whose key is `key`, its certificates kept in `place`:
     /// no profile and this process's own account, for a test that asks the device's own actions
@@ -468,14 +502,28 @@ impl DeviceOnly {
     }
 
     fn keep(&self, invocation: InvocationId, update: InvocationUpdate) -> InvocationReceipt {
-        let state = InvocationState::new(invocation, update);
-        let receipt = state.receipt();
-        self.0
-            .founding
-            .calls()
-            .lock_recover()
-            .insert(invocation, state);
-        receipt
+        self.0.keep(invocation, update)
+    }
+
+    /// Report `stage` on `invocation`, as the report numbered `sequence`: what a caller
+    /// following the call reads while it waits.
+    fn progressing(
+        &self,
+        invocation: InvocationId,
+        sequence: u64,
+        stage: &str,
+    ) -> InvocationReceipt {
+        self.keep(
+            invocation,
+            InvocationUpdate::Progress {
+                invocation,
+                sequence,
+                phase: FOUNDING_FOUNDING.to_owned(),
+                completed: None,
+                total: None,
+                message: Some(stage.to_owned()),
+            },
+        )
     }
 
     /// Start a new person on this device ([`FOUND`]), as its own account asks, or under the
@@ -495,31 +543,64 @@ impl DeviceOnly {
         })
     }
 
-    /// Answer the founding `invocation` with the person `person` and the tickets `kinds` names,
-    /// issued as their own act once their services run here: the answer waits for them, and says
-    /// why if they were not issued.
+    /// Answer the founding `invocation`, which asks for the tickets `kinds` names, at once:
+    /// the person is made and their part started under it, which takes longer than a caller
+    /// waits for one answer, and each stage is reported on the call as it is reached. The
+    /// tickets are issued as the person's own act once their services run here, and the answer
+    /// says why when they were not.
     fn founding_tickets(
         &self,
         invocation: InvocationId,
-        person: String,
+        args: Value,
         kinds: Vec<String>,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let (done, answer) = tilo_actions::remote::pending();
-        // The call waits for the person's services to issue what was asked: it stands as under
-        // way first, so a caller that asks again under its id reads that same call rather than
-        // founding the person a second time.
-        self.keep(invocation, InvocationUpdate::Accepted { invocation });
-        let (founding, runtime, answering) = (
-            Arc::clone(&self.0.founding),
-            self.0.runtime.clone(),
-            self.clone(),
-        );
+        // The call stands as under way before anything is made, so a caller that asks again
+        // under its id reads that same call rather than founding the person a second time.
+        let receipt = self.keep(invocation, InvocationUpdate::Accepted { invocation });
+        let (runtime, answering) = (self.0.runtime.clone(), self.clone());
         runtime.spawn(async move {
+            let mut sequence = 1;
+            answering.progressing(invocation, sequence, FOUNDING_STARTING);
+            let mut reporting = {
+                let answering = answering.clone();
+                move |stage: &str| {
+                    sequence = sequence.saturating_add(1);
+                    answering.progressing(invocation, sequence, stage);
+                }
+            };
+            // Making the person is the account's work on disk and no async step: it runs where
+            // it cannot hold the runtime the answer above was written on, reporting the stage
+            // it is in for as long as it takes.
+            let founding = answering.clone();
+            let mut waiting = tokio::task::spawn_blocking(move || founding.found(&args));
+            let made = loop {
+                match tokio::time::timeout(REPORTING, &mut waiting).await {
+                    Ok(joined) => break joined,
+                    Err(_) => reporting(FOUNDING_STARTING),
+                }
+            };
+            let person = match made {
+                Ok(Ok(person)) => person,
+                Ok(Err(refusal)) => {
+                    let update = failed_as(invocation, refusal.code, &refusal.message);
+                    let _ = answering.keep(invocation, update);
+                    return;
+                }
+                Err(error) => {
+                    let update = failed(
+                        invocation,
+                        &format!("this device could not make a new person: {error}"),
+                    );
+                    let _ = answering.keep(invocation, update);
+                    return;
+                }
+            };
             let asked = hex::decode(&person)
                 .ok()
                 .and_then(|key| <[u8; 32]>::try_from(key).ok());
+            reporting(FOUNDING_FOUNDING);
             let outcome = match asked {
-                Some(person) => founding.issue(person, &kinds).await,
+                Some(person) => answering.0.founding.issue(person, &kinds, reporting).await,
                 None => Err("the person founded is no key".to_owned()),
             };
             let update = match outcome {
@@ -534,10 +615,9 @@ impl DeviceOnly {
                     serde_json::json!({ "person": person, "tickets": [], "tickets_error": why }),
                 ),
             };
-            let receipt = answering.keep(invocation, update);
-            done.complete(Ok(receipt));
+            let _ = answering.keep(invocation, update);
         });
-        answer
+        Pending::ready(Ok(receipt))
     }
 
     /// Bring a person back on this device ([`RESTORE`]) from the recovery words or the backup
@@ -860,22 +940,21 @@ impl ActionProvider for DeviceOnly {
                     InvokeArgument::Json(argument) => Value::Object(argument.clone()),
                     _ => Value::Null,
                 };
+                // A founder that asks for their first tickets is answered them as part of
+                // founding: the call is answered at once and reports each stage, since making
+                // the person and starting their part takes longer than a caller waits.
+                if address.action == FOUND {
+                    let kinds = founding_kinds(&args);
+                    if !kinds.is_empty() {
+                        return self.founding_tickets(invocation, args, kinds);
+                    }
+                }
                 let made = if address.action == FOUND {
                     self.found(&args)
                 } else {
                     self.restore(&args)
                 };
-                let kinds = if address.action == FOUND {
-                    founding_kinds(&args)
-                } else {
-                    Vec::new()
-                };
                 match made {
-                    // A founder that needs the first tickets hands them back in this answer, as
-                    // part of founding: they are issued here once the person's own services run.
-                    Ok(person) if !kinds.is_empty() => {
-                        self.founding_tickets(invocation, person, kinds)
-                    }
                     Ok(person) => Pending::ready(Ok(self.keep(
                         invocation,
                         succeeded(invocation, serde_json::json!({ "person": person })),

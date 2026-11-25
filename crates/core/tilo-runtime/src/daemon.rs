@@ -1428,6 +1428,18 @@ impl Native {
                 std::thread::Builder::new()
                     .name("tilo-native-wait".into())
                     .spawn(move || {
+                        // A caller following a call this device already took reads its stage
+                        // where the device keeps it: answered here, not once the person's part
+                        // starts. The call's progress is what a founding waits on.
+                        if follows_a_call(&stream) {
+                            if let Err(error) = native.device_only(stream, slot, seated) {
+                                tracing::debug!(
+                                    %error,
+                                    "a native connection following a call was not served"
+                                );
+                            }
+                            return;
+                        }
                         let deadline = Instant::now()
                             .checked_add(WAITED_WITHIN)
                             .unwrap_or_else(Instant::now);
@@ -2115,6 +2127,31 @@ fn read_some(stream: &Stream) -> io::Result<Vec<u8>> {
     let mut chunk = [0_u8; 16 * 1024];
     let taken = Read::read(&mut &*stream, &mut chunk)?;
     Ok(chunk.get(..taken).unwrap_or_default().to_vec())
+}
+
+/// Whether `stream`'s first line follows a call by its invocation: the request a caller makes
+/// while it waits on a call the device took. The line is looked at without being read, so the
+/// endpoint that serves the connection reads it, descriptors and all, as it always has.
+#[cfg(unix)]
+fn follows_a_call(stream: &Stream) -> bool {
+    // What follows an invocation id is written as the connection opens: a client that says
+    // nothing by then is no follow, and waits as any other connection does.
+    const SAYS_WITHIN: Duration = Duration::from_secs(1);
+    const SAYS: &[u8] = b"\"invocation_id\"";
+    let mut line = [0_u8; 512];
+    if stream.set_read_timeout(Some(SAYS_WITHIN)).is_err() {
+        return false;
+    }
+    let read = stream.peek(&mut line).unwrap_or(0);
+    let _ = stream.set_read_timeout(None);
+    line.get(..read)
+        .is_some_and(|read| read.windows(SAYS.len()).any(|window| window == SAYS))
+}
+
+/// No Unix socket to look at: a Windows pipe's first line is left to the endpoint that serves it.
+#[cfg(not(unix))]
+fn follows_a_call(_stream: &Stream) -> bool {
+    false
 }
 
 /// The first message on `stream`, with the descriptors it carries: a Windows pipe carries bytes

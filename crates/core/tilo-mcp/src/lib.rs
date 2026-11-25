@@ -2336,6 +2336,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // instead of this bridge reading the revision first, a round trip
         // to the app of its own.
         let current = revision.is_none();
+        // A call whose invocation this caller already holds is a follow: it is answered each
+        // time the invocation moves, not only once it ends.
+        let following = self.observed(invocation).await.is_some();
         let mut request = InvokeRequest {
             on_behalf_of: None,
             invocation,
@@ -2384,6 +2387,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     invocation,
                     &tilo_actions::remote::InvocationState::new(invocation, update),
                 )
+            }
+            Admission::Answered(_) | Admission::Failed(_) if following => {
+                self.settled_followed(invocation, wait).await?
             }
             Admission::Answered(_) | Admission::Failed(_) => self.settled(invocation, wait).await?,
         };
@@ -2692,6 +2698,68 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // This call admitted the invocation, so the caller is told how to
                 // ask about it again: an observation the host did not answer in
                 // time says nothing about whether the invocation is theirs.
+                let mut value = state.as_ref().map_or_else(
+                    || json!({"invocation_id": id.0.to_string()}),
+                    |state| state_json(id, state),
+                );
+                if let Some(fields) = value.as_object_mut() {
+                    fields.insert(
+                        "pending".into(),
+                        format!(
+                            "not finished within {} ms; tilo_status with this invocation_id answers \
+                             how it went, or pass a longer wait_ms",
+                            wait.as_millis()
+                        )
+                        .into(),
+                    );
+                }
+                return Ok(value);
+            };
+            if let Some(change) = change {
+                let _ = tokio::time::timeout_at(deadline, change).await;
+            } else {
+                let next = tokio::time::Instant::now()
+                    .checked_add(SETTLE_POLL)
+                    .map_or(deadline, |next| next.min(deadline));
+                tokio::time::sleep_until(next).await;
+            }
+        }
+    }
+    /// [`Self::settled`] for a call that is followed where it already stands: its answer is the
+    /// state the invocation next moves to, or the one it still has once the wait is over, so a
+    /// caller sees each stage its provider reports instead of waiting for the whole call to
+    /// end. A call held until its action has ended is not answered by these: it ends first, as
+    /// before.
+    async fn settled_followed(
+        &self,
+        id: tilo_actions::InvocationId,
+        wait: Hold,
+    ) -> Result<Value, String> {
+        let Hold::For(wait) = wait else {
+            return self.settled(id, wait).await;
+        };
+        let began = tokio::time::Instant::now();
+        let mut seen: Option<tilo_actions::InvocationUpdate> = None;
+        loop {
+            // Asked before observing, so a change in between still wakes it.
+            let change = self.host().next_change(&self.caller(), &id);
+            let state = self.observed(id).await;
+            self.saw(id, state.as_ref());
+            if let Some(state) = state.as_ref() {
+                if state.update.is_terminal() {
+                    return Ok(state_json(id, state));
+                }
+                match &seen {
+                    // Where the call moved since this follow began: what it is doing now.
+                    Some(was) if *was != state.update => return Ok(state_json(id, state)),
+                    Some(_) => {}
+                    None => seen = Some(state.update.clone()),
+                }
+            }
+            let Some(deadline) = began
+                .checked_add(wait)
+                .filter(|deadline| tokio::time::Instant::now() < *deadline)
+            else {
                 let mut value = state.as_ref().map_or_else(
                     || json!({"invocation_id": id.0.to_string()}),
                     |state| state_json(id, state),
