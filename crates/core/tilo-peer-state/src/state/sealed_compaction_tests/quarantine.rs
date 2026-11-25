@@ -184,7 +184,10 @@ fn two_writes_each() -> (
     let mut f = fixture_holding(&[RECORD, OTHER]);
     let (now, keys, other) = (f.now, f.keys(), f.other.clone());
     let mut author = Author::new(&f.replica);
-    let mut beside = Author(AutoCommit::load(&f.replica.document(APP, OTHER).unwrap()).unwrap());
+    let mut beside = Author::of(
+        &f.replica,
+        AutoCommit::load(&f.replica.document(APP, OTHER).unwrap()).unwrap(),
+    );
     let mut history = Vec::new();
     for value in ["1", "2"] {
         let sealed = write(&f.replica, &other, &keys, &author.edit("value", value), now);
@@ -246,7 +249,7 @@ fn refuses_writes(
 
     // Nothing written here while the record is set aside could be kept across a restart: a
     // local write to it is refused at once, and says why.
-    let mut aside = Author(author.0.clone());
+    let mut aside = Author(author.0.clone(), author.1);
     let early = write(
         restored,
         &f.other,

@@ -252,21 +252,34 @@ fn signed(
 
 /// Edits of the seeded record, each an incremental on the one before, as
 /// the plaintext a key holder's sealed write opens to. Each is a window's
-/// direct edit of the record, which names no finer action: it is the signing
-/// device's person's, whichever device seals it.
-pub(super) struct Author(pub(super) AutoCommit);
+/// direct edit of the record, which names no finer action: it is the editing
+/// device's person's, and names them.
+pub(super) struct Author(pub(super) AutoCommit, pub(super) [u8; 32]);
 
 impl Author {
     pub(super) fn new(peer: &StatePeer) -> Self {
-        Self(AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap())
+        Self::of(
+            peer,
+            AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap(),
+        )
     }
 
-    /// Commit what is pending as a direct edit of the record.
+    /// `doc` written as `peer`'s device's person.
+    pub(super) fn of(peer: &StatePeer, doc: AutoCommit) -> Self {
+        Self(
+            doc,
+            crate::owner::testing::person_of(peer, peer.core.origin),
+        )
+    }
+
+    /// Commit what is pending as a direct edit of the record, naming the person whose device it
+    /// is.
     pub(super) fn commit(&mut self) {
-        self.0.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
-        );
+        let message = tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(
+            hex::encode(self.1),
+        ));
+        self.0
+            .commit_with(automerge::transaction::CommitOptions::default().with_message(message));
     }
 
     pub(super) fn edit(&mut self, key: &str, value: &str) -> Vec<u8> {
@@ -2702,7 +2715,10 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let actor = automerge::ActorId::from(b"one device, every load".as_slice());
         let base = f.replica.document(APP, RECORD).unwrap();
-        let mut page = Author(AutoCommit::load(&base).unwrap().with_actor(actor.clone()));
+        let mut page = Author::of(
+            &f.replica,
+            AutoCommit::load(&base).unwrap().with_actor(actor.clone()),
+        );
         let _let_go = page.edit("early-1", "first");
         let stuck = write(
             &f.replica,
@@ -2713,7 +2729,7 @@ tilo_test_env::scenario! {
         );
         admit(&mut f.replica, &f.other, stuck, now);
 
-        let mut reloaded = Author(AutoCommit::load(&base).unwrap().with_actor(actor));
+        let mut reloaded = Author::of(&f.replica, AutoCommit::load(&base).unwrap().with_actor(actor));
         let again = write(&f.replica, &f.other, &keys, &reloaded.edit("again", "1"), now);
         admit(&mut f.replica, &f.other, again, now);
         let read = captured(&f, &f.replica, &keys).expect("the record reads after one write");
@@ -3490,7 +3506,7 @@ fn a_change_forged_into_a_members_sealed_checkpoint_is_not_read() {
     // The editor folds the history into a checkpoint that also holds a change it made for the
     // owner's device, which never asked for it.
     let (read, _) = read_refused(&f.replica, &f, &keys);
-    let mut folded = Author(read);
+    let mut folded = Author::of(&f.replica, read);
     let caller = f
         .replica
         .owner_certificates()

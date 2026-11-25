@@ -345,53 +345,37 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A framework change names no one: it is decided as whoever signed it, here an agent signing
-/// with its own key, and its grants are the agent's, never the person's it works for. Sealed, a
-/// receiver reads only its claims: a claim that names no one is refused, and the same edit naming
-/// who made it is decided as them.
+/// A window's direct edit of a record names who made it. A commit that names no one is refused
+/// in the clear, whoever signed it, and so is a sealed claim that names no one; the same edit
+/// naming its invoker is decided as them.
 #[test]
-fn a_framework_change_signed_by_an_agent_is_decided_as_the_agent() {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "notes.md", "hello").unwrap();
-    doc.commit_with(
-        CommitOptions::default().with_message(FrameworkChange::Native.change_message()),
-    );
-    let payload = collab_types::op::DocumentMutation::Incremental(doc.save_after(&[]))
-        .encode()
-        .unwrap();
-    let op = collab_types::op::SignedOp::new_unsigned(
-        payload,
-        collab_types::document_artifact_id(FILES, WORKSPACE, "tree"),
-        collab_types::Ed25519PublicKey::from_bytes([7; 32]),
-        collab_types::document_attestation_id(FILES, WORKSPACE, "tree"),
-        collab_types::role::OpKind::Change,
-        std::time::SystemTime::UNIX_EPOCH,
-        1,
-    );
+fn a_native_edit_naming_no_one_is_refused_and_one_naming_its_maker_is_admitted() {
+    let native = |message: String| {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "notes.md", "hello").unwrap();
+        doc.commit_with(CommitOptions::default().with_message(message));
+        let payload = collab_types::op::DocumentMutation::Incremental(doc.save_after(&[]))
+            .encode()
+            .unwrap();
+        collab_types::op::SignedOp::new_unsigned(
+            payload,
+            collab_types::document_artifact_id(FILES, WORKSPACE, "tree"),
+            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+            collab_types::document_attestation_id(FILES, WORKSPACE, "tree"),
+            collab_types::role::OpKind::Change,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        )
+    };
     let agent = Acting::agent(AGENT, "ada");
     let asked = std::cell::RefCell::new(Vec::new());
     let allows = |invoker: Option<&Acting>, _: &TreePath, _: ActionKind| {
         asked.borrow_mut().push(invoker.cloned());
         true
     };
-    let decided = decide_opened(
-        (&op, None),
-        &tree(),
-        (None, None, None),
-        None,
-        &Surfaces::default(),
-        &allows,
-        (None, Some(&agent)),
-    );
-    assert_eq!(decided, Ok(Receipt::Admit));
-    assert_eq!(asked.borrow().clone(), vec![Some(agent.clone())]);
-
-    // Sealed, a receiver that has not opened it reads only its claims: one that names no one is
-    // refused, whoever signed it.
-    let decide_sealed = |op: &collab_types::op::SignedOp| {
-        let (sealed, _) = sealed(op);
+    let decide = |op: &collab_types::op::SignedOp| {
         decide_opened(
-            (&sealed, None),
+            (op, None),
             &tree(),
             (None, None, None),
             None,
@@ -400,19 +384,19 @@ fn a_framework_change_signed_by_an_agent_is_decided_as_the_agent() {
             (None, Some(&agent)),
         )
     };
-    assert_eq!(decide_sealed(&op), Err(ReceiptRefusal::NoInvoker));
+    let unnamed = native(FrameworkChange::Native.change_message());
+    assert_eq!(decide(&unnamed), Err(ReceiptRefusal::NoInvoker));
+    // Sealed, a receiver that has not opened it reads only its claims: one that names no one is
+    // refused too.
+    let (unnamed_sealed, _) = sealed(&unnamed);
+    assert_eq!(decide(&unnamed_sealed), Err(ReceiptRefusal::NoInvoker));
 
     // The same edit naming who made it is decided as them.
-    asked.borrow_mut().clear();
-    let mut named = AutoCommit::new();
-    named.put(ROOT, "notes.md", "hello").unwrap();
-    named.commit_with(CommitOptions::default().with_message(ActionContext::whole_edit_by(&agent)));
-    let mut op = op;
-    op.payload = collab_types::op::DocumentMutation::Incremental(named.save_after(&[]))
-        .encode()
-        .unwrap();
-    assert_eq!(decide_sealed(&op), Ok(Receipt::Admit));
-    assert_eq!(asked.into_inner(), vec![Some(agent)]);
+    let named = native(ActionContext::whole_edit_by(&agent));
+    assert_eq!(decide(&named), Ok(Receipt::Admit));
+    let (named_sealed, _) = sealed(&named);
+    assert_eq!(decide(&named_sealed), Ok(Receipt::Admit));
+    assert_eq!(asked.into_inner(), vec![Some(agent); 2]);
 }
 
 /// A sealed write an app made by itself, signed by the owner's device: a receiver that has not

@@ -15,9 +15,12 @@ pub enum Maker {
     Derived,
     /// A framework change that names no one: whoever signed it made it, the signing device's
     /// person or the agent its key is certified for, and it is decided and recorded as theirs.
+    /// Only the changes the framework makes of a record itself, never a window's edit of it.
     Signer,
     /// It names no one and is no framework change: refused, as every change that says nothing of
-    /// who made it.
+    /// who made it. A window's own edit (`FrameworkChange::Native`) is one of these: it names the
+    /// person, agent or device whose edit it is ([`tilo_actions::ActionContext::whole_edit_by`]),
+    /// and one that names no one is refused on every path.
     Nobody,
 }
 
@@ -42,8 +45,11 @@ pub fn maker_of(change: &automerge::Change) -> Maker {
                 Maker::Derived
             }
             // A structure every holder derives is the one kind made apart that must not differ:
-            // one that is not the derived change is no structure at all.
-            FrameworkChange::Structure => Maker::Nobody,
+            // one that is not the derived change is no structure at all. A window's direct edit
+            // of a record is nobody's unless it names who made it: a device's own commit names
+            // its person, and an agent's its agent
+            // ([`tilo_actions::ActionContext::whole_edit_by`]).
+            FrameworkChange::Structure | FrameworkChange::Native => Maker::Nobody,
             _ => Maker::Signer,
         },
         // A resource store's change names its invoker in its stamp: one that names none is

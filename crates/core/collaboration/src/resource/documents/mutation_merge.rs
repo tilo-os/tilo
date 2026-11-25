@@ -59,9 +59,10 @@ impl ResourceStore {
         mutation: collab_types::DocumentMutation,
         held: Option<AutoCommit>,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
+        let app = self.kept_app().map_err(|error| error.to_string())?;
         let merged = self.with_action_state(&checkout.id, |doc, history, actions| {
             let mut local = doc.clone();
-            actions.commit_for_save(&mut local);
+            actions.commit_for_save(&mut local, &app);
             let before = local.get_heads();
             let whole = match (&mutation, held) {
                 (_, Some(held)) => Ok(held),

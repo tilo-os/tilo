@@ -454,7 +454,7 @@ tilo_test_env::scenario! {
         let message = write(&f.replica, &f.owner, &keys, &author.edit("value", "one"), f.now);
         admit(&mut f.replica, &f.owner, message, f.now);
         // The record as the workspace holds it, which the writer reads when it starts again.
-        let mut again = Author(author.0.fork());
+        let mut again = Author(author.0.fork(), author.1);
         // A file larger than one frame, of which only the first segment ever reached the
         // workspace: its writer ended while the rest was on its way.
         let file = noise(collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES * 3 / 2, 7);

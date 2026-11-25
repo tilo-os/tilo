@@ -2106,13 +2106,7 @@ impl Layouts {
         }
         let message = tilo_session_core::layout::step_context(asked, action, &person)
             .change_message()
-            .unwrap_or_else(|| {
-                shared_resource::change_message(
-                    asked
-                        .member_id()
-                        .and_then(tilo_actions::MemberId::person_id),
-                )
-            });
+            .unwrap_or_else(|| shared_resource::change_message(&person));
         // What the action did to the person's own view of the workspace (a width, a window made
         // as large as its display) is a step of theirs in that view, written in its turn.
         if let Some(workspace) = tree.active_workspace()
@@ -2439,10 +2433,14 @@ impl Layouts {
         // Every change a device signs says what it is and who made it: the edit of the record this
         // person just made here. A step taken from the history is its own change already.
         if candidate.pending_ops() > 0 {
-            let author = self.person.borrow().clone();
+            let Some(author) = self.person.borrow().clone() else {
+                // The layout has no person here: nobody made this edit, and no change says so.
+                tracing::warn!(%workspace_id, "a layout edit was made by no person");
+                return false;
+            };
             candidate.commit_with(
                 automerge::transaction::CommitOptions::default()
-                    .with_message(shared_resource::change_message(author.as_deref())),
+                    .with_message(shared_resource::change_message(&author)),
             );
         }
         let changes = candidate.save_after(heads);
@@ -3004,7 +3002,7 @@ fn view_step(
     {
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(shared_resource::change_message(Some(person))),
+                .with_message(shared_resource::change_message(person)),
         );
     }
     // An arranging action's step is the person's, on whichever of their devices made it.
@@ -3016,7 +3014,7 @@ fn view_step(
         return Ok(false);
     }
     let message = step.acted.as_ref().map_or_else(
-        || shared_resource::change_message(Some(person)),
+        || shared_resource::change_message(person),
         |acted| acted.message.clone(),
     );
     doc.commit_with(

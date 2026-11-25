@@ -184,7 +184,7 @@ fn write_of(
     change(&mut doc);
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(shared_resource::change_message(Some(person))),
+            .with_message(shared_resource::change_message(person)),
     );
     let mutation = if held.is_some() {
         collab_types::DocumentMutation::Incremental(doc.save_after(&heads))

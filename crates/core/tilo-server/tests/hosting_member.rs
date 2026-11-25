@@ -62,6 +62,13 @@ async fn write_sealed_at(
     let keys = keys_of(keys_at, workspace, (APP, record)).await;
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "body", body).unwrap();
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default().with_message(
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(
+                linked.person(),
+            )),
+        ),
+    );
     vec![write_sealed(linked, &keys, (APP, record), doc.save())]
 }
 

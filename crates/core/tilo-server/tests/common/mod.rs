@@ -611,6 +611,12 @@ impl Linked {
         self.sync.device()
     }
 
+    /// The person whose device this link belongs to: whose every write it names.
+    #[must_use]
+    pub fn person(&self) -> String {
+        hex::encode(self.device.cert.user_public_key)
+    }
+
     /// Read this device's copy of the workspace.
     pub fn read<R>(&self, read: impl FnOnce(&tilo_peer_state::StatePeer) -> R) -> R {
         self.sync.read(read)

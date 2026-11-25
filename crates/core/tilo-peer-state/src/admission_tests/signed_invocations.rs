@@ -3,7 +3,9 @@
 use super::*;
 use automerge::transaction::CommitOptions;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget, SignedCall};
-use tilo_actions::{ActionAddress, ActionContext, Did, EditOp, FieldEdit, InvocationId, PathStep};
+use tilo_actions::{
+    Acting, ActionAddress, ActionContext, Did, EditOp, FieldEdit, InvocationId, PathStep,
+};
 use tilo_server_protocol::invocation::sign_invocation_now;
 use tilo_user_identity::{
     RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
@@ -901,11 +903,11 @@ tilo_test_env::scenario! {
 }
 
 /// A change that keeps no history entry, no stamp and no framework name says nothing of who made
-/// it, and is refused as every change that names no one; one named a framework change is its
-/// signer's, the device's person.
+/// it, and is refused as every change that names no one. So is a window's direct edit that names
+/// no one; one naming its maker is theirs.
 #[test]
-fn a_change_naming_nothing_is_refused_and_a_framework_change_is_its_signers() {
-    let (mut receiver, _a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+fn a_change_naming_nothing_is_refused_and_a_native_edit_names_its_maker() {
+    let (mut receiver, _a, _ac, b, bc, now) = seeded_with(RevocationList::new());
     let plain = committed_unclaimed(&receiver, &b, "an edit", "plain", now);
     let refused = take(&mut receiver, plain, now).unwrap_err();
     assert!(
@@ -922,8 +924,19 @@ fn a_change_naming_nothing_is_refused_and_a_framework_change_is_its_signers() {
         "native",
         now,
     );
-    take(&mut receiver, native, now).expect("a framework change is decided as its signer's");
-    assert_eq!(value(&receiver), "\"native\"");
+    let refused = take(&mut receiver, native, now).unwrap_err();
+    assert!(
+        refused.reason.contains("names no invoker"),
+        "{}",
+        refused.reason
+    );
+    assert_eq!(value(&receiver), "\"seed\"", "never applied");
+
+    // The same edit naming who made it is theirs.
+    let named = ActionContext::whole_edit_by(&Acting::person(hex::encode(bc.user_public_key)));
+    let message = committed_unclaimed(&receiver, &b, &named, "named", now);
+    take(&mut receiver, message, now).expect("an edit naming its maker is theirs");
+    assert_eq!(value(&receiver), "\"named\"");
 }
 
 /// A change named the record's genesis that is not the founding every holder derives names no
@@ -972,7 +985,7 @@ fn a_genesis_that_is_not_the_derived_founding_is_decided_as_its_signers_person()
 /// taken.
 #[test]
 fn a_genesis_is_taken_only_as_a_records_first_change() {
-    let (mut receiver, _a, _ac, b, _bc, now) =
+    let (mut receiver, _a, _ac, b, bc, now) =
         seeded_records(RevocationList::new(), false, &["tab:2"]);
     let genesis = tilo_actions::FrameworkChange::Genesis.change_message();
     let rewrite = committed_unclaimed(&receiver, &b, &genesis, "rewritten", now);
@@ -997,7 +1010,7 @@ fn a_genesis_is_taken_only_as_a_records_first_change() {
     );
     assert_eq!(value_at(&receiver, "tab:2"), "\"first\"", "never applied");
 
-    let native = tilo_actions::FrameworkChange::Native.change_message();
+    let native = ActionContext::whole_edit_by(&Acting::person(hex::encode(bc.user_public_key)));
     let mut edited = unsigned_commit_at(&receiver, (APP, "tab:2"), &b, &native, "edited", now);
     edited.seq = 2;
     collab_types::sign_op(&mut edited, &b).unwrap();
@@ -1200,7 +1213,7 @@ fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
         "{refused:?}"
     );
 
-    let native = tilo_actions::FrameworkChange::Native.change_message();
+    let native = ActionContext::whole_edit_by(&Acting::person(hex::encode(person)));
     let kept = upkeep(
         &receiver,
         &server_key,

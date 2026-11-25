@@ -102,7 +102,7 @@ async fn reads_front(workspaces: &Workspaces, what: &str, want: &str) {
 
 /// Write `front` as the layout's front on `workspaces`, sealed with the keys its device's key
 /// service holds for the layout's group: the layout's founding write where none is held yet.
-async fn write_front(workspaces: &Workspaces, what: &str, want: &str) {
+async fn write_front(workspaces: &Workspaces, person: &str, what: &str, want: &str) {
     let sealed = tilo_test_env::within(what, async {
         loop {
             if let Some(Ok(keys)) = workspaces.own_route_keys(&layout_route(), true).await {
@@ -121,10 +121,12 @@ async fn write_front(workspaces: &Workspaces, what: &str, want: &str) {
     let heads = document.get_heads();
     automerge::transaction::Transactable::put(&mut document, automerge::ROOT, "front", want)
         .unwrap();
-    // Committed as the desktop commits its own edits: a native change, its signer's.
+    // Committed as the desktop commits its own edits: an edit of the record naming the person
+    // whose device made it.
     document.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        automerge::transaction::CommitOptions::default().with_message(
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person)),
+        ),
     );
     let changes = if founding {
         document.save()
@@ -249,9 +251,21 @@ async fn a_devices_own_service_holds_a_workspace_a_server_hosts_as_a_member_copy
 
     // A sealed record both ways: the laptop's key service takes part in the workspace's group over
     // its member link, so what it seals the server opens, and what the server seals it opens.
-    write_front(&copies, "the laptop seals the layout", "Main").await;
+    write_front(
+        &copies,
+        &hex::encode(ada.user_pk),
+        "the laptop seals the layout",
+        "Main",
+    )
+    .await;
     reads_front(hosted, "the server opens the laptop's layout", "Main").await;
-    write_front(hosted, "the server seals a change of the layout", "Moved").await;
+    write_front(
+        hosted,
+        &hex::encode(ada.user_pk),
+        "the server seals a change of the layout",
+        "Moved",
+    )
+    .await;
     reads_front(&copies, "the laptop opens the server's change", "Moved").await;
 
     // The laptop's service opens again on the copy it kept, and syncs with the server from it.
@@ -268,6 +282,7 @@ async fn a_devices_own_service_holds_a_workspace_a_server_hosts_as_a_member_copy
     reads_front(&copies, "the laptop opens the layout it kept", "Moved").await;
     write_front(
         &copies,
+        &hex::encode(ada.user_pk),
         "the laptop seals a change after its restart",
         "Again",
     )
@@ -327,7 +342,13 @@ async fn what_a_laptop_writes_while_its_server_is_down_reaches_the_server_once_i
     )
     .await
     .expect("the server admits the laptop's membership");
-    write_front(&copies, "the laptop seals the layout", "Main").await;
+    write_front(
+        &copies,
+        &hex::encode(ada.user_pk),
+        "the laptop seals the layout",
+        "Main",
+    )
+    .await;
     reads_front(
         server.workspaces().expect("the server holds workspaces"),
         "the server opens the laptop's layout",
@@ -338,7 +359,13 @@ async fn what_a_laptop_writes_while_its_server_is_down_reaches_the_server_once_i
     // The network goes: the server is out of reach. The laptop's own service still takes its
     // apps' writes and answers their reads.
     server.shutdown().await;
-    write_front(&copies, "the laptop writes with its server down", "Offline").await;
+    write_front(
+        &copies,
+        &hex::encode(ada.user_pk),
+        "the laptop writes with its server down",
+        "Offline",
+    )
+    .await;
     reads_front(&copies, "the laptop reads its own write offline", "Offline").await;
 
     // The network is back: the server reads what the laptop wrote meanwhile.
@@ -392,7 +419,7 @@ fn note_title(workspaces: &Workspaces, note: &str) -> Option<String> {
 /// Write the note `note` on `workspaces`, sealed with the keys its device's key service holds
 /// for the workspace's group, as someone typing it writes it: a founding write, then edits after
 /// it, the last of them titling it `title`.
-async fn write_note(workspaces: &Workspaces, note: &str, title: &str) {
+async fn write_note(workspaces: &Workspaces, person: &str, note: &str, title: &str) {
     let sealed = tilo_test_env::within("the note's keys", async {
         loop {
             if let Some(Ok(keys)) = workspaces.own_route_keys(&note_route(note), true).await {
@@ -408,10 +435,12 @@ async fn write_note(workspaces: &Workspaces, note: &str, title: &str) {
         let heads = document.get_heads();
         automerge::transaction::Transactable::put(&mut document, automerge::ROOT, "title", typed)
             .unwrap();
-        // Committed as a note's editor commits its own edits: a native change, its signer's.
+        // Committed as a note's editor commits its own edits: an edit of the record naming the
+        // person whose device made it.
         document.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            automerge::transaction::CommitOptions::default().with_message(
+                tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person)),
+            ),
         );
         let changes = if founding {
             document.save()
@@ -516,7 +545,7 @@ async fn notes_written_long_ago(
     .await
     .expect("the server admits the laptop's membership");
     for (note, title) in NOTES_WRITTEN {
-        write_note(&copies, note, title).await;
+        write_note(&copies, &hex::encode(ada.user_pk), note, title).await;
     }
     reads_every_note(&hosted, "the server opens the laptop's notes").await;
     // The laptop's sync stops, and time passes.

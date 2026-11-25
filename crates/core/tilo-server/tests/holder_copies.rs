@@ -207,6 +207,13 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
     document
         .put(ROOT, "body", "while the server was away")
         .unwrap();
+    document.commit_with(
+        automerge::transaction::CommitOptions::default().with_message(
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(
+                on_laptop.person(),
+            )),
+        ),
+    );
     let written = [write_sealed(
         &on_laptop,
         &keys,

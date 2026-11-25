@@ -59,8 +59,9 @@ impl Default for ResourceActions {
 
 impl ResourceActions {
     /// Commit what is open on the resource for a save. A toolkit's open action keeps its own
-    /// provenance; edits made outside any action are committed as the framework's own.
-    pub fn commit_for_save(&self, doc: &mut AutoCommit) {
+    /// provenance; edits made outside any action are the app `app`'s own write of its record, and
+    /// are committed as such: a change names who made it.
+    pub fn commit_for_save(&self, doc: &mut AutoCommit, app: &tilo_app_id::AppId) {
         if self
             .toolkit
             .as_ref()
@@ -72,8 +73,11 @@ impl ResourceActions {
             // Input not wrapped in an action frame still has to be closed: a writer would see
             // unchanged heads and write only the earlier snapshot.
             doc.commit_with(
-                automerge::transaction::CommitOptions::default()
-                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                automerge::transaction::CommitOptions::default().with_message(
+                    tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::by_app(
+                        app.clone(),
+                    )),
+                ),
             );
         }
     }

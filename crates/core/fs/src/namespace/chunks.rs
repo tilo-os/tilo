@@ -107,9 +107,13 @@ fn chunk_maps(doc: &mut AutoCommit) -> Result<ObjId, AutomergeError> {
 }
 
 impl Chunks {
-    pub(super) fn new(index: AutoCommit, workspace: Option<String>) -> Self {
+    pub(super) fn new(
+        index: AutoCommit,
+        workspace: Option<String>,
+        person: Option<tilo_actions::MemberId>,
+    ) -> Self {
         Self {
-            index: ChangeTrackedDoc::new(index),
+            index: ChangeTrackedDoc::new(index, person),
             held: BTreeMap::new(),
             workspace,
             located: HashMap::new(),

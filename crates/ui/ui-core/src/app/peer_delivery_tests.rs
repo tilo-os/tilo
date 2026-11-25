@@ -449,7 +449,12 @@ tilo_test_env::scenario! {
             if published {
                 let id = &binding.checkout.id;
                 let records = &fixture.records;
-                let commit = records.with_action_state(id, |doc, _, state| state.commit_for_save(doc));
+                let commit = records.with_action_state(id, |doc, _, state| {
+                    state.commit_for_save(
+                        doc,
+                        &tilo_app_id::AppId::from(crate::application_test_support::APP),
+                    )
+                });
                 commit.unwrap();
             }
             let before = fixture
@@ -738,7 +743,12 @@ tilo_test_env::scenario! {
         // passes publish: the owner routes, and the primary document.
         let id = &binding.checkout.id;
         let records = &fixture.records;
-        let commit = records.with_action_state(id, |doc, _, state| state.commit_for_save(doc));
+        let commit = records.with_action_state(id, |doc, _, state| {
+            state.commit_for_save(
+                doc,
+                &tilo_app_id::AppId::from(crate::application_test_support::APP),
+            )
+        });
         commit.unwrap();
         fixture.app.publish_owned_documents();
         let primary = fixture.app.pending_primary_document().unwrap();

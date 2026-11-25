@@ -635,7 +635,11 @@ impl Namespace {
     pub fn new(author: impl Into<MountAuthor>) -> Result<Self, automerge::AutomergeError> {
         let mount: MountAuthor = author.into();
         let index = started_from(mount.founding(0));
-        let mut ns = Self::over(Chunks::new(index, mount.workspace.clone()), mount, 0);
+        let mut ns = Self::over(
+            Chunks::new(index, mount.workspace.clone(), mount.person.clone()),
+            mount,
+            0,
+        );
         let root_document_id = FileDocumentId::new();
         ns.doc.put(
             &Obj::index(),

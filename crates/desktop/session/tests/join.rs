@@ -162,15 +162,17 @@ fn settings_channel() -> String {
     document_channel(SETTINGS)
 }
 
-/// One change of the record: `value` written under `key` , as an app writes it.
+/// One change of the record: `value` written under `key` , as an app writes it, naming itself as
+/// the app whose write it is.
 fn change(key: &str, value: &str) -> Vec<u8> {
     let mut document = automerge::AutoCommit::new();
     document
         .put(automerge::ROOT, key, value)
         .expect("the record takes the key");
     document.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        automerge::transaction::CommitOptions::default().with_message(
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::by_app(APP)),
+        ),
     );
     document.save_after(&[])
 }

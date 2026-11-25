@@ -940,8 +940,9 @@ impl ProcessContext {
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), ResourceOpenError> {
+        let by = crate::permissions::Acting::member(self.author.clone());
         let reservation = self.reservation.as_mut().ok_or(ResourceOpenError::Busy)?;
-        reservation.initialize(initialize)?;
+        reservation.initialize_by(initialize, &by)?;
         self.reservation = None;
         Ok(())
     }
@@ -951,8 +952,9 @@ impl ProcessContext {
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), ResourceOpenError> {
+        let by = crate::permissions::Acting::member(self.author.clone());
         let reservation = self.reservation.as_mut().ok_or(ResourceOpenError::Busy)?;
-        reservation.initialize_seeded(initialize, seed)?;
+        reservation.initialize_seeded_by(initialize, seed, &by)?;
         self.reservation = None;
         Ok(())
     }

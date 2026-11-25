@@ -386,7 +386,7 @@ impl Records {
 
     /// The record `key` as it is founded: the derived founding of its kind and id, which every
     /// holder makes alike and the workspace admits only as that, then the record's initial
-    /// content as a native edit, as an app's record is founded.
+    /// content as the person's own edit of the record they made, as an app's record is founded.
     fn founded(&self, key: &str) -> Result<Doc, RecordError> {
         let model = |e: &dyn std::fmt::Display| RecordError::Model(e.to_string());
         let record = self.document_id(key)?;
@@ -399,8 +399,11 @@ impl Records {
             .map_err(|e| model(&e))?;
         Environment::initialize(&mut doc).map_err(|e| model(&e))?;
         doc.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            automerge::transaction::CommitOptions::default().with_message(
+                tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(
+                    self.person()?,
+                )),
+            ),
         );
         Ok(doc)
     }

@@ -412,8 +412,11 @@ fn an_apps_records_are_kept_by_the_workspace_service_over_its_connection() {
                 )
                 .expect("a text puts");
                 doc.commit_with(
-                    automerge::transaction::CommitOptions::default()
-                        .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                    automerge::transaction::CommitOptions::default().with_message(
+                        tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::by_app(
+                            APP,
+                        )),
+                    ),
                 );
             });
             let why = store

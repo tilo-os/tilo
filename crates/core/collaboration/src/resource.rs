@@ -214,8 +214,8 @@ impl RecordTypes {
 /// keeps its items in (`founding`, as the record's type declares them,
 /// [`collab_types::document::founding`]), which every member creating the same record makes alike
 /// and the store derives for the record its route names, then what the app's `initialize` writes,
-/// as any change of the writer's. Nothing of who the record is goes in: the workspace's store
-/// keeps that.
+/// as the edit of `by`, who creates the record. Nothing of who the record is goes in: the
+/// workspace's store keeps that.
 ///
 /// A kind whose type is not declared (`founding` is `None`) founds nothing: its record is made
 /// only while what `initialize` writes keeps no container at its root. One it would make there
@@ -228,7 +228,10 @@ pub fn content_genesis(
     doc: &mut AutoCommit,
     checkout: &DocumentCheckout,
     founding: Option<&[(String, ObjType)]>,
-    initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    (by, initialize): (
+        &tilo_action_policy::Acting,
+        impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    ),
 ) -> Result<(), ResourceOpenError> {
     let kind = checkout.kind.as_str();
     let failed =
@@ -277,9 +280,11 @@ pub fn content_genesis(
         }
     }
     if made.pending_ops() != 0 {
+        // The initializer's content is the creator's edit of the record they just made: a change
+        // that names no one is refused.
         made.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                .with_message(tilo_actions::ActionContext::whole_edit_by(by)),
         );
     }
     *doc = made;
@@ -295,7 +300,8 @@ pub fn content_genesis(
 ///
 /// The change is the same on every device that holds the same history: made at time zero by an
 /// actor derived from the record (`kind`, `id`), the containers it brings together and the heads
-/// it is made on, which are its only dependencies. Two devices doing it at once from one history
+/// it is made on, which are its only dependencies, and named as the app `app`'s own edit of its
+/// record, the same everywhere. Two devices doing it at once from one history
 /// make one change, which a merge keeps once; two doing it from different histories make two, of
 /// which a list keeps an element naming an `id` once all the same. Opened again, a record brought
 /// together is not changed. Whether this changed anything.
@@ -307,6 +313,7 @@ pub fn merge_split_containers(
     kind: &str,
     id: &str,
     founding: &[(String, ObjType)],
+    app: &str,
 ) -> Result<bool, ResourceOpenError> {
     let failed =
         |error: automerge::AutomergeError| ResourceOpenError::Initialization(error.to_string());
@@ -401,7 +408,12 @@ pub fn merge_split_containers(
     }
     merging.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Native.change_message())
+            // The store derives it for the app whose record this is, on every device alike: the
+            // same bytes made apart merge as one change. Naming the app keeps that, and names
+            // who made it.
+            .with_message(tilo_actions::ActionContext::whole_edit_by(
+                &tilo_actions::Acting::by_app(app),
+            ))
             .with_time(0),
     );
     let merged = merging
@@ -479,7 +491,11 @@ fn fingerprint(doc: &AutoCommit, obj: &automerge::ObjId, prop: automerge::Prop) 
                 .collect();
             format!("map:{entries:?}")
         }
-        Ok(None) | Err(_) => String::new(),
+        Ok(None) => String::new(),
+        Err(error) => {
+            tracing::warn!(%error, "a value of the record could not be fingerprinted");
+            String::new()
+        }
     }
 }
 
@@ -672,7 +688,15 @@ mod tests {
     ) -> Result<AutoCommit, ResourceOpenError> {
         let mut doc = AutoCommit::new().with_actor(writer.clone());
         let founding = types.founding(checkout.kind.as_str());
-        content_genesis(&mut doc, checkout, founding.as_deref(), initialize)?;
+        content_genesis(
+            &mut doc,
+            checkout,
+            founding.as_deref(),
+            (
+                &tilo_action_policy::Acting::by_app("test.founding"),
+                initialize,
+            ),
+        )?;
         Ok(doc)
     }
 
@@ -905,12 +929,16 @@ mod tests {
         );
 
         let mut alone = one.clone();
-        assert!(merge_split_containers(&mut alone, LIST, "apart", &split_founding()).unwrap());
+        assert!(
+            merge_split_containers(&mut alone, LIST, "apart", &split_founding(), "test.app")
+                .unwrap()
+        );
         assert_eq!(items(&alone), ["bread", "eggs", "milk"]);
         assert_eq!(notes(&alone), ["n1", "n2"]);
         let heads = alone.get_heads();
         assert!(
-            !merge_split_containers(&mut alone, LIST, "apart", &split_founding()).unwrap(),
+            !merge_split_containers(&mut alone, LIST, "apart", &split_founding(), "test.app")
+                .unwrap(),
             "a second open changes nothing"
         );
         assert_eq!(alone.get_heads(), heads);
@@ -920,8 +948,14 @@ mod tests {
         let (mut here, mut there) = (one.fork(), two.fork());
         here.set_actor(automerge::ActorId::from(b"device-one-again".as_slice()));
         there.set_actor(automerge::ActorId::from(b"device-two-again".as_slice()));
-        assert!(merge_split_containers(&mut here, LIST, "apart", &split_founding()).unwrap());
-        assert!(merge_split_containers(&mut there, LIST, "apart", &split_founding()).unwrap());
+        assert!(
+            merge_split_containers(&mut here, LIST, "apart", &split_founding(), "test.app")
+                .unwrap()
+        );
+        assert!(
+            merge_split_containers(&mut there, LIST, "apart", &split_founding(), "test.app")
+                .unwrap()
+        );
         assert_eq!(
             here.get_heads(),
             there.get_heads(),
@@ -967,18 +1001,18 @@ mod tests {
         two.merge(&mut one.clone()).unwrap();
         two.put(ROOT, "title", "Shopping").unwrap();
         two.commit();
-        assert!(merge_split_containers(&mut one, LIST, "entries", &founding).unwrap());
-        assert!(merge_split_containers(&mut two, LIST, "entries", &founding).unwrap());
+        assert!(merge_split_containers(&mut one, LIST, "entries", &founding, "test.app").unwrap());
+        assert!(merge_split_containers(&mut two, LIST, "entries", &founding, "test.app").unwrap());
         one.merge(&mut two.clone()).unwrap();
         two.merge(&mut one.clone()).unwrap();
-        merge_split_containers(&mut one, LIST, "entries", &founding).unwrap();
-        merge_split_containers(&mut two, LIST, "entries", &founding).unwrap();
+        merge_split_containers(&mut one, LIST, "entries", &founding, "test.app").unwrap();
+        merge_split_containers(&mut two, LIST, "entries", &founding, "test.app").unwrap();
         one.merge(&mut two.clone()).unwrap();
         two.merge(&mut one.clone()).unwrap();
         assert_eq!(one.get_heads(), two.get_heads(), "they converge");
         assert_eq!(ids(&one), ["a", "b", "c"], "each entry once");
         let heads = one.get_heads();
-        assert!(!merge_split_containers(&mut one, LIST, "entries", &founding).unwrap());
+        assert!(!merge_split_containers(&mut one, LIST, "entries", &founding, "test.app").unwrap());
         assert_eq!(one.get_heads(), heads, "opened again, nothing changes");
     }
 

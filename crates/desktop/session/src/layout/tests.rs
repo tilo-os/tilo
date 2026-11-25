@@ -141,7 +141,7 @@ fn strip_of(
 
 /// Write `strips` as the layout of the workspace into `doc`, as another device does.
 fn lay_out(doc: &mut automerge::AutoCommit, strips: Vec<tilo_desktop_model::Strip>) {
-    laid_out_as(doc, strips, shared_resource::change_message(None));
+    laid_out_as(doc, strips, shared_resource::change_message("ada"));
 }
 
 /// [`lay_out`], committed with `message`.

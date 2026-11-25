@@ -28,7 +28,7 @@ use super::{
 };
 use crate::history_mode::HistoryOwner;
 use crate::history_mode::owner::ResourceOwnerLifetime;
-use crate::permissions::MemberId;
+use crate::permissions::{Acting, MemberId};
 
 #[cfg(test)]
 #[path = "person_owner_tests.rs"]
@@ -397,16 +397,16 @@ impl StoredResource {
         edit: &mut dyn FnMut(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<Result<(), String>, HistoryUnavailable> {
         let author = self.author.clone();
+        let message = tilo_actions::ActionContext::whole_edit_by(&Acting::member(author.clone()));
         let result = self
             .store
             .with_history_or_why(&self.checkout.id, |doc, history| {
                 let before = doc.get_heads();
                 edit(doc)?;
-                // The closure writes the record directly, naming no finer
-                // action than an edit of the whole record.
+                // The closure writes the record directly, naming no finer action than an edit of
+                // the whole record: it names this person, whose edit it is.
                 doc.commit_with(
-                    automerge::transaction::CommitOptions::default()
-                        .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                    automerge::transaction::CommitOptions::default().with_message(message.clone()),
                 );
                 if undoable {
                     history.record_committed_action_authored(doc, before, None, None, Some(author));

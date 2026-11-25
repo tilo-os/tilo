@@ -1734,7 +1734,7 @@ impl ChainCore {
     }
 
     /// Change the record of waiting actions: nobody's undo step, saved as
-    /// any edit of the app's records.
+    /// any edit of the app's records, naming the person whose window takes its write out.
     fn edit_unsent<T>(
         &self,
         edit: impl FnOnce(
@@ -1742,6 +1742,9 @@ impl ChainCore {
         ) -> Result<T, ui_core::automerge::AutomergeError>,
     ) -> Result<T, String> {
         let id = &self.waiting_resource.id;
+        let message = tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::member(
+            self.workspace.me.clone(),
+        ));
         let edited = self
             .workspace
             .store
@@ -1749,7 +1752,7 @@ impl ChainCore {
                 let edited = edit(doc).map_err(|error| error.to_string())?;
                 doc.commit_with(
                     ui_core::automerge::transaction::CommitOptions::default()
-                        .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                        .with_message(message.clone()),
                 );
                 history.rebase(doc);
                 Ok::<_, String>(edited)

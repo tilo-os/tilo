@@ -86,6 +86,10 @@ pub(super) struct ChangeTrackedDoc {
     doc: AutoCommit,
     /// What the edits not yet committed did, once one of them was a file action.
     naming: Option<Naming>,
+    /// The person whose certified device this mount is, when it is one: who made what the
+    /// document committed with no file action naming it (`None` for a bare mount, which is no
+    /// person's).
+    person: Option<tilo_actions::MemberId>,
     /// Moves on with every possible change. The value carries nothing: a
     /// subscriber learns "something may have changed since you last looked"
     /// and looks. Shared with every clone.
@@ -93,10 +97,11 @@ pub(super) struct ChangeTrackedDoc {
 }
 
 impl ChangeTrackedDoc {
-    pub(super) fn new(doc: AutoCommit) -> Self {
+    pub(super) fn new(doc: AutoCommit, person: Option<tilo_actions::MemberId>) -> Self {
         Self {
             doc,
             naming: None,
+            person,
             changes: Arc::new(watch::Sender::new(())),
         }
     }
@@ -106,6 +111,7 @@ impl ChangeTrackedDoc {
         Self {
             doc,
             naming: None,
+            person: with.person.clone(),
             changes: Arc::clone(&with.changes),
         }
     }
@@ -200,9 +206,9 @@ impl ChangeTrackedDoc {
     // named as what it is.
 
     /// Commit what the document changed as a mount's edit of the tree: the
-    /// change names the framework's direct edit of a record, which no app
-    /// action produced, as every change a device signs must
-    /// ([`collab_types::check_claimed`]).
+    /// change names what produced it, which no app action may have, as every change a device
+    /// signs must ([`collab_types::check_claimed`]). What no file action named is the mount's
+    /// person's own edit of the document; a bare mount is no person's and names nobody.
     pub(super) fn commit_named(&mut self) {
         let naming = self.naming.take();
         if self.doc.pending_ops() == 0 {
@@ -211,7 +217,12 @@ impl ChangeTrackedDoc {
         let message = naming
             .and_then(|naming| naming.context())
             .and_then(|context| context.change_message())
-            .unwrap_or_else(|| FrameworkChange::Native.change_message());
+            .unwrap_or_else(|| match &self.person {
+                Some(person) => tilo_actions::ActionContext::whole_edit_by(
+                    &tilo_actions::Acting::member(person.clone()),
+                ),
+                None => FrameworkChange::Native.change_message(),
+            });
         self.doc
             .commit_with(CommitOptions::default().with_message(message));
     }
@@ -276,6 +287,7 @@ impl Clone for ChangeTrackedDoc {
         Self {
             doc: self.doc.clone(),
             naming: self.naming.clone(),
+            person: self.person.clone(),
             changes: Arc::clone(&self.changes),
         }
     }
@@ -312,7 +324,7 @@ mod tests {
 
     #[test]
     fn edits_announce_and_reads_and_saves_do_not() {
-        let mut doc = ChangeTrackedDoc::new(AutoCommit::new());
+        let mut doc = ChangeTrackedDoc::new(AutoCommit::new(), None);
         let mut changes = doc.subscribe();
         let _ = doc.get_heads();
         let _ = doc.save();

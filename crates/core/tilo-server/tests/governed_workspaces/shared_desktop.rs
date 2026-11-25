@@ -168,9 +168,13 @@ impl Page<'_> {
             .with_actor(automerge::ActorId::from(actor));
         let heads = doc.get_heads();
         shared_resource::write(&mut doc, desktop).unwrap();
+        // A member's page writes its desktop as the person whose device it is.
         doc.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            automerge::transaction::CommitOptions::default().with_message(
+                tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(
+                    hex::encode(self.device.cert.user_public_key),
+                )),
+            ),
         );
         let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&heads));
         let author = collab_types::Ed25519PublicKey::from_bytes(self.device.device_pubkey());

@@ -53,8 +53,9 @@ impl ResourceStore {
         id: &DocumentId,
         frontier: &mut crate::state::DocumentFrontier,
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), ResourceOpenError> {
+        let app = self.kept_app()?;
         self.with_action_state(id, |doc, _, actions| {
-            actions.commit_for_save(doc);
+            actions.commit_for_save(doc, &app);
             let (delta, heads) = frontier.pending_mirror_delta(doc);
             if delta.is_empty() {
                 actions.notices.replicating();
@@ -79,8 +80,9 @@ impl ResourceStore {
         id: &DocumentId,
         frontier: &mut crate::state::DocumentFrontier,
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), ResourceOpenError> {
+        let app = self.kept_app()?;
         self.with_action_state(id, |doc, _, actions| {
-            actions.commit_for_save(doc);
+            actions.commit_for_save(doc, &app);
             let own = actions.writers.borrow().clone();
             let (delta, heads) = frontier.pending_delta(doc, &own);
             if delta.is_empty() {
@@ -139,8 +141,9 @@ impl ResourceStore {
         &self,
         id: &DocumentId,
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), ResourceOpenError> {
+        let app = self.kept_app()?;
         self.with_action_state(id, |doc, _, actions| {
-            actions.commit_for_save(doc);
+            actions.commit_for_save(doc, &app);
             let heads = doc.get_heads();
             actions.notices.sent(&heads);
             (doc.save(), heads)
@@ -157,8 +160,9 @@ impl ResourceStore {
         &self,
         id: &DocumentId,
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<automerge::ChangeHash>), ResourceOpenError> {
+        let app = self.kept_app()?;
         self.with_action_state(id, |doc, _, actions| {
-            actions.commit_for_save(doc);
+            actions.commit_for_save(doc, &app);
             let heads = doc.get_heads();
             actions.notices.sent(&heads);
             (doc.save(), doc.save_after(&[]), heads)

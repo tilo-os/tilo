@@ -40,13 +40,14 @@ fn new_note() -> DocumentCheckout {
     DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"))
 }
 
-/// `key` set to `value` as an app's edit made outside any action is kept: as the framework's own
+/// `key` set to `value` as the app `app`'s edit made outside any action is kept: as the app's own
 /// change, named so every reader takes it.
-fn put_text(doc: &mut AutoCommit, key: &str, value: &str) {
+fn put_text(doc: &mut AutoCommit, app: &str, key: &str, value: &str) {
     doc.put(ROOT, key, value).expect("a text puts");
     doc.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        automerge::transaction::CommitOptions::default().with_message(
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::by_app(app)),
+        ),
     );
 }
 
@@ -86,7 +87,7 @@ fn a_record_one_process_wrote_opens_in_the_next(start: Start<'_>, app: &str, wor
         let store = owners.open(app, workspace).expect("the store opens");
         store.create_resource(&note).expect("the record is made");
         store.with(&note.id, |doc| {
-            put_text(doc, "body", "typed before closing")
+            put_text(doc, app, "body", "typed before closing")
         });
         store.flush().expect("the workspace took what was typed");
         assert_eq!(
@@ -114,8 +115,8 @@ fn two_processes_of_one_app_both_keep_their_changes(start: Start<'_>, app: &str,
         second.try_open_resource(&note).expect("the record opens"),
         ResourceOpenOutcome::Loaded
     );
-    first.with(&note.id, |doc| put_text(doc, "first", "one"));
-    second.with(&note.id, |doc| put_text(doc, "second", "two"));
+    first.with(&note.id, |doc| put_text(doc, app, "first", "one"));
+    second.with(&note.id, |doc| put_text(doc, app, "second", "two"));
     first.flush().expect("the workspace took the first change");
     second
         .flush()
@@ -179,7 +180,7 @@ fn records_of_two_workspaces_never_alias(start: Start<'_>, app: &str, [one, two]
         let mut owners = ResourceOwners::writing(start(workspace));
         let store = owners.open(app, workspace).expect("the store opens");
         store.create_resource(&note).expect("the record is made");
-        store.with(&note.id, |doc| put_text(doc, "body", body));
+        store.with(&note.id, |doc| put_text(doc, app, "body", body));
         if workspace == one {
             store
                 .create_resource(&only_in_one)

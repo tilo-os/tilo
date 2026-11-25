@@ -1085,7 +1085,7 @@ impl Lounge {
         );
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(shared_resource::change_message(Some(&person))),
+                .with_message(shared_resource::change_message(&person)),
         );
         let mutation = if first {
             DocumentMutation::Snapshot(doc.save())

@@ -116,8 +116,10 @@ fn names_what_it_read(
 /// write larger than one op is written as segments, so no op carries its changes whole. `None`
 /// decides `op` itself. `imported` is the person whose devices imported the history `op` is of,
 /// when it is: its changes that name no invoker are decided as theirs. `signer` is who signed
-/// `op` (the signing device's person, or the agent its key is certified for): a framework change
-/// that names no one is decided and recorded as theirs ([`crate::claim::Maker::Signer`]).
+/// `op` (the signing device's person, or the agent its key is certified for): the framework's own
+/// change of a record that names no one is decided and recorded as theirs
+/// ([`crate::claim::Maker::Signer`]). A window's edit of a record names who made it, and one that
+/// names no one is refused.
 ///
 /// # Errors
 /// The first [`ReceiptRefusal`].
@@ -178,8 +180,9 @@ pub fn decide_op_replayed(
 
 /// The claim each of `changes` makes as a cleartext change names it, with the units `written`
 /// reads it to write: decided as the invoker its own message names, the import step's person
-/// when it names none, or its signer's when it is a framework change that names no one
-/// ([`crate::claim::maker_of`]). A change that names no one otherwise is refused.
+/// when it names none, or its signer's when it is the framework's own change of the record and
+/// names no one ([`crate::claim::maker_of`]). A window's edit that names no one is refused, as
+/// one on every path: a change that names nobody otherwise is too.
 fn cleartext_claims(
     changes: &[automerge::Change],
     written: Option<&collab_types::units::ByChange>,

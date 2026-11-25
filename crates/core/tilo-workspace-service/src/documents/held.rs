@@ -321,9 +321,10 @@ mod tests {
         document
             .put(ROOT, "front", front)
             .expect("the layout's front");
-        document.commit_with(CommitOptions::default().with_message(
-            tilo_desktop_model::shared_resource::change_message(Some(person)),
-        ));
+        document.commit_with(
+            CommitOptions::default()
+                .with_message(tilo_desktop_model::shared_resource::change_message(person)),
+        );
         (document.save_after(&heads), document.save())
     }
 
@@ -382,7 +383,7 @@ mod tests {
         desktop.put(ROOT, "front", "Main").expect("the front");
         desktop.commit_with(
             CommitOptions::default()
-                .with_message(tilo_desktop_model::shared_resource::change_message(None)),
+                .with_message(tilo_desktop_model::shared_resource::change_message("ada")),
         );
         peer.install_seed(
             SeedState {

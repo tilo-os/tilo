@@ -58,7 +58,11 @@ impl Namespace {
             }
         }
         let mount: super::MountAuthor = author.into();
-        let mut docs = Chunks::new(index.unwrap_or_default(), mount.workspace.clone());
+        let mut docs = Chunks::new(
+            index.unwrap_or_default(),
+            mount.workspace.clone(),
+            mount.person.clone(),
+        );
         for (chunk, doc) in chunks {
             docs.adopt_chunk(chunk, doc)?;
         }

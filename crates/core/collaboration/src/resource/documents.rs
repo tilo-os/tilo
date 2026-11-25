@@ -588,7 +588,17 @@ impl ResourceSet {
         want: &DocumentCheckout,
     ) -> Result<(), ResourceOpenError> {
         if let Some(founding) = self.types.founding(want.kind.as_str()) {
-            super::merge_split_containers(doc, want.kind.as_str(), want.id.route(), &founding)?;
+            // The record's own app names the change, whichever store opened the record: the app
+            // that declares the kind, so every holder derives the same bytes.
+            let app = collab_types::app_surface::app_of_kind(want.kind.as_str())
+                .unwrap_or_else(|| self.app_id.to_string());
+            super::merge_split_containers(
+                doc,
+                want.kind.as_str(),
+                want.id.route(),
+                &founding,
+                &app,
+            )?;
         }
         Ok(())
     }
@@ -601,7 +611,16 @@ impl ResourceSet {
         self.answered.borrow_mut().remove(&want.id);
         let mut doc = AutoCommit::new().with_actor(self.writer.clone());
         let founding = self.types.founding(want.kind.as_str());
-        content_genesis(&mut doc, want, founding.as_deref(), |_| Ok(()))?;
+        // Only the derived founding is written here, nobody's change.
+        content_genesis(
+            &mut doc,
+            want,
+            founding.as_deref(),
+            (
+                &tilo_action_policy::Acting::by_app(self.app_id.clone()),
+                |_| Ok(()),
+            ),
+        )?;
         Ok(doc)
     }
 
@@ -709,6 +728,7 @@ impl ResourceSet {
         let Ok(workspace) = self.cluster().map(|cluster| cluster.to_string()) else {
             return;
         };
+        let app = self.app_id.clone();
         for (id, slot) in &mut self.open {
             slot.poll_write(crate::time::Duration::ZERO);
             if slot.writing.is_some() {
@@ -717,7 +737,7 @@ impl ResourceSet {
             let Some(doc) = slot.doc.as_mut() else {
                 continue;
             };
-            slot.action_state.commit_for_save(doc);
+            slot.action_state.commit_for_save(doc, &app);
             let heads = doc.get_heads();
             if slot.stored.as_ref() == Some(&heads) || heads.is_empty() {
                 continue;
@@ -1171,7 +1191,8 @@ impl ResourceReservation {
         &self.checkout
     }
 
-    /// Initialize once, then make the record live with its one history.
+    /// Initialize once as the app whose record it is, then make the record live with its one
+    /// history.
     ///
     /// # Errors
     /// Retains the reservation on initializer or validation failure.
@@ -1179,7 +1200,21 @@ impl ResourceReservation {
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), ResourceOpenError> {
-        self.initialize_seeded(initialize, |_| Ok(()))
+        let by = self.store.app_acting()?;
+        self.initialize_by(initialize, &by)
+    }
+
+    /// [`Self::initialize`] as `by`'s creation of the record: the person whose window or session
+    /// creates it, or the app that starts a record of its own.
+    ///
+    /// # Errors
+    /// As [`Self::initialize`].
+    pub fn initialize_by(
+        &mut self,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        by: &tilo_action_policy::Acting,
+    ) -> Result<(), ResourceOpenError> {
+        self.initialize_seeded_by(initialize, |_| Ok(()), by)
     }
 
     /// [`Self::initialize`], then `seed` the record with what depends on who creates it or where;
@@ -1191,6 +1226,21 @@ impl ResourceReservation {
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<(), ResourceOpenError> {
+        let by = self.store.app_acting()?;
+        self.initialize_seeded_by(initialize, seed, &by)
+    }
+
+    /// [`Self::initialize_seeded`] as `by`'s: what the initializer and the seed write is their
+    /// edit, and committed as theirs.
+    ///
+    /// # Errors
+    /// As [`Self::initialize_seeded`].
+    pub fn initialize_seeded_by(
+        &mut self,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        by: &tilo_action_policy::Acting,
     ) -> Result<(), ResourceOpenError> {
         let (writer, founding) = {
             let set = self.store.0.borrow();
@@ -1204,8 +1254,19 @@ impl ResourceReservation {
             )
         };
         let mut doc = AutoCommit::new().with_actor(writer);
-        content_genesis(&mut doc, &self.checkout, founding.as_deref(), initialize)?;
+        content_genesis(
+            &mut doc,
+            &self.checkout,
+            founding.as_deref(),
+            (by, initialize),
+        )?;
         seed(&mut doc).map_err(ResourceOpenError::Initialization)?;
+        if doc.pending_ops() != 0 {
+            doc.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_actions::ActionContext::whole_edit_by(by)),
+            );
+        }
         let mut set = self.store.set_mut();
         if set
             .pending
@@ -1299,6 +1360,29 @@ impl ResourceStore {
         let set = self.0.try_borrow_mut()?;
         set.generation.set(set.generation.get().wrapping_add(1));
         Ok(set)
+    }
+
+    /// The app whose records this store keeps.
+    ///
+    /// # Errors
+    /// The set is borrowed now.
+    fn kept_app(&self) -> Result<tilo_app_id::AppId, ResourceOpenError> {
+        let app = self
+            .0
+            .try_borrow()
+            .map_err(|_| ResourceOpenError::Busy)?
+            .app_id
+            .clone();
+        Ok(app)
+    }
+
+    /// [`Self::kept_app`], acting by itself: who made what it wrote with no action naming
+    /// somebody.
+    ///
+    /// # Errors
+    /// The set is borrowed now.
+    fn app_acting(&self) -> Result<tilo_action_policy::Acting, ResourceOpenError> {
+        Ok(tilo_action_policy::Acting::by_app(self.kept_app()?))
     }
 
     /// A number that moves whenever anything may have changed a resource of this store (a commit,
@@ -1777,12 +1861,16 @@ impl ResourceStore {
             return;
         };
         let mut merged = false;
+        // The kind's own app names the change, so every holder of the record derives the same
+        // bytes, whichever store opened it.
+        let app =
+            collab_types::app_surface::app_of_kind(kind).unwrap_or_else(|| set.app_id.to_string());
         for (id, parked) in &mut set.open {
             if parked.kind.as_str() != kind {
                 continue;
             }
             if let Some(doc) = parked.doc.as_mut() {
-                match super::merge_split_containers(doc, kind, id.route(), &founding) {
+                match super::merge_split_containers(doc, kind, id.route(), &founding, &app) {
                     Ok(changed) => merged |= changed,
                     Err(error) => {
                         tracing::warn!(record = %id, %error, "a record's split containers were not brought together");
@@ -2099,8 +2187,9 @@ impl ResourceStore {
     /// # Errors
     /// The record is not open here or its owner is busy.
     pub fn hold_notice(&self, id: &DocumentId, text: String) -> Result<(), ResourceOpenError> {
+        let app = self.kept_app()?;
         self.with_action_state(id, |doc, _, actions| {
-            actions.commit_for_save(doc);
+            actions.commit_for_save(doc, &app);
             let heads = doc.get_heads();
             actions.notices.hold(text, heads);
         })

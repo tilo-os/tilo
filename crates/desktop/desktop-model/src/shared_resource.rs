@@ -1219,22 +1219,21 @@ fn update(
 }
 
 /// The message a change of the record is committed with: an edit of the
-/// shared desktop, by `person` when one made it. It names its action, as
-/// every change a device signs must, and who made it, as the desktop's
-/// history tells it ([`change_author`]).
+/// shared desktop by `person`, who made it. It names its action, as every
+/// change a device signs must, and who made it, as the desktop's history
+/// tells it ([`change_author`]).
 #[must_use]
-pub fn change_message(person: Option<&str>) -> String {
-    let mut context = tilo_actions::ActionContext::for_resource(
+pub fn change_message(person: &str) -> String {
+    tilo_actions::ActionContext::for_resource(
         crate::ownership::DESKTOP_DOCUMENT,
         crate::ownership::DESKTOP_KIND,
         "Desktop",
-    );
-    if let Some(person) = person.filter(|person| !person.is_empty()) {
-        context = context.with_invoker(tilo_actions::ActionInvoker::person(person));
-    }
-    context
-        .change_message()
-        .unwrap_or_else(|| tilo_actions::FrameworkChange::Native.change_message())
+    )
+    .with_invoker(tilo_actions::ActionInvoker::person(person))
+    .change_message()
+    .unwrap_or_else(|| {
+        tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person))
+    })
 }
 
 /// `person`'s change of the record as one step of theirs: [`change_message`],
@@ -1252,7 +1251,9 @@ pub fn step_message(person: &str) -> String {
         .with_invoker(tilo_actions::ActionInvoker::person(person))
     }
     .change_message()
-    .unwrap_or_else(|| tilo_actions::FrameworkChange::Native.change_message())
+    .unwrap_or_else(|| {
+        tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person))
+    })
 }
 
 /// `person`'s change of the record that is nobody's step: what it shows, or the layout it was
@@ -1263,7 +1264,7 @@ pub fn housekeeping_message(person: &str) -> String {
         .with_invoker(tilo_actions::ActionInvoker::person(person))
         .with_change(tilo_actions::ChangeKind::Housekeeping)
         .change_message()
-        .unwrap_or_else(|| change_message(Some(person)))
+        .unwrap_or_else(|| change_message(person))
 }
 
 /// The person who made a change of the record, as its message ([`change_message`])
@@ -1289,7 +1290,7 @@ pub fn commit_change(
 ) {
     let message = action
         .and_then(tilo_actions::ActionContext::change_message)
-        .unwrap_or_else(|| change_message(Some(author)));
+        .unwrap_or_else(|| change_message(author));
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
             .with_message(message)

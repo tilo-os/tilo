@@ -148,7 +148,8 @@ pub fn draft_local_write(
         {
             return Err(WriteRefusal::Refused(format!(
                 "a change to {document} of {app} names no one who made it: commit it with its \
-                 history entry, or as a framework change such as a native edit ({})",
+                 history entry, or as an edit of the record naming who made it \
+                 (ActionContext::whole_edit_by) ({})",
                 nameless.hash()
             )));
         }
