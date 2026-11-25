@@ -1394,13 +1394,27 @@ async fn test_endpoint(key: &ed25519_dalek::SigningKey) -> iroh::Endpoint {
 /// tasks: what the synchronous calls into the service use.
 ///
 /// On a thread already driving a runtime a second `block_on` would panic, so
-/// the future is driven from a thread of its own there.
+/// the future is driven from a thread of its own there. The app runtime's own
+/// thread never waits here: every task of every session and daemon in the
+/// process runs on it, and the future waits on that thread's timers and
+/// sockets, so the wait would hold them all until something else gave way.
+/// A debug build stops there, and a release build says where it waits from.
 pub(crate) fn block_on_owned<F>(future: F) -> F::Output
 where
     F: std::future::Future + Send + 'static,
     F::Output: Send + 'static,
 {
     let runtime = tilo_rt::app();
+    if runtime.is_runtime_thread() {
+        tracing::error!(
+            from = %std::backtrace::Backtrace::force_capture(),
+            "a synchronous call into the workspaces waits on the app runtime's own thread"
+        );
+        assert!(
+            !cfg!(debug_assertions),
+            "a synchronous call into the workspaces waits on the app runtime's own thread"
+        );
+    }
     if tokio::runtime::Handle::try_current().is_err() {
         return runtime.handle().block_on(future);
     }
