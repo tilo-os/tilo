@@ -244,7 +244,7 @@ fn workspace_skills_are_shared_and_a_viewers_write_is_refused() {
 
 /// Make the person's assistant `Scout` in the workspace, as the Assistant app's own action does:
 /// the agent whose triggers a mention fires.
-async fn make_scout(host: &Host) {
+pub(crate) async fn make_scout(host: &Host) {
     let target = tilo_actions::remote::RemoteActionTarget::workspace_governance(
         host.workspace(),
         tilo_actions::remote::WORKSPACE_AGENT_CREATE,
@@ -311,7 +311,7 @@ async fn chat_provider(host: &Host) -> String {
 /// person's own write, not their agent's, which the agent's triggers leave out. The instance
 /// takes the channel as its record delivers it, so a write that comes before it holds the
 /// channel is asked again.
-async fn write_to_scout(host: &Host, channel: &str, words: &str) -> (String, bool) {
+pub(crate) async fn write_to_scout(host: &Host, channel: &str, words: &str) -> (String, bool) {
     let address = chat_rows(host, host.workspace(), host.person())
         .into_iter()
         .filter_map(|row| row.action)
@@ -349,12 +349,15 @@ async fn write_to_scout(host: &Host, channel: &str, words: &str) -> (String, boo
 /// call: the model its agents answer a turn on.
 /// Link a model on this computer and answer the workspace's calls through `replies`, one per
 /// call: the model its agents answer a turn on.
-fn scripted(host: &Host, replies: impl IntoIterator<Item = Reply>) -> Arc<ScriptedProvider> {
+pub(crate) fn scripted(
+    host: &Host,
+    replies: impl IntoIterator<Item = Reply>,
+) -> Arc<ScriptedProvider> {
     host.scripted_models(replies)
 }
 
 /// Wait until a turn asked its model `count` times.
-async fn asked(scripted: &ScriptedProvider, count: usize) {
+pub(crate) async fn asked(scripted: &ScriptedProvider, count: usize) {
     let deadline = tilo_test_env::hang_deadline();
     while scripted.asked().len() < count {
         assert!(
@@ -368,7 +371,7 @@ async fn asked(scripted: &ScriptedProvider, count: usize) {
 
 /// What the tools answered in `request`, in the order asked: each answer's words, and whether
 /// it failed.
-fn tool_answers(
+pub(crate) fn tool_answers(
     request: &tilo_workspace_service::workspaces::model_answers::protocol::ModelRequest,
 ) -> Vec<(String, bool)> {
     use tilo_workspace_service::workspaces::model_answers::protocol::Content;
