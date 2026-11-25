@@ -320,8 +320,8 @@ pub mod calls {
     /// Run the first `action` `app`'s record offers `caller`, with `arguments`, through the
     /// provider the dispatch hands the app's calls to: what it answered, or why not.
     ///
-    /// # Panics
-    /// The record offers `caller` no such action, or the app's records are not served here.
+    /// # Errors
+    /// The record offers `caller` no such action, or `arguments` is not an object.
     pub async fn call(
         workspaces: &Workspaces,
         caller: &Caller,
@@ -343,18 +343,18 @@ pub mod calls {
             .into_iter()
             .filter_map(|row| row.action)
             .collect();
-        let address = offered
+        let Some(address) = offered
             .iter()
             .find(|offered| offered.address.action == action)
             .map(|offered| offered.address.clone())
-            .unwrap_or_else(|| {
-                panic!(
-                    "{app} offers {action}: {:?}",
-                    offered.iter().map(|o| &o.address).collect::<Vec<_>>()
-                )
-            });
+        else {
+            return Err(format!(
+                "{app} offers {action}: {:?}",
+                offered.iter().map(|o| &o.address).collect::<Vec<_>>()
+            ));
+        };
         let serde_json::Value::Object(arguments) = arguments else {
-            panic!("arguments are an object");
+            return Err("arguments are an object".to_owned());
         };
         let request = InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
@@ -525,6 +525,40 @@ mod tests {
         serde_json::to_string(&records.rows(caller)).unwrap()
     }
 
+    /// The workspace denies `person`'s agent `scout` everything in it.
+    async fn deny_the_agent(workspaces: &Workspaces, workspace: &str, person: &str) {
+        tilo_workspace_service::workspaces::fixtures::record_grants(
+            workspaces,
+            workspace,
+            &[tilo_action_policy::Grant::new(
+                "scout-denied",
+                tilo_action_policy::Grantee::agent("scout", person.to_owned()),
+                TreePath::workspace(workspace).rest(),
+                KindSet::ALL,
+                Answer::Deny,
+                tilo_action_policy::Grantee::person(person.to_owned()),
+            )],
+        )
+        .await;
+    }
+
+    /// The workspace grants `person`'s agent `scout` their undoable writes in it.
+    async fn grant_the_agent(workspaces: &Workspaces, workspace: &str, person: &str) {
+        tilo_workspace_service::workspaces::fixtures::record_grants(
+            workspaces,
+            workspace,
+            &[tilo_action_policy::Grant::new(
+                "scout-delegated",
+                tilo_action_policy::Grantee::agent("scout", person.to_owned()),
+                TreePath::workspace(workspace),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                tilo_action_policy::Grantee::person(person.to_owned()),
+            )],
+        )
+        .await;
+    }
+
     /// tl Chat's record, which no window holds open on a server, is offered to its person and
     /// written as theirs through the provider the dispatch hands a call to: what an agent's
     /// reply and a person's `tilo do` reach.
@@ -601,19 +635,7 @@ mod tests {
             .expect("Chat's root is made");
 
         // Outside its delegation: the workspace denies it everything.
-        tilo_workspace_service::workspaces::fixtures::record_grants(
-            &workspaces,
-            &workspace,
-            &[tilo_action_policy::Grant::new(
-                "scout-denied",
-                tilo_action_policy::Grantee::agent("scout", person.clone()),
-                TreePath::workspace(&workspace).rest(),
-                KindSet::ALL,
-                Answer::Deny,
-                tilo_action_policy::Grantee::person(person.clone()),
-            )],
-        )
-        .await;
+        deny_the_agent(&workspaces, &workspace, &person).await;
         let held = scout();
         let to = tilo_actions::MemberId::person(person.clone());
         let request = write_to(&records, &held, &to, "Sold the house").await;
@@ -639,19 +661,7 @@ mod tests {
             &[tilo_action_policy::GrantId::new("scout-denied")],
         )
         .await;
-        tilo_workspace_service::workspaces::fixtures::record_grants(
-            &workspaces,
-            &workspace,
-            &[tilo_action_policy::Grant::new(
-                "scout-delegated",
-                tilo_action_policy::Grantee::agent("scout", person.clone()),
-                TreePath::workspace(&workspace),
-                KindSet::READ_UNDOABLE,
-                Answer::Allow,
-                tilo_action_policy::Grantee::person(person.clone()),
-            )],
-        )
-        .await;
+        grant_the_agent(&workspaces, &workspace, &person).await;
         let delegated = scout();
         let request = write_to(&records, &delegated, &to, "The plan is ready").await;
         run(&workspaces, &delegated, request)
@@ -803,23 +813,16 @@ mod tests {
         server.shutdown().await;
     }
 
-    /// Search over Tasks, read with no window of it open, finds a workspace's task for its
-    /// members and nothing for a person who is not one: the record reads as the person searching,
-    /// never as the person whose device serves it.
-    #[tokio::test]
-    async fn search_finds_nothing_of_another_apps_record_for_a_person_outside_the_workspace() {
+    /// Tasks' record in `workspace`, its root made as a window opening it first would, with a
+    /// task `ada_person` wrote in it.
+    async fn tasks_with_a_task(
+        workspaces: &Workspaces,
+        workspace: &str,
+        ada_person: &str,
+    ) -> BuiltInRecords {
         use tilolang_tilo::runtime::Value;
         const TASKS: &str = "so.tilo.tasks";
-        let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
-        let server = test_host(dir.path(), &key, &owner).await;
-        let workspaces = server.workspaces().clone();
-        workspaces.provide_tilolang(crate::host());
-        declare_chat(&workspaces);
-        let workspace = workspaces.create("Team").await.unwrap().workspace;
-        let ada_person = hex::encode(owner.user_public_key);
         let tasks = built_in(TASKS).unwrap().expect("Tasks is built in");
-        // The record's channel is founded here, as a window opening it first would.
         let tasks_records = BuiltInRecords {
             workspaces: workspaces.clone(),
             app: TASKS,
@@ -827,16 +830,16 @@ mod tests {
             rooted: Arc::default(),
         };
         tasks_records
-            .rooted(&workspace, &ada_person)
+            .rooted(workspace, ada_person)
             .await
             .expect("Tasks' record has its root");
-        let ada = member(tilo_actions::MemberId::person(ada_person.clone()));
+        let ada = member(tilo_actions::MemberId::person(ada_person.to_owned()));
         let who = ada.clone();
         with_tl_record(
-            &workspaces,
-            &workspace,
+            workspaces,
+            workspace,
             &tasks,
-            (ada, &ada_person),
+            (ada, ada_person),
             move |opened| {
                 opened.open_root()?;
                 opened
@@ -854,6 +857,25 @@ mod tests {
         )
         .await
         .expect("Ada writes a task");
+        tasks_records
+    }
+
+    /// Search over Tasks, read with no window of it open, finds a workspace's task for its
+    /// members and nothing for a person who is not one: the record reads as the person searching,
+    /// never as the person whose device serves it.
+    #[tokio::test]
+    async fn search_finds_nothing_of_another_apps_record_for_a_person_outside_the_workspace() {
+        use tilolang_tilo::runtime::Value;
+        const TASKS: &str = "so.tilo.tasks";
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
+        workspaces.provide_tilolang(crate::host());
+        declare_chat(&workspaces);
+        let workspace = workspaces.create("Team").await.unwrap().workspace;
+        let ada_person = hex::encode(owner.user_public_key);
+        let tasks_records = tasks_with_a_task(&workspaces, &workspace, &ada_person).await;
 
         let found = |person: &str| {
             let found = workspaces
