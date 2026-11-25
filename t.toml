@@ -1050,6 +1050,18 @@ requires = ["arch=x86_64"]
 on = ["dispatch", "idle"]
 heavy = true
 
+# The Android library's std, built from source for a target spec with native thread-locals, holds
+# more thread-locals than bionic has pthread keys, and rustc's own Android std does not: a program
+# built both ways, linked statically so this kernel runs it. Building std fetches the crates its
+# own lockfile names from crates.io, which needs cargo's network.
+[[check]]
+name = "android-tls"
+egress = { to = ["code.tilo.so:443", "index.crates.io:443", "static.crates.io:443"] }
+run = "cargo test --locked -p tilo-app-builder --test android_thread_locals -- --ignored"
+env = { CARGO_NET_OFFLINE = "false" }
+requires = ["arch=x86_64"]
+on = ["dispatch", "idle"]
+
 # The Tilo app's APK, built as a developer builds one: `tilolang setup android` installs the SDK's
 # build tools and platform from Google's repository, and `tilolang build` compiles the phone's
 # library and its tilolang apps and links them. The JDK the SDK's tools run on, and zip, come from
@@ -1057,10 +1069,12 @@ heavy = true
 # setup is pinned and served from t's cache; the builder image carries the NDK only. The JDK is
 # named by its directory, since `java` on PATH comes from alternatives links the run doesn't see,
 # and the SDK tools keep their cache in ANDROID_USER_HOME: Java's home is the passwd entry's, not
-# $HOME, and isn't writable here.
+# $HOME, and isn't writable here. The library's std is built from source, from the crates its own
+# lockfile names, which come from crates.io and need cargo's network.
 [[check]]
 name = "android-apk"
 egress = { to = ["0.0.0.0/0", "::/0"] }
+env = { CARGO_NET_OFFLINE = "false" }
 setup = { run = "dnf install -y --setopt=install_weak_deps=False --repo=fedora --setopt=fedora.metalink= '--setopt=fedora.baseurl=https://dl.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/' java-25-openjdk-devel zip unzip && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
 run = "export JAVA_HOME=\"$(dirname \"$(dirname \"$(ls /usr/lib/jvm/java-25-openjdk*/bin/javac | head -n 1)\")\")\"\nexport PATH=\"$JAVA_HOME/bin:$PATH\"\nexport ANDROID_HOME=\"$TMPDIR/android-sdk\"\nexport ANDROID_USER_HOME=\"$TMPDIR/android-user\"\nmkdir -p \"$ANDROID_HOME\" \"$ANDROID_USER_HOME\"\ncargo run --locked -p tilolang-cli --bin tilolang -- setup android --accept-licenses\ncargo run --locked -p tilolang-cli --bin tilolang -- build --platform android --arch x86_64 --profile release --output /target/android-apk crates/desktop/phone\n"
 # The APK as it ships: an optimised build, whose size is the one the app-size budget reads, and
