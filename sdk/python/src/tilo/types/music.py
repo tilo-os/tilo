@@ -43,7 +43,6 @@ __all__ = [
     "PlayNextArgs",
     "HideRecArgs",
     "RestoreRecArgs",
-    "NoteFailureArgs",
     "UpdateTasteArgs",
     "DismissArtistArgs",
     "PreferArtistArgs",
@@ -97,12 +96,6 @@ RestoreRecArgs = TypedDict("RestoreRecArgs", {
 })
 """The arguments of `restore_rec`."""
 
-NoteFailureArgs = TypedDict("NoteFailureArgs", {
-    "reason": "str",
-    "at": "float",
-})
-"""The arguments of `note_failure`."""
-
 UpdateTasteArgs = TypedDict("UpdateTasteArgs", {
     "which": "str",
     "on": "bool",
@@ -127,7 +120,7 @@ QueueMovedArgs = TypedDict("QueueMovedArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -188,7 +181,7 @@ class Notice(Resource):
 
 class Track(Resource):
     """Track — `tl.so.tilo.music.Track`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     wapyyydf: str  # key
     zpnajesf: str  # title
     pzaz5i7w: str  # artist
@@ -270,7 +263,7 @@ class Track(Resource):
 
 class Album(Resource):
     """Album — `tl.so.tilo.music.Album`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     xlmick3d: str  # key
     ui7q6nc2: str  # title
     c36cztfw: str  # artist
@@ -320,7 +313,7 @@ class Album(Resource):
 
 class Artist(Resource):
     """Artist — `tl.so.tilo.music.Artist`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     a3jwtsne: str  # key
     aht5vji7: str  # name
     p7suhaoo: int  # subscribers
@@ -350,7 +343,7 @@ class Artist(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.music.Playlist`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     zliedtfz: str  # key
     rtkxqj2p: str  # title
     htibtwee: str  # subtitle
@@ -377,7 +370,7 @@ class Playlist(Resource):
 
 class SpotifyDevice(Resource):
     """SpotifyDevice — `tl.so.tilo.music.SpotifyDevice`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     @property
     def _4ruem7bk(self) -> str:
         """key (`4ruem7bk` on the wire)."""
@@ -394,7 +387,7 @@ class SpotifyDevice(Resource):
 
 class SpotifyQueueItem(Resource):
     """SpotifyQueueItem — `tl.so.tilo.music.SpotifyQueueItem`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     r4rop6xj: str  # key
     teom6gyk: str  # title
     b4nh57k6: str  # artist
@@ -405,7 +398,7 @@ class SpotifyQueueItem(Resource):
 
 class Section(Resource):
     """Section — `tl.so.tilo.music.Section`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     jsrmddga: str  # key
     @property
     def _2kqqdved(self) -> str:
@@ -420,7 +413,7 @@ class Section(Resource):
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.music.Suggestion`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     qh34h2ch: str  # key
     xh6birha: str  # section
     a5bkjkyq: str  # kind
@@ -446,7 +439,7 @@ class Suggestion(Resource):
 
 class Mixtape(Resource):
     """Mixtape — `tl.so.tilo.music.Mixtape`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     @property
     def _5d2oxk4b(self) -> str:
         """name (`5d2oxk4b` on the wire)."""
@@ -511,7 +504,7 @@ class Mixtape(Resource):
 
 class Taste(Resource):
     """Taste — `tl.so.tilo.music.Taste`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     nhxvxvrt: bool  # followed_artists
     fygjzxca: bool  # liked_songs
     splmmoir: bool  # saved_albums
@@ -523,7 +516,7 @@ class Taste(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.music.Library`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     hkr3ia6d: str  # name
     cp5uymkx: list[Entry[Track]]  # tracks
     phkx3ocv: list[Entry[Album]]  # albums
@@ -564,6 +557,7 @@ class Library(Resource):
     vnufl2py: str  # trouble
     jelhifn2: str  # player_trouble
     bw27kdqh: float  # player_at
+    x6v7yq2x: str  # player_retried
     fkvdcomi: bool  # online
 
     def session(self) -> Any:
@@ -640,12 +634,8 @@ class Library(Resource):
         reason: str,
         at: float,
     ) -> None:
-        """Says why the player stopped, and where, so the notice names the place and continues there."""
+        """Says why the player stopped, and where, so the notice names the place and continues there. A stream that stopped partway is first asked for again by itself, once: a source that drops a connection or an address that expired plays on without the person doing anything."""
         return self.action("note_failure", reason=reason, at=at)
-
-    def note_failure_many(self, items: list[NoteFailureArgs]) -> list[dict[str, Any]]:
-        """Runs `note_failure` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("note_failure", items)
 
     def retry_stream(self) -> None:
         """Asks the catalogue for the song's address again and plays it on from where it stopped: a stream its source stopped serving partway through, or one whose signed address expired, continues from that place rather than beginning again."""
@@ -747,12 +737,12 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"session", "open_audio_file", "follow_stream", "follow_stream_many", "open_link", "add_to_queue", "add_to_queue_many", "play_next", "play_next_many", "lyrics_now", "hide_rec", "hide_rec_many", "restore_rec", "restore_rec_many", "search", "open_suggestion", "lyrics_of", "note_failure", "note_failure_many", "retry_stream", "new_mixtape", "set_catalogue", "connect_spotify", "finish_spotify", "disconnect_spotify", "spotify_devices", "transfer_playback", "remote_play", "remote_pause", "remote_next", "remote_previous", "spotify_now", "spotify_queue", "queue_on_spotify", "spotify_more", "update_taste", "update_taste_many", "dismiss_artist", "dismiss_artist_many", "prefer_artist", "prefer_artist_many"})
+    __actions__ = frozenset({"session", "open_audio_file", "follow_stream", "follow_stream_many", "open_link", "add_to_queue", "add_to_queue_many", "play_next", "play_next_many", "lyrics_now", "hide_rec", "hide_rec_many", "restore_rec", "restore_rec_many", "search", "open_suggestion", "lyrics_of", "note_failure", "retry_stream", "new_mixtape", "set_catalogue", "connect_spotify", "finish_spotify", "disconnect_spotify", "spotify_devices", "transfer_playback", "remote_play", "remote_pause", "remote_next", "remote_previous", "spotify_now", "spotify_queue", "queue_on_spotify", "spotify_more", "update_taste", "update_taste_many", "dismiss_artist", "dismiss_artist_many", "prefer_artist", "prefer_artist_many"})
 
 
 class Music(Resource):
     """Music — `tl.so.tilo.music`."""
-    __surface__ = "so.tilo.music@b2520efef4b013e0"
+    __surface__ = "so.tilo.music@7417b198334861f3"
     def queue_moved(self,
         *,
         p: Any,

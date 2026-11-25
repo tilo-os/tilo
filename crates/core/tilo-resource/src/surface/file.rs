@@ -285,10 +285,17 @@ fn leading<'a>(
     entries.into_iter()
 }
 
-/// The surface file's text for `resources`: each resource's scalars, its
-/// fields one per line, then its verbs, their parameters one per line.
-pub fn render(header: &str, resources: &[Value]) -> Result<String, String> {
+/// The surface file's text for `resources`, with the record kinds of other apps
+/// `reads` names: their list, then each resource's scalars, its fields one per
+/// line, then its verbs, their parameters one per line.
+pub fn render(header: &str, resources: &[Value], reads: &[String]) -> Result<String, String> {
     let mut text = format!("{header}format = {FORMAT}\n\n");
+    if !reads.is_empty() {
+        let list: Vec<Value> = reads.iter().cloned().map(Value::String).collect();
+        text.push_str("reads = ");
+        inline(&Value::Array(list), &mut text)?;
+        text.push_str("\n\n");
+    }
     for resource in resources.iter().map(filed) {
         let Value::Object(map) = &resource else {
             return Err("a resource of the surface is not a table".to_owned());

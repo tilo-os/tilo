@@ -35,10 +35,12 @@ __all__ = [
     "JobStarted",
     "FaceScan",
     "Photos",
+    "CheckPictureArgs",
     "ToggleFavoriteArgs",
     "RotateRightArgs",
     "RotateLeftArgs",
     "ResetEditsArgs",
+    "DevelopArgs",
     "RecognizeTextArgs",
     "CropPhotoArgs",
     "TagArgs",
@@ -58,6 +60,12 @@ __all__ = [
     "RemoveSelectedArgs",
     "EditSelectedArgs",
     "RemoveAlbumArgs",
+    "StartAlbumDraftArgs",
+    "AlbumDraftToggleArgs",
+    "CancelAlbumDraftArgs",
+    "SaveAlbumArgs",
+    "DeleteAlbumDraftArgs",
+    "DismissNoticeArgs",
     "AddPersonArgs",
     "RemovePersonArgs",
     "RenamePersonArgs",
@@ -75,6 +83,10 @@ __all__ = [
 Change = Literal["keep", "clear", "set", "add", "remove"]
 """What an edit does to one field of every selected photo: keeps what each photo has, takes it off all of them, gives them all one value, or adds or takes off names (tags, people)."""
 
+CheckPictureArgs = TypedDict("CheckPictureArgs", {
+})
+"""The arguments of `check_picture`."""
+
 ToggleFavoriteArgs = TypedDict("ToggleFavoriteArgs", {
     "favorite": NotRequired["bool | None"],
 })
@@ -91,6 +103,12 @@ RotateLeftArgs = TypedDict("RotateLeftArgs", {
 ResetEditsArgs = TypedDict("ResetEditsArgs", {
 })
 """The arguments of `reset_edits`."""
+
+DevelopArgs = TypedDict("DevelopArgs", {
+    "rotation": "int",
+    "crop": "list[float]",
+})
+"""The arguments of `develop`."""
 
 RecognizeTextArgs = TypedDict("RecognizeTextArgs", {
 })
@@ -203,6 +221,32 @@ RemoveAlbumArgs = TypedDict("RemoveAlbumArgs", {
 })
 """The arguments of `remove_album`."""
 
+StartAlbumDraftArgs = TypedDict("StartAlbumDraftArgs", {
+    "id": "str",
+})
+"""The arguments of `start_album_draft`."""
+
+AlbumDraftToggleArgs = TypedDict("AlbumDraftToggleArgs", {
+    "p": "Photo",
+})
+"""The arguments of `album_draft_toggle`."""
+
+CancelAlbumDraftArgs = TypedDict("CancelAlbumDraftArgs", {
+})
+"""The arguments of `cancel_album_draft`."""
+
+SaveAlbumArgs = TypedDict("SaveAlbumArgs", {
+})
+"""The arguments of `save_album`."""
+
+DeleteAlbumDraftArgs = TypedDict("DeleteAlbumDraftArgs", {
+})
+"""The arguments of `delete_album_draft`."""
+
+DismissNoticeArgs = TypedDict("DismissNoticeArgs", {
+})
+"""The arguments of `dismiss_notice`."""
+
 AddPersonArgs = TypedDict("AddPersonArgs", {
     "p": "Photo",
     "person": "str",
@@ -270,7 +314,7 @@ RemovePersonResourceArgs = TypedDict("RemovePersonResourceArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -331,7 +375,7 @@ class Notice(Resource):
 
 class Photo(Resource):
     """Photo — `tl.so.tilo.photos.Photo`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     rv4vs7su: str  # name
     r55t3rg3: str  # picture
     vwrtdas3: str  # thumb
@@ -344,6 +388,8 @@ class Photo(Resource):
     def _2i7i3as5(self, value: str) -> None:
         self.edit("2i7i3as5", value=value)
     ktv6ci4q: int  # rotation
+    dpfjny5e: list[float]  # crop
+    nyatlpd5: str  # picture_state
     yyfm6s7t: bool  # favorite
     wm3tr75p: str  # captured_at
     zz3fpxbt: str  # folder
@@ -385,6 +431,14 @@ class Photo(Resource):
     def _7rzyj24a(self, value: list[str]) -> None:
         self.edit("7rzyj24a", value=value)
 
+    def check_picture(self) -> None:
+        """Looks at where this device stands on a photo's picture: whether it holds the bytes yet, and whether what it holds is a picture it opens. A record reaches this device from another one before its picture's bytes do, so a photo says the picture is still arriving instead of drawing nothing; the window looks again while it waits."""
+        return self.action("check_picture")
+
+    def check_picture_many(self, items: list[CheckPictureArgs]) -> list[dict[str, Any]]:
+        """Runs `check_picture` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("check_picture", items)
+
     def toggle_favorite(self,
         *,
         favorite: bool | None = None,
@@ -400,7 +454,7 @@ class Photo(Resource):
         return self.many("toggle_favorite", items)
 
     def rotate_right(self) -> None:
-        """Turns the photograph a quarter clockwise, as its person sees it: the window draws the original turned, and a save writes what it draws."""
+        """Turns the photograph a quarter clockwise, as its person sees it."""
         return self.action("rotate_right")
 
     def rotate_right_many(self, items: list[RotateRightArgs]) -> list[dict[str, Any]]:
@@ -416,12 +470,24 @@ class Photo(Resource):
         return self.many("rotate_left", items)
 
     def reset_edits(self) -> None:
-        """Puts the photograph back as it came, taking the person's own turns off it."""
+        """Puts the photograph back as it came, taking every edit off it."""
         return self.action("reset_edits")
 
     def reset_edits_many(self, items: list[ResetEditsArgs]) -> list[dict[str, Any]]:
         """Runs `reset_edits` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reset_edits", items)
+
+    def develop(self,
+        *,
+        rotation: int,
+        crop: list[float],
+    ) -> None:
+        """Records an edit on the photograph and draws it: the device keeps the part the person chose, then turns it, and keeps the result in the content store. Nothing is written over the photograph, so every edit can be taken back and the person can see the picture as it came beside the one they made."""
+        return self.action("develop", rotation=rotation, crop=crop)
+
+    def develop_many(self, items: list[DevelopArgs]) -> list[dict[str, Any]]:
+        """Runs `develop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("develop", items)
 
     def describe_photo(self) -> None:
         """What a picture shows, in a sentence, as the device's image model reads it: the sentence the library's details show and search finds. The work is the device's own, asked of this session on the app's behalf, so the app never runs a model itself."""
@@ -440,8 +506,12 @@ class Photo(Resource):
         return self.action("copy_photo")
 
     def tag_photo(self) -> None:
-        """The objects and pets the device's image model finds in a picture, added to what the photo already lists."""
+        """What the device's image model finds in a picture, added to what the photo already lists: the objects, and the pets apart from them."""
         return self.action("tag_photo")
+
+    def analyze_photo(self) -> None:
+        """What the photograph shows, as the device's model reads it in one go: the sentence search finds it by, the words in it, and the objects and pets it holds. It replaces what the photo said before, so analyzing again after the picture changed says what it shows now."""
+        return self.action("analyze_photo")
 
     def crop_photo(self,
         *,
@@ -499,12 +569,12 @@ class Photo(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"toggle_favorite", "toggle_favorite_many", "rotate_right", "rotate_right_many", "rotate_left", "rotate_left_many", "reset_edits", "reset_edits_many", "describe_photo", "recognize_text", "recognize_text_many", "copy_photo", "tag_photo", "crop_photo", "crop_photo_many", "tag", "tag_many", "untag", "untag_many", "share", "set_place", "set_place_many", "clear_place", "clear_place_many", "export_photo"})
+    __actions__ = frozenset({"check_picture", "check_picture_many", "toggle_favorite", "toggle_favorite_many", "rotate_right", "rotate_right_many", "rotate_left", "rotate_left_many", "reset_edits", "reset_edits_many", "develop", "develop_many", "describe_photo", "recognize_text", "recognize_text_many", "copy_photo", "tag_photo", "analyze_photo", "crop_photo", "crop_photo_many", "tag", "tag_many", "untag", "untag_many", "share", "set_place", "set_place_many", "clear_place", "clear_place_many", "export_photo"})
 
 
 class Album(Resource):
     """Album — `tl.so.tilo.photos.Album`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     unujaudz: str  # name
     k7fl2y27: list[str]  # photos
 
@@ -539,14 +609,14 @@ class Album(Resource):
 
 class Person(Resource):
     """Person — `tl.so.tilo.photos.Person`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     segahwtp: str  # name
     vbzsnqg5: list[str]  # photos
 
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.photos.Suggestion`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     qracadw6: str  # name
     ehc6rrhm: list[str]  # photos
     @property
@@ -561,7 +631,7 @@ class Suggestion(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.photos.Library`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     moeuycny: list[Entry[Photo]]  # photos
     tqa4lyow: list[Entry[Album]]  # albums
     xr5mtp2m: list[Entry[Person]]  # people
@@ -587,6 +657,18 @@ class Library(Resource):
     ii2qmjt5: bool  # import_stopped
     xkkw7d65: list[Entry[Unread]]  # unread
     fypuuz3p: list[Entry[FaceScan]]  # face_scans
+    jcilt5zf: str  # notice
+    kg3gc2rb: bool  # album_draft_open
+    xjkjqqf5: str  # album_draft_id
+    @property
+    def _2ql3qzqp(self) -> str:
+        """album_draft_name (`2ql3qzqp` on the wire)."""
+        return self.fields["2ql3qzqp"]
+
+    @_2ql3qzqp.setter
+    def _2ql3qzqp(self, value: str) -> None:
+        self.edit("2ql3qzqp", value=value)
+    myrcknu3: list[str]  # album_draft_photos
 
     def import_photo(self, *, file: Any) -> Photo:
         """Imports a photograph the person picks: the library keeps the address of its bytes, the name it came in with, what its own container says of it (when and where it was taken) and a small preview the grid draws. A picture whose bytes the window already holds reads at once."""
@@ -769,6 +851,54 @@ class Library(Resource):
         """Runs `remove_album` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove_album", items)
 
+    def start_album_draft(self, *, id: str) -> None:
+        """Opens an album draft: the album `id` names as it stands now, or an empty one to start. The person chooses its photos in the library and nothing about the album changes until they save the draft, so a change another member makes meanwhile is reviewed, not overwritten unseen."""
+        return self.action("start_album_draft", id=id)
+
+    def start_album_draft_many(self, items: list[StartAlbumDraftArgs]) -> list[dict[str, Any]]:
+        """Runs `start_album_draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("start_album_draft", items)
+
+    def album_draft_toggle(self, *, p: Photo) -> None:
+        """Chooses a photo for the album draft, or takes it out of the draft when it is already in it."""
+        return self.action("album_draft_toggle", p=p)
+
+    def album_draft_toggle_many(self, items: list[AlbumDraftToggleArgs]) -> list[dict[str, Any]]:
+        """Runs `album_draft_toggle` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("album_draft_toggle", items)
+
+    def cancel_album_draft(self) -> None:
+        """Closes the album draft, saving nothing."""
+        return self.action("cancel_album_draft")
+
+    def cancel_album_draft_many(self, items: list[CancelAlbumDraftArgs]) -> list[dict[str, Any]]:
+        """Runs `cancel_album_draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("cancel_album_draft", items)
+
+    def save_album(self) -> None:
+        """Saves the album draft. A photo the draft names that the library no longer holds, or an album another member deleted while it was open, is a change made first by someone else: the draft stays as it is and says so, so they review it and save again. What the save does add and take away merges with a change another member made meanwhile."""
+        return self.action("save_album")
+
+    def save_album_many(self, items: list[SaveAlbumArgs]) -> list[dict[str, Any]]:
+        """Runs `save_album` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("save_album", items)
+
+    def delete_album_draft(self) -> None:
+        """Deletes the album the draft is of. Its photos stay in the library."""
+        return self.action("delete_album_draft")
+
+    def delete_album_draft_many(self, items: list[DeleteAlbumDraftArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_album_draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_album_draft", items)
+
+    def dismiss_notice(self) -> None:
+        """Takes down what the library last had to say."""
+        return self.action("dismiss_notice")
+
+    def dismiss_notice_many(self, items: list[DismissNoticeArgs]) -> list[dict[str, Any]]:
+        """Runs `dismiss_notice` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("dismiss_notice", items)
+
     def add_person(self,
         *,
         p: Photo,
@@ -930,12 +1060,12 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"import_photo", "absorb_picture", "import_photo_meta", "import_folder", "import_folder_many", "start_import", "start_import_many", "imported", "imported_many", "stop_import", "retry_import", "retry_import_many", "reindex", "reindex_many", "dismiss_import", "dismiss_import_many", "favorite_selected", "favorite_selected_many", "remove_selected", "remove_selected_many", "edit_selected", "edit_selected_many", "new_album", "remove_album", "remove_album_many", "add_person", "add_person_many", "remove_person", "remove_person_many", "rename_person", "rename_person_many", "face_scan", "set_recognition", "set_recognition_many", "scan_faces", "scan_step", "read_batch", "pause_scan", "pause_scan_many", "delete_face_data", "delete_face_data_many", "approve_suggestion", "approve_suggestion_many", "merge_suggestion", "merge_suggestion_many", "dismiss_suggestion", "dismiss_suggestion_many", "person_named", "new_person", "merge_people", "merge_people_many", "split_photo", "split_photo_many", "remove_person_resource", "remove_person_resource_many"})
+    __actions__ = frozenset({"import_photo", "absorb_picture", "import_photo_meta", "import_folder", "import_folder_many", "start_import", "start_import_many", "imported", "imported_many", "stop_import", "retry_import", "retry_import_many", "reindex", "reindex_many", "dismiss_import", "dismiss_import_many", "favorite_selected", "favorite_selected_many", "remove_selected", "remove_selected_many", "edit_selected", "edit_selected_many", "new_album", "remove_album", "remove_album_many", "start_album_draft", "start_album_draft_many", "album_draft_toggle", "album_draft_toggle_many", "cancel_album_draft", "cancel_album_draft_many", "save_album", "save_album_many", "delete_album_draft", "delete_album_draft_many", "dismiss_notice", "dismiss_notice_many", "add_person", "add_person_many", "remove_person", "remove_person_many", "rename_person", "rename_person_many", "face_scan", "set_recognition", "set_recognition_many", "scan_faces", "scan_step", "read_batch", "pause_scan", "pause_scan_many", "delete_face_data", "delete_face_data_many", "approve_suggestion", "approve_suggestion_many", "merge_suggestion", "merge_suggestion_many", "dismiss_suggestion", "dismiss_suggestion_many", "person_named", "new_person", "merge_people", "merge_people_many", "split_photo", "split_photo_many", "remove_person_resource", "remove_person_resource_many"})
 
 
 class Unread(Resource):
     """Unread — `tl.so.tilo.photos.Unread`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     @property
     def _6iu5enh3(self) -> str:
         """name (`6iu5enh3` on the wire)."""
@@ -959,7 +1089,7 @@ class Unread(Resource):
 
 class ChosenPicture(Resource):
     """ChosenPicture — `tl.so.tilo.photos.ChosenPicture`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     wjvddrc5: str  # name
     @property
     def _6agrr5bt(self) -> str:
@@ -974,13 +1104,13 @@ class ChosenPicture(Resource):
 
 class ImportAsk(Resource):
     """ImportAsk — `tl.so.tilo.photos.ImportAsk`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     pgrmuslm: list[ChosenPicture]  # files
 
 
 class ReadPicture(Resource):
     """ReadPicture — `tl.so.tilo.photos.ReadPicture`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     z7dxm5rp: str  # name
     bedul3kq: str  # picture
     v72wrl73: str  # thumb
@@ -992,7 +1122,7 @@ class ReadPicture(Resource):
 
 class ImportRecord(Resource):
     """ImportRecord — `tl.so.tilo.photos.ImportRecord`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     k33gw4xu: str  # job
     hbuvlsle: str  # state
     l5ism53v: int  # found
@@ -1003,13 +1133,13 @@ class ImportRecord(Resource):
 
 class JobStarted(Resource):
     """JobStarted — `tl.so.tilo.photos.JobStarted`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     cgbfeocd: str  # job
 
 
 class FaceScan(Resource):
     """FaceScan — `tl.so.tilo.photos.FaceScan`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
     dejwr76b: bool  # on
     dcarwzkc: str  # state
     quetfngb: list[str]  # scanned
@@ -1017,5 +1147,5 @@ class FaceScan(Resource):
 
 class Photos(Resource):
     """Photos — `tl.so.tilo.photos`."""
-    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    __surface__ = "so.tilo.photos@217d98cb8a458042"
 

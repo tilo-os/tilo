@@ -913,6 +913,7 @@ tilo_test_env::scenario! {
         let written = tilo_resource::surface::file::render(
             "# Written by a test\n\n",
             &[serde_json::to_value(&surface).unwrap()],
+            &[],
         )
         .unwrap();
         let filed = tilo_resource::surface::file::filed(

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings.sections@1c95e9a19f83e797";
+export const SURFACE = "so.tilo.settings.sections@a90eafad61e6b88d";
 
 export interface Ink {
   primary: number;
@@ -483,6 +483,16 @@ export interface SetLayoutsArgs {
   active: string;
 }
 
+/** The arguments of `set-keyboard-layout`. */
+export interface SetKeyboardLayoutArgs {
+  value: string;
+}
+
+/** The arguments of `set-keyboard-layouts`. */
+export interface SetKeyboardLayoutsArgs {
+  value: string[];
+}
+
 /** The arguments of `set-caps-lock`. */
 export interface SetCapsLockArgs {
   behaviour: string;
@@ -500,7 +510,7 @@ export interface SetPasteShortcutArgs {
 }
 
 /** The arguments of `set-keyboard-layouts`. */
-export interface SetKeyboardLayoutsArgs {
+export interface InputDeviceSetKeyboardLayoutsArgs {
   keyboard: string;
   profile: KeyboardProfile;
 }
@@ -1074,6 +1084,16 @@ export interface Input extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setLayoutsMany(items: SetLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
+  setKeyboardLayout(args: {
+    value: string;
+  }): Promise<void>;
+  /** Runs `set-keyboard-layout` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setKeyboardLayoutMany(items: SetKeyboardLayoutArgs[]): Promise<tilo.ActionAnswer[]>;
+  setKeyboardLayouts(args: {
+    value: string[];
+  }): Promise<void>;
+  /** Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setKeyboardLayoutsMany(items: SetKeyboardLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
   setCapsLock(args: {
     behaviour: string;
   }): Promise<void>;
@@ -1094,7 +1114,7 @@ export interface Input extends tilo.Resource {
 
 /** The actions `Input` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const INPUT_ACTIONS = ["setKeyRepeat", "setKeyRepeatMany", "chooseLayout", "chooseLayoutMany", "setLayouts", "setLayoutsMany", "setCapsLock", "setCapsLockMany", "setComposeKey", "setComposeKeyMany", "setPasteShortcut", "setPasteShortcutMany"] as const;
+export const INPUT_ACTIONS = ["setKeyRepeat", "setKeyRepeatMany", "chooseLayout", "chooseLayoutMany", "setLayouts", "setLayoutsMany", "setKeyboardLayout", "setKeyboardLayoutMany", "setKeyboardLayouts", "setKeyboardLayoutsMany", "setCapsLock", "setCapsLockMany", "setComposeKey", "setComposeKeyMany", "setPasteShortcut", "setPasteShortcutMany"] as const;
 
 /** The `settings.input` kind at `path`. */
 export function input(ws: tilo.Workspace, path: string): Input {
@@ -1117,7 +1137,7 @@ export interface InputDevice extends tilo.Resource {
     profile: KeyboardProfile;
   }): Promise<void>;
   /** Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setKeyboardLayoutsMany(items: SetKeyboardLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
+  setKeyboardLayoutsMany(items: InputDeviceSetKeyboardLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
   setKeyboardSources(args: {
     keyboard: string;
     sources: string[];

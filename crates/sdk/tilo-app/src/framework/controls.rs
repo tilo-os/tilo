@@ -79,9 +79,11 @@ thread_local! {
     pub(super) static UNBOUND: std::cell::RefCell<Option<Vec<String>>> =
         const { std::cell::RefCell::new(None) };
     /// The surfaces of the other records the views open (the person's own),
-    /// while a surface report collects them.
-    pub(super) static OPENED: std::cell::RefCell<Option<Vec<tilo_resource::Surface>>> =
-        const { std::cell::RefCell::new(None) };
+    /// each with the app that keeps it when another app does, while a surface
+    /// report collects them.
+    pub(super) static OPENED: std::cell::RefCell<
+        Option<Vec<(Option<&'static str>, tilo_resource::Surface)>>,
+    > = const { std::cell::RefCell::new(None) };
     /// The settings sections another provider keeps for the app
     /// ([`Resources::kept_by`](super::Resources::kept_by)): theirs to publish
     /// and describe, so no report of the app's lists them.
@@ -98,7 +100,7 @@ pub(crate) fn kept_section(kind: &'static str) {
     });
     OPENED.with(|opened| {
         if let Some(opened) = opened.borrow_mut().as_mut() {
-            opened.retain(|surface| surface.kind != kind);
+            opened.retain(|(_, surface)| surface.kind != kind);
         }
     });
 }
@@ -106,7 +108,7 @@ pub(crate) fn kept_section(kind: &'static str) {
 /// A view opened a settings section of `P`, which lives in the person's own
 /// scope: a surface report lists its surface too, marked as the person's.
 pub(crate) fn opened_section<P: Resource>() {
-    resource_opened::<P>(true);
+    resource_opened::<P>(true, None);
 }
 
 /// A view or the window opened a record of `P` beside the app's own: a
@@ -117,21 +119,31 @@ pub(crate) fn opened_section<P: Resource>() {
 /// ([`ResourceApp::PERSON_RESOURCES`](super::ResourceApp::PERSON_RESOURCES)), not
 /// the open's.
 pub(crate) fn opened_resource<P: Resource>() {
-    resource_opened::<P>(false);
+    resource_opened::<P>(false, None);
 }
 
-fn resource_opened<P: Resource>(person: bool) {
+/// A view or the window opened the shared record of `P`, which the app
+/// `P::OWNER` keeps for every app of the workspace: a surface report lists it
+/// under that app's `reads` where the app is not this one.
+pub(crate) fn opened_shared<P: tilo_resource::SharedResource>() {
+    resource_opened::<P>(false, Some(P::OWNER));
+}
+
+fn resource_opened<P: Resource>(person: bool, owner: Option<&'static str>) {
     if KEPT.with_borrow(|kept| kept.contains(&P::KIND)) {
         return;
     }
     OPENED.with(|opened| {
         if let Some(opened) = opened.borrow_mut().as_mut()
-            && !opened.iter().any(|surface| surface.kind == P::KIND)
+            && !opened.iter().any(|(_, surface)| surface.kind == P::KIND)
         {
-            opened.push(tilo_resource::Surface {
-                person,
-                ..P::surface()
-            });
+            opened.push((
+                owner,
+                tilo_resource::Surface {
+                    person,
+                    ..P::surface()
+                },
+            ));
         }
     });
 }

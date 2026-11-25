@@ -132,6 +132,7 @@ pub fn surface_file() -> Result<String, String> {
         "# What the settings provider publishes, written by this crate's tests\n\
          # (`UPDATE_SNAPSHOTS=1`); review changes like an API change.\n\n",
         resources.as_array().map_or(&[][..], Vec::as_slice),
+        &[],
     )?;
     for Root {
         name,

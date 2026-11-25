@@ -22,10 +22,14 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.photos@40c14e9d1aa2fff8";
+export const SURFACE = "so.tilo.photos@217d98cb8a458042";
 
 /** What an edit does to one field of every selected photo: keeps what each photo has, takes it off all of them, gives them all one value, or adds or takes off names (tags, people). One of "keep", "clear", "set", "add", "remove". */
 export type Change = "keep" | "clear" | "set" | "add" | "remove";
+
+/** The arguments of `check_picture`. */
+export interface CheckPictureArgs {
+}
 
 /** The arguments of `toggle_favorite`. */
 export interface ToggleFavoriteArgs {
@@ -42,6 +46,12 @@ export interface RotateLeftArgs {
 
 /** The arguments of `reset_edits`. */
 export interface ResetEditsArgs {
+}
+
+/** The arguments of `develop`. */
+export interface DevelopArgs {
+  rotation: number;
+  crop: number[];
 }
 
 /** The arguments of `recognize_text`. */
@@ -155,6 +165,32 @@ export interface RemoveAlbumArgs {
   a: Album;
 }
 
+/** The arguments of `start_album_draft`. */
+export interface StartAlbumDraftArgs {
+  id: string;
+}
+
+/** The arguments of `album_draft_toggle`. */
+export interface AlbumDraftToggleArgs {
+  p: Photo;
+}
+
+/** The arguments of `cancel_album_draft`. */
+export interface CancelAlbumDraftArgs {
+}
+
+/** The arguments of `save_album`. */
+export interface SaveAlbumArgs {
+}
+
+/** The arguments of `delete_album_draft`. */
+export interface DeleteAlbumDraftArgs {
+}
+
+/** The arguments of `dismiss_notice`. */
+export interface DismissNoticeArgs {
+}
+
 /** The arguments of `add_person`. */
 export interface AddPersonArgs {
   p: Photo;
@@ -247,6 +283,8 @@ export interface Photo extends tilo.Resource {
   vwrtdas3: string;  // thumb
   "2i7i3as5": string;  // edited
   ktv6ci4q: number;  // rotation
+  dpfjny5e: number[];  // crop
+  nyatlpd5: string;  // picture_state
   yyfm6s7t: boolean;  // favorite
   wm3tr75p: string;  // captured_at
   zz3fpxbt: string;  // folder
@@ -259,13 +297,17 @@ export interface Photo extends tilo.Resource {
   p4pebna2: string;  // recognized
   "6esqywn4": string[];  // objects
   "7rzyj24a": string[];  // pets
+  /** Looks at where this device stands on a photo's picture: whether it holds the bytes yet, and whether what it holds is a picture it opens. A record reaches this device from another one before its picture's bytes do, so a photo says the picture is still arriving instead of drawing nothing; the window looks again while it waits. */
+  check_picture(): Promise<void>;
+  /** Runs `check_picture` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  check_pictureMany(items: CheckPictureArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Marks a photo as a favorite, or takes that back. */
   toggle_favorite(args?: {
     favorite?: boolean;
   }): Promise<void>;
   /** Runs `toggle_favorite` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   toggle_favoriteMany(items: ToggleFavoriteArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Turns the photograph a quarter clockwise, as its person sees it: the window draws the original turned, and a save writes what it draws. */
+  /** Turns the photograph a quarter clockwise, as its person sees it. */
   rotate_right(): Promise<void>;
   /** Runs `rotate_right` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rotate_rightMany(items: RotateRightArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -273,10 +315,17 @@ export interface Photo extends tilo.Resource {
   rotate_left(): Promise<void>;
   /** Runs `rotate_left` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rotate_leftMany(items: RotateLeftArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Puts the photograph back as it came, taking the person's own turns off it. */
+  /** Puts the photograph back as it came, taking every edit off it. */
   reset_edits(): Promise<void>;
   /** Runs `reset_edits` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   reset_editsMany(items: ResetEditsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Records an edit on the photograph and draws it: the device keeps the part the person chose, then turns it, and keeps the result in the content store. Nothing is written over the photograph, so every edit can be taken back and the person can see the picture as it came beside the one they made. */
+  develop(args: {
+    rotation: number;
+    crop: number[];
+  }): Promise<void>;
+  /** Runs `develop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  developMany(items: DevelopArgs[]): Promise<tilo.ActionAnswer[]>;
   /** What a picture shows, in a sentence, as the device's image model reads it: the sentence the library's details show and search finds. The work is the device's own, asked of this session on the app's behalf, so the app never runs a model itself. */
   describe_photo(): Promise<void>;
   /** The words in the photograph, read on this device and kept with the photo, so the library finds it by what it says. Needs no model: a device without one still reads its text. */
@@ -285,8 +334,10 @@ export interface Photo extends tilo.Resource {
   recognize_textMany(items: RecognizeTextArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Copies the photograph to the person's clipboard as a picture, so it pastes into another app. */
   copy_photo(): Promise<void>;
-  /** The objects and pets the device's image model finds in a picture, added to what the photo already lists. */
+  /** What the device's image model finds in a picture, added to what the photo already lists: the objects, and the pets apart from them. */
   tag_photo(): Promise<void>;
+  /** What the photograph shows, as the device's model reads it in one go: the sentence search finds it by, the words in it, and the objects and pets it holds. It replaces what the photo said before, so analyzing again after the picture changed says what it shows now. */
+  analyze_photo(): Promise<void>;
   /** Keeps the part of the photograph its person chose: `x`, `y`, `width` and `height` are fractions of the picture as the window shows it, so every member and device reads the crop. */
   crop_photo(args: {
     x: number;
@@ -326,7 +377,7 @@ export interface Photo extends tilo.Resource {
 
 /** The actions `Photo` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PHOTO_ACTIONS = ["toggle_favorite", "toggle_favoriteMany", "rotate_right", "rotate_rightMany", "rotate_left", "rotate_leftMany", "reset_edits", "reset_editsMany", "describe_photo", "recognize_text", "recognize_textMany", "copy_photo", "tag_photo", "crop_photo", "crop_photoMany", "tag", "tagMany", "untag", "untagMany", "share", "set_place", "set_placeMany", "clear_place", "clear_placeMany", "export_photo"] as const;
+export const PHOTO_ACTIONS = ["check_picture", "check_pictureMany", "toggle_favorite", "toggle_favoriteMany", "rotate_right", "rotate_rightMany", "rotate_left", "rotate_leftMany", "reset_edits", "reset_editsMany", "develop", "developMany", "describe_photo", "recognize_text", "recognize_textMany", "copy_photo", "tag_photo", "analyze_photo", "crop_photo", "crop_photoMany", "tag", "tagMany", "untag", "untagMany", "share", "set_place", "set_placeMany", "clear_place", "clear_placeMany", "export_photo"] as const;
 
 /** The `tl.so.tilo.photos.Photo` kind at `path`. */
 export function photo(ws: tilo.Workspace, path: string): Photo {
@@ -410,6 +461,11 @@ export interface Library extends tilo.Resource {
   ii2qmjt5: boolean;  // import_stopped
   xkkw7d65: Array<tilo.Entry<Unread>>;  // unread
   fypuuz3p: Array<tilo.Entry<FaceScan>>;  // face_scans
+  jcilt5zf: string;  // notice
+  kg3gc2rb: boolean;  // album_draft_open
+  xjkjqqf5: string;  // album_draft_id
+  "2ql3qzqp": string;  // album_draft_name
+  myrcknu3: string[];  // album_draft_photos
   /** Imports a photograph the person picks: the library keeps the address of its bytes, the name it came in with, what its own container says of it (when and where it was taken) and a small preview the grid draws. A picture whose bytes the window already holds reads at once. */
   import_photo(args: {
     file: unknown;
@@ -504,6 +560,34 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
   /** Runs `remove_album` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   remove_albumMany(items: RemoveAlbumArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Opens an album draft: the album `id` names as it stands now, or an empty one to start. The person chooses its photos in the library and nothing about the album changes until they save the draft, so a change another member makes meanwhile is reviewed, not overwritten unseen. */
+  start_album_draft(args: {
+    id: string;
+  }): Promise<void>;
+  /** Runs `start_album_draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  start_album_draftMany(items: StartAlbumDraftArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Chooses a photo for the album draft, or takes it out of the draft when it is already in it. */
+  album_draft_toggle(args: {
+    p: Photo;
+  }): Promise<void>;
+  /** Runs `album_draft_toggle` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  album_draft_toggleMany(items: AlbumDraftToggleArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Closes the album draft, saving nothing. */
+  cancel_album_draft(): Promise<void>;
+  /** Runs `cancel_album_draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  cancel_album_draftMany(items: CancelAlbumDraftArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Saves the album draft. A photo the draft names that the library no longer holds, or an album another member deleted while it was open, is a change made first by someone else: the draft stays as it is and says so, so they review it and save again. What the save does add and take away merges with a change another member made meanwhile. */
+  save_album(): Promise<void>;
+  /** Runs `save_album` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  save_albumMany(items: SaveAlbumArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes the album the draft is of. Its photos stay in the library. */
+  delete_album_draft(): Promise<void>;
+  /** Runs `delete_album_draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_album_draftMany(items: DeleteAlbumDraftArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes down what the library last had to say. */
+  dismiss_notice(): Promise<void>;
+  /** Runs `dismiss_notice` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  dismiss_noticeMany(items: DismissNoticeArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Names a person on a photo, and puts the photo on that person when the library knows them. */
   add_person(args: {
     p: Photo;
@@ -602,7 +686,7 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["import_photo", "absorb_picture", "import_photo_meta", "import_folder", "import_folderMany", "start_import", "start_importMany", "imported", "importedMany", "stop_import", "retry_import", "retry_importMany", "reindex", "reindexMany", "dismiss_import", "dismiss_importMany", "favorite_selected", "favorite_selectedMany", "remove_selected", "remove_selectedMany", "edit_selected", "edit_selectedMany", "new_album", "remove_album", "remove_albumMany", "add_person", "add_personMany", "remove_person", "remove_personMany", "rename_person", "rename_personMany", "face_scan", "set_recognition", "set_recognitionMany", "scan_faces", "scan_step", "read_batch", "pause_scan", "pause_scanMany", "delete_face_data", "delete_face_dataMany", "approve_suggestion", "approve_suggestionMany", "merge_suggestion", "merge_suggestionMany", "dismiss_suggestion", "dismiss_suggestionMany", "person_named", "new_person", "merge_people", "merge_peopleMany", "split_photo", "split_photoMany", "remove_person_resource", "remove_person_resourceMany"] as const;
+export const LIBRARY_ACTIONS = ["import_photo", "absorb_picture", "import_photo_meta", "import_folder", "import_folderMany", "start_import", "start_importMany", "imported", "importedMany", "stop_import", "retry_import", "retry_importMany", "reindex", "reindexMany", "dismiss_import", "dismiss_importMany", "favorite_selected", "favorite_selectedMany", "remove_selected", "remove_selectedMany", "edit_selected", "edit_selectedMany", "new_album", "remove_album", "remove_albumMany", "start_album_draft", "start_album_draftMany", "album_draft_toggle", "album_draft_toggleMany", "cancel_album_draft", "cancel_album_draftMany", "save_album", "save_albumMany", "delete_album_draft", "delete_album_draftMany", "dismiss_notice", "dismiss_noticeMany", "add_person", "add_personMany", "remove_person", "remove_personMany", "rename_person", "rename_personMany", "face_scan", "set_recognition", "set_recognitionMany", "scan_faces", "scan_step", "read_batch", "pause_scan", "pause_scanMany", "delete_face_data", "delete_face_dataMany", "approve_suggestion", "approve_suggestionMany", "merge_suggestion", "merge_suggestionMany", "dismiss_suggestion", "dismiss_suggestionMany", "person_named", "new_person", "merge_people", "merge_peopleMany", "split_photo", "split_photoMany", "remove_person_resource", "remove_person_resourceMany"] as const;
 
 /** The `tl.so.tilo.photos.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {

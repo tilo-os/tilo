@@ -534,6 +534,9 @@ pub(crate) fn resource_id(kind: &str) -> String {
 #[derive(Clone, Copy)]
 pub struct PersonKind {
     kind: &'static str,
+    /// The app that keeps a shared record of it; `None` for the person's own record, which is
+    /// this app's.
+    owner: Option<&'static str>,
     report: fn() -> tilo_resource::Surface,
     open: fn(&super::settings::ViewStorage),
 }
@@ -547,6 +550,7 @@ impl PersonKind {
     pub const fn shared<P: tilo_resource::SharedResource>() -> Self {
         Self {
             kind: P::KIND,
+            owner: Some(P::OWNER),
             report: workspace_surface::<P>,
             open: open_shared::<P>,
         }
@@ -557,6 +561,7 @@ impl PersonKind {
     pub const fn profile<P: Resource>() -> Self {
         Self {
             kind: P::KIND,
+            owner: None,
             report: profile_surface::<P>,
             open: open_profile::<P>,
         }
@@ -566,6 +571,13 @@ impl PersonKind {
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         self.kind
+    }
+
+    /// The app that keeps a shared record of it, when another app does; `None` for the app's
+    /// own, the person's included.
+    #[must_use]
+    pub const fn owner(&self) -> Option<&'static str> {
+        self.owner
     }
 
     /// Its surface, as the app's surface report lists it: `P`'s, marked as
@@ -601,7 +613,7 @@ fn workspace_surface<P: Resource>() -> tilo_resource::Surface {
 fn open_shared<P: tilo_resource::SharedResource>(storage: &super::settings::ViewStorage) {
     // The app's surface lists the record, so the host admits the app's changes
     // to it, whichever app of the workspace keeps it.
-    super::controls::opened_resource::<P>();
+    super::controls::opened_shared::<P>();
     let _ = storage.shared_workspace::<P>(P::OWNER);
 }
 

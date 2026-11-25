@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@20b997efd54ce90c";
+export const SURFACE = "so.tilo.browser@f8d93b0d07e65c53";
 
 /** Where a row the address bar offers comes from. One of "bookmark", "visited", "imported", "search". */
 export type SuggestionKind = "bookmark" | "visited" | "imported" | "search";
@@ -56,19 +56,6 @@ export interface ForgetFormArgs {
 
 /** The arguments of `delete_address`. */
 export interface DeleteAddressArgs {
-}
-
-/** The arguments of `update_download`. */
-export interface UpdateDownloadArgs {
-  id: number;
-  state: string;
-  name: string;
-  url: string;
-  path: string;
-  retryable: boolean;
-  received: number;
-  total: number;
-  error: string;
 }
 
 /** The arguments of `open_from_page`. */
@@ -428,7 +415,6 @@ export interface Page extends tilo.Resource {
   dedg3fev: Array<tilo.Entry<PageStep>>;  // steps
   mk755sf3: DialogAsk | null;  // dialog
   tveuvbse: MenuAsk | null;  // menu
-  o2occ235: Array<tilo.Entry<Download>>;  // downloads
   eg4w4fow: boolean;  // muted
   zh6wrcvk: PageMedia | null;  // media
   i6yst6vv: boolean;  // pip
@@ -571,20 +557,6 @@ export interface Page extends tilo.Resource {
     cross_origin?: boolean;
     frame?: string;
   }): Promise<Answer>;
-  /** Writes what the page last said of one of its downloads into the page's record, as its window hands it over while the transfer moves. The window raises it, never a person, agent or script. */
-  update_download(args: {
-    id: number;
-    state: string;
-    name: string;
-    url: string;
-    path: string;
-    retryable: boolean;
-    received: number;
-    total: number;
-    error: string;
-  }): Promise<void>;
-  /** Runs `update_download` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  update_downloadMany(items: UpdateDownloadArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Keeps a page the page opened in a window of its own as a page of this browser, as its window hands it over: a popup a site sized, or a plain new tab. */
   open_from_page(args: {
     url: string;
@@ -695,20 +667,12 @@ export interface Page extends tilo.Resource {
     id: number;
     name?: string;
   }): Promise<Answer>;
-  /** Saves what an address serves into the browser's downloads. */
+  /** Downloads what an address serves into the person's Downloads, as a job of the Browser's own that goes on when the window closes. A page's window raises it for a download the person saved there, naming the handle its request waits under; a person or agent names an address. */
   download(args: {
     url: string;
+    name?: string;
+    request?: string;
   }): Promise<Answer>;
-  /** Stops a download that is still going. */
-  cancel_download(args: {
-    d: Download;
-  }): Promise<Answer>;
-  /** Starts a failed download again from the beginning. */
-  retry_download(args: {
-    d: Download;
-  }): Promise<Answer>;
-  /** Stops every download this page has going. */
-  cancel_all_downloads(): Promise<Answer>;
   /** Opens the engine's developer tools for this page: its console, its elements and its network. */
   developer_tools(): Promise<Answer>;
   /** Writes the page as a PDF and hands it to Print Centre, where the person chooses the printer and how it prints. The engine answers with the file once it has written it; a page with nothing open has nothing to print. */
@@ -944,7 +908,7 @@ export interface Page extends tilo.Resource {
 
 /** The actions `Page` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "update_download", "update_downloadMany", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "submit_address", "choose_omnibox", "back", "forward", "reload", "stop_loading", "leave_fullscreen", "remember_fullscreen", "remember_fullscreenMany", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "cancel_download", "retry_download", "cancel_all_downloads", "developer_tools", "print_page", "note_print", "note_printMany", "mute", "float_page_video", "float_page_videoMany", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "list_extensions", "install_extension", "install_store_extension", "update_extensions", "enable_extension", "remove_extension", "click_extension", "choose_extension_notice", "dismiss_extension_notice", "remember_extensions", "remember_extensionsMany", "note_extension", "note_extensionMany", "open_side_panel", "close_panel", "remember_panel", "remember_panelMany", "remember_omnibox", "remember_omniboxMany", "typed_address", "address_left", "enter_omnibox", "note_extension_updates", "note_extension_updatesMany", "remember_credential", "remember_credentialMany", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page"] as const;
+export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "submit_address", "choose_omnibox", "back", "forward", "reload", "stop_loading", "leave_fullscreen", "remember_fullscreen", "remember_fullscreenMany", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "developer_tools", "print_page", "note_print", "note_printMany", "mute", "float_page_video", "float_page_videoMany", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "list_extensions", "install_extension", "install_store_extension", "update_extensions", "enable_extension", "remove_extension", "click_extension", "choose_extension_notice", "dismiss_extension_notice", "remember_extensions", "remember_extensionsMany", "note_extension", "note_extensionMany", "open_side_panel", "close_panel", "remember_panel", "remember_panelMany", "remember_omnibox", "remember_omniboxMany", "typed_address", "address_left", "enter_omnibox", "note_extension_updates", "note_extension_updatesMany", "remember_credential", "remember_credentialMany", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page"] as const;
 
 /** The `tl.so.tilo.browser.Page` kind at `path`. */
 export function page(ws: tilo.Workspace, path: string): Page {
@@ -1047,24 +1011,57 @@ export function pageMedia(ws: tilo.Workspace, path: string): PageMedia {
 
 /** Download — `tl.so.tilo.browser.Download`. */
 export interface Download extends tilo.Resource {
-  anfisgsq: number;  // transfer
-  in525zqp: string;  // state
-  wz6wi2p3: string;  // name
   z4gzfvzw: string;  // url
-  feka5n4y: string;  // path
-  kubpqqew: boolean;  // retryable
-  cokrfftg: number;  // received
-  pbavpdyk: number;  // total
-  wfaksaa6: string;  // error
+  wz6wi2p3: string;  // name
+  mhf455xb: string;  // job
+  /** Stops a download that is still going: what it saved so far is removed. */
+  cancel_download(): Promise<Answer>;
+  /** Starts a download that failed or was cancelled again, from the beginning. */
+  retry_download(): Promise<Answer>;
 }
 
 /** The actions `Download` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DOWNLOAD_ACTIONS = [] as const;
+export const DOWNLOAD_ACTIONS = ["cancel_download", "retry_download"] as const;
 
 /** The `tl.so.tilo.browser.Download` kind at `path`. */
 export function download(ws: tilo.Workspace, path: string): Download {
   return resourceProxy(ws, path, SURFACE, DOWNLOAD_ACTIONS) as unknown as Download;
+}
+
+/** DownloadJob — `tl.so.tilo.browser.DownloadJob`. */
+export interface DownloadJob extends tilo.Resource {
+  q5gkqwpu: string;  // state
+  sr3wciux: number;  // done
+  r5unqai3: number;  // total
+  fmdfhyux: string;  // path
+  ba6qps55: string;  // name
+  zmyv6bxj: string;  // error
+}
+
+/** The actions `DownloadJob` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DOWNLOADJOB_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.DownloadJob` kind at `path`. */
+export function downloadJob(ws: tilo.Workspace, path: string): DownloadJob {
+  return resourceProxy(ws, path, SURFACE, DOWNLOADJOB_ACTIONS) as unknown as DownloadJob;
+}
+
+/** DownloadAsk — `tl.so.tilo.browser.DownloadAsk`. */
+export interface DownloadAsk extends tilo.Resource {
+  "3dy7bucf": string;  // url
+  ova5zveb: string;  // name
+  e7uolvpg: string;  // request
+}
+
+/** The actions `DownloadAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DOWNLOADASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.DownloadAsk` kind at `path`. */
+export function downloadAsk(ws: tilo.Workspace, path: string): DownloadAsk {
+  return resourceProxy(ws, path, SURFACE, DOWNLOADASK_ACTIONS) as unknown as DownloadAsk;
 }
 
 /** SiteInfo — `tl.so.tilo.browser.SiteInfo`. */
@@ -1383,6 +1380,7 @@ export interface Browser extends tilo.Resource {
   zx4a3bhv: Array<tilo.Entry<Page>>;  // pages
   z3z5vks2: boolean;  // addresses_enabled
   nskkfe4o: Array<tilo.Entry<Extension>>;  // extensions
+  "3gaxygjd": Array<tilo.Entry<Download>>;  // downloads
   uq4ctcke: string;  // extension_notice
   /** Opens a page in a window of its own. Every window of the app is one page; what it shows, its address and its own back and forward are the system's. */
   new_page(): Promise<Page>;
@@ -1494,6 +1492,8 @@ export function browser(ws: tilo.Workspace, path: string): Browser {
 
 /** Browser — `tl.so.tilo.browser`. */
 export interface TiloBrowser extends tilo.Resource {
+  /** Stops every download still going, from every window. */
+  cancel_all_downloads(): Promise<Answer>;
   /** Opens a saved download in the app that opens its kind, through the system's one open. */
   open_download(args: {
     name: string;
@@ -1509,7 +1509,7 @@ export interface TiloBrowser extends tilo.Resource {
 
 /** The actions `TiloBrowser` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TILOBROWSER_ACTIONS = ["open_download", "reveal_download", "reveal_downloadMany"] as const;
+export const TILOBROWSER_ACTIONS = ["cancel_all_downloads", "open_download", "reveal_download", "reveal_downloadMany"] as const;
 
 /** The `tl.so.tilo.browser` kind at `path`. */
 export function tiloBrowser(ws: tilo.Workspace, path: string): TiloBrowser {
