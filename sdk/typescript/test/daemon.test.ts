@@ -56,7 +56,7 @@ async function rows(listing: Listing): Promise<Row[]> {
 
 /** The Tasks app's action that makes a task, and the task list it adds it to. */
 const NEW_TASK = "so.tilo.tasks#new_task";
-const TASK_LIST = "so.tilo.tasks/tl:so.tilo.tasks";
+const TASK_LIST = "so.tilo.tasks/Tasks";
 
 /** The id a call that made something names it by: its result's reference, or the resources of
  * the answer it kept. */
@@ -260,7 +260,7 @@ id = "${id}"
 version = "${APP_VERSION}"
 kind = "app"
 runtime = "${runtime}"
-required-runtimes = ["${bun}"]
+optional-runtimes = ["${bun}"]
 
 [publisher]
 identity = "ed25519:${"00".repeat(32)}"

@@ -23,7 +23,7 @@ pytestmark = pytest.mark.skipif(
 TITLE = "Made by the SDK's test"
 # The Tasks app's action that makes a task, and the task list it adds it to.
 NEW_TASK = "so.tilo.tasks#new_task"
-TASK_LIST = "so.tilo.tasks/tl:so.tilo.tasks"
+TASK_LIST = "so.tilo.tasks/Tasks"
 TEXT = "Every call the test makes is a tool call of the agent surface."
 
 
