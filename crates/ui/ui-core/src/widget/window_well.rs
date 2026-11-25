@@ -35,6 +35,10 @@ pub struct Wells {
     /// drawing several displays lays one place out on each, so the part is what tells the two
     /// apart. A handle with no part keys its wells by the place alone.
     placed: Rc<RefCell<BTreeMap<WellKey, Rect>>>,
+    /// Which well last reported each place ([`WindowWell`]'s own number): a well that leaves
+    /// forgets its place only while the place is still its own, so a view rebuilt in place,
+    /// whose new well reported the place before the old one was let go, keeps the new one.
+    reporters: Rc<RefCell<BTreeMap<WellKey, u64>>>,
     generation: Rc<std::cell::Cell<u64>>,
     /// The part this handle's wells belong to (a display's id, as the shell names its parts):
     /// empty for a handle that is not a part's.
@@ -57,6 +61,7 @@ impl Wells {
     pub fn for_part(&self, part: impl Into<String>) -> Self {
         Self {
             placed: Rc::clone(&self.placed),
+            reporters: Rc::clone(&self.reporters),
             generation: Rc::clone(&self.generation),
             part: Rc::new(part.into()),
         }
@@ -139,10 +144,27 @@ impl Wells {
         self.generation.set(self.generation.get().wrapping_add(1));
     }
 
+    /// Record `rect` as the well of `place`, reported by the well numbered `well`.
+    fn place_from(&self, place: &str, rect: Rect, well: u64) {
+        let key = ((*self.part).clone(), place.to_owned());
+        self.reporters.borrow_mut().insert(key, well);
+        self.place(place, rect);
+    }
+
+    /// Forget the well of `place` that the well numbered `well` reported, if the place is still
+    /// that well's: another well that reported it since stands there now.
+    fn remove_from(&self, place: &str, well: u64) {
+        let key = ((*self.part).clone(), place.to_owned());
+        if self.reporters.borrow().get(&key) == Some(&well) {
+            self.remove(place);
+        }
+    }
+
     /// Forget the well of `place` on this handle's part: it left the screen (its place scrolled
     /// away, or the shell shows another workspace and does not draw it).
     pub fn remove(&self, place: &str) {
         let key = ((*self.part).clone(), place.to_owned());
+        self.reporters.borrow_mut().remove(&key);
         if self.placed.borrow_mut().remove(&key).is_some() {
             self.generation.set(self.generation.get().wrapping_add(1));
         }
@@ -155,8 +177,12 @@ impl Wells {
         let before = placed.len();
         if self.part.is_empty() {
             placed.clear();
+            self.reporters.borrow_mut().clear();
         } else {
             placed.retain(|(part, _), _| part.as_str() != self.part.as_str());
+            self.reporters
+                .borrow_mut()
+                .retain(|(part, _), _| part.as_str() != self.part.as_str());
         }
         if placed.len() != before {
             self.generation.set(self.generation.get().wrapping_add(1));
@@ -190,22 +216,30 @@ impl Drop for Installed {
     }
 }
 
-/// Report `rect` as the well of `place` to the wells installed on this thread, if any.
-fn report(place: &str, rect: Rect) {
+/// Report `rect` as the well of `place`, by the well numbered `well`, to the wells installed on
+/// this thread, if any.
+fn report(place: &str, rect: Rect, well: u64) {
     CURRENT.with(|current| {
         if let Some(wells) = current.borrow().as_ref() {
-            wells.place(place, rect);
+            wells.place_from(place, rect, well);
         }
     });
 }
 
-/// Forget the well of `place` on the wells installed on this thread, if any: it left the screen.
-fn forget(place: &str) {
+/// Forget the well of `place` the well numbered `well` reported, on the wells installed on this
+/// thread, if any: it left the screen.
+fn forget(place: &str, well: u64) {
     CURRENT.with(|current| {
         if let Some(wells) = current.borrow().as_ref() {
-            wells.remove(place);
+            wells.remove_from(place, well);
         }
     });
+}
+
+thread_local! {
+    /// The number the next well built on this thread takes: what tells two wells of one place
+    /// apart while a rebuilt view's new well stands before the old one is let go.
+    static NEXT_WELL: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// A place's window, at the rectangle the well stands at: the app's own window shows there, so
@@ -232,6 +266,8 @@ const WINDOW_ASPECT: f32 = 1.6;
 /// See the module docs.
 pub struct WindowWell {
     place: String,
+    /// This well's own number, which its reports carry ([`Wells`]'s reporters).
+    id: u64,
     rect: Rect,
     /// Whether the well stands on a laid-out tree: it reports on every layout while it does,
     /// so a host that installs another handle (a new policy, a test) sees it at once, and
@@ -243,8 +279,14 @@ impl WindowWell {
     /// A well for the place `place`.
     #[must_use]
     pub fn new(place: impl Into<String>) -> Self {
+        let id = NEXT_WELL.with(|next| {
+            let id = next.get();
+            next.set(id.wrapping_add(1));
+            id
+        });
         Self {
             place: place.into(),
+            id,
             rect: Rect::ZERO,
             on_screen: false,
         }
@@ -260,7 +302,7 @@ impl WindowWell {
 impl Drop for WindowWell {
     fn drop(&mut self) {
         if self.on_screen {
-            forget(&self.place);
+            forget(&self.place, self.id);
         }
     }
 }
@@ -277,7 +319,7 @@ impl Described for WindowWell {
             return true;
         }
         if self.on_screen {
-            forget(&self.place);
+            forget(&self.place, self.id);
         }
         self.place = props.place;
         true
@@ -319,7 +361,7 @@ impl Widget for WindowWell {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.on_screen = true;
-        report(&self.place, self.rect);
+        report(&self.place, self.rect, self.id);
     }
 
     fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
