@@ -26,6 +26,10 @@ web-time = { version = "1", features = ["serde"] }
 tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 # A member's hue is derived from who they are.
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32, where the toolkit
+# reads these values.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
