@@ -815,8 +815,10 @@ and screen share only, never documents, and stays as it is.
   store's schema check applies to it unchanged. A seed gets no store command,
   verb or write path of its own, and a store that knows no schema refuses
   every write.
-- **Files are resources.** The tree syncs as ordinary records through
-  `tree_sync` only. Bytes go through one content store, moved by
+- **Files are resources.** Each folder and file of the tree is a record of
+  the workspace's store, nested under its folder, kept and synced like any
+  other record, read by whom its nearest folder names (everyone when none
+  does). Bytes go through one content store, moved by
   `RouteContent`, with keys from `workspace-keys`. A person sees it as one
   `~/<workspace>` folder on every computer, Tilo OS and any other Linux
   alike, with files on demand and a keep-offline pin. The device daemon
@@ -849,6 +851,8 @@ and screen share only, never documents, and stays as it is.
 | The overlap in `collab_app_broker` | ~30,000 |
 | `tilo_fs::sync` and the fs ALPNs | ~2,000 |
 | `fs` `kept_documents`, `runtime-fs` blobs, `content-device` | ~3,000 |
+| The Files tree's own chunk documents and sync: `fs` `tree_sync` and `namespace/chunks.rs`, the workspace service's `files.rs` backend and `files/socket.rs`, and the Files special cases in admission (`collab-types` `files_open_step`, `tilo-server-protocol` `puts_files`), all in the push that puts the tree into the store | ~5,500 |
+| The one-time step that brings an existing tree into the store, the only reader left of the chunk documents, once the company instance and every dev stack has moved (owner: **Files travel at disk and network speed** session) | (new) |
 
 About 75k lines. Owners: **One engine** session (replica, frame store,
 link, compaction, broker, files); **tilolang onto the resource store**
