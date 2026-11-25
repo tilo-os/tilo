@@ -2040,8 +2040,8 @@ view no_assistant(record: workspace.WorkspaceAgent) {
 }
 
 /// The sidebar: channels outside any category first, then each category with its channels.
-/// Choosing one shows it beside the sidebar.
-/// TODO(language): a resource's own key for a navigation item; the category and name stand in.
+/// Choosing one shows it beside the sidebar. Each place is keyed by the conversation's id, so a
+/// rename keeps the place chosen and two conversations called the same stay apart.
 view sidebar(all: Conversations) {
     state shown: Text = ""
     // What the person is writing and has not sent, read once: each conversation's row says the
@@ -2109,7 +2109,7 @@ view sidebar(all: Conversations) {
                                                 ch: TextChannel => {
                                                     if not ch.archived {
                                                         ui.NavItem(
-                                                            "{c.name}/{ch.name}",
+                                                            ch.id(),
                                                             ch.name,
                                                             icon: .hash,
                                                             item: ch,
@@ -2141,20 +2141,15 @@ view sidebar(all: Conversations) {
                                                                     )
                                                                 }
                                                             }
-                                                            on select: set(
-                                                                    shown,
-                                                                    "{c.name}/{ch.name}",
-                                                                )
-                                                                .then(
-                                                                    open(ch),
-                                                                )
+                                                            on select: set(shown, ch.id())
+                                                                .then(open(ch))
                                                         }
                                                     }
                                                 }
                                                 v: VoiceChannel => {
                                                     // A voice channel, and under it who is in
                                                     // its call now.
-                                                    let key = "{c.name}/voice/{v.name}"
+                                                    let key = v.id()
                                                     ui.NavItem(
                                                         key,
                                                         v.name,
@@ -2165,7 +2160,7 @@ view sidebar(all: Conversations) {
                                                     }
                                                     for m in call_members(v) {
                                                         ui.NavItem(
-                                                            "{key}/{m.who.name()}",
+                                                            "{key}/{m.who.id()}",
                                                             m.who.name(),
                                                             person: m.who,
                                                             speaking: m.speaking,
@@ -2184,7 +2179,7 @@ view sidebar(all: Conversations) {
                             ch: TextChannel => {
                                 if not ch.archived {
                                     ui.NavItem(
-                                        "/{ch.name}",
+                                        ch.id(),
                                         ch.name,
                                         icon: .hash,
                                         item: ch,
@@ -2210,18 +2205,18 @@ view sidebar(all: Conversations) {
                                                 )
                                             }
                                         }
-                                        on select: set(shown, "/{ch.name}").then(open(ch))
+                                        on select: set(shown, ch.id()).then(open(ch))
                                     }
                                 }
                             }
                             v: VoiceChannel => {
-                                let key = "/voice/{v.name}"
+                                let key = v.id()
                                 ui.NavItem(key, v.name, icon: .volume_2, item: v) {
                                     on select: set(shown, key).then(open(v))
                                 }
                                 for m in call_members(v) {
                                     ui.NavItem(
-                                        "{key}/{m.who.name()}",
+                                        "{key}/{m.who.id()}",
                                         m.who.name(),
                                         person: m.who,
                                         speaking: m.speaking,
@@ -2239,25 +2234,25 @@ view sidebar(all: Conversations) {
                                 if d.people.contains(invoker) {
                                     if let other = other_in(d, invoker) {
                                         ui.NavItem(
-                                            "/dm/{other.id()}",
+                                            d.id(),
                                             other.name(),
                                             person: other,
                                             item: d,
                                             secondary: draft_line(writing, d),
                                             mentions: mentions(d),
                                         ) {
-                                            on select: set(shown, "/dm/{other.id()}").then(open(d))
+                                            on select: set(shown, d.id()).then(open(d))
                                         }
                                     } else {
                                         ui.NavItem(
-                                            "/dm/self",
+                                            d.id(),
                                             "Notes to self",
                                             icon: .bookmark,
                                             item: d,
                                             secondary: draft_line(writing, d),
                                             mentions: mentions(d),
                                         ) {
-                                            on select: set(shown, "/dm/self").then(open(d))
+                                            on select: set(shown, d.id()).then(open(d))
                                         }
                                     }
                                 }

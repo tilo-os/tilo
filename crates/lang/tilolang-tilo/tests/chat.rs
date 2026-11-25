@@ -1520,6 +1520,86 @@ fn a_channel_lists_its_threads_and_opening_one_opens_it() {
     );
 }
 
+#[test]
+fn a_place_is_keyed_by_its_conversation_so_a_rename_and_a_twin_name_stay_apart() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all.clone(), Value::text("design")]);
+    let team = call(&ada, "new_category", vec![all.clone(), Value::text("Team")]);
+    let twin = call(
+        &ada,
+        "new_channel",
+        vec![
+            all,
+            Value::text("design"),
+            Value::text(""),
+            Value::Opt(Some(Box::new(team))),
+        ],
+    );
+    ada.commit();
+    // The place of `at`: the row the sidebar draws for that conversation.
+    let place = |view: &ViewInstance, at: &tilolang_runtime::ResourceRef| -> UiNode {
+        view.tree()
+            .of_kind("ui.NavItem")
+            .into_iter()
+            .find(|item| {
+                matches!(item.props.get("item"), Some(Value::Ref(reference))
+                    if reference.target.id_string() == at.id_string())
+            })
+            .unwrap_or_else(|| panic!("a place for {at:?}"))
+            .clone()
+    };
+    // Two channels called `design` stand apart, each place keyed by its own id.
+    let sidebar = ada.view(APP);
+    assert_eq!(
+        text_prop(&place(&sidebar, &target(&design)), "key"),
+        Some(target(&design).id_string()),
+        "the channel's own id"
+    );
+    assert_eq!(
+        text_prop(&place(&sidebar, &target(&twin)), "key"),
+        Some(target(&twin).id_string()),
+        "the twin's own id"
+    );
+
+    // A rename changes what the place says, never the key it keeps.
+    call(
+        &ada,
+        "rename_channel",
+        vec![design.clone(), Value::text("design reviews")],
+    );
+    ada.commit();
+    let mut renamed = ada.view(APP);
+    let renamed_place = place(&renamed, &target(&design));
+    assert_eq!(
+        text_prop(&renamed_place, "key"),
+        Some(target(&design).id_string()),
+        "a rename keeps the place"
+    );
+    assert_eq!(
+        text_prop(&renamed_place, "label"),
+        Some("design reviews".to_owned())
+    );
+
+    // Choosing the renamed channel selects it by that key.
+    let outcome = renamed.fire(&renamed_place.key, "select").unwrap();
+    assert!(matches!(outcome, InvokeOutcome::Done(_)), "{outcome:?}");
+    renamed.poll_patches().unwrap();
+    let selected = renamed
+        .tree()
+        .first_of_kind("ui.NavList")
+        .expect("the sidebar's list")
+        .props
+        .get("selected")
+        .cloned();
+    assert_eq!(
+        selected,
+        Some(Value::text(target(&design).id_string())),
+        "the place chosen is the conversation's id"
+    );
+}
+
 /// How many ways the view offers to make a channel: the bar's primary, and any empty state's
 /// own call to action. The host reads the bar's off the action's declaration, and its header
 /// rules only ever drop a control that repeats one the content or the sidebar offers, so a view
